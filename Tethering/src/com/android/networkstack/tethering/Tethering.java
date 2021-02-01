@@ -93,7 +93,6 @@ import android.net.TetheringConfigurationParcel;
 import android.net.TetheringRequestParcel;
 import android.net.ip.IpServer;
 import android.net.shared.NetdUtils;
-import android.net.util.BaseNetdUnsolicitedEventListener;
 import android.net.util.InterfaceSet;
 import android.net.util.PrefixUtils;
 import android.net.util.SharedLog;
@@ -132,6 +131,7 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -140,8 +140,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Executor;
@@ -216,13 +216,12 @@ public class Tethering {
     private final ArrayMap<String, TetherState> mTetherStates;
     private final BroadcastReceiver mStateReceiver;
     private final Looper mLooper;
-    private final StateMachine mTetherMainSM;
+    private final TetherMainSM mTetherMainSM;
     private final OffloadController mOffloadController;
     private final UpstreamNetworkMonitor mUpstreamNetworkMonitor;
     // TODO: Figure out how to merge this and other downstream-tracking objects
     // into a single coherent structure.
-    // Use LinkedHashSet for predictable ordering order for ConnectedClientsTracker.
-    private final LinkedHashSet<IpServer> mForwardedDownstreams;
+    private final HashSet<IpServer> mForwardedDownstreams;
     private final VersionedBroadcastListener mCarrierConfigChange;
     private final TetheringDependencies mDeps;
     private final EntitlementManager mEntitlementMgr;
@@ -287,7 +286,7 @@ public class Tethering {
                 });
         mUpstreamNetworkMonitor = mDeps.getUpstreamNetworkMonitor(mContext, mTetherMainSM, mLog,
                 TetherMainSM.EVENT_UPSTREAM_CALLBACK);
-        mForwardedDownstreams = new LinkedHashSet<>();
+        mForwardedDownstreams = new HashSet<>();
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_CARRIER_CONFIG_CHANGED);
@@ -1423,6 +1422,7 @@ public class Tethering {
         //    interfaces.
         // 2) mNotifyList contains all state machines that may have outstanding tethering state
         //    that needs to be torn down.
+        // 3) Use mNotifyList for predictable ordering order for ConnectedClientsTracker.
         //
         // Because we excise interfaces immediately from mTetherStates, we must maintain mNotifyList
         // so that the garbage collector does not clean up the state machine before it has a chance
@@ -1457,6 +1457,15 @@ public class Tethering {
             mOffload = new OffloadWrapper();
 
             setInitialState(mInitialState);
+        }
+
+        /**
+         * Returns all downstreams that are serving clients, regardless of they are actually
+         * tethered or localOnly. This must be called on the tethering thread (not thread-safe).
+         */
+        @NonNull
+        public List<IpServer> getAllDownstreams() {
+            return mNotifyList;
         }
 
         class InitialState extends State {
@@ -1627,6 +1636,13 @@ public class Tethering {
         protected void handleNewUpstreamNetworkState(UpstreamNetworkState ns) {
             mIPv6TetheringCoordinator.updateUpstreamNetworkState(ns);
             mOffload.updateUpstreamNetworkState(ns);
+
+            // TODO: Delete all related offload rules which are using this upstream.
+            if (ns != null) {
+                // Add upstream index to the map. The upstream interface index is required while
+                // the conntrack event builds the offload rules.
+                mBpfCoordinator.addUpstreamIfindexToMap(ns.linkProperties);
+            }
         }
 
         private void handleInterfaceServingStateActive(int mode, IpServer who) {
@@ -2209,6 +2225,13 @@ public class Tethering {
                 && !isProvisioningNeededButUnavailable();
     }
 
+    private void dumpBpf(IndentingPrintWriter pw) {
+        pw.println("BPF offload:");
+        pw.increaseIndent();
+        mBpfCoordinator.dump(pw);
+        pw.decreaseIndent();
+    }
+
     void dump(@NonNull FileDescriptor fd, @NonNull PrintWriter writer, @Nullable String[] args) {
         // Binder.java closes the resource for us.
         @SuppressWarnings("resource")
@@ -2216,6 +2239,11 @@ public class Tethering {
         if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
                 != PERMISSION_GRANTED) {
             pw.println("Permission Denial: can't dump.");
+            return;
+        }
+
+        if (argsContain(args, "bpf")) {
+            dumpBpf(pw);
             return;
         }
 
@@ -2270,10 +2298,7 @@ public class Tethering {
         mOffloadController.dump(pw);
         pw.decreaseIndent();
 
-        pw.println("BPF offload:");
-        pw.increaseIndent();
-        mBpfCoordinator.dump(pw);
-        pw.decreaseIndent();
+        dumpBpf(pw);
 
         pw.println("Private address coordinator:");
         pw.increaseIndent();
@@ -2300,7 +2325,8 @@ public class Tethering {
     }
 
     private void updateConnectedClients(final List<WifiClient> wifiClients) {
-        if (mConnectedClientsTracker.updateConnectedClients(mForwardedDownstreams, wifiClients)) {
+        if (mConnectedClientsTracker.updateConnectedClients(mTetherMainSM.getAllDownstreams(),
+                wifiClients)) {
             reportTetherClientsChanged(mConnectedClientsTracker.getLastTetheredClients());
         }
     }

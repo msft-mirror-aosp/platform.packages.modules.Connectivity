@@ -19,17 +19,14 @@
 #include <jni.h>
 #include <linux/filter.h>
 #include <nativehelper/JNIHelp.h>
-#include <nativehelper/JNIHelpCompat.h>
 #include <nativehelper/ScopedUtfChars.h>
+#include <netjniutils/netjniutils.h>
 #include <net/if.h>
 #include <netinet/ether.h>
 #include <netinet/ip6.h>
 #include <netinet/icmp6.h>
 #include <sys/socket.h>
 #include <stdio.h>
-
-#define LOG_TAG "TetheringUtils"
-#include <android/log.h>
 
 namespace android {
 
@@ -57,7 +54,7 @@ static void android_net_util_setupIcmpFilter(JNIEnv *env, jobject javaFd, uint32
         filter_code,
     };
 
-    int fd = jniGetFDFromFileDescriptor(env, javaFd);
+    int fd = netjniutils::GetNativeFileDescriptor(env, javaFd);
     if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &filter, sizeof(filter)) != 0) {
         jniThrowExceptionFmt(env, "java/net/SocketException",
                 "setsockopt(SO_ATTACH_FILTER): %s", strerror(errno));
@@ -79,7 +76,7 @@ static void android_net_util_setupRaSocket(JNIEnv *env, jobject clazz, jobject j
 {
     static const int kLinkLocalHopLimit = 255;
 
-    int fd = jniGetFDFromFileDescriptor(env, javaFd);
+    int fd = netjniutils::GetNativeFileDescriptor(env, javaFd);
 
     // Set an ICMPv6 filter that only passes Router Solicitations.
     struct icmp6_filter rs_only;
@@ -182,20 +179,6 @@ int register_android_net_util_TetheringUtils(JNIEnv* env) {
     return jniRegisterNativeMethods(env,
             "android/net/util/TetheringUtils",
             gMethods, NELEM(gMethods));
-}
-
-extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
-    JNIEnv *env;
-    if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, "ERROR: GetEnv failed");
-        return JNI_ERR;
-    }
-
-    if (register_android_net_util_TetheringUtils(env) < 0) {
-        return JNI_ERR;
-    }
-
-    return JNI_VERSION_1_6;
 }
 
 }; // namespace android
