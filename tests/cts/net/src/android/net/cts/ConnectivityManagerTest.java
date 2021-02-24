@@ -93,6 +93,7 @@ import android.net.util.KeepaliveUtils;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Handler;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.os.SystemClock;
@@ -108,6 +109,9 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.ArrayUtils;
+import com.android.modules.utils.build.SdkLevel;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.SkipPresubmit;
 import com.android.testutils.TestableNetworkCallback;
@@ -118,6 +122,7 @@ import libcore.io.Streams;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -150,6 +155,8 @@ import java.util.regex.Pattern;
 
 @RunWith(AndroidJUnit4.class)
 public class ConnectivityManagerTest {
+    @Rule
+    public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
 
     private static final String TAG = ConnectivityManagerTest.class.getSimpleName();
 
@@ -162,9 +169,7 @@ public class ConnectivityManagerTest {
     private static final int MAX_KEEPALIVE_RETRY_COUNT = 3;
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
-    // Changing meteredness on wifi involves reconnecting, which can take several seconds (involves
-    // re-associating, DHCP...)
-    private static final int NETWORK_CHANGE_METEREDNESS_TIMEOUT = 30_000;
+    private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
     private static final int NUM_TRIES_MULTIPATH_PREF_CHECK = 20;
     private static final long INTERVAL_MULTIPATH_PREF_CHECK_MS = 500;
     // device could have only one interface: data, wifi.
@@ -194,7 +199,6 @@ public class ConnectivityManagerTest {
     private PackageManager mPackageManager;
     private final HashMap<Integer, NetworkConfig> mNetworks =
             new HashMap<Integer, NetworkConfig>();
-    boolean mWifiWasDisabled;
     private UiAutomation mUiAutomation;
     private CtsNetUtils mCtsNetUtils;
 
@@ -206,7 +210,6 @@ public class ConnectivityManagerTest {
         mWifiManager = (WifiManager) mContext.getSystemService(Context.WIFI_SERVICE);
         mPackageManager = mContext.getPackageManager();
         mCtsNetUtils = new CtsNetUtils(mContext);
-        mWifiWasDisabled = false;
 
         // Get com.android.internal.R.array.networkAttributes
         int resId = mContext.getResources().getIdentifier("networkAttributes", "array", "android");
@@ -229,10 +232,7 @@ public class ConnectivityManagerTest {
 
     @After
     public void tearDown() throws Exception {
-        // Return WiFi to its original disabled state after tests that explicitly connect.
-        if (mWifiWasDisabled) {
-            mCtsNetUtils.disconnectFromWifi(null);
-        }
+        // Release any NetworkRequests filed to connect mobile data.
         if (mCtsNetUtils.cellConnectAttempted()) {
             mCtsNetUtils.disconnectFromCell();
         }
@@ -246,17 +246,6 @@ public class ConnectivityManagerTest {
         } finally {
             mCm.unregisterNetworkCallback(callback);
         }
-    }
-
-    /**
-     * Make sure WiFi is connected to an access point if it is not already. If
-     * WiFi is enabled as a result of this function, it will be disabled
-     * automatically in tearDown().
-     */
-    private Network ensureWifiConnected() {
-        mWifiWasDisabled = !mWifiManager.isWifiEnabled();
-        // Even if wifi is enabled, the network may not be connected or ready yet
-        return mCtsNetUtils.connectToWifi();
     }
 
     @Test
@@ -532,25 +521,43 @@ public class ConnectivityManagerTest {
         final TestNetworkCallback defaultTrackingCallback = new TestNetworkCallback();
         mCm.registerDefaultNetworkCallback(defaultTrackingCallback);
 
+        final TestNetworkCallback systemDefaultTrackingCallback = new TestNetworkCallback();
+        if (SdkLevel.isAtLeastS()) {
+            runWithShellPermissionIdentity(() ->
+                    mCm.registerSystemDefaultNetworkCallback(systemDefaultTrackingCallback,
+                            new Handler(Looper.getMainLooper())),
+                    NETWORK_SETTINGS);
+        }
+
         Network wifiNetwork = null;
 
         try {
-            ensureWifiConnected();
+            mCtsNetUtils.ensureWifiConnected();
 
             // Now we should expect to get a network callback about availability of the wifi
             // network even if it was already connected as a state-based action when the callback
             // is registered.
             wifiNetwork = callback.waitForAvailable();
-            assertNotNull("Did not receive NetworkCallback.onAvailable for TRANSPORT_WIFI",
+            assertNotNull("Did not receive onAvailable for TRANSPORT_WIFI request",
                     wifiNetwork);
 
-            assertNotNull("Did not receive NetworkCallback.onAvailable for any default network",
+            assertNotNull("Did not receive onAvailable on default network callback",
                     defaultTrackingCallback.waitForAvailable());
+
+            if (SdkLevel.isAtLeastS()) {
+                assertNotNull("Did not receive onAvailable on system default network callback",
+                        systemDefaultTrackingCallback.waitForAvailable());
+            }
         } catch (InterruptedException e) {
             fail("Broadcast receiver or NetworkCallback wait was interrupted.");
         } finally {
             mCm.unregisterNetworkCallback(callback);
             mCm.unregisterNetworkCallback(defaultTrackingCallback);
+            if (SdkLevel.isAtLeastS()) {
+                runWithShellPermissionIdentity(
+                        () -> mCm.unregisterNetworkCallback(systemDefaultTrackingCallback),
+                        NETWORK_SETTINGS);
+            }
         }
     }
 
@@ -569,23 +576,29 @@ public class ConnectivityManagerTest {
 
         // Create a ConnectivityActionReceiver that has an IntentFilter for our locally defined
         // action, NETWORK_CALLBACK_ACTION.
-        IntentFilter filter = new IntentFilter();
+        final IntentFilter filter = new IntentFilter();
         filter.addAction(NETWORK_CALLBACK_ACTION);
 
-        ConnectivityActionReceiver receiver = new ConnectivityActionReceiver(
+        final ConnectivityActionReceiver receiver = new ConnectivityActionReceiver(
                 mCm, ConnectivityManager.TYPE_WIFI, NetworkInfo.State.CONNECTED);
         mContext.registerReceiver(receiver, filter);
 
         // Create a broadcast PendingIntent for NETWORK_CALLBACK_ACTION.
-        Intent intent = new Intent(NETWORK_CALLBACK_ACTION);
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                mContext, 0, intent, PendingIntent.FLAG_CANCEL_CURRENT);
+        final Intent intent = new Intent(NETWORK_CALLBACK_ACTION)
+                .setPackage(mContext.getPackageName());
+        // While ConnectivityService would put extra info such as network or request id before
+        // broadcasting the inner intent. The MUTABLE flag needs to be added accordingly.
+        // TODO: replace with PendingIntent.FLAG_MUTABLE when this code compiles against S+ or
+        //  shims.
+        final int pendingIntentFlagMutable = 1 << 25;
+        final PendingIntent pendingIntent = PendingIntent.getBroadcast(mContext, 0 /*requestCode*/,
+                intent, PendingIntent.FLAG_CANCEL_CURRENT | pendingIntentFlagMutable);
 
         // We will register for a WIFI network being available or lost.
         mCm.registerNetworkCallback(makeWifiNetworkRequest(), pendingIntent);
 
         try {
-            ensureWifiConnected();
+            mCtsNetUtils.ensureWifiConnected();
 
             // Now we expect to get the Intent delivered notifying of the availability of the wifi
             // network even if it was already connected as a state-based action when the callback
@@ -666,6 +679,17 @@ public class ConnectivityManagerTest {
         return null;
     }
 
+    /**
+     * Checks that enabling/disabling wifi causes CONNECTIVITY_ACTION broadcasts.
+     */
+    @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
+    @Test
+    public void testToggleWifiConnectivityAction() {
+        // toggleWifi calls connectToWifi and disconnectFromWifi, which both wait for
+        // CONNECTIVITY_ACTION broadcasts.
+        mCtsNetUtils.toggleWifi();
+    }
+
     /** Verify restricted networks cannot be requested. */
     @AppModeFull(reason = "CHANGE_NETWORK_STATE permission can't be granted to instant apps")
     @Test
@@ -737,7 +761,9 @@ public class ConnectivityManagerTest {
         // with the current setting. Therefore, if the setting has already been changed,
         // this method will return right away, and if not it will wait for the setting to change.
         mCm.registerDefaultNetworkCallback(networkCallback);
-        if (!latch.await(NETWORK_CHANGE_METEREDNESS_TIMEOUT, TimeUnit.MILLISECONDS)) {
+        // Changing meteredness on wifi involves reconnecting, which can take several seconds
+        // (involves re-associating, DHCP...).
+        if (!latch.await(NETWORK_CALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
             fail("Timed out waiting for active network metered status to change to "
                  + requestedMeteredness + " ; network = " + mCm.getActiveNetwork());
         }
@@ -793,7 +819,7 @@ public class ConnectivityManagerTest {
     @Test
     public void testGetMultipathPreference() throws Exception {
         final ContentResolver resolver = mContext.getContentResolver();
-        ensureWifiConnected();
+        mCtsNetUtils.ensureWifiConnected();
         final String ssid = unquoteSSID(mWifiManager.getConnectionInfo().getSSID());
         final String oldMeteredSetting = getWifiMeteredStatus(ssid);
         final String oldMeteredMultipathPreference = Settings.Global.getString(
@@ -807,7 +833,7 @@ public class ConnectivityManagerTest {
             waitForActiveNetworkMetered(TRANSPORT_WIFI, true);
             // Wifi meterness changes from unmetered to metered will disconnect and reconnect since
             // R.
-            final Network network = ensureWifiConnected();
+            final Network network = mCtsNetUtils.ensureWifiConnected();
             assertEquals(ssid, unquoteSSID(mWifiManager.getConnectionInfo().getSSID()));
             assertEquals(mCm.getNetworkCapabilities(network).hasCapability(
                     NET_CAPABILITY_NOT_METERED), false);
@@ -1021,7 +1047,7 @@ public class ConnectivityManagerTest {
             return;
         }
 
-        final Network network = ensureWifiConnected();
+        final Network network = mCtsNetUtils.ensureWifiConnected();
         if (getSupportedKeepalivesForNet(network) != 0) return;
         final InetAddress srcAddr = getFirstV4Address(network);
         assumeTrue("This test requires native IPv4", srcAddr != null);
@@ -1041,7 +1067,7 @@ public class ConnectivityManagerTest {
             return;
         }
 
-        final Network network = ensureWifiConnected();
+        final Network network = mCtsNetUtils.ensureWifiConnected();
         if (getSupportedKeepalivesForNet(network) == 0) return;
         final InetAddress srcAddr = getFirstV4Address(network);
         assumeTrue("This test requires native IPv4", srcAddr != null);
@@ -1252,7 +1278,7 @@ public class ConnectivityManagerTest {
             return;
         }
 
-        final Network network = ensureWifiConnected();
+        final Network network = mCtsNetUtils.ensureWifiConnected();
         final int supported = getSupportedKeepalivesForNet(network);
         if (supported == 0) {
             return;
@@ -1349,7 +1375,7 @@ public class ConnectivityManagerTest {
             return;
         }
 
-        final Network network = ensureWifiConnected();
+        final Network network = mCtsNetUtils.ensureWifiConnected();
         final int supported = getSupportedKeepalivesForNet(network);
         if (supported == 0) {
             return;
@@ -1397,7 +1423,7 @@ public class ConnectivityManagerTest {
 
         // Ensure that NetworkUtils.queryUserAccess always returns false since this package should
         // not have netd system permission to call this function.
-        final Network wifiNetwork = ensureWifiConnected();
+        final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
         assertFalse(NetworkUtils.queryUserAccess(Binder.getCallingUid(), wifiNetwork.netId));
 
         // Ensure that this package cannot bind to any restricted network that's currently
@@ -1490,12 +1516,12 @@ public class ConnectivityManagerTest {
     }
 
     private void waitForAvailable(@NonNull final TestableNetworkCallback cb) {
-        cb.eventuallyExpect(CallbackEntry.AVAILABLE, AIRPLANE_MODE_CHANGE_TIMEOUT_MS,
+        cb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
                 c -> c instanceof CallbackEntry.Available);
     }
 
     private void waitForLost(@NonNull final TestableNetworkCallback cb) {
-        cb.eventuallyExpect(CallbackEntry.LOST, AIRPLANE_MODE_CHANGE_TIMEOUT_MS,
+        cb.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
                 c -> c instanceof CallbackEntry.Lost);
     }
 
@@ -1548,6 +1574,7 @@ public class ConnectivityManagerTest {
      * {@link android.Manifest.permission.NETWORK_SETTINGS}.
      */
     @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testRequestBackgroundNetwork() throws Exception {
         // Create a tun interface. Use the returned interface name as the specifier to create
         // a test network request.
@@ -1598,7 +1625,7 @@ public class ConnectivityManagerTest {
             // background if no foreground request can be satisfied. Thus, wait for a short
             // period is needed to let foreground capability go away.
             callback.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
-                    callback.getDefaultTimeoutMs(),
+                    NETWORK_CALLBACK_TIMEOUT_MS,
                     c -> c instanceof CallbackEntry.CapabilitiesChanged
                             && !((CallbackEntry.CapabilitiesChanged) c).getCaps()
                             .hasCapability(NET_CAPABILITY_FOREGROUND));
