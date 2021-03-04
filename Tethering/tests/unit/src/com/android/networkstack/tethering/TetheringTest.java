@@ -358,6 +358,11 @@ public class TetheringTest {
         }
 
         @Override
+        protected boolean isFeatureEnabled(Context ctx, String featureVersionFlag) {
+            return false;
+        }
+
+        @Override
         protected Resources getResourcesForSubIdWrapper(Context ctx, int subId) {
             return mResources;
         }
@@ -586,6 +591,9 @@ public class TetheringTest {
                 ArgumentCaptor.forClass(SoftApCallback.class);
         verify(mWifiManager).registerSoftApCallback(any(), softApCallbackCaptor.capture());
         mSoftApCallback = softApCallbackCaptor.getValue();
+
+        when(mPackageManager.hasSystemFeature(PackageManager.FEATURE_WIFI)).thenReturn(true);
+        when(mPackageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)).thenReturn(true);
     }
 
     private void setTetheringSupported(final boolean supported) {

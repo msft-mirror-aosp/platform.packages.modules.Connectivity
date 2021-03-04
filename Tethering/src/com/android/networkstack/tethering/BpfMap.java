@@ -41,6 +41,10 @@ import java.util.function.BiConsumer;
  * @param <V> the value of the map.
  */
 public class BpfMap<K extends Struct, V extends Struct> implements AutoCloseable {
+    static {
+        System.loadLibrary("tetherutilsjni");
+    }
+
     // Following definitions from kernel include/uapi/linux/bpf.h
     public static final int BPF_F_RDWR = 0;
     public static final int BPF_F_RDONLY = 1 << 3;
@@ -218,8 +222,22 @@ public class BpfMap<K extends Struct, V extends Struct> implements AutoCloseable
     }
 
     @Override
-    public void close() throws Exception {
+    public void close() throws ErrnoException {
         closeMap(mMapFd);
+    }
+
+    /**
+     * Clears the map. The map may already be empty.
+     *
+     * @throws ErrnoException if the map is already closed, if an error occurred during iteration,
+     *                        or if a non-ENOENT error occurred when deleting a key.
+     */
+    public void clear() throws ErrnoException {
+        K key = getFirstKey();
+        while (key != null) {
+            deleteEntry(key);  // ignores ENOENT.
+            key = getFirstKey();
+        }
     }
 
     private static native int closeMap(int fd) throws ErrnoException;
