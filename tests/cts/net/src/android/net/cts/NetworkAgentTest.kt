@@ -44,9 +44,9 @@ import android.net.NetworkCapabilities.TRANSPORT_VPN
 import android.net.NetworkInfo
 import android.net.NetworkProvider
 import android.net.NetworkRequest
+import android.net.NetworkScore
 import android.net.RouteInfo
 import android.net.SocketKeepalive
-import android.net.StringNetworkSpecifier
 import android.net.Uri
 import android.net.VpnManager
 import android.net.VpnTransportInfo
@@ -70,6 +70,7 @@ import com.android.connectivity.aidl.INetworkAgent
 import com.android.connectivity.aidl.INetworkAgentRegistry
 import com.android.modules.utils.build.SdkLevel
 import com.android.net.module.util.ArrayTrackRecord
+import com.android.testutils.CompatUtil
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.DevSdkIgnoreRunner
 import com.android.testutils.RecorderCallback.CallbackEntry.Available
@@ -81,7 +82,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers.any
-import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.ArgumentMatchers.argThat
 import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.doReturn
@@ -218,8 +218,6 @@ class NetworkAgentTest {
             data class OnSignalStrengthThresholdsUpdated(val thresholds: IntArray) : CallbackEntry()
         }
 
-        fun getName(): String? = (nc.getNetworkSpecifier() as? StringNetworkSpecifier)?.specifier
-
         override fun onBandwidthUpdateRequested() {
             history.add(OnBandwidthUpdateRequested)
         }
@@ -327,7 +325,7 @@ class NetworkAgentTest {
                 addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
             }
             if (null != name) {
-                setNetworkSpecifier(StringNetworkSpecifier(name))
+                setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name))
             }
         }
         val lp = initialLp ?: LinkProperties().apply {
@@ -503,12 +501,12 @@ class NetworkAgentTest {
         val request1 = NetworkRequest.Builder()
                 .clearCapabilities()
                 .addTransportType(TRANSPORT_TEST)
-                .setNetworkSpecifier(StringNetworkSpecifier(name1))
+                .setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name1))
                 .build()
         val request2 = NetworkRequest.Builder()
                 .clearCapabilities()
                 .addTransportType(TRANSPORT_TEST)
-                .setNetworkSpecifier(StringNetworkSpecifier(name2))
+                .setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name2))
                 .build()
         val callback1 = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
         val callback2 = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
@@ -634,7 +632,7 @@ class NetworkAgentTest {
                 argThat<NetworkInfo> { it.detailedState == NetworkInfo.DetailedState.CONNECTING },
                 any(LinkProperties::class.java),
                 any(NetworkCapabilities::class.java),
-                anyInt() /* score */,
+                any(NetworkScore::class.java),
                 any(NetworkAgentConfig::class.java),
                 eq(NetworkProvider.ID_NONE))
     }
