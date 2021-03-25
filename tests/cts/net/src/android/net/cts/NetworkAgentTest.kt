@@ -18,6 +18,8 @@ package android.net.cts
 import android.app.Instrumentation
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.INetworkAgent
+import android.net.INetworkAgentRegistry
 import android.net.InetAddresses
 import android.net.IpPrefix
 import android.net.KeepalivePacketData
@@ -44,6 +46,7 @@ import android.net.NetworkCapabilities.TRANSPORT_VPN
 import android.net.NetworkInfo
 import android.net.NetworkProvider
 import android.net.NetworkRequest
+import android.net.NetworkScore
 import android.net.RouteInfo
 import android.net.SocketKeepalive
 import android.net.Uri
@@ -65,8 +68,6 @@ import android.os.Looper
 import android.os.Message
 import android.util.DebugUtils.valueToString
 import androidx.test.InstrumentationRegistry
-import com.android.connectivity.aidl.INetworkAgent
-import com.android.connectivity.aidl.INetworkAgentRegistry
 import com.android.modules.utils.build.SdkLevel
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.testutils.CompatUtil
@@ -631,7 +632,7 @@ class NetworkAgentTest {
                 argThat<NetworkInfo> { it.detailedState == NetworkInfo.DetailedState.CONNECTING },
                 any(LinkProperties::class.java),
                 any(NetworkCapabilities::class.java),
-                any() /* score */,
+                any(NetworkScore::class.java),
                 any(NetworkAgentConfig::class.java),
                 eq(NetworkProvider.ID_NONE))
     }
