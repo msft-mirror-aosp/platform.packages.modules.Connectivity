@@ -261,6 +261,7 @@ public class BpfCoordinator {
 
         /** Get downstream4 BPF map. */
         @Nullable public BpfMap<Tether4Key, Tether4Value> getBpfDownstream4Map() {
+            if (!isAtLeastS()) return null;
             try {
                 return new BpfMap<>(TETHER_DOWNSTREAM4_MAP_PATH,
                     BpfMap.BPF_F_RDWR, Tether4Key.class, Tether4Value.class);
@@ -272,6 +273,7 @@ public class BpfCoordinator {
 
         /** Get upstream4 BPF map. */
         @Nullable public BpfMap<Tether4Key, Tether4Value> getBpfUpstream4Map() {
+            if (!isAtLeastS()) return null;
             try {
                 return new BpfMap<>(TETHER_UPSTREAM4_MAP_PATH,
                     BpfMap.BPF_F_RDWR, Tether4Key.class, Tether4Value.class);
@@ -283,6 +285,7 @@ public class BpfCoordinator {
 
         /** Get downstream6 BPF map. */
         @Nullable public BpfMap<TetherDownstream6Key, Tether6Value> getBpfDownstream6Map() {
+            if (!isAtLeastS()) return null;
             try {
                 return new BpfMap<>(TETHER_DOWNSTREAM6_FS_PATH,
                     BpfMap.BPF_F_RDWR, TetherDownstream6Key.class, Tether6Value.class);
@@ -294,6 +297,7 @@ public class BpfCoordinator {
 
         /** Get upstream6 BPF map. */
         @Nullable public BpfMap<TetherUpstream6Key, Tether6Value> getBpfUpstream6Map() {
+            if (!isAtLeastS()) return null;
             try {
                 return new BpfMap<>(TETHER_UPSTREAM6_FS_PATH, BpfMap.BPF_F_RDWR,
                         TetherUpstream6Key.class, Tether6Value.class);
@@ -305,6 +309,7 @@ public class BpfCoordinator {
 
         /** Get stats BPF map. */
         @Nullable public BpfMap<TetherStatsKey, TetherStatsValue> getBpfStatsMap() {
+            if (!isAtLeastS()) return null;
             try {
                 return new BpfMap<>(TETHER_STATS_MAP_PATH,
                     BpfMap.BPF_F_RDWR, TetherStatsKey.class, TetherStatsValue.class);
@@ -316,6 +321,7 @@ public class BpfCoordinator {
 
         /** Get limit BPF map. */
         @Nullable public BpfMap<TetherLimitKey, TetherLimitValue> getBpfLimitMap() {
+            if (!isAtLeastS()) return null;
             try {
                 return new BpfMap<>(TETHER_LIMIT_MAP_PATH,
                     BpfMap.BPF_F_RDWR, TetherLimitKey.class, TetherLimitValue.class);
@@ -420,7 +426,8 @@ public class BpfCoordinator {
      * See NetlinkMonitor#handlePacket, NetlinkMessage#parseNfMessage.
      */
     public void startMonitoring(@NonNull final IpServer ipServer) {
-        if (!isUsingBpf()) return;
+        // TODO: Wrap conntrackMonitor starting function into mBpfCoordinatorShim.
+        if (!isUsingBpf() || !mDeps.isAtLeastS()) return;
 
         if (mMonitoringIpServers.contains(ipServer)) {
             Log.wtf(TAG, "The same downstream " + ipServer.interfaceName()
@@ -441,6 +448,9 @@ public class BpfCoordinator {
      * Note that this can be only called on handler thread.
      */
     public void stopMonitoring(@NonNull final IpServer ipServer) {
+        // TODO: Wrap conntrackMonitor stopping function into mBpfCoordinatorShim.
+        if (!isUsingBpf() || !mDeps.isAtLeastS()) return;
+
         mMonitoringIpServers.remove(ipServer);
 
         if (!mMonitoringIpServers.isEmpty()) return;
@@ -828,7 +838,7 @@ public class BpfCoordinator {
             }
             map.forEach((k, v) -> pw.println(ipv6UpstreamRuletoString(k, v)));
         } catch (ErrnoException e) {
-            pw.println("Error dumping IPv4 map: " + e);
+            pw.println("Error dumping IPv6 upstream map: " + e);
         }
     }
 
@@ -875,6 +885,10 @@ public class BpfCoordinator {
     }
 
     private void dumpCounters(@NonNull IndentingPrintWriter pw) {
+        if (!mDeps.isAtLeastS()) {
+            pw.println("No counter support");
+            return;
+        }
         try (BpfMap<U32Struct, U32Struct> map = new BpfMap<>(TETHER_ERROR_MAP_PATH,
                 BpfMap.BPF_F_RDONLY, U32Struct.class, U32Struct.class)) {
 
