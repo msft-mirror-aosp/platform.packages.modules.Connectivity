@@ -111,6 +111,7 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.MessageQueue;
+import android.os.Process;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.VintfRuntimeInfo;
@@ -587,12 +588,14 @@ public class ConnectivityManagerTest {
         final TestNetworkCallback defaultTrackingCallback = new TestNetworkCallback();
         mCm.registerDefaultNetworkCallback(defaultTrackingCallback);
 
-        final TestNetworkCallback systemDefaultTrackingCallback = new TestNetworkCallback();
+        final TestNetworkCallback systemDefaultCallback = new TestNetworkCallback();
+        final TestNetworkCallback perUidCallback = new TestNetworkCallback();
+        final Handler h = new Handler(Looper.getMainLooper());
         if (shouldTestSApis()) {
-            runWithShellPermissionIdentity(() ->
-                    mCmShim.registerSystemDefaultNetworkCallback(systemDefaultTrackingCallback,
-                            new Handler(Looper.getMainLooper())),
-                    NETWORK_SETTINGS);
+            runWithShellPermissionIdentity(() -> {
+                mCmShim.registerSystemDefaultNetworkCallback(systemDefaultCallback, h);
+                mCmShim.registerDefaultNetworkCallbackAsUid(Process.myUid(), perUidCallback, h);
+            }, NETWORK_SETTINGS);
         }
 
         Network wifiNetwork = null;
@@ -607,22 +610,27 @@ public class ConnectivityManagerTest {
             assertNotNull("Did not receive onAvailable for TRANSPORT_WIFI request",
                     wifiNetwork);
 
+            final Network defaultNetwork = defaultTrackingCallback.waitForAvailable();
             assertNotNull("Did not receive onAvailable on default network callback",
-                    defaultTrackingCallback.waitForAvailable());
+                    defaultNetwork);
 
             if (shouldTestSApis()) {
                 assertNotNull("Did not receive onAvailable on system default network callback",
-                        systemDefaultTrackingCallback.waitForAvailable());
+                        systemDefaultCallback.waitForAvailable());
+                final Network perUidNetwork = perUidCallback.waitForAvailable();
+                assertNotNull("Did not receive onAvailable on per-UID default network callback",
+                        perUidNetwork);
+                assertEquals(defaultNetwork, perUidNetwork);
             }
+
         } catch (InterruptedException e) {
             fail("Broadcast receiver or NetworkCallback wait was interrupted.");
         } finally {
             mCm.unregisterNetworkCallback(callback);
             mCm.unregisterNetworkCallback(defaultTrackingCallback);
             if (shouldTestSApis()) {
-                runWithShellPermissionIdentity(
-                        () -> mCm.unregisterNetworkCallback(systemDefaultTrackingCallback),
-                        NETWORK_SETTINGS);
+                mCm.unregisterNetworkCallback(systemDefaultCallback);
+                mCm.unregisterNetworkCallback(perUidCallback);
             }
         }
     }
@@ -1632,6 +1640,62 @@ public class ConnectivityManagerTest {
             assertEquals("Invalid captive portal URL protocol", "http", parsedUrl.getProtocol());
         } catch (MalformedURLException e) {
             throw new AssertionFailedError("Captive portal server URL is invalid: " + e);
+        }
+    }
+
+    /**
+     * Verifies that apps are forbidden from getting ssid information from
+     * {@Code NetworkCapabilities} if they do not hold NETWORK_SETTINGS permission.
+     * See b/161370134.
+     */
+    @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
+    @Test
+    public void testSsidInNetworkCapabilities() throws Exception {
+        assumeTrue("testSsidInNetworkCapabilities cannot execute unless device supports WiFi",
+                mPackageManager.hasSystemFeature(FEATURE_WIFI));
+
+        final Network network = mCtsNetUtils.ensureWifiConnected();
+        final String ssid = unquoteSSID(mWifiManager.getConnectionInfo().getSSID());
+        assertNotNull("Ssid getting from WiifManager is null", ssid);
+        // This package should have no NETWORK_SETTINGS permission. Verify that no ssid is contained
+        // in the NetworkCapabilities.
+        verifySsidFromQueriedNetworkCapabilities(network, ssid, false /* hasSsid */);
+        verifySsidFromCallbackNetworkCapabilities(ssid, false /* hasSsid */);
+        // Adopt shell permission to allow to get ssid information.
+        runWithShellPermissionIdentity(() -> {
+            verifySsidFromQueriedNetworkCapabilities(network, ssid, true /* hasSsid */);
+            verifySsidFromCallbackNetworkCapabilities(ssid, true /* hasSsid */);
+        });
+    }
+
+    private void verifySsidFromQueriedNetworkCapabilities(@NonNull Network network,
+            @NonNull String ssid, boolean hasSsid) throws Exception {
+        // Verify if ssid is contained in NetworkCapabilities queried from ConnectivityManager.
+        final NetworkCapabilities nc = mCm.getNetworkCapabilities(network);
+        assertNotNull("NetworkCapabilities of the network is null", nc);
+        assertEquals(hasSsid, Pattern.compile(ssid).matcher(nc.toString()).find());
+    }
+
+    private void verifySsidFromCallbackNetworkCapabilities(@NonNull String ssid, boolean hasSsid)
+            throws Exception {
+        final CompletableFuture<NetworkCapabilities> foundNc = new CompletableFuture();
+        final NetworkCallback callback = new NetworkCallback() {
+            @Override
+            public void onCapabilitiesChanged(Network network, NetworkCapabilities nc) {
+                foundNc.complete(nc);
+            }
+        };
+        try {
+            mCm.registerNetworkCallback(makeWifiNetworkRequest(), callback);
+            // Registering a callback here guarantees onCapabilitiesChanged is called immediately
+            // because WiFi network should be connected.
+            final NetworkCapabilities nc =
+                    foundNc.get(NETWORK_CALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            // Verify if ssid is contained in the NetworkCapabilities received from callback.
+            assertNotNull("NetworkCapabilities of the network is null", nc);
+            assertEquals(hasSsid, Pattern.compile(ssid).matcher(nc.toString()).find());
+        } finally {
+            mCm.unregisterNetworkCallback(callback);
         }
     }
 
