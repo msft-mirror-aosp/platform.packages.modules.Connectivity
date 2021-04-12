@@ -93,7 +93,6 @@ import android.net.TetheringConfigurationParcel;
 import android.net.TetheringRequestParcel;
 import android.net.ip.IpServer;
 import android.net.shared.NetdUtils;
-import android.net.util.BaseNetdUnsolicitedEventListener;
 import android.net.util.InterfaceSet;
 import android.net.util.PrefixUtils;
 import android.net.util.SharedLog;
@@ -132,6 +131,7 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -442,7 +442,8 @@ public class Tethering {
     // NOTE: This is always invoked on the mLooper thread.
     private void updateConfiguration() {
         mConfig = mDeps.generateTetheringConfiguration(mContext, mLog, mActiveDataSubId);
-        mUpstreamNetworkMonitor.updateMobileRequiresDun(mConfig.isDunRequired);
+        mUpstreamNetworkMonitor.setUpstreamConfig(mConfig.chooseUpstreamAutomatically,
+                mConfig.isDunRequired);
         reportConfigurationChanged(mConfig.toStableParcelable());
     }
 
@@ -1559,7 +1560,7 @@ public class Tethering {
                             config.preferredUpstreamIfaceTypes);
             if (ns == null) {
                 if (tryCell) {
-                    mUpstreamNetworkMonitor.registerMobileNetworkRequest();
+                    mUpstreamNetworkMonitor.setTryCell(true);
                     // We think mobile should be coming up; don't set a retry.
                 } else {
                     sendMessageDelayed(CMD_RETRY_UPSTREAM, UPSTREAM_SETTLE_TIME_MS);
@@ -1636,6 +1637,13 @@ public class Tethering {
         protected void handleNewUpstreamNetworkState(UpstreamNetworkState ns) {
             mIPv6TetheringCoordinator.updateUpstreamNetworkState(ns);
             mOffload.updateUpstreamNetworkState(ns);
+
+            // TODO: Delete all related offload rules which are using this upstream.
+            if (ns != null) {
+                // Add upstream index to the map. The upstream interface index is required while
+                // the conntrack event builds the offload rules.
+                mBpfCoordinator.addUpstreamIfindexToMap(ns.linkProperties);
+            }
         }
 
         private void handleInterfaceServingStateActive(int mode, IpServer who) {
@@ -1682,12 +1690,14 @@ public class Tethering {
             // If this is a Wi-Fi interface, tell WifiManager of any errors
             // or the inactive serving state.
             if (who.interfaceType() == TETHERING_WIFI) {
-                if (who.lastError() != TETHER_ERROR_NO_ERROR) {
-                    getWifiManager().updateInterfaceIpState(
-                            who.interfaceName(), IFACE_IP_MODE_CONFIGURATION_ERROR);
+                final WifiManager mgr = getWifiManager();
+                final String iface = who.interfaceName();
+                if (mgr == null) {
+                    Log.wtf(TAG, "Skipping WifiManager notification about inactive tethering");
+                } else if (who.lastError() != TETHER_ERROR_NO_ERROR) {
+                    mgr.updateInterfaceIpState(iface, IFACE_IP_MODE_CONFIGURATION_ERROR);
                 } else {
-                    getWifiManager().updateInterfaceIpState(
-                            who.interfaceName(), IFACE_IP_MODE_UNSPECIFIED);
+                    mgr.updateInterfaceIpState(iface, IFACE_IP_MODE_UNSPECIFIED);
                 }
             }
         }
@@ -1707,6 +1717,12 @@ public class Tethering {
                 case UpstreamNetworkMonitor.EVENT_ON_LOST:
                     mPrivateAddressCoordinator.removeUpstreamPrefix(ns.network);
                     break;
+            }
+
+            if (mConfig.chooseUpstreamAutomatically
+                    && arg1 == UpstreamNetworkMonitor.EVENT_DEFAULT_SWITCHED) {
+                chooseUpstreamType(true);
+                return;
             }
 
             if (ns == null || !pertainsToCurrentUpstream(ns)) {
@@ -1843,7 +1859,7 @@ public class Tethering {
                         // longer desired, release any mobile requests.
                         final boolean previousUpstreamWanted = updateUpstreamWanted();
                         if (previousUpstreamWanted && !mUpstreamWanted) {
-                            mUpstreamNetworkMonitor.releaseMobileNetworkRequest();
+                            mUpstreamNetworkMonitor.setTryCell(false);
                         }
                         break;
                     }
@@ -2218,6 +2234,13 @@ public class Tethering {
                 && !isProvisioningNeededButUnavailable();
     }
 
+    private void dumpBpf(IndentingPrintWriter pw) {
+        pw.println("BPF offload:");
+        pw.increaseIndent();
+        mBpfCoordinator.dump(pw);
+        pw.decreaseIndent();
+    }
+
     void dump(@NonNull FileDescriptor fd, @NonNull PrintWriter writer, @Nullable String[] args) {
         // Binder.java closes the resource for us.
         @SuppressWarnings("resource")
@@ -2225,6 +2248,11 @@ public class Tethering {
         if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
                 != PERMISSION_GRANTED) {
             pw.println("Permission Denial: can't dump.");
+            return;
+        }
+
+        if (argsContain(args, "bpf")) {
+            dumpBpf(pw);
             return;
         }
 
@@ -2279,10 +2307,7 @@ public class Tethering {
         mOffloadController.dump(pw);
         pw.decreaseIndent();
 
-        pw.println("BPF offload:");
-        pw.increaseIndent();
-        mBpfCoordinator.dump(pw);
-        pw.decreaseIndent();
+        dumpBpf(pw);
 
         pw.println("Private address coordinator:");
         pw.increaseIndent();
@@ -2405,6 +2430,19 @@ public class Tethering {
             mLog.log(iface + " is not a tetherable iface, ignoring");
             return;
         }
+
+        final PackageManager pm = mContext.getPackageManager();
+        if ((interfaceType == TETHERING_WIFI || interfaceType == TETHERING_WIGIG)
+                && !pm.hasSystemFeature(PackageManager.FEATURE_WIFI)) {
+            mLog.log(iface + " is not tetherable, because WiFi feature is disabled");
+            return;
+        }
+        if (interfaceType == TETHERING_WIFI_P2P
+                && !pm.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
+            mLog.log(iface + " is not tetherable, because WiFi Direct feature is disabled");
+            return;
+        }
+
         maybeTrackNewInterfaceLocked(iface, interfaceType);
     }
 
