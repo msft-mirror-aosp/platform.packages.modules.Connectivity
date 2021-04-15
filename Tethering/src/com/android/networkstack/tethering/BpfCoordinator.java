@@ -137,6 +137,8 @@ public class BpfCoordinator {
     private final BpfTetherStatsProvider mStatsProvider;
     @NonNull
     private final BpfCoordinatorShim mBpfCoordinatorShim;
+    @NonNull
+    private final BpfConntrackEventConsumer mBpfConntrackEventConsumer;
 
     // True if BPF offload is supported, false otherwise. The BPF offload could be disabled by
     // a runtime resource overlay package or device configuration. This flag is only initialized
@@ -248,6 +250,11 @@ public class BpfCoordinator {
             return new ConntrackMonitor(getHandler(), getSharedLog(), consumer);
         }
 
+        /** Get interface information for a given interface. */
+        @NonNull public InterfaceParams getInterfaceParams(String ifName) {
+            return InterfaceParams.getByName(ifName);
+        }
+
         /**
          * Check OS Build at least S.
          *
@@ -339,7 +346,14 @@ public class BpfCoordinator {
         mNetd = mDeps.getNetd();
         mLog = mDeps.getSharedLog().forSubComponent(TAG);
         mIsBpfEnabled = isBpfEnabled();
-        mConntrackMonitor = mDeps.getConntrackMonitor(new BpfConntrackEventConsumer());
+
+        // The conntrack consummer needs to be initialized in BpfCoordinator constructor because it
+        // have to access the data members of BpfCoordinator which is not a static class. The
+        // consumer object is also needed for initializing the conntrack monitor which may be
+        // mocked for testing.
+        mBpfConntrackEventConsumer = new BpfConntrackEventConsumer();
+        mConntrackMonitor = mDeps.getConntrackMonitor(mBpfConntrackEventConsumer);
+
         BpfTetherStatsProvider provider = new BpfTetherStatsProvider();
         try {
             mDeps.getNetworkStatsManager().registerNetworkStatsProvider(
@@ -478,25 +492,14 @@ public class BpfCoordinator {
         LinkedHashMap<Inet6Address, Ipv6ForwardingRule> rules = mIpv6ForwardingRules.get(ipServer);
 
         // When the first rule is added to an upstream, setup upstream forwarding and data limit.
-        final int upstreamIfindex = rule.upstreamIfindex;
-        if (!isAnyRuleOnUpstream(upstreamIfindex)) {
-            // If failed to set a data limit, probably should not use this upstream, because
-            // the upstream may not want to blow through the data limit that was told to apply.
-            // TODO: Perhaps stop the coordinator.
-            boolean success = updateDataLimit(upstreamIfindex);
-            if (!success) {
-                final String iface = mInterfaceNames.get(upstreamIfindex);
-                mLog.e("Setting data limit for " + iface + " failed.");
-            }
-
-        }
+        maybeSetLimit(rule.upstreamIfindex);
 
         if (!isAnyRuleFromDownstreamToUpstream(rule.downstreamIfindex, rule.upstreamIfindex)) {
             final int downstream = rule.downstreamIfindex;
             final int upstream = rule.upstreamIfindex;
             // TODO: support upstream forwarding on non-point-to-point interfaces.
             // TODO: get the MTU from LinkProperties and update the rules when it changes.
-            if (!mBpfCoordinatorShim.startUpstreamIpv6Forwarding(downstream, upstream,
+            if (!mBpfCoordinatorShim.startUpstreamIpv6Forwarding(downstream, upstream, rule.srcMac,
                     NULL_MAC_ADDRESS, NULL_MAC_ADDRESS, NetworkStackConstants.ETHER_MTU)) {
                 mLog.e("Failed to enable upstream IPv6 forwarding from "
                         + mInterfaceNames.get(downstream) + " to " + mInterfaceNames.get(upstream));
@@ -537,29 +540,15 @@ public class BpfCoordinator {
         if (!isAnyRuleFromDownstreamToUpstream(rule.downstreamIfindex, rule.upstreamIfindex)) {
             final int downstream = rule.downstreamIfindex;
             final int upstream = rule.upstreamIfindex;
-            if (!mBpfCoordinatorShim.stopUpstreamIpv6Forwarding(downstream, upstream)) {
+            if (!mBpfCoordinatorShim.stopUpstreamIpv6Forwarding(downstream, upstream,
+                    rule.srcMac)) {
                 mLog.e("Failed to disable upstream IPv6 forwarding from "
                         + mInterfaceNames.get(downstream) + " to " + mInterfaceNames.get(upstream));
             }
         }
 
         // Do cleanup functionality if there is no more rule on the given upstream.
-        final int upstreamIfindex = rule.upstreamIfindex;
-        if (!isAnyRuleOnUpstream(upstreamIfindex)) {
-            final TetherStatsValue statsValue =
-                    mBpfCoordinatorShim.tetherOffloadGetAndClearStats(upstreamIfindex);
-            if (statsValue == null) {
-                Log.wtf(TAG, "Fail to cleanup tether stats for upstream index " + upstreamIfindex);
-                return;
-            }
-
-            SparseArray<TetherStatsValue> tetherStatsList = new SparseArray<TetherStatsValue>();
-            tetherStatsList.put(upstreamIfindex, statsValue);
-
-            // Update the last stats delta and delete the local cache for a given upstream.
-            updateQuotaAndStatsFromSnapshot(tetherStatsList);
-            mStats.remove(upstreamIfindex);
-        }
+        maybeClearLimit(rule.upstreamIfindex);
     }
 
     /**
@@ -687,7 +676,7 @@ public class BpfCoordinator {
         if (lp == null || !lp.hasIpv4Address()) return;
 
         // Support raw ip upstream interface only.
-        final InterfaceParams params = InterfaceParams.getByName(lp.getInterfaceName());
+        final InterfaceParams params = mDeps.getInterfaceParams(lp.getInterfaceName());
         if (params == null || params.hasMacAddress) return;
 
         Collection<InetAddress> addresses = lp.getAddresses();
@@ -814,15 +803,15 @@ public class BpfCoordinator {
                 final int upstreamIfindex = rule.upstreamIfindex;
                 pw.println(String.format("%d(%s) %d(%s) %s %s %s", upstreamIfindex,
                         mInterfaceNames.get(upstreamIfindex), rule.downstreamIfindex,
-                        downstreamIface, rule.address, rule.srcMac, rule.dstMac));
+                        downstreamIface, rule.address.getHostAddress(), rule.srcMac, rule.dstMac));
             }
             pw.decreaseIndent();
         }
     }
 
     private String ipv6UpstreamRuletoString(TetherUpstream6Key key, Tether6Value value) {
-        return String.format("%d(%s) -> %d(%s) %04x %s %s",
-                key.iif, getIfName(key.iif), value.oif, getIfName(value.oif),
+        return String.format("%d(%s) %s -> %d(%s) %04x %s %s",
+                key.iif, getIfName(key.iif), key.dstMac, value.oif, getIfName(value.oif),
                 value.ethProto, value.ethSrcMac, value.ethDstMac);
     }
 
@@ -851,9 +840,10 @@ public class BpfCoordinator {
         } catch (UnknownHostException impossible) {
             throw new AssertionError("4-byte array not valid IPv4 address!");
         }
-        return String.format("%d(%s) %d(%s) %s:%d -> %s:%d -> %s:%d",
-                key.iif, getIfName(key.iif), value.oif, getIfName(value.oif),
-                private4, key.srcPort, public4, value.srcPort, dst4, key.dstPort);
+        return String.format("[%s] %d(%s) %s:%d -> %d(%s) %s:%d -> %s:%d",
+                key.dstMac, key.iif, getIfName(key.iif), private4, key.srcPort,
+                value.oif, getIfName(value.oif),
+                public4, value.srcPort, dst4, key.dstPort);
     }
 
     private void dumpIpv4ForwardingRules(IndentingPrintWriter pw) {
@@ -866,7 +856,7 @@ public class BpfCoordinator {
                 pw.println("No IPv4 rules");
                 return;
             }
-            pw.println("[IPv4]: iif(iface) oif(iface) src nat dst");
+            pw.println("IPv4: [inDstMac] iif(iface) src -> nat -> dst");
             pw.increaseIndent();
             map.forEach((k, v) -> pw.println(ipv4RuleToString(k, v)));
         } catch (ErrnoException e) {
@@ -911,6 +901,62 @@ public class BpfCoordinator {
 
     /** IPv6 forwarding rule class. */
     public static class Ipv6ForwardingRule {
+        // The upstream6 and downstream6 rules are built as the following tables. Only raw ip
+        // upstream interface is supported.
+        // TODO: support ether ip upstream interface.
+        //
+        // NAT network topology:
+        //
+        //         public network (rawip)                 private network
+        //                   |                 UE                |
+        // +------------+    V    +------------+------------+    V    +------------+
+        // |   Sever    +---------+  Upstream  | Downstream +---------+   Client   |
+        // +------------+         +------------+------------+         +------------+
+        //
+        // upstream6 key and value:
+        //
+        // +------+-------------+
+        // | TetherUpstream6Key |
+        // +------+------+------+
+        // |field |iif   |dstMac|
+        // |      |      |      |
+        // +------+------+------+
+        // |value |downst|downst|
+        // |      |ream  |ream  |
+        // +------+------+------+
+        //
+        // +------+----------------------------------+
+        // |      |Tether6Value                      |
+        // +------+------+------+------+------+------+
+        // |field |oif   |ethDst|ethSrc|ethPro|pmtu  |
+        // |      |      |mac   |mac   |to    |      |
+        // +------+------+------+------+------+------+
+        // |value |upstre|--    |--    |ETH_P_|1500  |
+        // |      |am    |      |      |IP    |      |
+        // +------+------+------+------+------+------+
+        //
+        // downstream6 key and value:
+        //
+        // +------+--------------------+
+        // |      |TetherDownstream6Key|
+        // +------+------+------+------+
+        // |field |iif   |dstMac|neigh6|
+        // |      |      |      |      |
+        // +------+------+------+------+
+        // |value |upstre|--    |client|
+        // |      |am    |      |      |
+        // +------+------+------+------+
+        //
+        // +------+----------------------------------+
+        // |      |Tether6Value                      |
+        // +------+------+------+------+------+------+
+        // |field |oif   |ethDst|ethSrc|ethPro|pmtu  |
+        // |      |      |mac   |mac   |to    |      |
+        // +------+------+------+------+------+------+
+        // |value |downst|client|downst|ETH_P_|1500  |
+        // |      |ream  |      |ream  |IP    |      |
+        // +------+------+------+------+------+------+
+        //
         public final int upstreamIfindex;
         public final int downstreamIfindex;
 
@@ -960,7 +1006,8 @@ public class BpfCoordinator {
          */
         @NonNull
         public TetherDownstream6Key makeTetherDownstream6Key() {
-            return new TetherDownstream6Key(upstreamIfindex, address.getAddress());
+            return new TetherDownstream6Key(upstreamIfindex, NULL_MAC_ADDRESS,
+                    address.getAddress());
         }
 
         /**
@@ -1113,7 +1160,10 @@ public class BpfCoordinator {
 
     // Support raw ip only.
     // TODO: add ether ip support.
-    private class BpfConntrackEventConsumer implements ConntrackEventConsumer {
+    // TODO: parse CTA_PROTOINFO of conntrack event in ConntrackMonitor. For TCP, only add rules
+    // while TCP status is established.
+    @VisibleForTesting
+    class BpfConntrackEventConsumer implements ConntrackEventConsumer {
         @NonNull
         private Tether4Key makeTetherUpstream4Key(
                 @NonNull ConntrackEvent e, @NonNull ClientInfo c) {
@@ -1178,8 +1228,9 @@ public class BpfCoordinator {
 
             if (e.msgType == (NetlinkConstants.NFNL_SUBSYS_CTNETLINK << 8
                     | NetlinkConstants.IPCTNL_MSG_CT_DELETE)) {
-                mBpfCoordinatorShim.tetherOffloadRuleRemove(false, upstream4Key);
-                mBpfCoordinatorShim.tetherOffloadRuleRemove(true, downstream4Key);
+                mBpfCoordinatorShim.tetherOffloadRuleRemove(UPSTREAM, upstream4Key);
+                mBpfCoordinatorShim.tetherOffloadRuleRemove(DOWNSTREAM, downstream4Key);
+                maybeClearLimit(upstreamIndex);
                 return;
             }
 
@@ -1187,8 +1238,9 @@ public class BpfCoordinator {
             final Tether4Value downstream4Value = makeTetherDownstream4Value(e, tetherClient,
                     upstreamIndex);
 
-            mBpfCoordinatorShim.tetherOffloadRuleAdd(false, upstream4Key, upstream4Value);
-            mBpfCoordinatorShim.tetherOffloadRuleAdd(true, downstream4Key, downstream4Value);
+            maybeSetLimit(upstreamIndex);
+            mBpfCoordinatorShim.tetherOffloadRuleAdd(UPSTREAM, upstream4Key, upstream4Value);
+            mBpfCoordinatorShim.tetherOffloadRuleAdd(DOWNSTREAM, downstream4Key, downstream4Value);
         }
     }
 
@@ -1250,6 +1302,47 @@ public class BpfCoordinator {
         return sendDataLimitToBpfMap(ifIndex, quotaBytes);
     }
 
+    private void maybeSetLimit(int upstreamIfindex) {
+        if (isAnyRuleOnUpstream(upstreamIfindex)
+                || mBpfCoordinatorShim.isAnyIpv4RuleOnUpstream(upstreamIfindex)) {
+            return;
+        }
+
+        // If failed to set a data limit, probably should not use this upstream, because
+        // the upstream may not want to blow through the data limit that was told to apply.
+        // TODO: Perhaps stop the coordinator.
+        boolean success = updateDataLimit(upstreamIfindex);
+        if (!success) {
+            final String iface = mInterfaceNames.get(upstreamIfindex);
+            mLog.e("Setting data limit for " + iface + " failed.");
+        }
+    }
+
+    // TODO: This should be also called while IpServer wants to clear all IPv4 rules. Relying on
+    // conntrack event can't cover this case.
+    private void maybeClearLimit(int upstreamIfindex) {
+        if (isAnyRuleOnUpstream(upstreamIfindex)
+                || mBpfCoordinatorShim.isAnyIpv4RuleOnUpstream(upstreamIfindex)) {
+            return;
+        }
+
+        final TetherStatsValue statsValue =
+                mBpfCoordinatorShim.tetherOffloadGetAndClearStats(upstreamIfindex);
+        if (statsValue == null) {
+            Log.wtf(TAG, "Fail to cleanup tether stats for upstream index " + upstreamIfindex);
+            return;
+        }
+
+        SparseArray<TetherStatsValue> tetherStatsList = new SparseArray<TetherStatsValue>();
+        tetherStatsList.put(upstreamIfindex, statsValue);
+
+        // Update the last stats delta and delete the local cache for a given upstream.
+        updateQuotaAndStatsFromSnapshot(tetherStatsList);
+        mStats.remove(upstreamIfindex);
+    }
+
+    // TODO: Rename to isAnyIpv6RuleOnUpstream and define an isAnyRuleOnUpstream method that called
+    // both isAnyIpv6RuleOnUpstream and mBpfCoordinatorShim.isAnyIpv4RuleOnUpstream.
     private boolean isAnyRuleOnUpstream(int upstreamIfindex) {
         for (LinkedHashMap<Inet6Address, Ipv6ForwardingRule> rules : mIpv6ForwardingRules
                 .values()) {
@@ -1417,6 +1510,14 @@ public class BpfCoordinator {
     @VisibleForTesting
     final SparseArray<String> getInterfaceNamesForTesting() {
         return mInterfaceNames;
+    }
+
+    // Return BPF conntrack event consumer. This is used for testing only.
+    // Note that this can be only called on handler thread.
+    @NonNull
+    @VisibleForTesting
+    final BpfConntrackEventConsumer getBpfConntrackEventConsumerForTesting() {
+        return mBpfConntrackEventConsumer;
     }
 
     private static native String[] getBpfCounterNames();
