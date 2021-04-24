@@ -62,6 +62,8 @@ import static android.system.OsConstants.AF_UNSPEC;
 
 import static com.android.compatibility.common.util.SystemUtil.runShellCommand;
 import static com.android.compatibility.common.util.SystemUtil.runWithShellPermissionIdentity;
+import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_LOCKDOWN_VPN;
+import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_NONE;
 import static com.android.testutils.MiscAsserts.assertThrows;
 import static com.android.testutils.TestPermissionUtil.runAsShell;
 
@@ -114,6 +116,7 @@ import android.os.MessageQueue;
 import android.os.Process;
 import android.os.SystemClock;
 import android.os.SystemProperties;
+import android.os.UserHandle;
 import android.os.VintfRuntimeInfo;
 import android.platform.test.annotations.AppModeFull;
 import android.provider.Settings;
@@ -122,18 +125,16 @@ import android.text.TextUtils;
 import android.util.ArraySet;
 import android.util.Log;
 import android.util.Pair;
+import android.util.Range;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.ArrayUtils;
-import com.android.modules.utils.build.SdkLevel;
 import com.android.networkstack.apishim.ConnectivityManagerShimImpl;
-import com.android.networkstack.apishim.ConstantsShim;
 import com.android.networkstack.apishim.common.ConnectivityManagerShim;
 import com.android.testutils.CompatUtil;
 import com.android.testutils.DevSdkIgnoreRule;
-import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRuleKt;
 import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.SkipPresubmit;
@@ -166,6 +167,7 @@ import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -192,6 +194,7 @@ public class ConnectivityManagerTest {
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
+    private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int NUM_TRIES_MULTIPATH_PREF_CHECK = 20;
     private static final long INTERVAL_MULTIPATH_PREF_CHECK_MS = 500;
     // device could have only one interface: data, wifi.
@@ -223,6 +226,9 @@ public class ConnectivityManagerTest {
     private final ArraySet<Integer> mNetworkTypes = new ArraySet<>();
     private UiAutomation mUiAutomation;
     private CtsNetUtils mCtsNetUtils;
+
+    // Used for cleanup purposes.
+    private final List<Range<Integer>> mVpnRequiredUidRanges = new ArrayList<>();
 
     @Before
     public void setUp() throws Exception {
@@ -302,6 +308,12 @@ public class ConnectivityManagerTest {
         // Release any NetworkRequests filed to connect mobile data.
         if (mCtsNetUtils.cellConnectAttempted()) {
             mCtsNetUtils.disconnectFromCell();
+        }
+
+        if (TestUtils.shouldTestSApis()) {
+            runWithShellPermissionIdentity(
+                    () -> mCmShim.setRequireVpnForUids(false, mVpnRequiredUidRanges),
+                    NETWORK_SETTINGS);
         }
 
         // All tests in this class require a working Internet connection as they start. Make
@@ -591,7 +603,7 @@ public class ConnectivityManagerTest {
         final TestNetworkCallback systemDefaultCallback = new TestNetworkCallback();
         final TestNetworkCallback perUidCallback = new TestNetworkCallback();
         final Handler h = new Handler(Looper.getMainLooper());
-        if (shouldTestSApis()) {
+        if (TestUtils.shouldTestSApis()) {
             runWithShellPermissionIdentity(() -> {
                 mCmShim.registerSystemDefaultNetworkCallback(systemDefaultCallback, h);
                 mCmShim.registerDefaultNetworkCallbackAsUid(Process.myUid(), perUidCallback, h);
@@ -614,7 +626,7 @@ public class ConnectivityManagerTest {
             assertNotNull("Did not receive onAvailable on default network callback",
                     defaultNetwork);
 
-            if (shouldTestSApis()) {
+            if (TestUtils.shouldTestSApis()) {
                 assertNotNull("Did not receive onAvailable on system default network callback",
                         systemDefaultCallback.waitForAvailable());
                 final Network perUidNetwork = perUidCallback.waitForAvailable();
@@ -628,7 +640,7 @@ public class ConnectivityManagerTest {
         } finally {
             mCm.unregisterNetworkCallback(callback);
             mCm.unregisterNetworkCallback(defaultTrackingCallback);
-            if (shouldTestSApis()) {
+            if (TestUtils.shouldTestSApis()) {
                 mCm.unregisterNetworkCallback(systemDefaultCallback);
                 mCm.unregisterNetworkCallback(perUidCallback);
             }
@@ -1656,7 +1668,7 @@ public class ConnectivityManagerTest {
 
         final Network network = mCtsNetUtils.ensureWifiConnected();
         final String ssid = unquoteSSID(mWifiManager.getConnectionInfo().getSSID());
-        assertNotNull("Ssid getting from WiifManager is null", ssid);
+        assertNotNull("Ssid getting from WifiManager is null", ssid);
         // This package should have no NETWORK_SETTINGS permission. Verify that no ssid is contained
         // in the NetworkCapabilities.
         verifySsidFromQueriedNetworkCapabilities(network, ssid, false /* hasSsid */);
@@ -1704,8 +1716,11 @@ public class ConnectivityManagerTest {
      * {@link android.Manifest.permission.NETWORK_SETTINGS}.
      */
     @Test
-    @IgnoreUpTo(Build.VERSION_CODES.R)
-    public void testRequestBackgroundNetwork() throws Exception {
+    public void testRequestBackgroundNetwork() {
+        // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
+        // shims, and @IgnoreUpTo does not check that.
+        assumeTrue(TestUtils.shouldTestSApis());
+
         // Create a tun interface. Use the returned interface name as the specifier to create
         // a test network request.
         final TestNetworkManager tnm = runWithShellPermissionIdentity(() ->
@@ -1730,14 +1745,14 @@ public class ConnectivityManagerTest {
         final TestableNetworkCallback callback = new TestableNetworkCallback();
         final Handler handler = new Handler(Looper.getMainLooper());
         assertThrows(SecurityException.class,
-                () -> mCmShim.requestBackgroundNetwork(testRequest, handler, callback));
+                () -> mCmShim.requestBackgroundNetwork(testRequest, callback, handler));
 
         Network testNetwork = null;
         try {
             // Request background test network via Shell identity which has NETWORK_SETTINGS
             // permission granted.
             runWithShellPermissionIdentity(
-                    () -> mCmShim.requestBackgroundNetwork(testRequest, handler, callback),
+                    () -> mCmShim.requestBackgroundNetwork(testRequest, callback, handler),
                     new String[] { android.Manifest.permission.NETWORK_SETTINGS });
 
             // Register the test network agent which has no foreground request associated to it.
@@ -1778,11 +1793,112 @@ public class ConnectivityManagerTest {
         }
     }
 
-    /**
-     * Whether to test S+ APIs. This requires a) that the test be running on an S+ device, and
-     * b) that the code be compiled against shims new enough to access these APIs.
-     */
-    private boolean shouldTestSApis() {
-        return SdkLevel.isAtLeastS() && ConstantsShim.VERSION > Build.VERSION_CODES.R;
+    private class DetailedBlockedStatusCallback extends TestableNetworkCallback {
+        public void expectAvailableCallbacks(Network network) {
+            super.expectAvailableCallbacks(network, false /* suspended */, true /* validated */,
+                    BLOCKED_REASON_NONE, NETWORK_CALLBACK_TIMEOUT_MS);
+        }
+        public void expectBlockedStatusCallback(Network network, int blockedStatus) {
+            super.expectBlockedStatusCallback(blockedStatus, network, NETWORK_CALLBACK_TIMEOUT_MS);
+        }
+        public void onBlockedStatusChanged(Network network, int blockedReasons) {
+            getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));
+        }
+    }
+
+    private void setRequireVpnForUids(boolean requireVpn, Collection<Range<Integer>> ranges)
+            throws Exception {
+        mCmShim.setRequireVpnForUids(requireVpn, ranges);
+        for (Range<Integer> range : ranges) {
+            if (requireVpn) {
+                mVpnRequiredUidRanges.add(range);
+            } else {
+                assertTrue(mVpnRequiredUidRanges.remove(range));
+            }
+        }
+    }
+
+    private void doTestBlockedStatusCallback() throws Exception {
+        final DetailedBlockedStatusCallback myUidCallback = new DetailedBlockedStatusCallback();
+        final DetailedBlockedStatusCallback otherUidCallback = new DetailedBlockedStatusCallback();
+
+        final int myUid = Process.myUid();
+        final int otherUid = UserHandle.getUid(5, Process.FIRST_APPLICATION_UID);
+        final Handler handler = new Handler(Looper.getMainLooper());
+        mCm.registerDefaultNetworkCallback(myUidCallback, handler);
+        mCmShim.registerDefaultNetworkCallbackAsUid(otherUid, otherUidCallback, handler);
+
+        final Network defaultNetwork = mCm.getActiveNetwork();
+        final List<DetailedBlockedStatusCallback> allCallbacks =
+                List.of(myUidCallback, otherUidCallback);
+        for (DetailedBlockedStatusCallback callback : allCallbacks) {
+            callback.expectAvailableCallbacks(defaultNetwork);
+        }
+
+        final Range<Integer> myUidRange = new Range<>(myUid, myUid);
+        final Range<Integer> otherUidRange = new Range<>(otherUid, otherUid);
+
+        setRequireVpnForUids(true, List.of(myUidRange));
+        myUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_LOCKDOWN_VPN);
+        otherUidCallback.assertNoCallback(NO_CALLBACK_TIMEOUT_MS);
+
+        setRequireVpnForUids(true, List.of(myUidRange, otherUidRange));
+        myUidCallback.assertNoCallback(NO_CALLBACK_TIMEOUT_MS);
+        otherUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_LOCKDOWN_VPN);
+
+        // setRequireVpnForUids does no deduplication or refcounting. Removing myUidRange does not
+        // unblock myUid because it was added to the blocked ranges twice.
+        setRequireVpnForUids(false, List.of(myUidRange));
+        myUidCallback.assertNoCallback(NO_CALLBACK_TIMEOUT_MS);
+        otherUidCallback.assertNoCallback(NO_CALLBACK_TIMEOUT_MS);
+
+        setRequireVpnForUids(false, List.of(myUidRange, otherUidRange));
+        myUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
+        otherUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
+
+        myUidCallback.assertNoCallback(NO_CALLBACK_TIMEOUT_MS);
+        otherUidCallback.assertNoCallback(NO_CALLBACK_TIMEOUT_MS);
+    }
+
+    @Test
+    public void testBlockedStatusCallback() {
+        // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
+        // shims, and @IgnoreUpTo does not check that.
+        assumeTrue(TestUtils.shouldTestSApis());
+        runWithShellPermissionIdentity(() -> doTestBlockedStatusCallback(), NETWORK_SETTINGS);
+    }
+
+    private void doTestLegacyLockdownEnabled() throws Exception {
+        NetworkInfo info = mCm.getActiveNetworkInfo();
+        assertNotNull(info);
+        assertEquals(DetailedState.CONNECTED, info.getDetailedState());
+
+        try {
+            mCmShim.setLegacyLockdownVpnEnabled(true);
+
+            // setLegacyLockdownVpnEnabled is asynchronous and only takes effect when the
+            // ConnectivityService handler thread processes it. Ensure it has taken effect by doing
+            // something that blocks until the handler thread is idle.
+            final TestableNetworkCallback callback = new TestableNetworkCallback();
+            mCm.registerDefaultNetworkCallback(callback);
+            waitForAvailable(callback);
+            mCm.unregisterNetworkCallback(callback);
+
+            // Test one of the effects of setLegacyLockdownVpnEnabled: the fact that any NetworkInfo
+            // in state CONNECTED is degraded to CONNECTING if the legacy VPN is not connected.
+            info = mCm.getActiveNetworkInfo();
+            assertNotNull(info);
+            assertEquals(DetailedState.CONNECTING, info.getDetailedState());
+        } finally {
+            mCmShim.setLegacyLockdownVpnEnabled(false);
+        }
+    }
+
+    @Test
+    public void testLegacyLockdownEnabled() {
+        // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
+        // shims, and @IgnoreUpTo does not check that.
+        assumeTrue(TestUtils.shouldTestSApis());
+        runWithShellPermissionIdentity(() -> doTestLegacyLockdownEnabled(), NETWORK_SETTINGS);
     }
 }
