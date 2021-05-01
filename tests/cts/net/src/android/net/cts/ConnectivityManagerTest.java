@@ -132,6 +132,8 @@ import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.ArrayUtils;
 import com.android.networkstack.apishim.ConnectivityManagerShimImpl;
+import com.android.networkstack.apishim.ConstantsShim;
+import com.android.networkstack.apishim.NetworkInformationShimImpl;
 import com.android.networkstack.apishim.common.ConnectivityManagerShim;
 import com.android.testutils.CompatUtil;
 import com.android.testutils.DevSdkIgnoreRule;
@@ -606,7 +608,7 @@ public class ConnectivityManagerTest {
         if (TestUtils.shouldTestSApis()) {
             runWithShellPermissionIdentity(() -> {
                 mCmShim.registerSystemDefaultNetworkCallback(systemDefaultCallback, h);
-                mCmShim.registerDefaultNetworkCallbackAsUid(Process.myUid(), perUidCallback, h);
+                mCmShim.registerDefaultNetworkCallbackForUid(Process.myUid(), perUidCallback, h);
             }, NETWORK_SETTINGS);
         }
 
@@ -1826,7 +1828,7 @@ public class ConnectivityManagerTest {
         final int otherUid = UserHandle.getUid(5, Process.FIRST_APPLICATION_UID);
         final Handler handler = new Handler(Looper.getMainLooper());
         mCm.registerDefaultNetworkCallback(myUidCallback, handler);
-        mCmShim.registerDefaultNetworkCallbackAsUid(otherUid, otherUidCallback, handler);
+        mCmShim.registerDefaultNetworkCallbackForUid(otherUid, otherUidCallback, handler);
 
         final Network defaultNetwork = mCm.getActiveNetwork();
         final List<DetailedBlockedStatusCallback> allCallbacks =
@@ -1900,5 +1902,14 @@ public class ConnectivityManagerTest {
         // shims, and @IgnoreUpTo does not check that.
         assumeTrue(TestUtils.shouldTestSApis());
         runWithShellPermissionIdentity(() -> doTestLegacyLockdownEnabled(), NETWORK_SETTINGS);
+    }
+
+    @Test
+    public void testGetCapabilityCarrierName() {
+        assumeTrue(TestUtils.shouldTestSApis());
+        assertEquals("ENTERPRISE", NetworkInformationShimImpl.newInstance()
+                .getCapabilityCarrierName(ConstantsShim.NET_CAPABILITY_ENTERPRISE));
+        assertNull(NetworkInformationShimImpl.newInstance()
+                .getCapabilityCarrierName(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED));
     }
 }
