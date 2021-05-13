@@ -47,7 +47,6 @@ import android.net.netstats.provider.NetworkStatsProvider;
 import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
 import android.net.util.TetheringUtils.ForwardedStats;
-import android.os.ConditionVariable;
 import android.os.Handler;
 import android.system.ErrnoException;
 import android.text.TextUtils;
@@ -137,6 +136,8 @@ public class BpfCoordinator {
     private final BpfTetherStatsProvider mStatsProvider;
     @NonNull
     private final BpfCoordinatorShim mBpfCoordinatorShim;
+    @NonNull
+    private final BpfConntrackEventConsumer mBpfConntrackEventConsumer;
 
     // True if BPF offload is supported, false otherwise. The BPF offload could be disabled by
     // a runtime resource overlay package or device configuration. This flag is only initialized
@@ -248,6 +249,11 @@ public class BpfCoordinator {
             return new ConntrackMonitor(getHandler(), getSharedLog(), consumer);
         }
 
+        /** Get interface information for a given interface. */
+        @NonNull public InterfaceParams getInterfaceParams(String ifName) {
+            return InterfaceParams.getByName(ifName);
+        }
+
         /**
          * Check OS Build at least S.
          *
@@ -339,7 +345,14 @@ public class BpfCoordinator {
         mNetd = mDeps.getNetd();
         mLog = mDeps.getSharedLog().forSubComponent(TAG);
         mIsBpfEnabled = isBpfEnabled();
-        mConntrackMonitor = mDeps.getConntrackMonitor(new BpfConntrackEventConsumer());
+
+        // The conntrack consummer needs to be initialized in BpfCoordinator constructor because it
+        // have to access the data members of BpfCoordinator which is not a static class. The
+        // consumer object is also needed for initializing the conntrack monitor which may be
+        // mocked for testing.
+        mBpfConntrackEventConsumer = new BpfConntrackEventConsumer();
+        mConntrackMonitor = mDeps.getConntrackMonitor(mBpfConntrackEventConsumer);
+
         BpfTetherStatsProvider provider = new BpfTetherStatsProvider();
         try {
             mDeps.getNetworkStatsManager().registerNetworkStatsProvider(
@@ -662,7 +675,7 @@ public class BpfCoordinator {
         if (lp == null || !lp.hasIpv4Address()) return;
 
         // Support raw ip upstream interface only.
-        final InterfaceParams params = InterfaceParams.getByName(lp.getInterfaceName());
+        final InterfaceParams params = mDeps.getInterfaceParams(lp.getInterfaceName());
         if (params == null || params.hasMacAddress) return;
 
         Collection<InetAddress> addresses = lp.getAddresses();
@@ -721,43 +734,35 @@ public class BpfCoordinator {
      * be allowed to be accessed on the handler thread.
      */
     public void dump(@NonNull IndentingPrintWriter pw) {
-        final ConditionVariable dumpDone = new ConditionVariable();
-        mHandler.post(() -> {
-            pw.println("mIsBpfEnabled: " + mIsBpfEnabled);
-            pw.println("Polling " + (mPollingStarted ? "started" : "not started"));
-            pw.println("Stats provider " + (mStatsProvider != null
-                    ? "registered" : "not registered"));
-            pw.println("Upstream quota: " + mInterfaceQuotas.toString());
-            pw.println("Polling interval: " + getPollingInterval() + " ms");
-            pw.println("Bpf shim: " + mBpfCoordinatorShim.toString());
+        pw.println("mIsBpfEnabled: " + mIsBpfEnabled);
+        pw.println("Polling " + (mPollingStarted ? "started" : "not started"));
+        pw.println("Stats provider " + (mStatsProvider != null
+                ? "registered" : "not registered"));
+        pw.println("Upstream quota: " + mInterfaceQuotas.toString());
+        pw.println("Polling interval: " + getPollingInterval() + " ms");
+        pw.println("Bpf shim: " + mBpfCoordinatorShim.toString());
 
-            pw.println("Forwarding stats:");
-            pw.increaseIndent();
-            if (mStats.size() == 0) {
-                pw.println("<empty>");
-            } else {
-                dumpStats(pw);
-            }
-            pw.decreaseIndent();
-
-            pw.println("Forwarding rules:");
-            pw.increaseIndent();
-            dumpIpv6UpstreamRules(pw);
-            dumpIpv6ForwardingRules(pw);
-            dumpIpv4ForwardingRules(pw);
-            pw.decreaseIndent();
-
-            pw.println();
-            pw.println("Forwarding counters:");
-            pw.increaseIndent();
-            dumpCounters(pw);
-            pw.decreaseIndent();
-
-            dumpDone.open();
-        });
-        if (!dumpDone.block(DUMP_TIMEOUT_MS)) {
-            pw.println("... dump timed-out after " + DUMP_TIMEOUT_MS + "ms");
+        pw.println("Forwarding stats:");
+        pw.increaseIndent();
+        if (mStats.size() == 0) {
+            pw.println("<empty>");
+        } else {
+            dumpStats(pw);
         }
+        pw.decreaseIndent();
+
+        pw.println("Forwarding rules:");
+        pw.increaseIndent();
+        dumpIpv6UpstreamRules(pw);
+        dumpIpv6ForwardingRules(pw);
+        dumpIpv4ForwardingRules(pw);
+        pw.decreaseIndent();
+
+        pw.println();
+        pw.println("Forwarding counters:");
+        pw.increaseIndent();
+        dumpCounters(pw);
+        pw.decreaseIndent();
     }
 
     private void dumpStats(@NonNull IndentingPrintWriter pw) {
@@ -1148,7 +1153,8 @@ public class BpfCoordinator {
     // TODO: add ether ip support.
     // TODO: parse CTA_PROTOINFO of conntrack event in ConntrackMonitor. For TCP, only add rules
     // while TCP status is established.
-    private class BpfConntrackEventConsumer implements ConntrackEventConsumer {
+    @VisibleForTesting
+    class BpfConntrackEventConsumer implements ConntrackEventConsumer {
         @NonNull
         private Tether4Key makeTetherUpstream4Key(
                 @NonNull ConntrackEvent e, @NonNull ClientInfo c) {
@@ -1495,6 +1501,14 @@ public class BpfCoordinator {
     @VisibleForTesting
     final SparseArray<String> getInterfaceNamesForTesting() {
         return mInterfaceNames;
+    }
+
+    // Return BPF conntrack event consumer. This is used for testing only.
+    // Note that this can be only called on handler thread.
+    @NonNull
+    @VisibleForTesting
+    final BpfConntrackEventConsumer getBpfConntrackEventConsumerForTesting() {
+        return mBpfConntrackEventConsumer;
     }
 
     private static native String[] getBpfCounterNames();
