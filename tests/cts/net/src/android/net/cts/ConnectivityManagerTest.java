@@ -102,6 +102,7 @@ import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkInfo.State;
 import android.net.NetworkRequest;
 import android.net.NetworkUtils;
+import android.net.ProxyInfo;
 import android.net.SocketKeepalive;
 import android.net.TestNetworkInterface;
 import android.net.TestNetworkManager;
@@ -1721,6 +1722,7 @@ public class ConnectivityManagerTest {
      * Verify background request can only be requested when acquiring
      * {@link android.Manifest.permission.NETWORK_SETTINGS}.
      */
+    @AppModeFull(reason = "Instant apps cannot create test networks")
     @Test
     public void testRequestBackgroundNetwork() {
         // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
@@ -1915,5 +1917,13 @@ public class ConnectivityManagerTest {
                 .getCapabilityCarrierName(ConstantsShim.NET_CAPABILITY_ENTERPRISE));
         assertNull(NetworkInformationShimImpl.newInstance()
                 .getCapabilityCarrierName(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED));
+    }
+
+    @Test
+    public void testSetGlobalProxy() {
+        assumeTrue(TestUtils.shouldTestSApis());
+        // Behavior is verified in gts. Verify exception thrown w/o permission.
+        assertThrows(SecurityException.class, () -> mCm.setGlobalProxy(
+                ProxyInfo.buildDirectProxy("example.com" /* host */, 8080 /* port */)));
     }
 }

@@ -47,7 +47,6 @@ import android.net.netstats.provider.NetworkStatsProvider;
 import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
 import android.net.util.TetheringUtils.ForwardedStats;
-import android.os.ConditionVariable;
 import android.os.Handler;
 import android.system.ErrnoException;
 import android.text.TextUtils;
@@ -73,6 +72,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -105,6 +105,7 @@ public class BpfCoordinator {
     private static final String TETHER_STATS_MAP_PATH = makeMapPath("stats");
     private static final String TETHER_LIMIT_MAP_PATH = makeMapPath("limit");
     private static final String TETHER_ERROR_MAP_PATH = makeMapPath("error");
+    private static final String TETHER_DEV_MAP_PATH = makeMapPath("dev");
 
     /** The names of all the BPF counters defined in bpf_tethering.h. */
     public static final String[] sBpfCounterNames = getBpfCounterNames();
@@ -221,6 +222,11 @@ public class BpfCoordinator {
     // Map for upstream and downstream pair.
     private final HashMap<String, HashSet<String>> mForwardingPairs = new HashMap<>();
 
+    // Set for upstream and downstream device map. Used for caching BPF dev map status and
+    // reduce duplicate adding or removing map operations. Use LinkedHashSet because the test
+    // BpfCoordinatorTest needs predictable iteration order.
+    private final Set<Integer> mDeviceMapSet = new LinkedHashSet<>();
+
     // Runnable that used by scheduling next polling of stats.
     private final Runnable mScheduledPollingTask = () -> {
         updateForwardedStats();
@@ -334,6 +340,18 @@ public class BpfCoordinator {
                     BpfMap.BPF_F_RDWR, TetherLimitKey.class, TetherLimitValue.class);
             } catch (ErrnoException e) {
                 Log.e(TAG, "Cannot create limit map: " + e);
+                return null;
+            }
+        }
+
+        /** Get dev BPF map. */
+        @Nullable public BpfMap<TetherDevKey, TetherDevValue> getBpfDevMap() {
+            if (!isAtLeastS()) return null;
+            try {
+                return new BpfMap<>(TETHER_DEV_MAP_PATH,
+                    BpfMap.BPF_F_RDWR, TetherDevKey.class, TetherDevValue.class);
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Cannot create dev map: " + e);
                 return null;
             }
         }
@@ -490,6 +508,9 @@ public class BpfCoordinator {
                     Ipv6ForwardingRule>());
         }
         LinkedHashMap<Inet6Address, Ipv6ForwardingRule> rules = mIpv6ForwardingRules.get(ipServer);
+
+        // Add upstream and downstream interface index to dev map.
+        maybeAddDevMap(rule.upstreamIfindex, rule.downstreamIfindex);
 
         // When the first rule is added to an upstream, setup upstream forwarding and data limit.
         maybeSetLimit(rule.upstreamIfindex);
@@ -735,43 +756,40 @@ public class BpfCoordinator {
      * be allowed to be accessed on the handler thread.
      */
     public void dump(@NonNull IndentingPrintWriter pw) {
-        final ConditionVariable dumpDone = new ConditionVariable();
-        mHandler.post(() -> {
-            pw.println("mIsBpfEnabled: " + mIsBpfEnabled);
-            pw.println("Polling " + (mPollingStarted ? "started" : "not started"));
-            pw.println("Stats provider " + (mStatsProvider != null
-                    ? "registered" : "not registered"));
-            pw.println("Upstream quota: " + mInterfaceQuotas.toString());
-            pw.println("Polling interval: " + getPollingInterval() + " ms");
-            pw.println("Bpf shim: " + mBpfCoordinatorShim.toString());
+        pw.println("mIsBpfEnabled: " + mIsBpfEnabled);
+        pw.println("Polling " + (mPollingStarted ? "started" : "not started"));
+        pw.println("Stats provider " + (mStatsProvider != null
+                ? "registered" : "not registered"));
+        pw.println("Upstream quota: " + mInterfaceQuotas.toString());
+        pw.println("Polling interval: " + getPollingInterval() + " ms");
+        pw.println("Bpf shim: " + mBpfCoordinatorShim.toString());
 
-            pw.println("Forwarding stats:");
-            pw.increaseIndent();
-            if (mStats.size() == 0) {
-                pw.println("<empty>");
-            } else {
-                dumpStats(pw);
-            }
-            pw.decreaseIndent();
-
-            pw.println("Forwarding rules:");
-            pw.increaseIndent();
-            dumpIpv6UpstreamRules(pw);
-            dumpIpv6ForwardingRules(pw);
-            dumpIpv4ForwardingRules(pw);
-            pw.decreaseIndent();
-
-            pw.println();
-            pw.println("Forwarding counters:");
-            pw.increaseIndent();
-            dumpCounters(pw);
-            pw.decreaseIndent();
-
-            dumpDone.open();
-        });
-        if (!dumpDone.block(DUMP_TIMEOUT_MS)) {
-            pw.println("... dump timed-out after " + DUMP_TIMEOUT_MS + "ms");
+        pw.println("Forwarding stats:");
+        pw.increaseIndent();
+        if (mStats.size() == 0) {
+            pw.println("<empty>");
+        } else {
+            dumpStats(pw);
         }
+        pw.decreaseIndent();
+
+        pw.println("Forwarding rules:");
+        pw.increaseIndent();
+        dumpIpv6UpstreamRules(pw);
+        dumpIpv6ForwardingRules(pw);
+        dumpIpv4ForwardingRules(pw);
+        pw.decreaseIndent();
+
+        pw.println("Device map:");
+        pw.increaseIndent();
+        dumpDevmap(pw);
+        pw.decreaseIndent();
+
+        pw.println();
+        pw.println("Forwarding counters:");
+        pw.increaseIndent();
+        dumpCounters(pw);
+        pw.decreaseIndent();
     }
 
     private void dumpStats(@NonNull IndentingPrintWriter pw) {
@@ -897,6 +915,31 @@ public class BpfCoordinator {
         } catch (ErrnoException e) {
             pw.println("Error dumping counter map: " + e);
         }
+    }
+
+    private void dumpDevmap(@NonNull IndentingPrintWriter pw) {
+        try (BpfMap<TetherDevKey, TetherDevValue> map = mDeps.getBpfDevMap()) {
+            if (map == null) {
+                pw.println("No devmap support");
+                return;
+            }
+            if (map.isEmpty()) {
+                pw.println("No interface index");
+                return;
+            }
+            pw.println("ifindex (iface) -> ifindex (iface)");
+            pw.increaseIndent();
+            map.forEach((k, v) -> {
+                // Only get upstream interface name. Just do the best to make the index readable.
+                // TODO: get downstream interface name because the index is either upstrema or
+                // downstream interface in dev map.
+                pw.println(String.format("%d (%s) -> %d (%s)", k.ifIndex, getIfName(k.ifIndex),
+                        v.ifIndex, getIfName(v.ifIndex)));
+            });
+        } catch (ErrnoException e) {
+            pw.println("Error dumping dev map: " + e);
+        }
+        pw.decreaseIndent();
     }
 
     /** IPv6 forwarding rule class. */
@@ -1238,6 +1281,7 @@ public class BpfCoordinator {
             final Tether4Value downstream4Value = makeTetherDownstream4Value(e, tetherClient,
                     upstreamIndex);
 
+            maybeAddDevMap(upstreamIndex, tetherClient.downstreamIfindex);
             maybeSetLimit(upstreamIndex);
             mBpfCoordinatorShim.tetherOffloadRuleAdd(UPSTREAM, upstream4Key, upstream4Value);
             mBpfCoordinatorShim.tetherOffloadRuleAdd(DOWNSTREAM, downstream4Key, downstream4Value);
@@ -1364,6 +1408,15 @@ public class BpfCoordinator {
             }
         }
         return false;
+    }
+
+    // TODO: remove the index from map while the interface has been removed because the map size
+    // is 64 entries. See packages\modules\Connectivity\Tethering\bpf_progs\offload.c.
+    private void maybeAddDevMap(int upstreamIfindex, int downstreamIfindex) {
+        for (Integer index : new Integer[] {upstreamIfindex, downstreamIfindex}) {
+            if (mDeviceMapSet.contains(index)) continue;
+            if (mBpfCoordinatorShim.addDevMap(index)) mDeviceMapSet.add(index);
+        }
     }
 
     private void forwardingPairAdd(@NonNull String intIface, @NonNull String extIface) {

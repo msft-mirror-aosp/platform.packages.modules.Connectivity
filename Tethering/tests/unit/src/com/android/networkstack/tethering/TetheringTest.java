@@ -26,7 +26,6 @@ import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED
 import static android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED;
 import static android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED;
 import static android.net.ConnectivityManager.TYPE_MOBILE_DUN;
-import static android.net.ConnectivityManager.TYPE_NONE;
 import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_DUN;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
@@ -75,7 +74,6 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -276,8 +274,6 @@ public class TetheringTest {
     private UpstreamNetworkMonitor mUpstreamNetworkMonitor;
 
     private TestConnectivityManager mCm;
-    private NetworkRequest mNetworkRequest;
-    private NetworkCallback mDefaultNetworkCallback;
 
     private class TestContext extends BroadcastInterceptingContext {
         TestContext(Context base) {
@@ -449,11 +445,6 @@ public class TetheringTest {
         @Override
         public IpServer.Dependencies getIpServerDependencies() {
             return mIpServerDependencies;
-        }
-
-        @Override
-        public NetworkRequest getDefaultNetworkRequest() {
-            return mNetworkRequest;
         }
 
         @Override
@@ -647,15 +638,7 @@ public class TetheringTest {
         mServiceContext.registerReceiver(mBroadcastReceiver,
                 new IntentFilter(ACTION_TETHER_STATE_CHANGED));
 
-        // TODO: add NOT_VCN_MANAGED here, but more importantly in the production code.
-        // TODO: even better, change TetheringDependencies.getDefaultNetworkRequest() to use
-        // registerSystemDefaultNetworkCallback() on S and above.
-        NetworkCapabilities defaultCaps = new NetworkCapabilities()
-                .addCapability(NET_CAPABILITY_INTERNET);
-        mNetworkRequest = new NetworkRequest(defaultCaps, TYPE_NONE, 1 /* requestId */,
-                NetworkRequest.Type.REQUEST);
-        mCm = spy(new TestConnectivityManager(mServiceContext, mock(IConnectivityManager.class),
-                mNetworkRequest));
+        mCm = spy(new TestConnectivityManager(mServiceContext, mock(IConnectivityManager.class)));
 
         mTethering = makeTethering();
         verify(mStatsManager, times(1)).registerNetworkStatsProvider(anyString(), any());
@@ -795,15 +778,13 @@ public class TetheringTest {
     }
 
     private void verifyDefaultNetworkRequestFiled() {
-        ArgumentCaptor<NetworkCallback> captor = ArgumentCaptor.forClass(NetworkCallback.class);
-        verify(mCm, times(1)).requestNetwork(eq(mNetworkRequest),
-                captor.capture(), any(Handler.class));
-        mDefaultNetworkCallback = captor.getValue();
-        assertNotNull(mDefaultNetworkCallback);
-
+        ArgumentCaptor<NetworkRequest> reqCaptor = ArgumentCaptor.forClass(NetworkRequest.class);
+        verify(mCm, times(1)).requestNetwork(reqCaptor.capture(),
+                any(NetworkCallback.class), any(Handler.class));
+        assertTrue(TestConnectivityManager.looksLikeDefaultRequest(reqCaptor.getValue()));
         // The default network request is only ever filed once.
         verifyNoMoreInteractions(mCm);
-        mUpstreamNetworkMonitor.startTrackDefaultNetwork(mNetworkRequest, mEntitleMgr);
+        mUpstreamNetworkMonitor.startTrackDefaultNetwork(mEntitleMgr);
         verifyNoMoreInteractions(mCm);
     }
 
@@ -943,7 +924,7 @@ public class TetheringTest {
         verifyNoMoreInteractions(mWifiManager);
         // Asking for the last error after the per-interface state machine
         // has been reaped yields an unknown interface error.
-        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastTetherError(TEST_WLAN_IFNAME));
+        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastErrorForTest(TEST_WLAN_IFNAME));
     }
 
     /**
@@ -1476,7 +1457,7 @@ public class TetheringTest {
         verifyNoMoreInteractions(mWifiManager);
         // Asking for the last error after the per-interface state machine
         // has been reaped yields an unknown interface error.
-        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastTetherError(TEST_WLAN_IFNAME));
+        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastErrorForTest(TEST_WLAN_IFNAME));
     }
 
     // TODO: Test with and without interfaceStatusChanged().
@@ -1945,7 +1926,7 @@ public class TetheringTest {
         // There are 2 IpServer state change events: STATE_AVAILABLE -> STATE_LOCAL_ONLY
         verify(mNotificationUpdater, times(2)).onDownstreamChanged(DOWNSTREAM_NONE);
 
-        assertEquals(TETHER_ERROR_NO_ERROR, mTethering.getLastTetherError(TEST_P2P_IFNAME));
+        assertEquals(TETHER_ERROR_NO_ERROR, mTethering.getLastErrorForTest(TEST_P2P_IFNAME));
 
         // Emulate externally-visible WifiP2pManager effects, when wifi p2p group
         // is being removed.
@@ -1964,7 +1945,7 @@ public class TetheringTest {
         verifyNoMoreInteractions(mNetd);
         // Asking for the last error after the per-interface state machine
         // has been reaped yields an unknown interface error.
-        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastTetherError(TEST_P2P_IFNAME));
+        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastErrorForTest(TEST_P2P_IFNAME));
     }
 
     private void workingWifiP2pGroupClient(
@@ -1994,7 +1975,7 @@ public class TetheringTest {
         verifyNoMoreInteractions(mNetd);
         // Asking for the last error after the per-interface state machine
         // has been reaped yields an unknown interface error.
-        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastTetherError(TEST_P2P_IFNAME));
+        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastErrorForTest(TEST_P2P_IFNAME));
     }
 
     @Test
@@ -2025,7 +2006,7 @@ public class TetheringTest {
         verify(mNetd, never()).networkAddInterface(INetd.LOCAL_NET_ID, TEST_P2P_IFNAME);
         verify(mNetd, never()).ipfwdEnableForwarding(TETHERING_NAME);
         verify(mNetd, never()).tetherStartWithConfiguration(any());
-        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastTetherError(TEST_P2P_IFNAME));
+        assertEquals(TETHER_ERROR_UNKNOWN_IFACE, mTethering.getLastErrorForTest(TEST_P2P_IFNAME));
     }
     @Test
     public void workingWifiP2pGroupOwnerLegacyModeWithIfaceChanged() throws Exception {
@@ -2390,10 +2371,10 @@ public class TetheringTest {
 
         mTethering.interfaceStatusChanged(TEST_USB_IFNAME, true);
         sendUsbBroadcast(true, true, true, TETHERING_USB);
-        assertContains(Arrays.asList(mTethering.getTetherableIfaces()), TEST_USB_IFNAME);
-        assertContains(Arrays.asList(mTethering.getTetherableIfaces()), TEST_ETH_IFNAME);
-        assertEquals(TETHER_ERROR_IFACE_CFG_ERROR, mTethering.getLastTetherError(TEST_USB_IFNAME));
-        assertEquals(TETHER_ERROR_IFACE_CFG_ERROR, mTethering.getLastTetherError(TEST_ETH_IFNAME));
+        assertContains(Arrays.asList(mTethering.getTetherableIfacesForTest()), TEST_USB_IFNAME);
+        assertContains(Arrays.asList(mTethering.getTetherableIfacesForTest()), TEST_ETH_IFNAME);
+        assertEquals(TETHER_ERROR_IFACE_CFG_ERROR, mTethering.getLastErrorForTest(TEST_USB_IFNAME));
+        assertEquals(TETHER_ERROR_IFACE_CFG_ERROR, mTethering.getLastErrorForTest(TEST_ETH_IFNAME));
     }
 
     @Test
