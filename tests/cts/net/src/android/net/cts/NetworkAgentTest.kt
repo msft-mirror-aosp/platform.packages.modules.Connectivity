@@ -359,7 +359,7 @@ class NetworkAgentTest {
         val callback = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
         requestNetwork(request, callback)
         val agent = createNetworkAgent(context, name)
-        agent.setTeardownDelayMs(0)
+        agent.setTeardownDelayMillis(0)
         agent.register()
         agent.markConnected()
         agent.expectCallback<OnNetworkCreated>()
@@ -596,8 +596,7 @@ class NetworkAgentTest {
         assertNotNull(vpnNc)
         assertEquals(VpnManager.TYPE_VPN_SERVICE,
                 (vpnNc.transportInfo as VpnTransportInfo).type)
-        // TODO: b/183938194 please fix the issue and enable following check.
-        // assertEquals(mySessionId, (vpnNc.transportInfo as VpnTransportInfo).sessionId)
+        assertEquals(mySessionId, (vpnNc.transportInfo as VpnTransportInfo).sessionId)
 
         val testAndVpn = intArrayOf(TRANSPORT_TEST, TRANSPORT_VPN)
         assertTrue(hasAllTransports(vpnNc, testAndVpn))

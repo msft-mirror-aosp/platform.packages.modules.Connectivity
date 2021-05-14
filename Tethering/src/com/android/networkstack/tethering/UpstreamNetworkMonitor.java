@@ -43,9 +43,13 @@ import android.util.Log;
 import android.util.SparseIntArray;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.StateMachine;
+import com.android.networkstack.apishim.ConnectivityManagerShimImpl;
+import com.android.networkstack.apishim.common.ConnectivityManagerShim;
+import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -141,33 +145,28 @@ public class UpstreamNetworkMonitor {
         mWhat = what;
         mLocalPrefixes = new HashSet<>();
         mIsDefaultCellularUpstream = false;
-    }
-
-    @VisibleForTesting
-    public UpstreamNetworkMonitor(
-            ConnectivityManager cm, StateMachine tgt, SharedLog log, int what) {
-        this((Context) null, tgt, log, what);
-        mCM = cm;
+        mCM = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
     }
 
     /**
-     * Tracking the system default network. This method should be called when system is ready.
+     * Tracking the system default network. This method should be only called once when system is
+     * ready, and the callback is never unregistered.
      *
-     * @param defaultNetworkRequest should be the same as ConnectivityService default request
      * @param entitle a EntitlementManager object to communicate between EntitlementManager and
      * UpstreamNetworkMonitor
      */
-    public void startTrackDefaultNetwork(NetworkRequest defaultNetworkRequest,
-            EntitlementManager entitle) {
-
-        // defaultNetworkRequest is not really a "request", just a way of tracking the system
-        // default network. It's guaranteed not to actually bring up any networks because it's
-        // the should be the same request as the ConnectivityService default request, and thus
-        // shares fate with it. We can't use registerDefaultNetworkCallback because it will not
-        // track the system default network if there is a VPN that applies to our UID.
-        if (mDefaultNetworkCallback == null) {
-            mDefaultNetworkCallback = new UpstreamNetworkCallback(CALLBACK_DEFAULT_INTERNET);
-            cm().requestNetwork(defaultNetworkRequest, mDefaultNetworkCallback, mHandler);
+    public void startTrackDefaultNetwork(EntitlementManager entitle) {
+        if (mDefaultNetworkCallback != null) {
+            Log.wtf(TAG, "default network callback is already registered");
+            return;
+        }
+        ConnectivityManagerShim mCmShim = ConnectivityManagerShimImpl.newInstance(mContext);
+        mDefaultNetworkCallback = new UpstreamNetworkCallback(CALLBACK_DEFAULT_INTERNET);
+        try {
+            mCmShim.registerSystemDefaultNetworkCallback(mDefaultNetworkCallback, mHandler);
+        } catch (UnsupportedApiLevelException e) {
+            Log.wtf(TAG, "registerSystemDefaultNetworkCallback is not supported");
+            return;
         }
         if (mEntitlementMgr == null) {
             mEntitlementMgr = entitle;
@@ -317,18 +316,6 @@ public class UpstreamNetworkMonitor {
                 if (!mIsDefaultCellularUpstream) {
                     mEntitlementMgr.maybeRunProvisioning();
                 }
-                // If we're on DUN, put our own grab on it.
-                registerMobileNetworkRequest();
-                break;
-            case TYPE_NONE:
-                // If we found NONE and mobile upstream is permitted we don't want to do this
-                // as we want any previous requests to keep trying to bring up something we can use.
-                if (!isCellularUpstreamPermitted()) releaseMobileNetworkRequest();
-                break;
-            default:
-                // If we've found an active upstream connection that's not DUN/HIPRI
-                // we should stop any outstanding DUN/HIPRI requests.
-                releaseMobileNetworkRequest();
                 break;
         }
 
@@ -402,13 +389,20 @@ public class UpstreamNetworkMonitor {
         notifyTarget(EVENT_ON_CAPABILITIES, network);
     }
 
-    private void updateLinkProperties(Network network, LinkProperties newLp) {
+    private @Nullable UpstreamNetworkState updateLinkProperties(@NonNull Network network,
+            LinkProperties newLp) {
         final UpstreamNetworkState prev = mNetworkMap.get(network);
         if (prev == null || newLp.equals(prev.linkProperties)) {
             // Ignore notifications about networks for which we have not yet
             // received onAvailable() (should never happen) and any duplicate
             // notifications (e.g. matching more than one of our callbacks).
-            return;
+            //
+            // Also, it can happen that onLinkPropertiesChanged is called after
+            // onLost removed the state from mNetworkMap. This appears to be due
+            // to a bug in disconnectAndDestroyNetwork, which calls
+            // nai.clatd.update() after the onLost callbacks.
+            // TODO: fix the bug and make this method void.
+            return null;
         }
 
         if (VDBG) {
@@ -416,13 +410,17 @@ public class UpstreamNetworkMonitor {
                     network, newLp));
         }
 
-        mNetworkMap.put(network, new UpstreamNetworkState(
-                newLp, prev.networkCapabilities, network));
+        final UpstreamNetworkState ns = new UpstreamNetworkState(newLp, prev.networkCapabilities,
+                network);
+        mNetworkMap.put(network, ns);
+        return ns;
     }
 
     private void handleLinkProp(Network network, LinkProperties newLp) {
-        updateLinkProperties(network, newLp);
-        notifyTarget(EVENT_ON_LINKPROPERTIES, network);
+        final UpstreamNetworkState ns = updateLinkProperties(network, newLp);
+        if (ns != null) {
+            notifyTarget(EVENT_ON_LINKPROPERTIES, ns);
+        }
     }
 
     private void handleLost(Network network) {
@@ -635,7 +633,8 @@ public class UpstreamNetworkMonitor {
         return prefixSet;
     }
 
-    private static boolean isCellular(UpstreamNetworkState ns) {
+    /** Check whether upstream is cellular. */
+    static boolean isCellular(UpstreamNetworkState ns) {
         return (ns != null) && isCellular(ns.networkCapabilities);
     }
 
