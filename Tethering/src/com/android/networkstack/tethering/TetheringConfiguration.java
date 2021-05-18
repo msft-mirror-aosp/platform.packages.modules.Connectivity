@@ -33,6 +33,8 @@ import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.DeviceConfigUtils;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -55,6 +57,8 @@ public class TetheringConfiguration {
     private static final String TAG = TetheringConfiguration.class.getSimpleName();
 
     private static final String[] EMPTY_STRING_ARRAY = new String[0];
+
+    private static final String TETHERING_MODULE_NAME = "com.android.tethering";
 
     // Default ranges used for the legacy DHCP server.
     // USB is  192.168.42.1 and 255.255.255.0
@@ -92,6 +96,20 @@ public class TetheringConfiguration {
      */
     public static final String TETHER_ENABLE_SELECT_ALL_PREFIX_RANGES =
             "tether_enable_select_all_prefix_ranges";
+
+    /**
+     * Experiment flag to force choosing upstreams automatically.
+     *
+     * This setting is intended to help force-enable the feature on OEM devices that disabled it
+     * via resource overlays, and later noticed issues. To that end, it overrides
+     * config_tether_upstream_automatic when set to true.
+     *
+     * This flag is enabled if !=0 and less than the module APK version: see
+     * {@link DeviceConfigUtils#isFeatureEnabled}. It is also ignored after R, as later devices
+     * should just set config_tether_upstream_automatic to true instead.
+     */
+    public static final String TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION =
+            "tether_force_upstream_automatic_version";
 
     /**
      * Default value that used to periodic polls tether offload stats from tethering offload HAL
@@ -146,7 +164,9 @@ public class TetheringConfiguration {
 
         isDunRequired = checkDunRequired(ctx);
 
-        chooseUpstreamAutomatically = getResourceBoolean(
+        final boolean forceAutomaticUpstream = !SdkLevel.isAtLeastS()
+                && isFeatureEnabled(ctx, TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION);
+        chooseUpstreamAutomatically = forceAutomaticUpstream || getResourceBoolean(
                 res, R.bool.config_tether_upstream_automatic, false /** defaultValue */);
         preferredUpstreamIfaceTypes = getUpstreamIfaceTypes(res, isDunRequired);
 
@@ -451,6 +471,12 @@ public class TetheringConfiguration {
     @VisibleForTesting
     protected String getDeviceConfigProperty(String name) {
         return DeviceConfig.getProperty(NAMESPACE_CONNECTIVITY, name);
+    }
+
+    @VisibleForTesting
+    protected boolean isFeatureEnabled(Context ctx, String featureVersionFlag) {
+        return DeviceConfigUtils.isFeatureEnabled(ctx, NAMESPACE_CONNECTIVITY, featureVersionFlag,
+                TETHERING_MODULE_NAME, false /* defaultEnabled */);
     }
 
     private Resources getResources(Context ctx, int subId) {

@@ -489,11 +489,18 @@ public class TetheringManager {
 
         return dispatcher.waitForResult((connector, listener) -> {
             try {
-                connector.tether(iface, callerPkg, listener);
+                connector.tether(iface, callerPkg, getAttributionTag(), listener);
             } catch (RemoteException e) {
                 throw new IllegalStateException(e);
             }
         });
+    }
+
+    /**
+     * @return the context's attribution tag
+     */
+    private @Nullable String getAttributionTag() {
+        return mContext.getAttributionTag();
     }
 
     /**
@@ -514,7 +521,7 @@ public class TetheringManager {
 
         return dispatcher.waitForResult((connector, listener) -> {
             try {
-                connector.untether(iface, callerPkg, listener);
+                connector.untether(iface, callerPkg, getAttributionTag(), listener);
             } catch (RemoteException e) {
                 throw new IllegalStateException(e);
             }
@@ -541,12 +548,35 @@ public class TetheringManager {
 
         return dispatcher.waitForResult((connector, listener) -> {
             try {
-                connector.setUsbTethering(enable, callerPkg, listener);
+                connector.setUsbTethering(enable, callerPkg, getAttributionTag(),
+                        listener);
             } catch (RemoteException e) {
                 throw new IllegalStateException(e);
             }
         });
     }
+
+    /**
+     * Indicates that this tethering connection will provide connectivity beyond this device (e.g.,
+     * global Internet access).
+     */
+    public static final int CONNECTIVITY_SCOPE_GLOBAL = 1;
+
+    /**
+     * Indicates that this tethering connection will only provide local connectivity.
+     */
+    public static final int CONNECTIVITY_SCOPE_LOCAL = 2;
+
+    /**
+     * Connectivity scopes for {@link TetheringRequest.Builder#setConnectivityScope}.
+     * @hide
+     */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = "CONNECTIVITY_SCOPE_", value = {
+            CONNECTIVITY_SCOPE_GLOBAL,
+            CONNECTIVITY_SCOPE_LOCAL,
+    })
+    public @interface ConnectivityScope {}
 
     /**
      *  Use with {@link #startTethering} to specify additional parameters when starting tethering.
@@ -571,6 +601,7 @@ public class TetheringManager {
                 mBuilderParcel.staticClientAddress = null;
                 mBuilderParcel.exemptFromEntitlementCheck = false;
                 mBuilderParcel.showProvisioningUi = true;
+                mBuilderParcel.connectivityScope = getDefaultConnectivityScope(type);
             }
 
             /**
@@ -616,7 +647,21 @@ public class TetheringManager {
                 return this;
             }
 
-            /** Build {@link TetheringRequest] with the currently set configuration. */
+            /**
+             * Sets the connectivity scope to be provided by this tethering downstream.
+             */
+            @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED)
+            @NonNull
+            public Builder setConnectivityScope(@ConnectivityScope int scope) {
+                if (!checkConnectivityScope(mBuilderParcel.tetheringType, scope)) {
+                    throw new IllegalArgumentException("Invalid connectivity scope " + scope);
+                }
+
+                mBuilderParcel.connectivityScope = scope;
+                return this;
+            }
+
+            /** Build {@link TetheringRequest} with the currently set configuration. */
             @NonNull
             public TetheringRequest build() {
                 return new TetheringRequest(mBuilderParcel);
@@ -647,6 +692,12 @@ public class TetheringManager {
             return mRequestParcel.tetheringType;
         }
 
+        /** Get connectivity type */
+        @ConnectivityScope
+        public int getConnectivityScope() {
+            return mRequestParcel.connectivityScope;
+        }
+
         /** Check if exempt from entitlement check. */
         public boolean isExemptFromEntitlementCheck() {
             return mRequestParcel.exemptFromEntitlementCheck;
@@ -668,6 +719,26 @@ public class TetheringManager {
                     && localIPv4Address.isIpv4() && clientAddress.isIpv4()
                     && new IpPrefix(localIPv4Address.toString()).equals(
                     new IpPrefix(clientAddress.toString()));
+        }
+
+        /**
+         * Returns the default connectivity scope for the given tethering type. Usually this is
+         * CONNECTIVITY_SCOPE_GLOBAL, except for NCM which for historical reasons defaults to local.
+         * @hide
+         */
+        public static @ConnectivityScope int getDefaultConnectivityScope(int tetheringType) {
+            return tetheringType != TETHERING_NCM
+                    ? CONNECTIVITY_SCOPE_GLOBAL
+                    : CONNECTIVITY_SCOPE_LOCAL;
+        }
+
+        /**
+         * Checks whether the requested connectivity scope is allowed.
+         * @hide
+         */
+        private static boolean checkConnectivityScope(int type, int scope) {
+            if (scope == CONNECTIVITY_SCOPE_GLOBAL) return true;
+            return type == TETHERING_USB || type == TETHERING_ETHERNET || type == TETHERING_NCM;
         }
 
         /**
@@ -740,7 +811,8 @@ public class TetheringManager {
                 });
             }
         };
-        getConnector(c -> c.startTethering(request.getParcel(), callerPkg, listener));
+        getConnector(c -> c.startTethering(request.getParcel(), callerPkg,
+                getAttributionTag(), listener));
     }
 
     /**
@@ -780,7 +852,8 @@ public class TetheringManager {
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "stopTethering caller:" + callerPkg);
 
-        getConnector(c -> c.stopTethering(type, callerPkg, new IIntResultListener.Stub() {
+        getConnector(c -> c.stopTethering(type, callerPkg, getAttributionTag(),
+                new IIntResultListener.Stub() {
             @Override
             public void onResult(int resultCode) {
                 // TODO: provide an API to obtain result
@@ -866,7 +939,7 @@ public class TetheringManager {
         Log.i(TAG, "getLatestTetheringEntitlementResult caller:" + callerPkg);
 
         getConnector(c -> c.requestLatestTetheringEntitlementResult(
-                type, receiver, showEntitlementUi, callerPkg));
+                type, receiver, showEntitlementUi, callerPkg, getAttributionTag()));
     }
 
     /**
@@ -928,6 +1001,15 @@ public class TetheringManager {
          * @param interfaces The list of 0 or more String of currently tethered interface names.
          */
         default void onTetheredInterfacesChanged(@NonNull List<String> interfaces) {}
+
+        /**
+         * Called when there was a change in the list of local-only interfaces.
+         *
+         * <p>This will be called immediately after the callback is registered, and may be called
+         * multiple times later upon changes.
+         * @param interfaces The list of 0 or more String of active local-only interface names.
+         */
+        default void onLocalOnlyInterfacesChanged(@NonNull List<String> interfaces) {}
 
         /**
          * Called when an error occurred configuring tethering.
@@ -1035,6 +1117,7 @@ public class TetheringManager {
                 private final HashMap<String, Integer> mErrorStates = new HashMap<>();
                 private String[] mLastTetherableInterfaces = null;
                 private String[] mLastTetheredInterfaces = null;
+                private String[] mLastLocalOnlyInterfaces = null;
 
                 @Override
                 public void onUpstreamChanged(Network network) throws RemoteException {
@@ -1072,6 +1155,14 @@ public class TetheringManager {
                             Collections.unmodifiableList(Arrays.asList(mLastTetheredInterfaces)));
                 }
 
+                private synchronized void maybeSendLocalOnlyIfacesChangedCallback(
+                        final TetherStatesParcel newStates) {
+                    if (Arrays.equals(mLastLocalOnlyInterfaces, newStates.localOnlyList)) return;
+                    mLastLocalOnlyInterfaces = newStates.localOnlyList.clone();
+                    callback.onLocalOnlyInterfacesChanged(
+                            Collections.unmodifiableList(Arrays.asList(mLastLocalOnlyInterfaces)));
+                }
+
                 // Called immediately after the callbacks are registered.
                 @Override
                 public void onCallbackStarted(TetheringCallbackStartedParcel parcel) {
@@ -1082,6 +1173,7 @@ public class TetheringManager {
                         sendRegexpsChanged(parcel.config);
                         maybeSendTetherableIfacesChangedCallback(parcel.states);
                         maybeSendTetheredIfacesChangedCallback(parcel.states);
+                        maybeSendLocalOnlyIfacesChangedCallback(parcel.states);
                         callback.onClientsChanged(parcel.tetheredClients);
                         callback.onOffloadStatusChanged(parcel.offloadStatus);
                     });
@@ -1112,6 +1204,7 @@ public class TetheringManager {
                         sendErrorCallbacks(states);
                         maybeSendTetherableIfacesChangedCallback(states);
                         maybeSendTetheredIfacesChangedCallback(states);
+                        maybeSendLocalOnlyIfacesChangedCallback(states);
                     });
                 }
 
@@ -1317,7 +1410,7 @@ public class TetheringManager {
         final RequestDispatcher dispatcher = new RequestDispatcher();
         final int ret = dispatcher.waitForResult((connector, listener) -> {
             try {
-                connector.isTetheringSupported(callerPkg, listener);
+                connector.isTetheringSupported(callerPkg, getAttributionTag(), listener);
             } catch (RemoteException e) {
                 throw new IllegalStateException(e);
             }
@@ -1340,14 +1433,15 @@ public class TetheringManager {
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "stopAllTethering caller:" + callerPkg);
 
-        getConnector(c -> c.stopAllTethering(callerPkg, new IIntResultListener.Stub() {
-            @Override
-            public void onResult(int resultCode) {
-                // TODO: add an API parameter to send result to caller.
-                // This has never been possible as stopAllTethering has always been void and never
-                // taken a callback object. The only indication that callers have is if the call
-                // results in a TETHER_STATE_CHANGE broadcast.
-            }
-        }));
+        getConnector(c -> c.stopAllTethering(callerPkg, getAttributionTag(),
+                new IIntResultListener.Stub() {
+                    @Override
+                    public void onResult(int resultCode) {
+                        // TODO: add an API parameter to send result to caller.
+                        // This has never been possible as stopAllTethering has always been void
+                        // and never taken a callback object. The only indication that callers have
+                        // is if the call results in a TETHER_STATE_CHANGE broadcast.
+                    }
+                }));
     }
 }
