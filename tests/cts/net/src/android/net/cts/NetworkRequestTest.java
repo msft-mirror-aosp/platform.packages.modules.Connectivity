@@ -28,10 +28,13 @@ import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 
+import static junit.framework.Assert.fail;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 
 import android.annotation.NonNull;
 import android.net.MacAddress;
@@ -39,23 +42,28 @@ import android.net.MatchAllNetworkSpecifier;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.NetworkSpecifier;
-import android.net.UidRange;
 import android.net.wifi.WifiNetworkSpecifier;
 import android.os.Build;
 import android.os.PatternMatcher;
 import android.os.Process;
 import android.util.ArraySet;
+import android.util.Range;
 
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.modules.utils.build.SdkLevel;
 import com.android.networkstack.apishim.ConstantsShim;
+import com.android.networkstack.apishim.NetworkRequestShimImpl;
+import com.android.networkstack.apishim.common.NetworkRequestShim;
+import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+
+import java.util.Set;
 
 @RunWith(AndroidJUnit4.class)
 public class NetworkRequestTest {
@@ -225,6 +233,14 @@ public class NetworkRequestTest {
         assertTrue(requestCellularInternet.canBeSatisfiedBy(capCellularVpnMmsInternet));
     }
 
+    private void setUids(NetworkRequest.Builder builder, Set<Range<Integer>> ranges)
+            throws UnsupportedApiLevelException {
+        if (SdkLevel.isAtLeastS()) {
+            final NetworkRequestShim networkRequestShim = NetworkRequestShimImpl.newInstance();
+            networkRequestShim.setUids(builder, ranges);
+        }
+    }
+
     @Test
     @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testInvariantInCanBeSatisfiedBy() {
@@ -232,15 +248,26 @@ public class NetworkRequestTest {
         // NetworkCapabilities.satisfiedByNetworkCapabilities().
         final LocalNetworkSpecifier specifier1 = new LocalNetworkSpecifier(1234 /* id */);
         final int uid = Process.myUid();
-        final ArraySet<UidRange> ranges = new ArraySet<>();
-        ranges.add(new UidRange(uid, uid));
-        final NetworkRequest requestCombination = new NetworkRequest.Builder()
+        final NetworkRequest.Builder nrBuilder = new NetworkRequest.Builder()
                 .addTransportType(TRANSPORT_CELLULAR)
                 .addCapability(NET_CAPABILITY_INTERNET)
                 .setLinkUpstreamBandwidthKbps(1000)
                 .setNetworkSpecifier(specifier1)
-                .setSignalStrength(-123)
-                .setUids(ranges).build();
+                .setSignalStrength(-123);
+
+        // The uid ranges should be set into the request, but setUids() takes a set of UidRange
+        // that is hidden and inaccessible from shims. Before, S setUids will be a no-op. But
+        // because NetworkRequest.Builder sets the UID of the request to the current UID, the
+        // request contains the current UID both on S and before S.
+        final Set<Range<Integer>> ranges = new ArraySet<>();
+        ranges.add(new Range<Integer>(uid, uid));
+        try {
+            setUids(nrBuilder, ranges);
+        } catch (UnsupportedApiLevelException e) {
+            // Not supported before API31.
+        }
+        final NetworkRequest requestCombination = nrBuilder.build();
+
         final NetworkCapabilities capCell = new NetworkCapabilities.Builder()
                 .addTransportType(TRANSPORT_CELLULAR).build();
         assertCorrectlySatisfies(false, requestCombination, capCell);
@@ -300,7 +327,7 @@ public class NetworkRequestTest {
     // TODO: 1. Refactor test cases with helper method.
     //       2. Test capability that does not yet exist.
     @Test @IgnoreUpTo(Build.VERSION_CODES.R)
-    public void testBypassingVcnForNonInternetRequest() {
+    public void testBypassingVcn() {
         // Make an empty request. Verify the NOT_VCN_MANAGED is added.
         final NetworkRequest emptyRequest = new NetworkRequest.Builder().build();
         assertTrue(emptyRequest.hasCapability(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED));
@@ -333,12 +360,12 @@ public class NetworkRequestTest {
                 .addCapability(NET_CAPABILITY_NOT_ROAMING).build();
         assertTrue(notRoamRequest.hasCapability(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED));
 
-        // Make a internet request. Verify the NOT_VCN_MANAGED is added.
+        // Make an internet request. Verify the NOT_VCN_MANAGED is added.
         final NetworkRequest internetRequest = new NetworkRequest.Builder()
                 .addCapability(NET_CAPABILITY_INTERNET).build();
         assertTrue(internetRequest.hasCapability(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED));
 
-        // Make a internet request which explicitly removed NOT_VCN_MANAGED.
+        // Make an internet request which explicitly removed NOT_VCN_MANAGED.
         // Verify the NOT_VCN_MANAGED is removed.
         final NetworkRequest internetRemoveNotVcnRequest = new NetworkRequest.Builder()
                 .addCapability(NET_CAPABILITY_INTERNET)
@@ -371,5 +398,54 @@ public class NetworkRequestTest {
         final NetworkRequest dunRequest = new NetworkRequest.Builder()
                 .addCapability(NET_CAPABILITY_DUN).build();
         assertTrue(dunRequest.hasCapability(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED));
+
+        // Make an internet request but with NetworkSpecifier. Verify the NOT_VCN_MANAGED is not
+        // added.
+        final NetworkRequest internetWithSpecifierRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_WIFI).addCapability(NET_CAPABILITY_INTERNET)
+                .setNetworkSpecifier(makeTestWifiSpecifier()).build();
+        assertFalse(internetWithSpecifierRequest.hasCapability(
+                ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED));
+    }
+
+    private void verifyEqualRequestBuilt(NetworkRequest orig) {
+        try {
+            final NetworkRequestShim shim = NetworkRequestShimImpl.newInstance();
+            final NetworkRequest copy = shim.newBuilder(orig).build();
+            assertEquals(orig, copy);
+        } catch (UnsupportedApiLevelException e) {
+            fail("NetworkRequestShim.newBuilder should be supported in this SDK version");
+        }
+    }
+
+    @Test
+    public void testBuildRequestFromExistingRequestWithBuilder() {
+        assumeTrue(TestUtils.shouldTestSApis());
+        final NetworkRequest.Builder builder = new NetworkRequest.Builder();
+
+        final NetworkRequest baseRequest = builder.build();
+        verifyEqualRequestBuilt(baseRequest);
+
+        final NetworkRequest requestCellMms = builder
+                .addTransportType(TRANSPORT_CELLULAR)
+                .addCapability(NET_CAPABILITY_MMS)
+                .setSignalStrength(-99).build();
+        verifyEqualRequestBuilt(requestCellMms);
+
+        final NetworkRequest requestWifi = builder
+                .addTransportType(TRANSPORT_WIFI)
+                .removeTransportType(TRANSPORT_CELLULAR)
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .removeCapability(NET_CAPABILITY_MMS)
+                .setNetworkSpecifier(makeTestWifiSpecifier())
+                .setSignalStrength(-33).build();
+        verifyEqualRequestBuilt(requestWifi);
+    }
+
+    private WifiNetworkSpecifier makeTestWifiSpecifier() {
+        return new WifiNetworkSpecifier.Builder()
+                .setSsidPattern(new PatternMatcher(TEST_SSID, PatternMatcher.PATTERN_LITERAL))
+                .setBssidPattern(ARBITRARY_ADDRESS, ARBITRARY_ADDRESS)
+                .build();
     }
 }

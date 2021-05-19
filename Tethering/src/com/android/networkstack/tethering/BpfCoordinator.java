@@ -47,7 +47,6 @@ import android.net.netstats.provider.NetworkStatsProvider;
 import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
 import android.net.util.TetheringUtils.ForwardedStats;
-import android.os.ConditionVariable;
 import android.os.Handler;
 import android.system.ErrnoException;
 import android.text.TextUtils;
@@ -73,6 +72,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -105,6 +105,7 @@ public class BpfCoordinator {
     private static final String TETHER_STATS_MAP_PATH = makeMapPath("stats");
     private static final String TETHER_LIMIT_MAP_PATH = makeMapPath("limit");
     private static final String TETHER_ERROR_MAP_PATH = makeMapPath("error");
+    private static final String TETHER_DEV_MAP_PATH = makeMapPath("dev");
 
     /** The names of all the BPF counters defined in bpf_tethering.h. */
     public static final String[] sBpfCounterNames = getBpfCounterNames();
@@ -137,6 +138,8 @@ public class BpfCoordinator {
     private final BpfTetherStatsProvider mStatsProvider;
     @NonNull
     private final BpfCoordinatorShim mBpfCoordinatorShim;
+    @NonNull
+    private final BpfConntrackEventConsumer mBpfConntrackEventConsumer;
 
     // True if BPF offload is supported, false otherwise. The BPF offload could be disabled by
     // a runtime resource overlay package or device configuration. This flag is only initialized
@@ -219,6 +222,11 @@ public class BpfCoordinator {
     // Map for upstream and downstream pair.
     private final HashMap<String, HashSet<String>> mForwardingPairs = new HashMap<>();
 
+    // Set for upstream and downstream device map. Used for caching BPF dev map status and
+    // reduce duplicate adding or removing map operations. Use LinkedHashSet because the test
+    // BpfCoordinatorTest needs predictable iteration order.
+    private final Set<Integer> mDeviceMapSet = new LinkedHashSet<>();
+
     // Runnable that used by scheduling next polling of stats.
     private final Runnable mScheduledPollingTask = () -> {
         updateForwardedStats();
@@ -246,6 +254,11 @@ public class BpfCoordinator {
         /** Get conntrack monitor. */
         @NonNull public ConntrackMonitor getConntrackMonitor(ConntrackEventConsumer consumer) {
             return new ConntrackMonitor(getHandler(), getSharedLog(), consumer);
+        }
+
+        /** Get interface information for a given interface. */
+        @NonNull public InterfaceParams getInterfaceParams(String ifName) {
+            return InterfaceParams.getByName(ifName);
         }
 
         /**
@@ -330,6 +343,18 @@ public class BpfCoordinator {
                 return null;
             }
         }
+
+        /** Get dev BPF map. */
+        @Nullable public BpfMap<TetherDevKey, TetherDevValue> getBpfDevMap() {
+            if (!isAtLeastS()) return null;
+            try {
+                return new BpfMap<>(TETHER_DEV_MAP_PATH,
+                    BpfMap.BPF_F_RDWR, TetherDevKey.class, TetherDevValue.class);
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Cannot create dev map: " + e);
+                return null;
+            }
+        }
     }
 
     @VisibleForTesting
@@ -339,7 +364,14 @@ public class BpfCoordinator {
         mNetd = mDeps.getNetd();
         mLog = mDeps.getSharedLog().forSubComponent(TAG);
         mIsBpfEnabled = isBpfEnabled();
-        mConntrackMonitor = mDeps.getConntrackMonitor(new BpfConntrackEventConsumer());
+
+        // The conntrack consummer needs to be initialized in BpfCoordinator constructor because it
+        // have to access the data members of BpfCoordinator which is not a static class. The
+        // consumer object is also needed for initializing the conntrack monitor which may be
+        // mocked for testing.
+        mBpfConntrackEventConsumer = new BpfConntrackEventConsumer();
+        mConntrackMonitor = mDeps.getConntrackMonitor(mBpfConntrackEventConsumer);
+
         BpfTetherStatsProvider provider = new BpfTetherStatsProvider();
         try {
             mDeps.getNetworkStatsManager().registerNetworkStatsProvider(
@@ -477,26 +509,18 @@ public class BpfCoordinator {
         }
         LinkedHashMap<Inet6Address, Ipv6ForwardingRule> rules = mIpv6ForwardingRules.get(ipServer);
 
-        // When the first rule is added to an upstream, setup upstream forwarding and data limit.
-        final int upstreamIfindex = rule.upstreamIfindex;
-        if (!isAnyRuleOnUpstream(upstreamIfindex)) {
-            // If failed to set a data limit, probably should not use this upstream, because
-            // the upstream may not want to blow through the data limit that was told to apply.
-            // TODO: Perhaps stop the coordinator.
-            boolean success = updateDataLimit(upstreamIfindex);
-            if (!success) {
-                final String iface = mInterfaceNames.get(upstreamIfindex);
-                mLog.e("Setting data limit for " + iface + " failed.");
-            }
+        // Add upstream and downstream interface index to dev map.
+        maybeAddDevMap(rule.upstreamIfindex, rule.downstreamIfindex);
 
-        }
+        // When the first rule is added to an upstream, setup upstream forwarding and data limit.
+        maybeSetLimit(rule.upstreamIfindex);
 
         if (!isAnyRuleFromDownstreamToUpstream(rule.downstreamIfindex, rule.upstreamIfindex)) {
             final int downstream = rule.downstreamIfindex;
             final int upstream = rule.upstreamIfindex;
             // TODO: support upstream forwarding on non-point-to-point interfaces.
             // TODO: get the MTU from LinkProperties and update the rules when it changes.
-            if (!mBpfCoordinatorShim.startUpstreamIpv6Forwarding(downstream, upstream,
+            if (!mBpfCoordinatorShim.startUpstreamIpv6Forwarding(downstream, upstream, rule.srcMac,
                     NULL_MAC_ADDRESS, NULL_MAC_ADDRESS, NetworkStackConstants.ETHER_MTU)) {
                 mLog.e("Failed to enable upstream IPv6 forwarding from "
                         + mInterfaceNames.get(downstream) + " to " + mInterfaceNames.get(upstream));
@@ -537,29 +561,15 @@ public class BpfCoordinator {
         if (!isAnyRuleFromDownstreamToUpstream(rule.downstreamIfindex, rule.upstreamIfindex)) {
             final int downstream = rule.downstreamIfindex;
             final int upstream = rule.upstreamIfindex;
-            if (!mBpfCoordinatorShim.stopUpstreamIpv6Forwarding(downstream, upstream)) {
+            if (!mBpfCoordinatorShim.stopUpstreamIpv6Forwarding(downstream, upstream,
+                    rule.srcMac)) {
                 mLog.e("Failed to disable upstream IPv6 forwarding from "
                         + mInterfaceNames.get(downstream) + " to " + mInterfaceNames.get(upstream));
             }
         }
 
         // Do cleanup functionality if there is no more rule on the given upstream.
-        final int upstreamIfindex = rule.upstreamIfindex;
-        if (!isAnyRuleOnUpstream(upstreamIfindex)) {
-            final TetherStatsValue statsValue =
-                    mBpfCoordinatorShim.tetherOffloadGetAndClearStats(upstreamIfindex);
-            if (statsValue == null) {
-                Log.wtf(TAG, "Fail to cleanup tether stats for upstream index " + upstreamIfindex);
-                return;
-            }
-
-            SparseArray<TetherStatsValue> tetherStatsList = new SparseArray<TetherStatsValue>();
-            tetherStatsList.put(upstreamIfindex, statsValue);
-
-            // Update the last stats delta and delete the local cache for a given upstream.
-            updateQuotaAndStatsFromSnapshot(tetherStatsList);
-            mStats.remove(upstreamIfindex);
-        }
+        maybeClearLimit(rule.upstreamIfindex);
     }
 
     /**
@@ -687,7 +697,7 @@ public class BpfCoordinator {
         if (lp == null || !lp.hasIpv4Address()) return;
 
         // Support raw ip upstream interface only.
-        final InterfaceParams params = InterfaceParams.getByName(lp.getInterfaceName());
+        final InterfaceParams params = mDeps.getInterfaceParams(lp.getInterfaceName());
         if (params == null || params.hasMacAddress) return;
 
         Collection<InetAddress> addresses = lp.getAddresses();
@@ -746,43 +756,40 @@ public class BpfCoordinator {
      * be allowed to be accessed on the handler thread.
      */
     public void dump(@NonNull IndentingPrintWriter pw) {
-        final ConditionVariable dumpDone = new ConditionVariable();
-        mHandler.post(() -> {
-            pw.println("mIsBpfEnabled: " + mIsBpfEnabled);
-            pw.println("Polling " + (mPollingStarted ? "started" : "not started"));
-            pw.println("Stats provider " + (mStatsProvider != null
-                    ? "registered" : "not registered"));
-            pw.println("Upstream quota: " + mInterfaceQuotas.toString());
-            pw.println("Polling interval: " + getPollingInterval() + " ms");
-            pw.println("Bpf shim: " + mBpfCoordinatorShim.toString());
+        pw.println("mIsBpfEnabled: " + mIsBpfEnabled);
+        pw.println("Polling " + (mPollingStarted ? "started" : "not started"));
+        pw.println("Stats provider " + (mStatsProvider != null
+                ? "registered" : "not registered"));
+        pw.println("Upstream quota: " + mInterfaceQuotas.toString());
+        pw.println("Polling interval: " + getPollingInterval() + " ms");
+        pw.println("Bpf shim: " + mBpfCoordinatorShim.toString());
 
-            pw.println("Forwarding stats:");
-            pw.increaseIndent();
-            if (mStats.size() == 0) {
-                pw.println("<empty>");
-            } else {
-                dumpStats(pw);
-            }
-            pw.decreaseIndent();
-
-            pw.println("Forwarding rules:");
-            pw.increaseIndent();
-            dumpIpv6UpstreamRules(pw);
-            dumpIpv6ForwardingRules(pw);
-            dumpIpv4ForwardingRules(pw);
-            pw.decreaseIndent();
-
-            pw.println();
-            pw.println("Forwarding counters:");
-            pw.increaseIndent();
-            dumpCounters(pw);
-            pw.decreaseIndent();
-
-            dumpDone.open();
-        });
-        if (!dumpDone.block(DUMP_TIMEOUT_MS)) {
-            pw.println("... dump timed-out after " + DUMP_TIMEOUT_MS + "ms");
+        pw.println("Forwarding stats:");
+        pw.increaseIndent();
+        if (mStats.size() == 0) {
+            pw.println("<empty>");
+        } else {
+            dumpStats(pw);
         }
+        pw.decreaseIndent();
+
+        pw.println("Forwarding rules:");
+        pw.increaseIndent();
+        dumpIpv6UpstreamRules(pw);
+        dumpIpv6ForwardingRules(pw);
+        dumpIpv4ForwardingRules(pw);
+        pw.decreaseIndent();
+
+        pw.println("Device map:");
+        pw.increaseIndent();
+        dumpDevmap(pw);
+        pw.decreaseIndent();
+
+        pw.println();
+        pw.println("Forwarding counters:");
+        pw.increaseIndent();
+        dumpCounters(pw);
+        pw.decreaseIndent();
     }
 
     private void dumpStats(@NonNull IndentingPrintWriter pw) {
@@ -814,15 +821,15 @@ public class BpfCoordinator {
                 final int upstreamIfindex = rule.upstreamIfindex;
                 pw.println(String.format("%d(%s) %d(%s) %s %s %s", upstreamIfindex,
                         mInterfaceNames.get(upstreamIfindex), rule.downstreamIfindex,
-                        downstreamIface, rule.address, rule.srcMac, rule.dstMac));
+                        downstreamIface, rule.address.getHostAddress(), rule.srcMac, rule.dstMac));
             }
             pw.decreaseIndent();
         }
     }
 
     private String ipv6UpstreamRuletoString(TetherUpstream6Key key, Tether6Value value) {
-        return String.format("%d(%s) -> %d(%s) %04x %s %s",
-                key.iif, getIfName(key.iif), value.oif, getIfName(value.oif),
+        return String.format("%d(%s) %s -> %d(%s) %04x %s %s",
+                key.iif, getIfName(key.iif), key.dstMac, value.oif, getIfName(value.oif),
                 value.ethProto, value.ethSrcMac, value.ethDstMac);
     }
 
@@ -851,9 +858,10 @@ public class BpfCoordinator {
         } catch (UnknownHostException impossible) {
             throw new AssertionError("4-byte array not valid IPv4 address!");
         }
-        return String.format("%d(%s) %d(%s) %s:%d -> %s:%d -> %s:%d",
-                key.iif, getIfName(key.iif), value.oif, getIfName(value.oif),
-                private4, key.srcPort, public4, value.srcPort, dst4, key.dstPort);
+        return String.format("[%s] %d(%s) %s:%d -> %d(%s) %s:%d -> %s:%d",
+                key.dstMac, key.iif, getIfName(key.iif), private4, key.srcPort,
+                value.oif, getIfName(value.oif),
+                public4, value.srcPort, dst4, key.dstPort);
     }
 
     private void dumpIpv4ForwardingRules(IndentingPrintWriter pw) {
@@ -866,7 +874,7 @@ public class BpfCoordinator {
                 pw.println("No IPv4 rules");
                 return;
             }
-            pw.println("[IPv4]: iif(iface) oif(iface) src nat dst");
+            pw.println("IPv4: [inDstMac] iif(iface) src -> nat -> dst");
             pw.increaseIndent();
             map.forEach((k, v) -> pw.println(ipv4RuleToString(k, v)));
         } catch (ErrnoException e) {
@@ -909,8 +917,89 @@ public class BpfCoordinator {
         }
     }
 
+    private void dumpDevmap(@NonNull IndentingPrintWriter pw) {
+        try (BpfMap<TetherDevKey, TetherDevValue> map = mDeps.getBpfDevMap()) {
+            if (map == null) {
+                pw.println("No devmap support");
+                return;
+            }
+            if (map.isEmpty()) {
+                pw.println("No interface index");
+                return;
+            }
+            pw.println("ifindex (iface) -> ifindex (iface)");
+            pw.increaseIndent();
+            map.forEach((k, v) -> {
+                // Only get upstream interface name. Just do the best to make the index readable.
+                // TODO: get downstream interface name because the index is either upstrema or
+                // downstream interface in dev map.
+                pw.println(String.format("%d (%s) -> %d (%s)", k.ifIndex, getIfName(k.ifIndex),
+                        v.ifIndex, getIfName(v.ifIndex)));
+            });
+        } catch (ErrnoException e) {
+            pw.println("Error dumping dev map: " + e);
+        }
+        pw.decreaseIndent();
+    }
+
     /** IPv6 forwarding rule class. */
     public static class Ipv6ForwardingRule {
+        // The upstream6 and downstream6 rules are built as the following tables. Only raw ip
+        // upstream interface is supported.
+        // TODO: support ether ip upstream interface.
+        //
+        // NAT network topology:
+        //
+        //         public network (rawip)                 private network
+        //                   |                 UE                |
+        // +------------+    V    +------------+------------+    V    +------------+
+        // |   Sever    +---------+  Upstream  | Downstream +---------+   Client   |
+        // +------------+         +------------+------------+         +------------+
+        //
+        // upstream6 key and value:
+        //
+        // +------+-------------+
+        // | TetherUpstream6Key |
+        // +------+------+------+
+        // |field |iif   |dstMac|
+        // |      |      |      |
+        // +------+------+------+
+        // |value |downst|downst|
+        // |      |ream  |ream  |
+        // +------+------+------+
+        //
+        // +------+----------------------------------+
+        // |      |Tether6Value                      |
+        // +------+------+------+------+------+------+
+        // |field |oif   |ethDst|ethSrc|ethPro|pmtu  |
+        // |      |      |mac   |mac   |to    |      |
+        // +------+------+------+------+------+------+
+        // |value |upstre|--    |--    |ETH_P_|1500  |
+        // |      |am    |      |      |IP    |      |
+        // +------+------+------+------+------+------+
+        //
+        // downstream6 key and value:
+        //
+        // +------+--------------------+
+        // |      |TetherDownstream6Key|
+        // +------+------+------+------+
+        // |field |iif   |dstMac|neigh6|
+        // |      |      |      |      |
+        // +------+------+------+------+
+        // |value |upstre|--    |client|
+        // |      |am    |      |      |
+        // +------+------+------+------+
+        //
+        // +------+----------------------------------+
+        // |      |Tether6Value                      |
+        // +------+------+------+------+------+------+
+        // |field |oif   |ethDst|ethSrc|ethPro|pmtu  |
+        // |      |      |mac   |mac   |to    |      |
+        // +------+------+------+------+------+------+
+        // |value |downst|client|downst|ETH_P_|1500  |
+        // |      |ream  |      |ream  |IP    |      |
+        // +------+------+------+------+------+------+
+        //
         public final int upstreamIfindex;
         public final int downstreamIfindex;
 
@@ -960,7 +1049,8 @@ public class BpfCoordinator {
          */
         @NonNull
         public TetherDownstream6Key makeTetherDownstream6Key() {
-            return new TetherDownstream6Key(upstreamIfindex, address.getAddress());
+            return new TetherDownstream6Key(upstreamIfindex, NULL_MAC_ADDRESS,
+                    address.getAddress());
         }
 
         /**
@@ -1113,7 +1203,10 @@ public class BpfCoordinator {
 
     // Support raw ip only.
     // TODO: add ether ip support.
-    private class BpfConntrackEventConsumer implements ConntrackEventConsumer {
+    // TODO: parse CTA_PROTOINFO of conntrack event in ConntrackMonitor. For TCP, only add rules
+    // while TCP status is established.
+    @VisibleForTesting
+    class BpfConntrackEventConsumer implements ConntrackEventConsumer {
         @NonNull
         private Tether4Key makeTetherUpstream4Key(
                 @NonNull ConntrackEvent e, @NonNull ClientInfo c) {
@@ -1178,8 +1271,9 @@ public class BpfCoordinator {
 
             if (e.msgType == (NetlinkConstants.NFNL_SUBSYS_CTNETLINK << 8
                     | NetlinkConstants.IPCTNL_MSG_CT_DELETE)) {
-                mBpfCoordinatorShim.tetherOffloadRuleRemove(false, upstream4Key);
-                mBpfCoordinatorShim.tetherOffloadRuleRemove(true, downstream4Key);
+                mBpfCoordinatorShim.tetherOffloadRuleRemove(UPSTREAM, upstream4Key);
+                mBpfCoordinatorShim.tetherOffloadRuleRemove(DOWNSTREAM, downstream4Key);
+                maybeClearLimit(upstreamIndex);
                 return;
             }
 
@@ -1187,8 +1281,10 @@ public class BpfCoordinator {
             final Tether4Value downstream4Value = makeTetherDownstream4Value(e, tetherClient,
                     upstreamIndex);
 
-            mBpfCoordinatorShim.tetherOffloadRuleAdd(false, upstream4Key, upstream4Value);
-            mBpfCoordinatorShim.tetherOffloadRuleAdd(true, downstream4Key, downstream4Value);
+            maybeAddDevMap(upstreamIndex, tetherClient.downstreamIfindex);
+            maybeSetLimit(upstreamIndex);
+            mBpfCoordinatorShim.tetherOffloadRuleAdd(UPSTREAM, upstream4Key, upstream4Value);
+            mBpfCoordinatorShim.tetherOffloadRuleAdd(DOWNSTREAM, downstream4Key, downstream4Value);
         }
     }
 
@@ -1250,6 +1346,47 @@ public class BpfCoordinator {
         return sendDataLimitToBpfMap(ifIndex, quotaBytes);
     }
 
+    private void maybeSetLimit(int upstreamIfindex) {
+        if (isAnyRuleOnUpstream(upstreamIfindex)
+                || mBpfCoordinatorShim.isAnyIpv4RuleOnUpstream(upstreamIfindex)) {
+            return;
+        }
+
+        // If failed to set a data limit, probably should not use this upstream, because
+        // the upstream may not want to blow through the data limit that was told to apply.
+        // TODO: Perhaps stop the coordinator.
+        boolean success = updateDataLimit(upstreamIfindex);
+        if (!success) {
+            final String iface = mInterfaceNames.get(upstreamIfindex);
+            mLog.e("Setting data limit for " + iface + " failed.");
+        }
+    }
+
+    // TODO: This should be also called while IpServer wants to clear all IPv4 rules. Relying on
+    // conntrack event can't cover this case.
+    private void maybeClearLimit(int upstreamIfindex) {
+        if (isAnyRuleOnUpstream(upstreamIfindex)
+                || mBpfCoordinatorShim.isAnyIpv4RuleOnUpstream(upstreamIfindex)) {
+            return;
+        }
+
+        final TetherStatsValue statsValue =
+                mBpfCoordinatorShim.tetherOffloadGetAndClearStats(upstreamIfindex);
+        if (statsValue == null) {
+            Log.wtf(TAG, "Fail to cleanup tether stats for upstream index " + upstreamIfindex);
+            return;
+        }
+
+        SparseArray<TetherStatsValue> tetherStatsList = new SparseArray<TetherStatsValue>();
+        tetherStatsList.put(upstreamIfindex, statsValue);
+
+        // Update the last stats delta and delete the local cache for a given upstream.
+        updateQuotaAndStatsFromSnapshot(tetherStatsList);
+        mStats.remove(upstreamIfindex);
+    }
+
+    // TODO: Rename to isAnyIpv6RuleOnUpstream and define an isAnyRuleOnUpstream method that called
+    // both isAnyIpv6RuleOnUpstream and mBpfCoordinatorShim.isAnyIpv4RuleOnUpstream.
     private boolean isAnyRuleOnUpstream(int upstreamIfindex) {
         for (LinkedHashMap<Inet6Address, Ipv6ForwardingRule> rules : mIpv6ForwardingRules
                 .values()) {
@@ -1271,6 +1408,15 @@ public class BpfCoordinator {
             }
         }
         return false;
+    }
+
+    // TODO: remove the index from map while the interface has been removed because the map size
+    // is 64 entries. See packages\modules\Connectivity\Tethering\bpf_progs\offload.c.
+    private void maybeAddDevMap(int upstreamIfindex, int downstreamIfindex) {
+        for (Integer index : new Integer[] {upstreamIfindex, downstreamIfindex}) {
+            if (mDeviceMapSet.contains(index)) continue;
+            if (mBpfCoordinatorShim.addDevMap(index)) mDeviceMapSet.add(index);
+        }
     }
 
     private void forwardingPairAdd(@NonNull String intIface, @NonNull String extIface) {
@@ -1417,6 +1563,14 @@ public class BpfCoordinator {
     @VisibleForTesting
     final SparseArray<String> getInterfaceNamesForTesting() {
         return mInterfaceNames;
+    }
+
+    // Return BPF conntrack event consumer. This is used for testing only.
+    // Note that this can be only called on handler thread.
+    @NonNull
+    @VisibleForTesting
+    final BpfConntrackEventConsumer getBpfConntrackEventConsumerForTesting() {
+        return mBpfConntrackEventConsumer;
     }
 
     private static native String[] getBpfCounterNames();

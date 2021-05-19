@@ -78,21 +78,25 @@ public abstract class BpfCoordinatorShim {
 
      * @param downstreamIfindex the downstream interface index
      * @param upstreamIfindex the upstream interface index
-     * @param srcMac the source MAC address to use for packets
-     * @oaram dstMac the destination MAC address to use for packets
+     * @param inDstMac the destination MAC address to use for XDP
+     * @param outSrcMac the source MAC address to use for packets
+     * @param outDstMac the destination MAC address to use for packets
      * @return true if operation succeeded or was a no-op, false otherwise
      */
     public abstract boolean startUpstreamIpv6Forwarding(int downstreamIfindex, int upstreamIfindex,
-            MacAddress srcMac, MacAddress dstMac, int mtu);
+            @NonNull MacAddress inDstMac, @NonNull MacAddress outSrcMac,
+            @NonNull MacAddress outDstMac, int mtu);
 
     /**
      * Stops IPv6 forwarding between the specified interfaces.
 
      * @param downstreamIfindex the downstream interface index
      * @param upstreamIfindex the upstream interface index
+     * @param inDstMac the destination MAC address to use for XDP
      * @return true if operation succeeded or was a no-op, false otherwise
      */
-    public abstract boolean stopUpstreamIpv6Forwarding(int downstreamIfindex, int upstreamIfindex);
+    public abstract boolean stopUpstreamIpv6Forwarding(int downstreamIfindex,
+            int upstreamIfindex, @NonNull MacAddress inDstMac);
 
     /**
      * Return BPF tethering offload statistics.
@@ -145,6 +149,11 @@ public abstract class BpfCoordinatorShim {
     public abstract boolean tetherOffloadRuleRemove(boolean downstream, @NonNull Tether4Key key);
 
     /**
+     * Whether there is currently any IPv4 rule on the specified upstream.
+     */
+    public abstract boolean isAnyIpv4RuleOnUpstream(int ifIndex);
+
+    /**
      * Attach BPF program.
      *
      * TODO: consider using InterfaceParams to replace interface name.
@@ -157,5 +166,15 @@ public abstract class BpfCoordinatorShim {
      * TODO: consider using InterfaceParams to replace interface name.
      */
     public abstract boolean detachProgram(@NonNull String iface);
+
+    /**
+     * Add interface index mapping.
+     */
+    public abstract boolean addDevMap(int ifIndex);
+
+    /**
+     * Remove interface index mapping.
+     */
+    public abstract boolean removeDevMap(int ifIndex);
 }
 
