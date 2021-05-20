@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2020 The Android Open Source Project
+ * Copyright (C) 2021 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,18 @@
  * limitations under the License.
  */
 
-package android.net;
+package com.android.networkstack.tethering;
 
-import android.net.LinkAddress;
+import com.android.net.module.util.Struct;
+import com.android.net.module.util.Struct.Field;
+import com.android.net.module.util.Struct.Type;
 
-/**
- * Configuration details for requesting tethering.
- * @hide
- */
-parcelable TetheringRequestParcel {
-    int tetheringType;
-    LinkAddress localIPv4Address;
-    LinkAddress staticClientAddress;
-    boolean exemptFromEntitlementCheck;
-    boolean showProvisioningUi;
-    int connectivityScope;
+/** The key of BpfMap which is used for mapping interface index. */
+public class TetherDevValue extends Struct {
+    @Field(order = 0, type = Type.U32)
+    public final long ifIndex;  // interface index
+
+    public TetherDevValue(final long ifIndex) {
+        this.ifIndex = ifIndex;
+    }
 }
