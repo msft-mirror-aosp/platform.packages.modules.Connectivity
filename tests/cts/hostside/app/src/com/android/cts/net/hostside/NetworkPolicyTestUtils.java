@@ -48,6 +48,7 @@ import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.ActionListener;
 import android.os.PersistableBundle;
 import android.os.Process;
+import android.os.UserHandle;
 import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.data.ApnSetting;
@@ -135,6 +136,12 @@ public class NetworkPolicyTestUtils {
         final ActivityManager am = (ActivityManager) getContext().getSystemService(
                 Context.ACTIVITY_SERVICE);
         return am.isLowRamDevice();
+    }
+
+    /** Forces JobScheduler to run the job if constraints are met. */
+    public static void forceRunJob(String pkg, int jobId) {
+        executeShellCommand("cmd jobscheduler run -f -u " + UserHandle.myUserId()
+                + " " + pkg + " " + jobId);
     }
 
     public static boolean isLocationEnabled() {
