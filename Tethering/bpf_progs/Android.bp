@@ -48,12 +48,6 @@ bpf {
         "-Wall",
         "-Werror",
     ],
-    include_dirs: [
-        // TODO: get rid of system/netd.
-        "system/netd/bpf_progs",             // for bpf_net_helpers.h
-        "system/netd/libnetdbpf/include",    // for bpf_shared.h
-        "system/netd/libnetdutils/include",  // for UidConstants.h
-    ],
 }
 
 bpf {
@@ -62,11 +56,5 @@ bpf {
     cflags: [
         "-Wall",
         "-Werror",
-    ],
-    include_dirs: [
-        // TODO: get rid of system/netd.
-        "system/netd/bpf_progs",             // for bpf_net_helpers.h
-        "system/netd/libnetdbpf/include",    // for bpf_shared.h
-        "system/netd/libnetdutils/include",  // for UidConstants.h
     ],
 }

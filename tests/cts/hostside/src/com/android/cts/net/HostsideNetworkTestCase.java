@@ -80,7 +80,7 @@ abstract class HostsideNetworkTestCase extends DeviceTestCase implements IAbiRec
             DeviceNotAvailableException {
         CompatibilityBuildHelper buildHelper = new CompatibilityBuildHelper(mCtsBuild);
         assertNull(getDevice().installPackage(buildHelper.getTestFile(apk),
-                false /* reinstall */, true /* grantPermissions */));
+                false /* reinstall */, true /* grantPermissions */, "-t"));
     }
 
     protected void uninstallPackage(String packageName, boolean shouldSucceed)
@@ -152,8 +152,10 @@ abstract class HostsideNetworkTestCase extends DeviceTestCase implements IAbiRec
             // build a meaningful error message
             StringBuilder errorBuilder = new StringBuilder("on-device tests failed:\n");
             for (Map.Entry<TestDescription, TestResult> resultEntry :
-                result.getTestResults().entrySet()) {
-                if (!resultEntry.getValue().getStatus().equals(TestStatus.PASSED)) {
+                    result.getTestResults().entrySet()) {
+                final TestStatus testStatus = resultEntry.getValue().getStatus();
+                if (!TestStatus.PASSED.equals(testStatus)
+                        && !TestStatus.ASSUMPTION_FAILURE.equals(testStatus)) {
                     errorBuilder.append(resultEntry.getKey().toString());
                     errorBuilder.append(":\n");
                     errorBuilder.append(resultEntry.getValue().getStackTrace());

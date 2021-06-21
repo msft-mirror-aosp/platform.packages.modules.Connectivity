@@ -17,8 +17,10 @@
 package com.android.cts.net.hostside;
 
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
+import static android.net.NetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED;
 
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.canChangeActiveNetworkMeteredness;
+import static com.android.cts.net.hostside.NetworkPolicyTestUtils.getActiveNetworkCapabilities;
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.setRestrictBackground;
 import static com.android.cts.net.hostside.Property.BATTERY_SAVER_MODE;
 import static com.android.cts.net.hostside.Property.DATA_SAVER_MODE;
@@ -29,6 +31,7 @@ import static org.junit.Assume.assumeTrue;
 
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.util.Log;
 
 import org.junit.After;
@@ -195,11 +198,19 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         setBatterySaverMode(false);
         setRestrictBackground(false);
 
+        // Get transports of the active network, this has to be done before changing meteredness,
+        // since wifi will be disconnected when changing from non-metered to metered.
+        final NetworkCapabilities networkCapabilities = getActiveNetworkCapabilities();
+
         // Mark network as metered.
         mMeterednessConfiguration.configureNetworkMeteredness(true);
 
-        // Register callback
-        registerNetworkCallback((INetworkCallback.Stub) mTestNetworkCallback);
+        // Register callback, copy the capabilities from the active network to expect the "original"
+        // network before disconnecting, but null out some fields to prevent over-specified.
+        registerNetworkCallback(new NetworkRequest.Builder()
+                .setCapabilities(networkCapabilities.setTransportInfo(null))
+                .removeCapability(NET_CAPABILITY_NOT_METERED)
+                .setSignalStrength(SIGNAL_STRENGTH_UNSPECIFIED).build(), mTestNetworkCallback);
         // Wait for onAvailable() callback to ensure network is available before the test
         // and store the default network.
         mNetwork = mTestNetworkCallback.expectAvailableCallbackAndGetNetwork();

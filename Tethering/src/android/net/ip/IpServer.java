@@ -742,15 +742,13 @@ public class IpServer extends StateMachine {
                     params.dnses.add(dnsServer);
                 }
             }
-
-            // Add upstream index to name mapping for the tether stats usage in the coordinator.
-            // Although this mapping could be added by both class Tethering and IpServer, adding
-            // mapping from IpServer guarantees that the mapping is added before the adding
-            // forwarding rules. That is because there are different state machines in both
-            // classes. It is hard to guarantee the link property update order between multiple
-            // state machines.
-            mBpfCoordinator.addUpstreamNameToLookupTable(upstreamIfIndex, upstreamIface);
         }
+
+        // Add upstream index to name mapping. See the comment of the interface mapping update in
+        // CMD_TETHER_CONNECTION_CHANGED. Adding the mapping update here to the avoid potential
+        // timing issue. It prevents that the IPv6 capability is updated later than
+        // CMD_TETHER_CONNECTION_CHANGED.
+        mBpfCoordinator.addUpstreamNameToLookupTable(upstreamIfIndex, upstreamIface);
 
         // If v6only is null, we pass in null to setRaParams(), which handles
         // deprecation of any existing RA data.
@@ -1056,8 +1054,16 @@ public class IpServer extends StateMachine {
         mLastRaParams = newParams;
     }
 
-    private void logMessage(State state, int what) {
-        mLog.log(state.getName() + " got " + sMagicDecoderRing.get(what, Integer.toString(what)));
+    private void maybeLogMessage(State state, int what) {
+        switch (what) {
+            // Suppress some CMD_* to avoid log flooding.
+            case CMD_IPV6_TETHER_UPDATE:
+            case CMD_NEIGHBOR_EVENT:
+                break;
+            default:
+                mLog.log(state.getName() + " got "
+                        + sMagicDecoderRing.get(what, Integer.toString(what)));
+        }
     }
 
     private void sendInterfaceState(int newInterfaceState) {
@@ -1097,7 +1103,7 @@ public class IpServer extends StateMachine {
 
         @Override
         public boolean processMessage(Message message) {
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLastError = TetheringManager.TETHER_ERROR_NO_ERROR;
@@ -1182,7 +1188,6 @@ public class IpServer extends StateMachine {
 
         @Override
         public boolean processMessage(Message message) {
-            logMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_UNREQUESTED:
                     transitionTo(mInitialState);
@@ -1240,7 +1245,7 @@ public class IpServer extends StateMachine {
         public boolean processMessage(Message message) {
             if (super.processMessage(message)) return true;
 
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLog.e("CMD_TETHER_REQUESTED while in local-only hotspot mode.");
@@ -1291,6 +1296,7 @@ public class IpServer extends StateMachine {
             // Sometimes interfaces are gone before we get
             // to remove their rules, which generates errors.
             // Just do the best we can.
+            mBpfCoordinator.maybeDetachProgram(mIfaceName, upstreamIface);
             try {
                 mNetd.ipfwdRemoveInterfaceForward(mIfaceName, upstreamIface);
             } catch (RemoteException | ServiceSpecificException e) {
@@ -1307,7 +1313,7 @@ public class IpServer extends StateMachine {
         public boolean processMessage(Message message) {
             if (super.processMessage(message)) return true;
 
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLog.e("CMD_TETHER_REQUESTED while already tethering.");
@@ -1334,6 +1340,27 @@ public class IpServer extends StateMachine {
                     mUpstreamIfaceSet = newUpstreamIfaceSet;
 
                     for (String ifname : added) {
+                        // Add upstream index to name mapping for the tether stats usage in the
+                        // coordinator. Although this mapping could be added by both class
+                        // Tethering and IpServer, adding mapping from IpServer guarantees that
+                        // the mapping is added before adding forwarding rules. That is because
+                        // there are different state machines in both classes. It is hard to
+                        // guarantee the link property update order between multiple state machines.
+                        // Note that both IPv4 and IPv6 interface may be added because
+                        // Tethering::setUpstreamNetwork calls getTetheringInterfaces which merges
+                        // IPv4 and IPv6 interface name (if any) into an InterfaceSet. The IPv6
+                        // capability may be updated later. In that case, IPv6 interface mapping is
+                        // updated in updateUpstreamIPv6LinkProperties.
+                        if (!ifname.startsWith("v4-")) {  // ignore clat interfaces
+                            final InterfaceParams upstreamIfaceParams =
+                                    mDeps.getInterfaceParams(ifname);
+                            if (upstreamIfaceParams != null) {
+                                mBpfCoordinator.addUpstreamNameToLookupTable(
+                                        upstreamIfaceParams.index, ifname);
+                            }
+                        }
+
+                        mBpfCoordinator.maybeAttachProgram(mIfaceName, ifname);
                         try {
                             mNetd.tetherAddForward(mIfaceName, ifname);
                             mNetd.ipfwdAddInterfaceForward(mIfaceName, ifname);
@@ -1397,7 +1424,7 @@ public class IpServer extends StateMachine {
     class WaitingForRestartState extends State {
         @Override
         public boolean processMessage(Message message) {
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_UNREQUESTED:
                     transitionTo(mInitialState);
@@ -1406,7 +1433,7 @@ public class IpServer extends StateMachine {
                     break;
                 case CMD_INTERFACE_DOWN:
                     transitionTo(mUnavailableState);
-                    mLog.i("Untethered (interface down) and restarting" + mIfaceName);
+                    mLog.i("Untethered (interface down) and restarting " + mIfaceName);
                     mCallback.requestEnableTethering(mInterfaceType, true /* enabled */);
                     break;
                 default:

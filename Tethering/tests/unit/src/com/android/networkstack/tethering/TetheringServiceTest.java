@@ -19,13 +19,17 @@ package com.android.networkstack.tethering;
 import static android.Manifest.permission.ACCESS_NETWORK_STATE;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
 import static android.Manifest.permission.WRITE_SETTINGS;
+import static android.content.pm.PackageManager.PERMISSION_DENIED;
 import static android.net.TetheringManager.TETHERING_WIFI;
 import static android.net.TetheringManager.TETHER_ERROR_NO_ACCESS_TETHERING_PERMISSION;
 import static android.net.TetheringManager.TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION;
 import static android.net.TetheringManager.TETHER_ERROR_NO_ERROR;
 
 import static org.junit.Assert.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -37,6 +41,7 @@ import android.net.IIntResultListener;
 import android.net.ITetheringConnector;
 import android.net.ITetheringEventCallback;
 import android.net.TetheringRequestParcel;
+import android.net.ip.IpServer;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.ResultReceiver;
@@ -46,6 +51,7 @@ import androidx.test.filters.SmallTest;
 import androidx.test.rule.ServiceTestRule;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.net.module.util.CollectionUtils;
 import com.android.networkstack.tethering.MockTetheringService.MockTetheringConnector;
 
 import org.junit.After;
@@ -66,6 +72,7 @@ public final class TetheringServiceTest {
     @Rule public ServiceTestRule mServiceTestRule;
     private Tethering mTethering;
     private Intent mMockServiceIntent;
+    private MockTetheringConnector mMockConnector;
     private ITetheringConnector mTetheringConnector;
     private UiAutomation mUiAutomation;
 
@@ -105,10 +112,9 @@ public final class TetheringServiceTest {
         mMockServiceIntent = new Intent(
                 InstrumentationRegistry.getTargetContext(),
                 MockTetheringService.class);
-        final MockTetheringConnector mockConnector =
-                (MockTetheringConnector) mServiceTestRule.bindService(mMockServiceIntent);
-        mTetheringConnector = mockConnector.getTetheringConnector();
-        final MockTetheringService service = mockConnector.getService();
+        mMockConnector = (MockTetheringConnector) mServiceTestRule.bindService(mMockServiceIntent);
+        mTetheringConnector = mMockConnector.getTetheringConnector();
+        final MockTetheringService service = mMockConnector.getService();
         mTethering = service.getTethering();
     }
 
@@ -140,12 +146,18 @@ public final class TetheringServiceTest {
 
     private void runTetheringCall(final TestTetheringCall test, String... permissions)
             throws Exception {
+        // Allow the test to run even if ACCESS_NETWORK_STATE was granted at the APK level
+        if (!CollectionUtils.contains(permissions, ACCESS_NETWORK_STATE)) {
+            mMockConnector.setPermission(ACCESS_NETWORK_STATE, PERMISSION_DENIED);
+        }
+
         if (permissions.length > 0) mUiAutomation.adoptShellPermissionIdentity(permissions);
         try {
             when(mTethering.isTetheringSupported()).thenReturn(true);
             test.runTetheringCall(new TestTetheringResult());
         } finally {
             mUiAutomation.dropShellPermissionIdentity();
+            mMockConnector.setPermission(ACCESS_NETWORK_STATE, null);
         }
     }
 
@@ -156,11 +168,9 @@ public final class TetheringServiceTest {
     }
 
     private void runTether(final TestTetheringResult result) throws Exception {
-        when(mTethering.tether(TEST_IFACE_NAME)).thenReturn(TETHER_ERROR_NO_ERROR);
         mTetheringConnector.tether(TEST_IFACE_NAME, TEST_CALLER_PKG, TEST_ATTRIBUTION_TAG, result);
         verify(mTethering).isTetheringSupported();
-        verify(mTethering).tether(TEST_IFACE_NAME);
-        result.assertResult(TETHER_ERROR_NO_ERROR);
+        verify(mTethering).tether(TEST_IFACE_NAME, IpServer.STATE_TETHERED, result);
     }
 
     @Test
@@ -186,12 +196,10 @@ public final class TetheringServiceTest {
     }
 
     private void runUnTether(final TestTetheringResult result) throws Exception {
-        when(mTethering.untether(TEST_IFACE_NAME)).thenReturn(TETHER_ERROR_NO_ERROR);
         mTetheringConnector.untether(TEST_IFACE_NAME, TEST_CALLER_PKG, TEST_ATTRIBUTION_TAG,
                 result);
         verify(mTethering).isTetheringSupported();
-        verify(mTethering).untether(TEST_IFACE_NAME);
-        result.assertResult(TETHER_ERROR_NO_ERROR);
+        verify(mTethering).untether(eq(TEST_IFACE_NAME), eq(result));
     }
 
     @Test
@@ -217,11 +225,15 @@ public final class TetheringServiceTest {
     }
 
     private void runSetUsbTethering(final TestTetheringResult result) throws Exception {
-        when(mTethering.setUsbTethering(true /* enable */)).thenReturn(TETHER_ERROR_NO_ERROR);
+        doAnswer((invocation) -> {
+            final IIntResultListener listener = invocation.getArgument(1);
+            listener.onResult(TETHER_ERROR_NO_ERROR);
+            return null;
+        }).when(mTethering).setUsbTethering(anyBoolean(), any(IIntResultListener.class));
         mTetheringConnector.setUsbTethering(true /* enable */, TEST_CALLER_PKG,
                 TEST_ATTRIBUTION_TAG, result);
         verify(mTethering).isTetheringSupported();
-        verify(mTethering).setUsbTethering(true /* enable */);
+        verify(mTethering).setUsbTethering(eq(true) /* enable */, any(IIntResultListener.class));
         result.assertResult(TETHER_ERROR_NO_ERROR);
     }
 
