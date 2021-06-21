@@ -17,6 +17,7 @@
 package com.android.cts.net.hostside;
 
 import static android.Manifest.permission.NETWORK_SETTINGS;
+import static android.net.ConnectivityManager.TYPE_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.os.Process.INVALID_UID;
 import static android.system.OsConstants.AF_INET;
@@ -722,12 +723,13 @@ public class VpnTest extends InstrumentationTestCase {
         final TestableNetworkCallback otherUidCallback = new TestableNetworkCallback();
         final TestableNetworkCallback myUidCallback = new TestableNetworkCallback();
         if (SdkLevel.isAtLeastS()) {
-            final int otherUid = UserHandle.getUid(UserHandle.of(5), Process.FIRST_APPLICATION_UID);
+            final int otherUid =
+                    UserHandle.of(5 /* userId */).getUid(Process.FIRST_APPLICATION_UID);
             final Handler h = new Handler(Looper.getMainLooper());
             runWithShellPermissionIdentity(() -> {
                 mCM.registerSystemDefaultNetworkCallback(systemDefaultCallback, h);
-                mCM.registerDefaultNetworkCallbackAsUid(otherUid, otherUidCallback, h);
-                mCM.registerDefaultNetworkCallbackAsUid(Process.myUid(), myUidCallback, h);
+                mCM.registerDefaultNetworkCallbackForUid(otherUid, otherUidCallback, h);
+                mCM.registerDefaultNetworkCallbackForUid(Process.myUid(), myUidCallback, h);
             }, NETWORK_SETTINGS);
             for (TestableNetworkCallback callback :
                     List.of(systemDefaultCallback, otherUidCallback, myUidCallback)) {
@@ -758,6 +760,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertEquals(vpnNetwork, mCM.getActiveNetwork());
         assertNotEqual(defaultNetwork, vpnNetwork);
         maybeExpectVpnTransportInfo(vpnNetwork);
+        assertTrue(mCM.getNetworkInfo(vpnNetwork).getType() == TYPE_VPN);
 
         if (SdkLevel.isAtLeastS()) {
             // Check that system default network callback has not seen any network changes, even
@@ -1148,7 +1151,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertTrue(vpnNc.hasTransport(TRANSPORT_VPN));
         final TransportInfo ti = vpnNc.getTransportInfo();
         assertTrue(ti instanceof VpnTransportInfo);
-        assertEquals(VpnManager.TYPE_VPN_SERVICE, ((VpnTransportInfo) ti).type);
+        assertEquals(VpnManager.TYPE_VPN_SERVICE, ((VpnTransportInfo) ti).getType());
     }
 
     private void assertDefaultProxy(ProxyInfo expected) {
