@@ -15,7 +15,8 @@
   ],
   "mainline-presubmit": [
     {
-      "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      // TODO: add back the tethering modules when updatable in this branch
+      "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex]",
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
@@ -26,8 +27,26 @@
   // Tests on physical devices with SIM cards: postsubmit only for capacity constraints
   "mainline-postsubmit": [
     {
-      "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      // TODO: add back the tethering module when updatable in this branch
+      "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex]",
       "keywords": ["sim"]
+    }
+  ],
+  "imports": [
+    {
+      "path": "frameworks/base/core/java/android/net"
+    },
+    {
+      "path": "packages/modules/NetworkStack"
+    },
+    {
+      "path": "packages/modules/CaptivePortalLogin"
+    },
+    {
+      "path": "packages/modules/Connectivity"
+    },
+    {
+      "path": "packages/modules/Connectivity/Tethering"
     }
   ]
 }

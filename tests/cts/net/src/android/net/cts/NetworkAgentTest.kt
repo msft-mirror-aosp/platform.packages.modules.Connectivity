@@ -15,6 +15,7 @@
  */
 package android.net.cts
 
+import android.Manifest.permission.NETWORK_SETTINGS
 import android.app.Instrumentation
 import android.content.Context
 import android.net.ConnectivityManager
@@ -65,17 +66,23 @@ import android.net.cts.NetworkAgentTest.TestableNetworkAgent.CallbackEntry.OnSta
 import android.net.cts.NetworkAgentTest.TestableNetworkAgent.CallbackEntry.OnStopSocketKeepalive
 import android.net.cts.NetworkAgentTest.TestableNetworkAgent.CallbackEntry.OnValidationStatus
 import android.os.Build
+import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.Message
+import android.os.SystemClock
+import android.telephony.TelephonyManager
 import android.util.DebugUtils.valueToString
 import androidx.test.InstrumentationRegistry
+import com.android.compatibility.common.util.SystemUtil.runWithShellPermissionIdentity
+import com.android.compatibility.common.util.ThrowingSupplier
 import com.android.modules.utils.build.SdkLevel
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.testutils.CompatUtil
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.DevSdkIgnoreRunner
 import com.android.testutils.RecorderCallback.CallbackEntry.Available
+import com.android.testutils.RecorderCallback.CallbackEntry.Losing
 import com.android.testutils.RecorderCallback.CallbackEntry.Lost
 import com.android.testutils.TestableNetworkCallback
 import org.junit.After
@@ -114,6 +121,7 @@ private const val NO_CALLBACK_TIMEOUT = 200L
 // requests filed by the test and should never match normal internet requests. 70 is the default
 // score of Ethernet networks, it's as good a value as any other.
 private const val TEST_NETWORK_SCORE = 70
+private const val WORSE_NETWORK_SCORE = 65
 private const val BETTER_NETWORK_SCORE = 75
 private const val FAKE_NET_ID = 1098
 private val instrumentation: Instrumentation
@@ -262,10 +270,9 @@ class NetworkAgentTest {
             history.add(OnSignalStrengthThresholdsUpdated(thresholds))
         }
 
-        fun expectEmptySignalStrengths() {
+        fun expectSignalStrengths(thresholds: IntArray? = intArrayOf()) {
             expectCallback<OnSignalStrengthThresholdsUpdated>().let {
-                // intArrayOf() without arguments makes an empty array
-                assertArrayEquals(intArrayOf(), it.thresholds)
+                assertArrayEquals(thresholds, it.thresholds)
             }
         }
 
@@ -285,7 +292,7 @@ class NetworkAgentTest {
         // a NetworkAgent whose network does not require validation (which test networks do
         // not, since they lack the INTERNET capability). It always contains the default argument
         // for the URI.
-        fun expectNoInternetValidationStatus() = expectCallback<OnValidationStatus>().let {
+        fun expectValidationBypassedStatus() = expectCallback<OnValidationStatus>().let {
             assertEquals(it.status, VALID_NETWORK)
             // The returned Uri is parsed from the empty string, which means it's an
             // instance of the (private) Uri.StringUri. There are no real good ways
@@ -299,6 +306,11 @@ class NetworkAgentTest {
             assertTrue(foundCallback is T, "Expected ${T::class} but found $foundCallback")
             return foundCallback
         }
+
+        inline fun <reified T : CallbackEntry> eventuallyExpect() =
+                history.poll(DEFAULT_TIMEOUT_MS) { it is T }.also {
+                    assertNotNull(it, "Callback ${T::class} not received")
+        } as T
 
         fun assertNoCallback() {
             assertTrue(waitForIdle(DEFAULT_TIMEOUT_MS),
@@ -320,11 +332,33 @@ class NetworkAgentTest {
         callbacksToCleanUp.add(callback)
     }
 
+    private fun registerBestMatchingNetworkCallback(
+        request: NetworkRequest,
+        callback: TestableNetworkCallback,
+        handler: Handler
+    ) {
+        mCM!!.registerBestMatchingNetworkCallback(request, callback, handler)
+        callbacksToCleanUp.add(callback)
+    }
+
+    private fun makeTestNetworkRequest(specifier: String? = null): NetworkRequest {
+        return NetworkRequest.Builder()
+                .clearCapabilities()
+                .addTransportType(TRANSPORT_TEST)
+                .also {
+                    if (specifier != null) {
+                        it.setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(specifier))
+                    }
+                }
+                .build()
+    }
+
     private fun createNetworkAgent(
         context: Context = realContext,
-        name: String? = null,
+        specifier: String? = null,
         initialNc: NetworkCapabilities? = null,
-        initialLp: LinkProperties? = null
+        initialLp: LinkProperties? = null,
+        initialConfig: NetworkAgentConfig? = null
     ): TestableNetworkAgent {
         val nc = initialNc ?: NetworkCapabilities().apply {
             addTransportType(TRANSPORT_TEST)
@@ -336,33 +370,38 @@ class NetworkAgentTest {
             if (SdkLevel.isAtLeastS()) {
                 addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
             }
-            if (null != name) {
-                setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name))
+            if (null != specifier) {
+                setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(specifier))
             }
         }
         val lp = initialLp ?: LinkProperties().apply {
             addLinkAddress(LinkAddress(LOCAL_IPV4_ADDRESS, 32))
             addRoute(RouteInfo(IpPrefix("0.0.0.0/0"), null, null))
         }
-        val config = NetworkAgentConfig.Builder().build()
+        val config = initialConfig ?: NetworkAgentConfig.Builder().build()
         return TestableNetworkAgent(context, mHandlerThread.looper, nc, lp, config).also {
             agentsToCleanUp.add(it)
         }
     }
 
-    private fun createConnectedNetworkAgent(context: Context = realContext, name: String? = null):
-            Pair<TestableNetworkAgent, TestableNetworkCallback> {
-        val request: NetworkRequest = NetworkRequest.Builder()
-                .clearCapabilities()
-                .addTransportType(TRANSPORT_TEST)
-                .build()
+    private fun createConnectedNetworkAgent(
+        context: Context = realContext,
+        specifier: String? = UUID.randomUUID().toString(),
+        initialConfig: NetworkAgentConfig? = null,
+        expectedInitSignalStrengthThresholds: IntArray? = intArrayOf()
+    ): Pair<TestableNetworkAgent, TestableNetworkCallback> {
         val callback = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
-        requestNetwork(request, callback)
-        val agent = createNetworkAgent(context, name)
-        agent.setTeardownDelayMs(0)
+        // Ensure this NetworkAgent is never unneeded by filing a request with its specifier.
+        requestNetwork(makeTestNetworkRequest(specifier = specifier), callback)
+        val agent = createNetworkAgent(context, specifier, initialConfig = initialConfig)
+        agent.setTeardownDelayMillis(0)
+        // Connect the agent and verify initial status callbacks.
         agent.register()
         agent.markConnected()
         agent.expectCallback<OnNetworkCreated>()
+        agent.expectSignalStrengths(expectedInitSignalStrengthThresholds)
+        agent.expectValidationBypassedStatus()
+        callback.expectAvailableThenValidatedCallbacks(agent.network!!)
         return agent to callback
     }
 
@@ -371,29 +410,63 @@ class NetworkAgentTest {
     }
 
     @Test
+    fun testSetSubtypeNameAndExtraInfoByAgentConfig() {
+        val subtypeLTE = TelephonyManager.NETWORK_TYPE_LTE
+        val subtypeNameLTE = "LTE"
+        val legacyExtraInfo = "mylegacyExtraInfo"
+        val config = NetworkAgentConfig.Builder()
+                .setLegacySubType(subtypeLTE)
+                .setLegacySubTypeName(subtypeNameLTE)
+                .setLegacyExtraInfo(legacyExtraInfo).build()
+        val (agent, callback) = createConnectedNetworkAgent(initialConfig = config)
+        val networkInfo = mCM.getNetworkInfo(agent.network)
+        assertEquals(subtypeLTE, networkInfo.getSubtype())
+        assertEquals(subtypeNameLTE, networkInfo.getSubtypeName())
+        assertEquals(legacyExtraInfo, config.getLegacyExtraInfo())
+    }
+
+    @Test
+    fun testSetLegacySubtypeInNetworkAgent() {
+        val subtypeLTE = TelephonyManager.NETWORK_TYPE_LTE
+        val subtypeUMTS = TelephonyManager.NETWORK_TYPE_UMTS
+        val subtypeNameLTE = "LTE"
+        val subtypeNameUMTS = "UMTS"
+        val config = NetworkAgentConfig.Builder()
+                .setLegacySubType(subtypeLTE)
+                .setLegacySubTypeName(subtypeNameLTE).build()
+        val (agent, callback) = createConnectedNetworkAgent(initialConfig = config)
+            agent.setLegacySubtype(subtypeUMTS, subtypeNameUMTS)
+
+            // There is no callback when networkInfo changes,
+            // so use the NetworkCapabilities callback to ensure
+            // that networkInfo is ready for verification.
+            val nc = NetworkCapabilities(agent.nc)
+            nc.addCapability(NET_CAPABILITY_NOT_METERED)
+            agent.sendNetworkCapabilities(nc)
+            callback.expectCapabilitiesThat(agent.network) {
+                it.hasCapability(NET_CAPABILITY_NOT_METERED)
+            }
+            val networkInfo = mCM.getNetworkInfo(agent.network)
+            assertEquals(subtypeUMTS, networkInfo.getSubtype())
+            assertEquals(subtypeNameUMTS, networkInfo.getSubtypeName())
+    }
+
+    @Test
     fun testConnectAndUnregister() {
         val (agent, callback) = createConnectedNetworkAgent()
-        callback.expectAvailableThenValidatedCallbacks(agent.network)
-        agent.expectEmptySignalStrengths()
-        agent.expectNoInternetValidationStatus()
-        agent.unregister()
-        callback.expectCallback<Lost>(agent.network)
-        agent.expectCallback<OnNetworkUnwanted>()
+        unregister(agent)
+        callback.expectCallback<Lost>(agent.network!!)
         assertFailsWith<IllegalStateException>("Must not be able to register an agent twice") {
             agent.register()
         }
-        agent.expectCallback<OnNetworkDestroyed>()
     }
 
     @Test
     fun testOnBandwidthUpdateRequested() {
-        val (agent, callback) = createConnectedNetworkAgent()
-        callback.expectAvailableThenValidatedCallbacks(agent.network)
-        agent.expectEmptySignalStrengths()
-        agent.expectNoInternetValidationStatus()
-        mCM.requestBandwidthUpdate(agent.network)
+        val (agent, _) = createConnectedNetworkAgent()
+        mCM.requestBandwidthUpdate(agent.network!!)
         agent.expectCallback<OnBandwidthUpdateRequested>()
-        agent.unregister()
+        unregister(agent)
     }
 
     @Test
@@ -409,13 +482,8 @@ class NetworkAgentTest {
                 registerNetworkCallback(request, it)
             }
         }
-        createConnectedNetworkAgent().let { (agent, callback) ->
-            callback.expectAvailableThenValidatedCallbacks(agent.network)
-            agent.expectCallback<OnSignalStrengthThresholdsUpdated>().let {
-                assertArrayEquals(it.thresholds, thresholds)
-            }
-            agent.expectNoInternetValidationStatus()
-
+        createConnectedNetworkAgent(expectedInitSignalStrengthThresholds = thresholds).let {
+            (agent, callback) ->
             // Send signal strength and check that the callbacks are called appropriately.
             val nc = NetworkCapabilities(agent.nc)
             nc.setSignalStrength(20)
@@ -424,21 +492,21 @@ class NetworkAgentTest {
 
             nc.setSignalStrength(40)
             agent.sendNetworkCapabilities(nc)
-            callbacks[0].expectAvailableCallbacks(agent.network)
+            callbacks[0].expectAvailableCallbacks(agent.network!!)
             callbacks[1].assertNoCallback(NO_CALLBACK_TIMEOUT)
             callbacks[2].assertNoCallback(NO_CALLBACK_TIMEOUT)
 
             nc.setSignalStrength(80)
             agent.sendNetworkCapabilities(nc)
-            callbacks[0].expectCapabilitiesThat(agent.network) { it.signalStrength == 80 }
-            callbacks[1].expectAvailableCallbacks(agent.network)
-            callbacks[2].expectAvailableCallbacks(agent.network)
+            callbacks[0].expectCapabilitiesThat(agent.network!!) { it.signalStrength == 80 }
+            callbacks[1].expectAvailableCallbacks(agent.network!!)
+            callbacks[2].expectAvailableCallbacks(agent.network!!)
 
             nc.setSignalStrength(55)
             agent.sendNetworkCapabilities(nc)
-            callbacks[0].expectCapabilitiesThat(agent.network) { it.signalStrength == 55 }
-            callbacks[1].expectCapabilitiesThat(agent.network) { it.signalStrength == 55 }
-            callbacks[2].expectCallback<Lost>(agent.network)
+            callbacks[0].expectCapabilitiesThat(agent.network!!) { it.signalStrength == 55 }
+            callbacks[1].expectCapabilitiesThat(agent.network!!) { it.signalStrength == 55 }
+            callbacks[2].expectCallback<Lost>(agent.network!!)
         }
         callbacks.forEach {
             mCM.unregisterNetworkCallback(it)
@@ -487,20 +555,17 @@ class NetworkAgentTest {
 
     @Test
     fun testSendUpdates(): Unit = createConnectedNetworkAgent().let { (agent, callback) ->
-        callback.expectAvailableThenValidatedCallbacks(agent.network)
-        agent.expectEmptySignalStrengths()
-        agent.expectNoInternetValidationStatus()
         val ifaceName = "adhocIface"
         val lp = LinkProperties(agent.lp)
         lp.setInterfaceName(ifaceName)
         agent.sendLinkProperties(lp)
-        callback.expectLinkPropertiesThat(agent.network) {
+        callback.expectLinkPropertiesThat(agent.network!!) {
             it.getInterfaceName() == ifaceName
         }
         val nc = NetworkCapabilities(agent.nc)
         nc.addCapability(NET_CAPABILITY_NOT_METERED)
         agent.sendNetworkCapabilities(nc)
-        callback.expectCapabilitiesThat(agent.network) {
+        callback.expectCapabilitiesThat(agent.network!!) {
             it.hasCapability(NET_CAPABILITY_NOT_METERED)
         }
     }
@@ -509,49 +574,32 @@ class NetworkAgentTest {
     fun testSendScore() {
         // This test will create two networks and check that the one with the stronger
         // score wins out for a request that matches them both.
-        // First create requests to make sure both networks are kept up, using the
-        // specifier so they are specific to each network
-        val name1 = UUID.randomUUID().toString()
-        val name2 = UUID.randomUUID().toString()
-        val request1 = NetworkRequest.Builder()
-                .clearCapabilities()
-                .addTransportType(TRANSPORT_TEST)
-                .setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name1))
-                .build()
-        val request2 = NetworkRequest.Builder()
-                .clearCapabilities()
-                .addTransportType(TRANSPORT_TEST)
-                .setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(name2))
-                .build()
-        val callback1 = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
-        val callback2 = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
-        requestNetwork(request1, callback1)
-        requestNetwork(request2, callback2)
 
-        // Then file the interesting request
-        val request = NetworkRequest.Builder()
-                .clearCapabilities()
-                .addTransportType(TRANSPORT_TEST)
-                .build()
+        // File the interesting request
         val callback = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
-        requestNetwork(request, callback)
+        requestNetwork(makeTestNetworkRequest(), callback)
 
-        // Connect the first Network
-        createConnectedNetworkAgent(name = name1).let { (agent1, _) ->
-            callback.expectAvailableThenValidatedCallbacks(agent1.network)
-            // Upgrade agent1 to a better score so that there is no ambiguity when
-            // agent2 connects that agent1 is still better
-            agent1.sendNetworkScore(BETTER_NETWORK_SCORE - 1)
-            // Connect the second agent
-            createConnectedNetworkAgent(name = name2).let { (agent2, _) ->
-                agent2.markConnected()
-                // The callback should not see anything yet
-                callback.assertNoCallback(NO_CALLBACK_TIMEOUT)
-                // Now update the score and expect the callback now prefers agent2
-                agent2.sendNetworkScore(BETTER_NETWORK_SCORE)
-                callback.expectCallback<Available>(agent2.network)
-            }
-        }
+        // Connect the first Network, with an unused callback that kept the network up.
+        val (agent1, _) = createConnectedNetworkAgent()
+        callback.expectAvailableThenValidatedCallbacks(agent1.network!!)
+        // If using the int ranking, agent1 must be upgraded to a better score so that there is
+        // no ambiguity when agent2 connects that agent1 is still better. If using policy
+        // ranking, this is not necessary.
+        agent1.sendNetworkScore(NetworkScore.Builder().setLegacyInt(BETTER_NETWORK_SCORE)
+                .build())
+
+        // Connect the second agent.
+        val (agent2, _) = createConnectedNetworkAgent()
+        // The callback should not see anything yet. With int ranking, agent1 was upgraded
+        // to a stronger score beforehand. With policy ranking, agent1 is preferred by
+        // virtue of already satisfying the request.
+        callback.assertNoCallback(NO_CALLBACK_TIMEOUT)
+        // Now downgrade the score and expect the callback now prefers agent2
+        agent1.sendNetworkScore(NetworkScore.Builder()
+                .setLegacyInt(WORSE_NETWORK_SCORE)
+                .setExiting(true)
+                .build())
+        callback.expectCallback<Available>(agent2.network!!)
 
         // tearDown() will unregister the requests and agents
     }
@@ -592,12 +640,11 @@ class NetworkAgentTest {
         callback.expectAvailableThenValidatedCallbacks(agent.network!!)
 
         // Check that the default network's transport is propagated to the VPN.
-        var vpnNc = mCM.getNetworkCapabilities(agent.network)
+        var vpnNc = mCM.getNetworkCapabilities(agent.network!!)
         assertNotNull(vpnNc)
         assertEquals(VpnManager.TYPE_VPN_SERVICE,
                 (vpnNc.transportInfo as VpnTransportInfo).type)
-        // TODO: b/183938194 please fix the issue and enable following check.
-        // assertEquals(mySessionId, (vpnNc.transportInfo as VpnTransportInfo).sessionId)
+        assertEquals(mySessionId, (vpnNc.transportInfo as VpnTransportInfo).sessionId)
 
         val testAndVpn = intArrayOf(TRANSPORT_TEST, TRANSPORT_VPN)
         assertTrue(hasAllTransports(vpnNc, testAndVpn))
@@ -625,7 +672,7 @@ class NetworkAgentTest {
         // This is not very accurate because the test does not control the capabilities of the
         // underlying networks, and because not congested, not roaming, and not suspended are the
         // default anyway. It's still useful as an extra check though.
-        vpnNc = mCM.getNetworkCapabilities(agent.network)
+        vpnNc = mCM.getNetworkCapabilities(agent.network!!)
         for (cap in listOf(NET_CAPABILITY_NOT_CONGESTED,
                 NET_CAPABILITY_NOT_ROAMING,
                 NET_CAPABILITY_NOT_SUSPENDED)) {
@@ -635,8 +682,14 @@ class NetworkAgentTest {
             }
         }
 
+        unregister(agent)
+        callback.expectCallback<Lost>(agent.network!!)
+    }
+
+    private fun unregister(agent: TestableNetworkAgent) {
         agent.unregister()
-        callback.expectCallback<Lost>(agent.network)
+        agent.eventuallyExpect<OnNetworkUnwanted>()
+        agent.eventuallyExpect<OnNetworkDestroyed>()
     }
 
     @Test
@@ -718,44 +771,166 @@ class NetworkAgentTest {
     fun testTemporarilyUnmeteredCapability() {
         // This test will create a networks with/without NET_CAPABILITY_TEMPORARILY_NOT_METERED
         // and check that the callback reflects the capability changes.
-        // First create a request to make sure the network is kept up
-        val request1 = NetworkRequest.Builder()
-                .clearCapabilities()
-                .addTransportType(TRANSPORT_TEST)
-                .build()
-        val callback1 = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS).also {
-            registerNetworkCallback(request1, it)
-        }
-        requestNetwork(request1, callback1)
-
-        // Then file the interesting request
-        val request = NetworkRequest.Builder()
-                .clearCapabilities()
-                .addTransportType(TRANSPORT_TEST)
-                .build()
-        val callback = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
-        requestNetwork(request, callback)
 
         // Connect the network
-        createConnectedNetworkAgent().let { (agent, _) ->
-            callback.expectAvailableThenValidatedCallbacks(agent.network)
+        val (agent, callback) = createConnectedNetworkAgent()
 
-            // Send TEMP_NOT_METERED and check that the callback is called appropriately.
-            val nc1 = NetworkCapabilities(agent.nc)
-                    .addCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
-            agent.sendNetworkCapabilities(nc1)
-            callback.expectCapabilitiesThat(agent.network) {
-                it.hasCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
-            }
-
-            // Remove TEMP_NOT_METERED and check that the callback is called appropriately.
-            val nc2 = NetworkCapabilities(agent.nc)
-                    .removeCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
-            agent.sendNetworkCapabilities(nc2)
-            callback.expectCapabilitiesThat(agent.network) {
-                !it.hasCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
-            }
+        // Send TEMP_NOT_METERED and check that the callback is called appropriately.
+        val nc1 = NetworkCapabilities(agent.nc)
+                .addCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
+        agent.sendNetworkCapabilities(nc1)
+        callback.expectCapabilitiesThat(agent.network!!) {
+            it.hasCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
         }
+
+        // Remove TEMP_NOT_METERED and check that the callback is called appropriately.
+        val nc2 = NetworkCapabilities(agent.nc)
+                .removeCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
+        agent.sendNetworkCapabilities(nc2)
+        callback.expectCapabilitiesThat(agent.network!!) {
+            !it.hasCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
+        }
+
+        // tearDown() will unregister the requests and agents
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    fun testSetLingerDuration() {
+        // This test will create two networks and check that the one with the stronger
+        // score wins out for a request that matches them both. And the weaker agent will
+        // be disconnected after customized linger duration.
+
+        // Request the first Network, with a request that could moved to agentStronger in order to
+        // make agentWeaker linger later.
+        val specifierWeaker = UUID.randomUUID().toString()
+        val specifierStronger = UUID.randomUUID().toString()
+        val commonCallback = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
+        requestNetwork(makeTestNetworkRequest(), commonCallback)
+        val agentWeaker = createNetworkAgent(specifier = specifierWeaker)
+        agentWeaker.register()
+        agentWeaker.markConnected()
+        commonCallback.expectAvailableThenValidatedCallbacks(agentWeaker.network!!)
+        // Downgrade agentWeaker to a worse score so that there is no ambiguity when
+        // agentStronger connects.
+        agentWeaker.sendNetworkScore(NetworkScore.Builder().setLegacyInt(WORSE_NETWORK_SCORE)
+                .setExiting(true).build())
+
+        // Verify invalid linger duration cannot be set.
+        assertFailsWith<IllegalArgumentException> {
+            agentWeaker.setLingerDuration(Duration.ofMillis(-1))
+        }
+        assertFailsWith<IllegalArgumentException> { agentWeaker.setLingerDuration(Duration.ZERO) }
+        assertFailsWith<IllegalArgumentException> {
+            agentWeaker.setLingerDuration(Duration.ofMillis(Integer.MIN_VALUE.toLong()))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            agentWeaker.setLingerDuration(Duration.ofMillis(Integer.MAX_VALUE.toLong() + 1))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            agentWeaker.setLingerDuration(Duration.ofMillis(
+                    NetworkAgent.MIN_LINGER_TIMER_MS.toLong() - 1))
+        }
+        // Verify valid linger timer can be set, but it should not take effect since the network
+        // is still needed.
+        agentWeaker.setLingerDuration(Duration.ofMillis(Integer.MAX_VALUE.toLong()))
+        commonCallback.assertNoCallback(NO_CALLBACK_TIMEOUT)
+        // Set to the value we want to verify the functionality.
+        agentWeaker.setLingerDuration(Duration.ofMillis(NetworkAgent.MIN_LINGER_TIMER_MS.toLong()))
+        // Make a listener which can observe agentWeaker lost later.
+        val callbackWeaker = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
+        registerNetworkCallback(NetworkRequest.Builder()
+                .clearCapabilities()
+                .addTransportType(TRANSPORT_TEST)
+                .setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier(specifierWeaker))
+                .build(), callbackWeaker)
+        callbackWeaker.expectAvailableCallbacks(agentWeaker.network!!)
+
+        // Connect the agentStronger with a score better than agentWeaker. Verify the callback for
+        // agentWeaker sees the linger expiry while the callback for both sees the winner.
+        // Record linger start timestamp prior to send score to prevent possible race, the actual
+        // timestamp should be slightly late than this since the service handles update
+        // network score asynchronously.
+        val lingerStart = SystemClock.elapsedRealtime()
+        val agentStronger = createNetworkAgent(specifier = specifierStronger)
+        agentStronger.register()
+        agentStronger.markConnected()
+        commonCallback.expectAvailableCallbacks(agentStronger.network!!)
+        callbackWeaker.expectCallback<Losing>(agentWeaker.network!!)
+        val expectedRemainingLingerDuration = lingerStart +
+                NetworkAgent.MIN_LINGER_TIMER_MS.toLong() - SystemClock.elapsedRealtime()
+        // If the available callback is too late. The remaining duration will be reduced.
+        assertTrue(expectedRemainingLingerDuration > 0,
+                "expected remaining linger duration is $expectedRemainingLingerDuration")
+        callbackWeaker.assertNoCallback(expectedRemainingLingerDuration)
+        callbackWeaker.expectCallback<Lost>(agentWeaker.network!!)
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    fun testSetSubscriberId() {
+        val imsi = UUID.randomUUID().toString()
+        val config = NetworkAgentConfig.Builder().setSubscriberId(imsi).build()
+
+        val (agent, _) = createConnectedNetworkAgent(initialConfig = config)
+        val snapshots = runWithShellPermissionIdentity(ThrowingSupplier {
+                mCM!!.allNetworkStateSnapshots }, NETWORK_SETTINGS)
+        val testNetworkSnapshot = snapshots.findLast { it.network == agent.network }
+        assertEquals(imsi, testNetworkSnapshot!!.subscriberId)
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    // TODO: Refactor helper functions to util class and move this test case to
+    //  {@link android.net.cts.ConnectivityManagerTest}.
+    fun testRegisterBestMatchingNetworkCallback() {
+        // Register best matching network callback with additional condition that will be
+        // exercised later. This assumes the test network agent has NOT_VCN_MANAGED in it and
+        // does not have NET_CAPABILITY_TEMPORARILY_NOT_METERED.
+        val bestMatchingCb = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
+        registerBestMatchingNetworkCallback(NetworkRequest.Builder()
+                .clearCapabilities()
+                .addTransportType(TRANSPORT_TEST)
+                .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+                .build(), bestMatchingCb, mHandlerThread.threadHandler)
+
+        val (agent1, _) = createConnectedNetworkAgent(specifier = "AGENT-1")
+        bestMatchingCb.expectAvailableThenValidatedCallbacks(agent1.network!!)
+        // Make agent1 worse so when agent2 shows up, the callback will see that.
+        agent1.sendNetworkScore(NetworkScore.Builder().setExiting(true).build())
+        bestMatchingCb.assertNoCallback(NO_CALLBACK_TIMEOUT)
+
+        val (agent2, _) = createConnectedNetworkAgent(specifier = "AGENT-2")
+        bestMatchingCb.expectAvailableDoubleValidatedCallbacks(agent2.network!!)
+
+        // Change something on agent1 to trigger capabilities changed, since the callback
+        // only cares about the best network, verify it received nothing from agent1.
+        val ncAgent1 = agent1.nc
+        ncAgent1.addCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED)
+        agent1.sendNetworkCapabilities(ncAgent1)
+        bestMatchingCb.assertNoCallback(NO_CALLBACK_TIMEOUT)
+
+        // Make agent1 the best network again, verify the callback now tracks agent1.
+        agent1.sendNetworkScore(NetworkScore.Builder()
+                .setExiting(false).setTransportPrimary(true).build())
+        bestMatchingCb.expectAvailableCallbacks(agent1.network!!)
+
+        // Make agent1 temporary vcn managed, which will not satisfying the request.
+        // Verify the callback switch from/to the other network accordingly.
+        ncAgent1.removeCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+        agent1.sendNetworkCapabilities(ncAgent1)
+        bestMatchingCb.expectAvailableCallbacks(agent2.network!!)
+        ncAgent1.addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+        agent1.sendNetworkCapabilities(ncAgent1)
+        bestMatchingCb.expectAvailableDoubleValidatedCallbacks(agent1.network!!)
+
+        // Verify the callback doesn't care about agent2 disconnect.
+        agent2.unregister()
+        agentsToCleanUp.remove(agent2)
+        bestMatchingCb.assertNoCallback()
+        agent1.unregister()
+        agentsToCleanUp.remove(agent1)
+        bestMatchingCb.expectCallback<Lost>(agent1.network!!)
 
         // tearDown() will unregister the requests and agents
     }

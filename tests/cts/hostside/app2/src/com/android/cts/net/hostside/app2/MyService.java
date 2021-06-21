@@ -24,6 +24,8 @@ import static com.android.cts.net.hostside.app2.Common.TAG;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.app.job.JobInfo;
+import android.app.job.JobScheduler;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -95,7 +97,7 @@ public class MyService extends Service {
                 Log.d(TAG, "unregister previous network callback: " + mNetworkCallback);
                 unregisterNetworkCallback();
             }
-            Log.d(TAG, "registering network callback");
+            Log.d(TAG, "registering network callback for " + request);
 
             mNetworkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
@@ -153,6 +155,13 @@ public class MyService extends Service {
                 mCm.unregisterNetworkCallback(mNetworkCallback);
                 mNetworkCallback = null;
             }
+        }
+
+        @Override
+        public void scheduleJob(JobInfo jobInfo) {
+            final JobScheduler jobScheduler = getApplicationContext()
+                    .getSystemService(JobScheduler.class);
+            jobScheduler.schedule(jobInfo);
         }
       };
 
