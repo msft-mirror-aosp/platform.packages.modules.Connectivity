@@ -191,7 +191,7 @@ public class UpstreamNetworkMonitor {
      * check even tethering is not active yet.
      */
     public void stop() {
-        releaseMobileNetworkRequest();
+        setTryCell(false);
 
         releaseCallback(mListenAllCallback);
         mListenAllCallback = null;
@@ -398,10 +398,10 @@ public class UpstreamNetworkMonitor {
             // notifications (e.g. matching more than one of our callbacks).
             //
             // Also, it can happen that onLinkPropertiesChanged is called after
-            // onLost removed the state from mNetworkMap. This appears to be due
-            // to a bug in disconnectAndDestroyNetwork, which calls
-            // nai.clatd.update() after the onLost callbacks.
-            // TODO: fix the bug and make this method void.
+            // onLost removed the state from mNetworkMap. This is due to a bug
+            // in disconnectAndDestroyNetwork, which calls nai.clatd.update()
+            // after the onLost callbacks. This was fixed in S.
+            // TODO: make this method void when R is no longer supported.
             return null;
         }
 

@@ -20,16 +20,37 @@ package {
 
 apex {
     name: "com.android.tethering",
+    compile_multilib: "both",
     updatable: true,
     min_sdk_version: "30",
-    java_libs: ["framework-tethering"],
+    bootclasspath_fragments: [
+        "com.android.tethering-bootclasspath-fragment",
+    ],
+    java_libs: [
+        "service-connectivity",
+    ],
+    multilib: {
+        first: {
+            jni_libs: ["libservice-connectivity"]
+        },
+        both: {
+            jni_libs: ["libframework-connectivity-jni"],
+        }
+    },
     bpfs: [
         "offload.o",
         "test.o",
     ],
-    apps: ["Tethering"],
+    apps: [
+        "ServiceConnectivityResources",
+        "Tethering",
+    ],
+    prebuilts: ["current_sdkinfo"],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
+    // Indicates that pre-installed version of this apex can be compressed.
+    // Whether it actually will be compressed is controlled on per-device basis.
+    compressible: true,
 
     androidManifest: "AndroidManifest.xml",
 }
@@ -45,11 +66,22 @@ android_app_certificate {
     certificate: "com.android.tethering",
 }
 
+// Encapsulate the contributions made by the com.android.tethering to the bootclasspath.
+bootclasspath_fragment {
+    name: "com.android.tethering-bootclasspath-fragment",
+    contents: [
+        "framework-connectivity",
+        "framework-tethering",
+    ],
+    apex_available: ["com.android.tethering"],
+}
+
 override_apex {
     name: "com.android.tethering.inprocess",
     base: "com.android.tethering",
     package_name: "com.android.tethering.inprocess",
     apps: [
+        "ServiceConnectivityResources",
         "InProcessTethering",
     ],
 }
