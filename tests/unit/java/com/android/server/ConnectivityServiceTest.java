@@ -109,6 +109,8 @@ import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_OEM_PAID;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_OEM_PAID_NO_FALLBACK;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_OEM_PAID_ONLY;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_OEM_PRIVATE_ONLY;
+import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
+import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_UNINITIALIZED;
 import static android.net.RouteInfo.RTN_UNREACHABLE;
 import static android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener.PREFIX_OPERATION_ADDED;
@@ -484,6 +486,7 @@ public class ConnectivityServiceTest {
     @Mock VpnProfileStore mVpnProfileStore;
     @Mock SystemConfigManager mSystemConfigManager;
     @Mock Resources mResources;
+    @Mock ProxyTracker mProxyTracker;
 
     private ArgumentCaptor<ResolverParamsParcel> mResolverParamsParcelCaptor =
             ArgumentCaptor.forClass(ResolverParamsParcel.class);
@@ -1278,10 +1281,14 @@ public class ConnectivityServiceTest {
             return mMockNetworkAgent;
         }
 
-        public void establish(LinkProperties lp, int uid, Set<UidRange> ranges, boolean validated,
-                boolean hasInternet, boolean isStrictMode) throws Exception {
+        private void setOwnerAndAdminUid(int uid) throws Exception {
             mNetworkCapabilities.setOwnerUid(uid);
             mNetworkCapabilities.setAdministratorUids(new int[]{uid});
+        }
+
+        public void establish(LinkProperties lp, int uid, Set<UidRange> ranges, boolean validated,
+                boolean hasInternet, boolean isStrictMode) throws Exception {
+            setOwnerAndAdminUid(uid);
             registerAgent(false, ranges, lp);
             connect(validated, hasInternet, isStrictMode);
             waitForIdle();
@@ -1636,7 +1643,7 @@ public class ConnectivityServiceTest {
         doReturn(mNetIdManager).when(deps).makeNetIdManager();
         doReturn(mNetworkStack).when(deps).getNetworkStack();
         doReturn(mSystemProperties).when(deps).getSystemProperties();
-        doReturn(mock(ProxyTracker.class)).when(deps).makeProxyTracker(any(), any());
+        doReturn(mProxyTracker).when(deps).makeProxyTracker(any(), any());
         doReturn(true).when(deps).queryUserAccess(anyInt(), any(), any());
         doAnswer(inv -> {
             mPolicyTracker = new WrappedMultinetworkPolicyTracker(
@@ -10380,16 +10387,23 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testVpnUidRangesUpdate() throws Exception {
-        LinkProperties lp = new LinkProperties();
+        // Set up a WiFi network without proxy.
+        mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+        mWiFiNetworkAgent.connect(true);
+        assertNull(mService.getProxyForNetwork(null));
+        assertNull(mCm.getDefaultProxy());
+
+        final LinkProperties lp = new LinkProperties();
         lp.setInterfaceName("tun0");
         lp.addRoute(new RouteInfo(new IpPrefix(Inet4Address.ANY, 0), null));
         lp.addRoute(new RouteInfo(new IpPrefix(Inet6Address.ANY, 0), null));
         final UidRange vpnRange = PRIMARY_UIDRANGE;
-        Set<UidRange> vpnRanges = Collections.singleton(vpnRange);
+        final Set<UidRange> vpnRanges = Collections.singleton(vpnRange);
         mMockVpn.establish(lp, VPN_UID, vpnRanges);
         assertVpnUidRangesUpdated(true, vpnRanges, VPN_UID);
+        // VPN is connected but proxy is not set, so there is no need to send proxy broadcast.
+        verify(mProxyTracker, never()).sendProxyBroadcast();
 
-        reset(mMockNetd);
         // Update to new range which is old range minus APP1, i.e. only APP2
         final Set<UidRange> newRanges = new HashSet<>(Arrays.asList(
                 new UidRange(vpnRange.start, APP1_UID - 1),
@@ -10399,6 +10413,101 @@ public class ConnectivityServiceTest {
 
         assertVpnUidRangesUpdated(true, newRanges, VPN_UID);
         assertVpnUidRangesUpdated(false, vpnRanges, VPN_UID);
+
+        // Uid has changed but proxy is not set, so there is no need to send proxy broadcast.
+        verify(mProxyTracker, never()).sendProxyBroadcast();
+
+        final ProxyInfo testProxyInfo = ProxyInfo.buildDirectProxy("test", 8888);
+        lp.setHttpProxy(testProxyInfo);
+        mMockVpn.sendLinkProperties(lp);
+        waitForIdle();
+        // Proxy is set, so send a proxy broadcast.
+        verify(mProxyTracker, times(1)).sendProxyBroadcast();
+        reset(mProxyTracker);
+
+        mMockVpn.setUids(vpnRanges);
+        waitForIdle();
+        // Uid has changed and proxy is already set, so send a proxy broadcast.
+        verify(mProxyTracker, times(1)).sendProxyBroadcast();
+        reset(mProxyTracker);
+
+        // Proxy is removed, send a proxy broadcast.
+        lp.setHttpProxy(null);
+        mMockVpn.sendLinkProperties(lp);
+        waitForIdle();
+        verify(mProxyTracker, times(1)).sendProxyBroadcast();
+        reset(mProxyTracker);
+
+        // Proxy is added in WiFi(default network), setDefaultProxy will be called.
+        final LinkProperties wifiLp = mCm.getLinkProperties(mWiFiNetworkAgent.getNetwork());
+        assertNotNull(wifiLp);
+        wifiLp.setHttpProxy(testProxyInfo);
+        mWiFiNetworkAgent.sendLinkProperties(wifiLp);
+        waitForIdle();
+        verify(mProxyTracker, times(1)).setDefaultProxy(eq(testProxyInfo));
+        reset(mProxyTracker);
+    }
+
+    @Test
+    public void testProxyBroadcastWillBeSentWhenVpnHasProxyAndConnects() throws Exception {
+        // Set up a WiFi network without proxy.
+        mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+        mWiFiNetworkAgent.connect(true);
+        assertNull(mService.getProxyForNetwork(null));
+        assertNull(mCm.getDefaultProxy());
+
+        final LinkProperties lp = new LinkProperties();
+        lp.setInterfaceName("tun0");
+        lp.addRoute(new RouteInfo(new IpPrefix(Inet4Address.ANY, 0), null));
+        lp.addRoute(new RouteInfo(new IpPrefix(Inet6Address.ANY, 0), null));
+        final ProxyInfo testProxyInfo = ProxyInfo.buildDirectProxy("test", 8888);
+        lp.setHttpProxy(testProxyInfo);
+        final UidRange vpnRange = PRIMARY_UIDRANGE;
+        final Set<UidRange> vpnRanges = Collections.singleton(vpnRange);
+        mMockVpn.setOwnerAndAdminUid(VPN_UID);
+        mMockVpn.registerAgent(false, vpnRanges, lp);
+        // In any case, the proxy broadcast won't be sent before VPN goes into CONNECTED state.
+        // Otherwise, the app that calls ConnectivityManager#getDefaultProxy() when it receives the
+        // proxy broadcast will get null.
+        verify(mProxyTracker, never()).sendProxyBroadcast();
+        mMockVpn.connect(true /* validated */, true /* hasInternet */, false /* isStrictMode */);
+        waitForIdle();
+        assertVpnUidRangesUpdated(true, vpnRanges, VPN_UID);
+        // Vpn is connected with proxy, so the proxy broadcast will be sent to inform the apps to
+        // update their proxy data.
+        verify(mProxyTracker, times(1)).sendProxyBroadcast();
+    }
+
+    @Test
+    public void testProxyBroadcastWillBeSentWhenTheProxyOfNonDefaultNetworkHasChanged()
+            throws Exception {
+        // Set up a CELLULAR network without proxy.
+        mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
+        mCellNetworkAgent.connect(true);
+        assertNull(mService.getProxyForNetwork(null));
+        assertNull(mCm.getDefaultProxy());
+        // CELLULAR network should be the default network.
+        assertEquals(mCellNetworkAgent.getNetwork(), mCm.getActiveNetwork());
+
+        // Set up a WiFi network without proxy.
+        mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+        mWiFiNetworkAgent.connect(true);
+        assertNull(mService.getProxyForNetwork(null));
+        assertNull(mCm.getDefaultProxy());
+        // WiFi network should be the default network.
+        assertEquals(mWiFiNetworkAgent.getNetwork(), mCm.getActiveNetwork());
+        // CELLULAR network is not the default network.
+        assertNotEquals(mCellNetworkAgent.getNetwork(), mCm.getActiveNetwork());
+
+        // CELLULAR network is not the system default network, but it might be a per-app default
+        // network. The proxy broadcast should be sent once its proxy has changed.
+        final LinkProperties cellularLp = new LinkProperties();
+        cellularLp.setInterfaceName(MOBILE_IFNAME);
+        final ProxyInfo testProxyInfo = ProxyInfo.buildDirectProxy("test", 8888);
+        cellularLp.setHttpProxy(testProxyInfo);
+        mCellNetworkAgent.sendLinkProperties(cellularLp);
+        waitForIdle();
+        verify(mProxyTracker, times(1)).sendProxyBroadcast();
     }
 
     @Test
@@ -10715,8 +10824,7 @@ public class ConnectivityServiceTest {
     }
 
     @Test
-    public void testOemNetworkRequestFactoryPreferenceUninitializedThrowsError()
-            throws PackageManager.NameNotFoundException {
+    public void testOemNetworkRequestFactoryPreferenceUninitializedThrowsError() {
         @OemNetworkPreferences.OemNetworkPreference final int prefToTest =
                 OEM_NETWORK_PREFERENCE_UNINITIALIZED;
 
@@ -10983,7 +11091,48 @@ public class ConnectivityServiceTest {
         assertThrows(UnsupportedOperationException.class,
                 () -> mService.setOemNetworkPreference(
                         createDefaultOemNetworkPreferences(networkPref),
-                        new TestOemListenerCallback()));
+                        null));
+    }
+
+    @Test
+    public void testSetOemNetworkPreferenceFailsForTestRequestWithoutPermission() {
+        // Calling setOemNetworkPreference() with a test pref requires the permission
+        // MANAGE_TEST_NETWORKS.
+        mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, false);
+        @OemNetworkPreferences.OemNetworkPreference final int networkPref =
+                OEM_NETWORK_PREFERENCE_TEST;
+
+        // Act on ConnectivityService.setOemNetworkPreference()
+        assertThrows(SecurityException.class,
+                () -> mService.setOemNetworkPreference(
+                        createDefaultOemNetworkPreferences(networkPref),
+                        null));
+    }
+
+    @Test
+    public void testSetOemNetworkPreferenceFailsForInvalidTestRequest() {
+        assertSetOemNetworkPreferenceFailsForInvalidTestRequest(OEM_NETWORK_PREFERENCE_TEST);
+    }
+
+    @Test
+    public void testSetOemNetworkPreferenceFailsForInvalidTestOnlyRequest() {
+        assertSetOemNetworkPreferenceFailsForInvalidTestRequest(OEM_NETWORK_PREFERENCE_TEST_ONLY);
+    }
+
+    private void assertSetOemNetworkPreferenceFailsForInvalidTestRequest(
+            @OemNetworkPreferences.OemNetworkPreference final int oemNetworkPreferenceForTest) {
+        mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, true);
+        final String secondPackage = "does.not.matter";
+
+        // A valid test request would only have a single mapping.
+        final OemNetworkPreferences pref = new OemNetworkPreferences.Builder()
+                .addNetworkPreference(TEST_PACKAGE_NAME, oemNetworkPreferenceForTest)
+                .addNetworkPreference(secondPackage, oemNetworkPreferenceForTest)
+                .build();
+
+        // Act on ConnectivityService.setOemNetworkPreference()
+        assertThrows(IllegalArgumentException.class,
+                () -> mService.setOemNetworkPreference(pref, null));
     }
 
     private void setOemNetworkPreferenceAgentConnected(final int transportType,
@@ -11160,8 +11309,18 @@ public class ConnectivityServiceTest {
     private void setupSetOemNetworkPreferenceForPreferenceTest(
             @OemNetworkPreferences.OemNetworkPreference final int networkPrefToSetup,
             @NonNull final UidRangeParcel[] uidRanges,
-            @NonNull final String testPackageName)
-            throws Exception {
+            @NonNull final String testPackageName) throws Exception {
+        setupSetOemNetworkPreferenceForPreferenceTest(
+                networkPrefToSetup, uidRanges, testPackageName, true);
+    }
+
+    private void setupSetOemNetworkPreferenceForPreferenceTest(
+            @OemNetworkPreferences.OemNetworkPreference final int networkPrefToSetup,
+            @NonNull final UidRangeParcel[] uidRanges,
+            @NonNull final String testPackageName,
+            final boolean hasAutomotiveFeature) throws Exception {
+        mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, hasAutomotiveFeature);
+
         // These tests work off a single UID therefore using 'start' is valid.
         mockGetApplicationInfo(testPackageName, uidRanges[0].start);
 
@@ -11466,6 +11625,55 @@ public class ConnectivityServiceTest {
     }
 
     /**
+     * Test the tracked default requests allows test requests without standard setup.
+     */
+    @Test
+    public void testSetOemNetworkPreferenceAllowsValidTestRequestWithoutChecks() throws Exception {
+        @OemNetworkPreferences.OemNetworkPreference int networkPref =
+                OEM_NETWORK_PREFERENCE_TEST;
+        validateSetOemNetworkPreferenceAllowsValidTestPrefRequest(networkPref);
+    }
+
+    /**
+     * Test the tracked default requests allows test only requests without standard setup.
+     */
+    @Test
+    public void testSetOemNetworkPreferenceAllowsValidTestOnlyRequestWithoutChecks()
+            throws Exception {
+        @OemNetworkPreferences.OemNetworkPreference int networkPref =
+                OEM_NETWORK_PREFERENCE_TEST_ONLY;
+        validateSetOemNetworkPreferenceAllowsValidTestPrefRequest(networkPref);
+    }
+
+    private void validateSetOemNetworkPreferenceAllowsValidTestPrefRequest(int networkPref)
+            throws Exception {
+        // The caller must have the MANAGE_TEST_NETWORKS permission.
+        final int testPackageUid = 123;
+        final String validTestPackageName = "does.not.matter";
+        final UidRangeParcel[] uidRanges =
+                toUidRangeStableParcels(uidRangesForUids(testPackageUid));
+        mServiceContext.setPermission(
+                Manifest.permission.MANAGE_TEST_NETWORKS, PERMISSION_GRANTED);
+
+        // Put the system into a state in which setOemNetworkPreference() would normally fail. This
+        // will confirm that a valid test request can bypass these checks.
+        mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, false);
+        mServiceContext.setPermission(
+                Manifest.permission.CONTROL_OEM_PAID_NETWORK_PREFERENCE, PERMISSION_DENIED);
+
+        // Validate the starting requests only includes the system default request.
+        assertEquals(1, mService.mDefaultNetworkRequests.size());
+
+        // Add an OEM default network request to track.
+        setupSetOemNetworkPreferenceForPreferenceTest(
+                networkPref, uidRanges, validTestPackageName,
+                false /* hasAutomotiveFeature */);
+
+        // Two requests should now exist; the system default and the test request.
+        assertEquals(2, mService.mDefaultNetworkRequests.size());
+    }
+
+    /**
      * Test the tracked default requests clear previous OEM requests on setOemNetworkPreference().
      */
     @Test
@@ -11477,7 +11685,7 @@ public class ConnectivityServiceTest {
         final UidRangeParcel[] uidRanges =
                 toUidRangeStableParcels(uidRangesForUids(testPackageUid));
 
-        // Validate the starting requests only includes the fallback request.
+        // Validate the starting requests only includes the system default request.
         assertEquals(1, mService.mDefaultNetworkRequests.size());
 
         // Add an OEM default network request to track.
