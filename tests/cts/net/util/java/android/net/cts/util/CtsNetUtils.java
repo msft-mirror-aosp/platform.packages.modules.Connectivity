@@ -18,12 +18,12 @@ package android.net.cts.util;
 
 import static android.Manifest.permission.ACCESS_WIFI_STATE;
 import static android.Manifest.permission.NETWORK_SETTINGS;
-import static android.net.ConnectivityManager.PRIVATE_DNS_MODE_OPPORTUNISTIC;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.wifi.WifiManager.SCAN_RESULTS_AVAILABLE_ACTION;
 
+import static com.android.compatibility.common.util.PropertyUtil.getFirstApiLevel;
 import static com.android.testutils.TestPermissionUtil.runAsShell;
 
 import static org.junit.Assert.assertEquals;
@@ -56,13 +56,13 @@ import android.net.wifi.WifiManager;
 import android.os.Binder;
 import android.os.Build;
 import android.os.IBinder;
-import android.os.SystemProperties;
-import android.provider.Settings;
 import android.system.Os;
 import android.system.OsConstants;
+import android.text.TextUtils;
 import android.util.Log;
 
 import com.android.compatibility.common.util.SystemUtil;
+import com.android.net.module.util.ConnectivitySettingsUtils;
 
 import junit.framework.AssertionFailedError;
 
@@ -81,12 +81,13 @@ import java.util.concurrent.TimeoutException;
 
 public final class CtsNetUtils {
     private static final String TAG = CtsNetUtils.class.getSimpleName();
-    private static final int DURATION = 10000;
     private static final int SOCKET_TIMEOUT_MS = 2000;
     private static final int PRIVATE_DNS_PROBE_MS = 1_000;
 
     private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 10_000;
     private static final int CONNECTIVITY_CHANGE_TIMEOUT_SECS = 30;
+    private static final String PRIVATE_DNS_MODE_OPPORTUNISTIC = "opportunistic";
+    private static final String PRIVATE_DNS_MODE_STRICT = "hostname";
     public static final int HTTP_PORT = 80;
     public static final String TEST_HOST = "connectivitycheck.gstatic.com";
     public static final String HTTP_REQUEST =
@@ -103,7 +104,7 @@ public final class CtsNetUtils {
     private final ContentResolver mCR;
     private final WifiManager mWifiManager;
     private TestNetworkCallback mCellNetworkCallback;
-    private String mOldPrivateDnsMode;
+    private int mOldPrivateDnsMode = 0;
     private String mOldPrivateDnsSpecifier;
 
     public CtsNetUtils(Context context) {
@@ -116,8 +117,7 @@ public final class CtsNetUtils {
     /** Checks if FEATURE_IPSEC_TUNNELS is enabled on the device */
     public boolean hasIpsecTunnelsFeature() {
         return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_IPSEC_TUNNELS)
-                || SystemProperties.getInt("ro.product.first_api_level", 0)
-                        >= Build.VERSION_CODES.Q;
+                || getFirstApiLevel() >= Build.VERSION_CODES.Q;
     }
 
     /**
@@ -212,7 +212,7 @@ public final class CtsNetUtils {
         mContext.registerReceiver(receiver, filter);
 
         boolean connected = false;
-        final String err = "Wifi must be configured to connect to an access point for this test.";
+        final String err = "Wifi must be configured to connect to an access point for this test";
         try {
             clearWifiBlacklist();
             SystemUtil.runShellCommand("svc wifi enable");
@@ -235,7 +235,7 @@ public final class CtsNetUtils {
             }
             // Ensure we get an onAvailable callback and possibly a CONNECTIVITY_ACTION.
             wifiNetwork = callback.waitForAvailable();
-            assertNotNull(err, wifiNetwork);
+            assertNotNull(err + ": onAvailable callback not received", wifiNetwork);
             connected = !expectLegacyBroadcast || receiver.waitForState();
         } catch (InterruptedException ex) {
             fail("connectToWifi was interrupted");
@@ -244,7 +244,7 @@ public final class CtsNetUtils {
             mContext.unregisterReceiver(receiver);
         }
 
-        assertTrue(err, connected);
+        assertTrue(err + ": CONNECTIVITY_ACTION not received", connected);
         return wifiNetwork;
     }
 
@@ -508,56 +508,69 @@ public final class CtsNetUtils {
     }
 
     public void storePrivateDnsSetting() {
-        // Store private DNS setting
-        mOldPrivateDnsMode = Settings.Global.getString(mCR, Settings.Global.PRIVATE_DNS_MODE);
-        mOldPrivateDnsSpecifier = Settings.Global.getString(mCR,
-                Settings.Global.PRIVATE_DNS_SPECIFIER);
-        // It's possible that there is no private DNS default value in Settings.
-        // Give it a proper default mode which is opportunistic mode.
-        if (mOldPrivateDnsMode == null) {
-            mOldPrivateDnsSpecifier = "";
-            mOldPrivateDnsMode = PRIVATE_DNS_MODE_OPPORTUNISTIC;
-            Settings.Global.putString(mCR,
-                    Settings.Global.PRIVATE_DNS_SPECIFIER, mOldPrivateDnsSpecifier);
-            Settings.Global.putString(mCR, Settings.Global.PRIVATE_DNS_MODE, mOldPrivateDnsMode);
-        }
+        mOldPrivateDnsMode = ConnectivitySettingsUtils.getPrivateDnsMode(mContext);
+        mOldPrivateDnsSpecifier = ConnectivitySettingsUtils.getPrivateDnsHostname(mContext);
     }
 
     public void restorePrivateDnsSetting() throws InterruptedException {
-        if (mOldPrivateDnsMode == null || mOldPrivateDnsSpecifier == null) {
+        if (mOldPrivateDnsMode == 0) {
+            fail("restorePrivateDnsSetting without storing settings first");
+        }
+
+        if (mOldPrivateDnsMode != ConnectivitySettingsUtils.PRIVATE_DNS_MODE_PROVIDER_HOSTNAME) {
+            ConnectivitySettingsUtils.setPrivateDnsMode(mContext, mOldPrivateDnsMode);
             return;
         }
         // restore private DNS setting
-        if ("hostname".equals(mOldPrivateDnsMode)) {
-            setPrivateDnsStrictMode(mOldPrivateDnsSpecifier);
-            awaitPrivateDnsSetting("restorePrivateDnsSetting timeout",
-                    mCm.getActiveNetwork(),
-                    mOldPrivateDnsSpecifier, true);
-        } else {
-            Settings.Global.putString(mCR, Settings.Global.PRIVATE_DNS_MODE, mOldPrivateDnsMode);
+        // In case of invalid setting, set to opportunistic to avoid a bad state and fail
+        if (TextUtils.isEmpty(mOldPrivateDnsSpecifier)) {
+            ConnectivitySettingsUtils.setPrivateDnsMode(mContext,
+                    ConnectivitySettingsUtils.PRIVATE_DNS_MODE_OPPORTUNISTIC);
+            fail("Invalid private DNS setting: no hostname specified in strict mode");
         }
+        setPrivateDnsStrictMode(mOldPrivateDnsSpecifier);
+
+        // There might be a race before private DNS setting is applied and the next test is
+        // running. So waiting private DNS to be validated can reduce the flaky rate of test.
+        awaitPrivateDnsSetting("restorePrivateDnsSetting timeout",
+                mCm.getActiveNetwork(),
+                mOldPrivateDnsSpecifier, true /* requiresValidatedServer */);
     }
 
     public void setPrivateDnsStrictMode(String server) {
         // To reduce flake rate, set PRIVATE_DNS_SPECIFIER before PRIVATE_DNS_MODE. This ensures
-        // that if the previous private DNS mode was not "hostname", the system only sees one
+        // that if the previous private DNS mode was not strict, the system only sees one
         // EVENT_PRIVATE_DNS_SETTINGS_CHANGED event instead of two.
-        Settings.Global.putString(mCR, Settings.Global.PRIVATE_DNS_SPECIFIER, server);
-        final String mode = Settings.Global.getString(mCR, Settings.Global.PRIVATE_DNS_MODE);
-        // If current private DNS mode is "hostname", we only need to set PRIVATE_DNS_SPECIFIER.
-        if (!"hostname".equals(mode)) {
-            Settings.Global.putString(mCR, Settings.Global.PRIVATE_DNS_MODE, "hostname");
+        ConnectivitySettingsUtils.setPrivateDnsHostname(mContext, server);
+        final int mode = ConnectivitySettingsUtils.getPrivateDnsMode(mContext);
+        // If current private DNS mode is strict, we only need to set PRIVATE_DNS_SPECIFIER.
+        if (mode != ConnectivitySettingsUtils.PRIVATE_DNS_MODE_PROVIDER_HOSTNAME) {
+            ConnectivitySettingsUtils.setPrivateDnsMode(mContext,
+                    ConnectivitySettingsUtils.PRIVATE_DNS_MODE_PROVIDER_HOSTNAME);
         }
     }
 
+    /**
+     * Waiting for the new private DNS setting to be validated.
+     * This method is helpful when the new private DNS setting is configured and ensure the new
+     * setting is applied and workable. It can also reduce the flaky rate when the next test is
+     * running.
+     *
+     * @param msg A message that will be printed when the validation of private DNS is timeout.
+     * @param network A network which will apply the new private DNS setting.
+     * @param server The hostname of private DNS.
+     * @param requiresValidatedServer A boolean to decide if it's needed to wait private DNS to be
+     *                                 validated or not.
+     * @throws InterruptedException If the thread is interrupted.
+     */
     public void awaitPrivateDnsSetting(@NonNull String msg, @NonNull Network network,
-            @NonNull String server, boolean requiresValidatedServers) throws InterruptedException {
-        CountDownLatch latch = new CountDownLatch(1);
-        NetworkRequest request = new NetworkRequest.Builder().clearCapabilities().build();
+            @NonNull String server, boolean requiresValidatedServer) throws InterruptedException {
+        final CountDownLatch latch = new CountDownLatch(1);
+        final NetworkRequest request = new NetworkRequest.Builder().clearCapabilities().build();
         NetworkCallback callback = new NetworkCallback() {
             @Override
             public void onLinkPropertiesChanged(Network n, LinkProperties lp) {
-                if (requiresValidatedServers && lp.getValidatedPrivateDnsServers().isEmpty()) {
+                if (requiresValidatedServer && lp.getValidatedPrivateDnsServers().isEmpty()) {
                     return;
                 }
                 if (network.equals(n) && server.equals(lp.getPrivateDnsServerName())) {
@@ -577,7 +590,7 @@ public final class CtsNetUtils {
         // private DNS probe. There is no way to know when the probe has completed: because the
         // network is likely already validated, there is no callback that we can listen to, so
         // just sleep.
-        if (requiresValidatedServers) {
+        if (requiresValidatedServer) {
             Thread.sleep(PRIVATE_DNS_PROBE_MS);
         }
     }
