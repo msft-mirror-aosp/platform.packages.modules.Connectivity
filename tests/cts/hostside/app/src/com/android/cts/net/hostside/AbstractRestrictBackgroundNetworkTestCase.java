@@ -47,6 +47,7 @@ import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkInfo.State;
+import android.net.NetworkRequest;
 import android.os.BatteryManager;
 import android.os.Binder;
 import android.os.Bundle;
@@ -104,6 +105,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     private static int PROCESS_STATE_FOREGROUND_SERVICE;
 
     private static final String KEY_NETWORK_STATE_OBSERVER = TEST_PKG + ".observer";
+
+    private static final String EMPTY_STRING = "";
 
     protected static final int TYPE_COMPONENT_ACTIVTIY = 0;
     protected static final int TYPE_COMPONENT_FOREGROUND_SERVICE = 1;
@@ -205,6 +208,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                 final String resultData = getResultData();
                 if (resultData == null) {
                     Log.e(TAG, "Received null data from ordered intent");
+                    // Offer an empty string so that the code waiting for the result can return.
+                    result.offer(EMPTY_STRING);
                     return;
                 }
                 result.offer(resultData);
@@ -713,8 +718,10 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         fail("app2 receiver is not ready");
     }
 
-    protected void registerNetworkCallback(INetworkCallback cb) throws Exception {
-        mServiceClient.registerNetworkCallback(cb);
+    protected void registerNetworkCallback(final NetworkRequest request, INetworkCallback cb)
+            throws Exception {
+        Log.i(TAG, "Registering network callback for request: " + request);
+        mServiceClient.registerNetworkCallback(request, cb);
     }
 
     protected void unregisterNetworkCallback() throws Exception {
@@ -889,5 +896,16 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
          * Gets the expected result so it's displayed on log and failure messages.
          */
         String getExpected();
+    }
+
+    protected void setRestrictedNetworkingMode(boolean enabled) throws Exception {
+        executeSilentShellCommand(
+                "settings put global restricted_networking_mode " + (enabled ? 1 : 0));
+        assertRestrictedNetworkingModeState(enabled);
+    }
+
+    protected void assertRestrictedNetworkingModeState(boolean enabled) throws Exception {
+        assertDelayedShellCommand("cmd netpolicy get restricted-mode",
+                "Restricted mode status: " + (enabled ? "enabled" : "disabled"));
     }
 }
