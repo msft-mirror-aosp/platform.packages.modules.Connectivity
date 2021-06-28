@@ -35,7 +35,6 @@ import android.net.NetworkProvider;
 import android.net.RouteInfo;
 import android.net.TestNetworkInterface;
 import android.net.TestNetworkSpecifier;
-import android.net.util.NetdService;
 import android.os.Binder;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -49,7 +48,6 @@ import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.NetworkStackConstants;
-import com.android.net.module.util.PermissionUtils;
 
 import java.io.UncheckedIOException;
 import java.net.Inet4Address;
@@ -86,7 +84,9 @@ class TestNetworkService extends ITestNetworkManager.Stub {
         mHandler = new Handler(mHandlerThread.getLooper());
 
         mContext = Objects.requireNonNull(context, "missing Context");
-        mNetd = Objects.requireNonNull(NetdService.getInstance(), "could not get netd instance");
+        mNetd = Objects.requireNonNull(
+                INetd.Stub.asInterface((IBinder) context.getSystemService(Context.NETD_SERVICE)),
+                "could not get netd instance");
         mCm = mContext.getSystemService(ConnectivityManager.class);
         mNetworkProvider = new NetworkProvider(mContext, mHandler.getLooper(),
                 TEST_NETWORK_PROVIDER_NAME);
@@ -121,6 +121,8 @@ class TestNetworkService extends ITestNetworkManager.Stub {
                         addr.getAddress().getHostAddress(),
                         addr.getPrefixLength());
             }
+
+            NetdUtils.setInterfaceUp(mNetd, iface);
 
             return new TestNetworkInterface(tunIntf, iface);
         } catch (RemoteException e) {
@@ -323,14 +325,6 @@ class TestNetworkService extends ITestNetworkManager.Stub {
         }
 
         try {
-            final long token = Binder.clearCallingIdentity();
-            try {
-                PermissionUtils.enforceNetworkStackPermission(mContext);
-                NetdUtils.setInterfaceUp(mNetd, iface);
-            } finally {
-                Binder.restoreCallingIdentity(token);
-            }
-
             // Synchronize all accesses to mTestNetworkTracker to prevent the case where:
             // 1. TestNetworkAgent successfully binds to death of binder
             // 2. Before it is added to the mTestNetworkTracker, binder dies, binderDied() is called

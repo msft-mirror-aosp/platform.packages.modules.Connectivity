@@ -44,6 +44,7 @@ import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.mock;
@@ -58,6 +59,7 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.net.ConnectivityManager.NetworkCallback;
+import android.os.Build;
 import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
 import android.os.Handler;
@@ -66,6 +68,7 @@ import android.os.Message;
 import android.os.Messenger;
 import android.os.Process;
 
+import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
@@ -78,6 +81,7 @@ import org.mockito.MockitoAnnotations;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
+@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
 public class ConnectivityManagerTest {
 
     @Mock Context mCtx;
@@ -215,7 +219,8 @@ public class ConnectivityManagerTest {
     public void testCallbackRelease() throws Exception {
         ConnectivityManager manager = new ConnectivityManager(mCtx, mService);
         NetworkRequest request = makeRequest(1);
-        NetworkCallback callback = mock(ConnectivityManager.NetworkCallback.class);
+        NetworkCallback callback = mock(ConnectivityManager.NetworkCallback.class,
+                CALLS_REAL_METHODS);
         Handler handler = new Handler(Looper.getMainLooper());
         ArgumentCaptor<Messenger> captor = ArgumentCaptor.forClass(Messenger.class);
 
@@ -243,7 +248,8 @@ public class ConnectivityManagerTest {
         ConnectivityManager manager = new ConnectivityManager(mCtx, mService);
         NetworkRequest req1 = makeRequest(1);
         NetworkRequest req2 = makeRequest(2);
-        NetworkCallback callback = mock(ConnectivityManager.NetworkCallback.class);
+        NetworkCallback callback = mock(ConnectivityManager.NetworkCallback.class,
+                CALLS_REAL_METHODS);
         Handler handler = new Handler(Looper.getMainLooper());
         ArgumentCaptor<Messenger> captor = ArgumentCaptor.forClass(Messenger.class);
 
@@ -317,26 +323,34 @@ public class ConnectivityManagerTest {
         NetworkCallback nullCallback = null;
         PendingIntent nullIntent = null;
 
-        mustFail(() -> { manager.requestNetwork(null, callback); });
-        mustFail(() -> { manager.requestNetwork(request, nullCallback); });
-        mustFail(() -> { manager.requestNetwork(request, callback, null); });
-        mustFail(() -> { manager.requestNetwork(request, callback, -1); });
-        mustFail(() -> { manager.requestNetwork(request, nullIntent); });
+        mustFail(() -> manager.requestNetwork(null, callback));
+        mustFail(() -> manager.requestNetwork(request, nullCallback));
+        mustFail(() -> manager.requestNetwork(request, callback, null));
+        mustFail(() -> manager.requestNetwork(request, callback, -1));
+        mustFail(() -> manager.requestNetwork(request, nullIntent));
 
-        mustFail(() -> { manager.registerNetworkCallback(null, callback, handler); });
-        mustFail(() -> { manager.registerNetworkCallback(request, null, handler); });
-        mustFail(() -> { manager.registerNetworkCallback(request, callback, null); });
-        mustFail(() -> { manager.registerNetworkCallback(request, nullIntent); });
+        mustFail(() -> manager.requestBackgroundNetwork(null, callback, handler));
+        mustFail(() -> manager.requestBackgroundNetwork(request, null, handler));
+        mustFail(() -> manager.requestBackgroundNetwork(request, callback, null));
 
-        mustFail(() -> { manager.registerDefaultNetworkCallback(null, handler); });
-        mustFail(() -> { manager.registerDefaultNetworkCallback(callback, null); });
+        mustFail(() -> manager.registerNetworkCallback(null, callback, handler));
+        mustFail(() -> manager.registerNetworkCallback(request, null, handler));
+        mustFail(() -> manager.registerNetworkCallback(request, callback, null));
+        mustFail(() -> manager.registerNetworkCallback(request, nullIntent));
 
-        mustFail(() -> { manager.registerSystemDefaultNetworkCallback(null, handler); });
-        mustFail(() -> { manager.registerSystemDefaultNetworkCallback(callback, null); });
+        mustFail(() -> manager.registerDefaultNetworkCallback(null, handler));
+        mustFail(() -> manager.registerDefaultNetworkCallback(callback, null));
 
-        mustFail(() -> { manager.unregisterNetworkCallback(nullCallback); });
-        mustFail(() -> { manager.unregisterNetworkCallback(nullIntent); });
-        mustFail(() -> { manager.releaseNetworkRequest(nullIntent); });
+        mustFail(() -> manager.registerSystemDefaultNetworkCallback(null, handler));
+        mustFail(() -> manager.registerSystemDefaultNetworkCallback(callback, null));
+
+        mustFail(() -> manager.registerBestMatchingNetworkCallback(null, callback, handler));
+        mustFail(() -> manager.registerBestMatchingNetworkCallback(request, null, handler));
+        mustFail(() -> manager.registerBestMatchingNetworkCallback(request, callback, null));
+
+        mustFail(() -> manager.unregisterNetworkCallback(nullCallback));
+        mustFail(() -> manager.unregisterNetworkCallback(nullIntent));
+        mustFail(() -> manager.releaseNetworkRequest(nullIntent));
     }
 
     static void mustFail(Runnable fn) {

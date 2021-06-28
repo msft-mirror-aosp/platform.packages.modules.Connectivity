@@ -45,20 +45,21 @@ java_defaults {
     ],
 }
 
-android_test {
-    name: "FrameworksNetTests",
-    defaults: ["FrameworksNetTests-jni-defaults"],
+android_library {
+    name: "FrameworksNetTestsLib",
+    min_sdk_version: "30",
+    defaults: [
+        "framework-connectivity-test-defaults",
+    ],
     srcs: [
         "java/**/*.java",
         "java/**/*.kt",
     ],
-    platform_apis: true,
-    test_suites: ["device-tests"],
-    certificate: "platform",
     jarjar_rules: "jarjar-rules.txt",
     static_libs: [
         "androidx.test.rules",
         "bouncycastle-repackaged-unbundled",
+        "core-tests-support",
         "FrameworksNetCommonTests",
         "frameworks-base-testutils",
         "frameworks-net-integration-testutils",
@@ -77,7 +78,21 @@ android_test {
         "android.test.mock",
         "ServiceConnectivityResources",
     ],
+    visibility: ["//packages/modules/Connectivity/tests:__subpackages__"],
+}
+
+android_test {
+    name: "FrameworksNetTests",
+    min_sdk_version: "30",
+    defaults: [
+        "framework-connectivity-test-defaults",
+        "FrameworksNetTests-jni-defaults",
+    ],
+    test_suites: ["device-tests"],
+    static_libs: [
+        "FrameworksNetTestsLib",
+    ],
     jni_libs: [
         "libservice-connectivity",
-    ],
+    ]
 }

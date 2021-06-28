@@ -16,12 +16,17 @@
 
 package com.android.server.net;
 
+import static android.Manifest.permission.READ_NETWORK_USAGE_HISTORY;
+import static android.Manifest.permission.UPDATE_DEVICE_STATS;
 import static android.content.Intent.ACTION_UID_REMOVED;
 import static android.content.Intent.EXTRA_UID;
+import static android.content.pm.PackageManager.PERMISSION_DENIED;
+import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.net.NetworkIdentity.OEM_PAID;
 import static android.net.NetworkIdentity.OEM_PRIVATE;
+import static android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
 import static android.net.NetworkStats.DEFAULT_NETWORK_NO;
 import static android.net.NetworkStats.DEFAULT_NETWORK_YES;
@@ -93,6 +98,7 @@ import android.net.NetworkTemplate;
 import android.net.TelephonyNetworkSpecifier;
 import android.net.UnderlyingNetworkInfo;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
+import android.os.Build;
 import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -106,17 +112,20 @@ import android.os.SimpleClock;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
 
+import androidx.annotation.Nullable;
 import androidx.test.InstrumentationRegistry;
+import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.test.BroadcastInterceptingContext;
-import com.android.internal.util.test.FsUtil;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings.Config;
 import com.android.testutils.HandlerUtils;
 import com.android.testutils.TestableNetworkStatsProviderBinder;
+
+import libcore.testing.io.TestIoUtils;
 
 import org.junit.After;
 import org.junit.Before;
@@ -141,6 +150,7 @@ import java.util.concurrent.Executor;
  */
 @RunWith(AndroidJUnit4.class)
 @SmallTest
+@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
 public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private static final String TAG = "NetworkStatsServiceTest";
 
@@ -199,6 +209,26 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
             if (Context.TELEPHONY_SERVICE.equals(name)) return mTelephonyManager;
             return mBaseContext.getSystemService(name);
         }
+
+        @Override
+        public void enforceCallingOrSelfPermission(String permission, @Nullable String message) {
+            if (checkCallingOrSelfPermission(permission) != PERMISSION_GRANTED) {
+                throw new SecurityException("Test does not have mocked permission " + permission);
+            }
+        }
+
+        @Override
+        public int checkCallingOrSelfPermission(String permission) {
+            switch (permission) {
+                case PERMISSION_MAINLINE_NETWORK_STACK:
+                case READ_NETWORK_USAGE_HISTORY:
+                case UPDATE_DEVICE_STATS:
+                    return PERMISSION_GRANTED;
+                default:
+                    return PERMISSION_DENIED;
+            }
+
+        }
     }
 
     private final Clock mClock = new SimpleClock(ZoneOffset.UTC) {
@@ -212,10 +242,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         MockitoAnnotations.initMocks(this);
         final Context context = InstrumentationRegistry.getContext();
         mServiceContext = new MockContext(context);
-        mStatsDir = context.getFilesDir();
-        if (mStatsDir.exists()) {
-            FsUtil.deleteContents(mStatsDir);
-        }
+        mStatsDir = TestIoUtils.createTemporaryDirectory(getClass().getSimpleName());
 
         PowerManager powerManager = (PowerManager) mServiceContext.getSystemService(
                 Context.POWER_SERVICE);
@@ -284,8 +311,6 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     @After
     public void tearDown() throws Exception {
-        FsUtil.deleteContents(mStatsDir);
-
         mServiceContext = null;
         mStatsDir = null;
 
