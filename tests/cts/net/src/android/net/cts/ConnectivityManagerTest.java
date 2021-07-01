@@ -55,16 +55,12 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVIT
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
-import static android.net.TetheringManager.TETHERING_WIFI;
-import static android.net.TetheringManager.TetheringRequest;
 import static android.net.cts.util.CtsNetUtils.ConnectivityActionReceiver;
 import static android.net.cts.util.CtsNetUtils.HTTP_PORT;
 import static android.net.cts.util.CtsNetUtils.NETWORK_CALLBACK_ACTION;
 import static android.net.cts.util.CtsNetUtils.TEST_HOST;
 import static android.net.cts.util.CtsNetUtils.TestNetworkCallback;
-import static android.net.cts.util.CtsTetheringUtils.StartTetheringCallback;
 import static android.net.cts.util.CtsTetheringUtils.TestTetheringEventCallback;
-import static android.net.cts.util.CtsTetheringUtils.isWifiTetheringSupported;
 import static android.net.util.NetworkStackUtils.TEST_CAPTIVE_PORTAL_HTTPS_URL;
 import static android.net.util.NetworkStackUtils.TEST_CAPTIVE_PORTAL_HTTP_URL;
 import static android.os.MessageQueue.OnFileDescriptorEventListener.EVENT_INPUT;
@@ -133,9 +129,9 @@ import android.net.SocketKeepalive;
 import android.net.TelephonyNetworkSpecifier;
 import android.net.TestNetworkInterface;
 import android.net.TestNetworkManager;
-import android.net.TetheringManager;
 import android.net.Uri;
 import android.net.cts.util.CtsNetUtils;
+import android.net.cts.util.CtsTetheringUtils;
 import android.net.util.KeepaliveUtils;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
@@ -286,7 +282,6 @@ public class ConnectivityManagerTest {
     private final ArraySet<Integer> mNetworkTypes = new ArraySet<>();
     private UiAutomation mUiAutomation;
     private CtsNetUtils mCtsNetUtils;
-    private TetheringManager mTm;
 
     // Used for cleanup purposes.
     private final List<Range<Integer>> mVpnRequiredUidRanges = new ArrayList<>();
@@ -302,7 +297,6 @@ public class ConnectivityManagerTest {
         mWifiManager = (WifiManager) mContext.getSystemService(Context.WIFI_SERVICE);
         mPackageManager = mContext.getPackageManager();
         mCtsNetUtils = new CtsNetUtils(mContext);
-        mTm = mContext.getSystemService(TetheringManager.class);
 
         if (DevSdkIgnoreRuleKt.isDevSdkInRange(null /* minExclusive */,
                 Build.VERSION_CODES.R /* maxInclusive */)) {
@@ -507,6 +501,7 @@ public class ConnectivityManagerTest {
     @Test
     public void testGetAllNetworkStateSnapshots()
             throws InterruptedException {
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_TELEPHONY));
         // Make sure cell is active to retrieve IMSI for verification in later step.
         final Network cellNetwork = mCtsNetUtils.connectToCell();
         final String subscriberId = getSubscriberIdForCellNetwork(cellNetwork);
@@ -537,8 +532,10 @@ public class ConnectivityManagerTest {
                     Objects.requireNonNull(mCm.getNetworkCapabilities(network));
             // Redact specifier of the capabilities of the snapshot before comparing since
             // the result returned from getNetworkCapabilities always get redacted.
+            final NetworkSpecifier snapshotCapSpecifier =
+                    snapshot.getNetworkCapabilities().getNetworkSpecifier();
             final NetworkSpecifier redactedSnapshotCapSpecifier =
-                    snapshot.getNetworkCapabilities().getNetworkSpecifier().redact();
+                    snapshotCapSpecifier == null ? null : snapshotCapSpecifier.redact();
             assertEquals("", caps.describeImmutableDifferences(
                     snapshot.getNetworkCapabilities()
                             .setNetworkSpecifier(redactedSnapshotCapSpecifier)));
@@ -735,6 +732,8 @@ public class ConnectivityManagerTest {
                     .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         } finally {
             mCtsNetUtils.restorePrivateDnsSetting();
+            // Toggle wifi to make sure it is re-validated
+            reconnectWifi();
         }
     }
 
@@ -940,8 +939,8 @@ public class ConnectivityManagerTest {
             // noticeably flaky.
             Thread.sleep(NO_CALLBACK_TIMEOUT_MS);
 
-            // TODO: BUG (b/189868426): this should also apply to listens
-            if (!useListen) {
+            // For R- frameworks, listens will receive duplicated callbacks. See b/189868426.
+            if (isAtLeastS() || !useListen) {
                 assertEquals("PendingIntent should only be received once", 1, receivedCount.get());
             }
         } finally {
@@ -954,12 +953,10 @@ public class ConnectivityManagerTest {
 
     private void assertPendingIntentRequestMatches(NetworkRequest broadcasted, NetworkRequest filed,
             boolean useListen) {
-        // TODO: BUG (b/191713869): on S the request extra is null on listens
-        if (isAtLeastS() && useListen && broadcasted == null) return;
         assertArrayEquals(filed.networkCapabilities.getCapabilities(),
                 broadcasted.networkCapabilities.getCapabilities());
-        // TODO: BUG (b/189868426): this should also apply to listens
-        if (useListen) return;
+        // For R- frameworks, listens will receive duplicated callbacks. See b/189868426.
+        if (!isAtLeastS() && useListen) return;
         assertArrayEquals(filed.networkCapabilities.getTransportTypes(),
                 broadcasted.networkCapabilities.getTransportTypes());
     }
@@ -1083,7 +1080,7 @@ public class ConnectivityManagerTest {
         final Matcher m = Pattern.compile("^" + ssid + ";(true|false|none)$",
                 Pattern.MULTILINE | Pattern.UNIX_LINES).matcher(policyString);
         if (!m.find()) {
-            fail("Unexpected format from cmd netpolicy");
+            fail("Unexpected format from cmd netpolicy, policyString = " + policyString);
         }
         return m.group(1);
     }
@@ -2236,14 +2233,15 @@ public class ConnectivityManagerTest {
                 ConnectivitySettingsManager.getNetworkAvoidBadWifi(mContext);
         final int curPrivateDnsMode = ConnectivitySettingsManager.getPrivateDnsMode(mContext);
 
-        final TestTetheringEventCallback tetherEventCallback = new TestTetheringEventCallback();
+        TestTetheringEventCallback tetherEventCallback = null;
+        final CtsTetheringUtils tetherUtils = new CtsTetheringUtils(mContext);
         try {
-            mTm.registerTetheringEventCallback(c -> c.run() /* executor */, tetherEventCallback);
+            tetherEventCallback = tetherUtils.registerTetheringEventCallback();
             // Adopt for NETWORK_SETTINGS permission.
             mUiAutomation.adoptShellPermissionIdentity();
             // start tethering
             tetherEventCallback.assumeWifiTetheringSupported(mContext);
-            startWifiTethering(tetherEventCallback);
+            tetherUtils.startWifiTethering(tetherEventCallback);
             // Update setting to verify the behavior.
             mCm.setAirplaneMode(true);
             ConnectivitySettingsManager.setPrivateDnsMode(mContext,
@@ -2264,8 +2262,10 @@ public class ConnectivityManagerTest {
             mCm.setAirplaneMode(false);
             ConnectivitySettingsManager.setNetworkAvoidBadWifi(mContext, curAvoidBadWifi);
             ConnectivitySettingsManager.setPrivateDnsMode(mContext, curPrivateDnsMode);
-            mTm.unregisterTetheringEventCallback(tetherEventCallback);
-            mTm.stopAllTethering();
+            if (tetherEventCallback != null) {
+                tetherUtils.unregisterTetheringEventCallback(tetherEventCallback);
+            }
+            tetherUtils.stopAllTethering();
             mUiAutomation.dropShellPermissionIdentity();
         }
     }
@@ -2310,19 +2310,6 @@ public class ConnectivityManagerTest {
                 ConnectivitySettingsManager.getPrivateDnsMode(mContext));
         assertEquals(expectedAvoidBadWifi,
                 ConnectivitySettingsManager.getNetworkAvoidBadWifi(mContext));
-    }
-
-    private void startWifiTethering(final TestTetheringEventCallback callback) throws Exception {
-        if (!isWifiTetheringSupported(mContext, callback)) return;
-
-        final List<String> wifiRegexs =
-                callback.getTetheringInterfaceRegexps().getTetherableWifiRegexs();
-        final StartTetheringCallback startTetheringCallback = new StartTetheringCallback();
-        final TetheringRequest request = new TetheringRequest.Builder(TETHERING_WIFI)
-                .setShouldShowEntitlementUi(false).build();
-        mTm.startTethering(request, c -> c.run() /* executor */, startTetheringCallback);
-        startTetheringCallback.verifyTetheringStarted();
-        callback.expectTetheredInterfacesChanged(wifiRegexs, TETHERING_WIFI);
     }
 
     /**
