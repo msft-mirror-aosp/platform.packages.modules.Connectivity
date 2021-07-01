@@ -25,9 +25,10 @@ import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,9 +39,9 @@ import java.net.InetAddress;
 import java.util.Arrays;
 import java.util.Collections;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class ParcelableTests {
     @Test
     public void testNetworkAttributesParceling() throws Exception {

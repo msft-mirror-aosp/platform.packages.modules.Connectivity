@@ -51,11 +51,11 @@ import android.text.format.DateUtils;
 import android.util.RecurrenceRule;
 
 import androidx.test.InstrumentationRegistry;
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.frameworks.tests.net.R;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import libcore.io.IoUtils;
 import libcore.io.Streams;
@@ -81,9 +81,9 @@ import java.util.List;
 /**
  * Tests for {@link NetworkStatsCollection}.
  */
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsCollectionTest {
 
     private static final String TEST_FILE = "test.bin";

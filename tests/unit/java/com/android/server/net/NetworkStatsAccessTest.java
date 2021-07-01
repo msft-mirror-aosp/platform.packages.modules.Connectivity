@@ -28,11 +28,11 @@ import android.content.pm.PackageManager;
 import android.os.Build;
 import android.telephony.TelephonyManager;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.server.LocalServices;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.After;
 import org.junit.Before;
@@ -41,9 +41,9 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsAccessTest {
     private static final String TEST_PKG = "com.example.test";
     private static final int TEST_UID = 12345;

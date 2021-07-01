@@ -34,12 +34,12 @@ import android.os.Build;
 import android.os.IBinder;
 import android.os.RemoteException;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.server.IpSecService.IResource;
 import com.android.server.IpSecService.RefcountedResource;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -53,8 +53,8 @@ import java.util.concurrent.ThreadLocalRandom;
 
 /** Unit tests for {@link IpSecService.RefcountedResource}. */
 @SmallTest
-@RunWith(AndroidJUnit4.class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecServiceRefcountedResourceTest {
     Context mMockContext;
     IpSecService.IpSecServiceConfiguration mMockIpSecSrvConfig;

@@ -28,11 +28,11 @@ import android.content.res.Resources;
 import android.os.Build;
 import android.os.Parcel;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.CollectionUtils;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -46,8 +46,8 @@ import java.util.Set;
 
 /** Unit tests for {@link IpSecAlgorithm}. */
 @SmallTest
-@RunWith(AndroidJUnit4.class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecAlgorithmTest {
     private static final byte[] KEY_MATERIAL;
 

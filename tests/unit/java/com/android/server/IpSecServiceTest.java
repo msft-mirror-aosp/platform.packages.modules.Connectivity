@@ -51,9 +51,10 @@ import android.system.Os;
 import android.system.StructStat;
 import android.util.Range;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import dalvik.system.SocketTagger;
 
@@ -72,8 +73,8 @@ import java.util.List;
 
 /** Unit tests for {@link IpSecService}. */
 @SmallTest
-@RunWith(AndroidJUnit4.class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecServiceTest {
 
     private static final int DROID_SPI = 0xD1201D;
