@@ -507,6 +507,7 @@ public class ConnectivityManagerTest {
     @Test
     public void testGetAllNetworkStateSnapshots()
             throws InterruptedException {
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_TELEPHONY));
         // Make sure cell is active to retrieve IMSI for verification in later step.
         final Network cellNetwork = mCtsNetUtils.connectToCell();
         final String subscriberId = getSubscriberIdForCellNetwork(cellNetwork);
@@ -737,6 +738,8 @@ public class ConnectivityManagerTest {
                     .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         } finally {
             mCtsNetUtils.restorePrivateDnsSetting();
+            // Toggle wifi to make sure it is re-validated
+            reconnectWifi();
         }
     }
 
@@ -942,8 +945,8 @@ public class ConnectivityManagerTest {
             // noticeably flaky.
             Thread.sleep(NO_CALLBACK_TIMEOUT_MS);
 
-            // TODO: BUG (b/189868426): this should also apply to listens
-            if (!useListen) {
+            // For R- frameworks, listens will receive duplicated callbacks. See b/189868426.
+            if (isAtLeastS() || !useListen) {
                 assertEquals("PendingIntent should only be received once", 1, receivedCount.get());
             }
         } finally {
@@ -956,12 +959,10 @@ public class ConnectivityManagerTest {
 
     private void assertPendingIntentRequestMatches(NetworkRequest broadcasted, NetworkRequest filed,
             boolean useListen) {
-        // TODO: BUG (b/191713869): on S the request extra is null on listens
-        if (isAtLeastS() && useListen && broadcasted == null) return;
         assertArrayEquals(filed.networkCapabilities.getCapabilities(),
                 broadcasted.networkCapabilities.getCapabilities());
-        // TODO: BUG (b/189868426): this should also apply to listens
-        if (useListen) return;
+        // For R- frameworks, listens will receive duplicated callbacks. See b/189868426.
+        if (!isAtLeastS() && useListen) return;
         assertArrayEquals(filed.networkCapabilities.getTransportTypes(),
                 broadcasted.networkCapabilities.getTransportTypes());
     }
@@ -1085,7 +1086,7 @@ public class ConnectivityManagerTest {
         final Matcher m = Pattern.compile("^" + ssid + ";(true|false|none)$",
                 Pattern.MULTILINE | Pattern.UNIX_LINES).matcher(policyString);
         if (!m.find()) {
-            fail("Unexpected format from cmd netpolicy");
+            fail("Unexpected format from cmd netpolicy, policyString = " + policyString);
         }
         return m.group(1);
     }
@@ -2895,6 +2896,10 @@ public class ConnectivityManagerTest {
     public void testUidsAllowedOnRestrictedNetworks() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
 
+        // TODO (b/175199465): figure out a reasonable permission check for
+        //  setUidsAllowedOnRestrictedNetworks that allows tests but not system-external callers.
+        assumeTrue(Build.isDebuggable());
+
         final int uid = mPackageManager.getPackageUid(mContext.getPackageName(), 0 /* flag */);
         final Set<Integer> originalUidsAllowedOnRestrictedNetworks =
                 ConnectivitySettingsManager.getUidsAllowedOnRestrictedNetworks(mContext);
@@ -2902,8 +2907,9 @@ public class ConnectivityManagerTest {
         // because it has been just installed to device. In case the uid is existed in setting
         // mistakenly, try to remove the uid and set correct uids to setting.
         originalUidsAllowedOnRestrictedNetworks.remove(uid);
-        ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext,
-                originalUidsAllowedOnRestrictedNetworks);
+        runWithShellPermissionIdentity(() ->
+                ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
+                        mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
 
         final Handler h = new Handler(Looper.getMainLooper());
         final TestableNetworkCallback testNetworkCb = new TestableNetworkCallback();
@@ -2950,8 +2956,9 @@ public class ConnectivityManagerTest {
             final Set<Integer> newUidsAllowedOnRestrictedNetworks =
                     new ArraySet<>(originalUidsAllowedOnRestrictedNetworks);
             newUidsAllowedOnRestrictedNetworks.add(uid);
-            ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext,
-                    newUidsAllowedOnRestrictedNetworks);
+            runWithShellPermissionIdentity(() ->
+                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
+                            mContext, newUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
             // Wait a while for sending allowed uids on the restricted network to netd.
             // TODD: Have a significant signal to know the uids has been send to netd.
             assertBindSocketToNetworkSuccess(network);
@@ -2960,8 +2967,9 @@ public class ConnectivityManagerTest {
             agent.unregister();
 
             // Restore setting.
-            ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext,
-                    originalUidsAllowedOnRestrictedNetworks);
+            runWithShellPermissionIdentity(() ->
+                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
+                            mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
         }
     }
 }
