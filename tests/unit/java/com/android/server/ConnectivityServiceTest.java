@@ -301,7 +301,6 @@ import android.util.SparseArray;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.connectivity.resources.R;
 import com.android.internal.app.IBatteryStats;
@@ -325,6 +324,8 @@ import com.android.server.connectivity.QosCallbackTracker;
 import com.android.server.connectivity.Vpn;
 import com.android.server.connectivity.VpnProfileStore;
 import com.android.server.net.NetworkPinner;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.ExceptionUtils;
 import com.android.testutils.HandlerUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
@@ -388,8 +389,9 @@ import kotlin.reflect.KClass;
  * Build, install and run with:
  *  runtest frameworks-net -c com.android.server.ConnectivityServiceTest
  */
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class ConnectivityServiceTest {
     private static final String TAG = "ConnectivityServiceTest";
 
@@ -1496,8 +1498,7 @@ public class ConnectivityServiceTest {
         return mService.getNetworkAgentInfoForNetwork(mna.getNetwork()).clatd;
     }
 
-    private static class WrappedMultinetworkPolicyTracker extends MultinetworkPolicyTracker {
-        volatile boolean mConfigRestrictsAvoidBadWifi;
+    private class WrappedMultinetworkPolicyTracker extends MultinetworkPolicyTracker {
         volatile int mConfigMeteredMultipathPreference;
 
         WrappedMultinetworkPolicyTracker(Context c, Handler h, Runnable r) {
@@ -1505,8 +1506,8 @@ public class ConnectivityServiceTest {
         }
 
         @Override
-        public boolean configRestrictsAvoidBadWifi() {
-            return mConfigRestrictsAvoidBadWifi;
+        protected Resources getResourcesForActiveSubId() {
+            return mResources;
         }
 
         @Override
@@ -1723,7 +1724,9 @@ public class ConnectivityServiceTest {
                 .getIdentifier(eq("config_networkSupportedKeepaliveCount"), eq("array"), any());
         doReturn(R.array.network_switch_type_name).when(mResources)
                 .getIdentifier(eq("network_switch_type_name"), eq("array"), any());
-
+        doReturn(R.integer.config_networkAvoidBadWifi).when(mResources)
+                .getIdentifier(eq("config_networkAvoidBadWifi"), eq("integer"), any());
+        doReturn(1).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
 
         final ConnectivityResources connRes = mock(ConnectivityResources.class);
         doReturn(mResources).when(connRes).get();
@@ -4763,30 +4766,29 @@ public class ConnectivityServiceTest {
     }
 
     @Test
-    public void testAvoidBadWifiSetting() throws Exception {
+    public void testSetAllowBadWifiUntil() throws Exception {
+        runAsShell(NETWORK_SETTINGS,
+                () -> mService.setTestAllowBadWifiUntil(System.currentTimeMillis() + 5_000L));
+        waitForIdle();
+        testAvoidBadWifiConfig_controlledBySettings();
+
+        runAsShell(NETWORK_SETTINGS,
+                () -> mService.setTestAllowBadWifiUntil(System.currentTimeMillis() - 5_000L));
+        waitForIdle();
+        testAvoidBadWifiConfig_ignoreSettings();
+    }
+
+    private void testAvoidBadWifiConfig_controlledBySettings() {
         final ContentResolver cr = mServiceContext.getContentResolver();
         final String settingName = ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI;
 
-        mPolicyTracker.mConfigRestrictsAvoidBadWifi = false;
-        String[] values = new String[] {null, "0", "1"};
-        for (int i = 0; i < values.length; i++) {
-            Settings.Global.putInt(cr, settingName, 1);
-            mPolicyTracker.reevaluate();
-            waitForIdle();
-            String msg = String.format("config=false, setting=%s", values[i]);
-            assertTrue(mService.avoidBadWifi());
-            assertFalse(msg, mPolicyTracker.shouldNotifyWifiUnvalidated());
-        }
-
-        mPolicyTracker.mConfigRestrictsAvoidBadWifi = true;
-
-        Settings.Global.putInt(cr, settingName, 0);
+        Settings.Global.putString(cr, settingName, "0");
         mPolicyTracker.reevaluate();
         waitForIdle();
         assertFalse(mService.avoidBadWifi());
         assertFalse(mPolicyTracker.shouldNotifyWifiUnvalidated());
 
-        Settings.Global.putInt(cr, settingName, 1);
+        Settings.Global.putString(cr, settingName, "1");
         mPolicyTracker.reevaluate();
         waitForIdle();
         assertTrue(mService.avoidBadWifi());
@@ -4799,13 +4801,40 @@ public class ConnectivityServiceTest {
         assertTrue(mPolicyTracker.shouldNotifyWifiUnvalidated());
     }
 
+    private void testAvoidBadWifiConfig_ignoreSettings() {
+        final ContentResolver cr = mServiceContext.getContentResolver();
+        final String settingName = ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI;
+
+        String[] values = new String[] {null, "0", "1"};
+        for (int i = 0; i < values.length; i++) {
+            Settings.Global.putString(cr, settingName, values[i]);
+            mPolicyTracker.reevaluate();
+            waitForIdle();
+            String msg = String.format("config=false, setting=%s", values[i]);
+            assertTrue(mService.avoidBadWifi());
+            assertFalse(msg, mPolicyTracker.shouldNotifyWifiUnvalidated());
+        }
+    }
+
+    @Test
+    public void testAvoidBadWifiSetting() throws Exception {
+        final ContentResolver cr = mServiceContext.getContentResolver();
+        final String settingName = ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI;
+
+        doReturn(1).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
+        testAvoidBadWifiConfig_ignoreSettings();
+
+        doReturn(0).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
+        testAvoidBadWifiConfig_controlledBySettings();
+    }
+
     @Ignore("Refactoring in progress b/178071397")
     @Test
     public void testAvoidBadWifi() throws Exception {
         final ContentResolver cr = mServiceContext.getContentResolver();
 
         // Pretend we're on a carrier that restricts switching away from bad wifi.
-        mPolicyTracker.mConfigRestrictsAvoidBadWifi = true;
+        doReturn(0).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
 
         // File a request for cell to ensure it doesn't go down.
         final TestNetworkCallback cellNetworkCallback = new TestNetworkCallback();
@@ -4856,13 +4885,13 @@ public class ConnectivityServiceTest {
 
         // Simulate switching to a carrier that does not restrict avoiding bad wifi, and expect
         // that we switch back to cell.
-        mPolicyTracker.mConfigRestrictsAvoidBadWifi = false;
+        doReturn(1).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
         mPolicyTracker.reevaluate();
         defaultCallback.expectAvailableCallbacksValidated(mCellNetworkAgent);
         assertEquals(mCm.getActiveNetwork(), cellNetwork);
 
         // Switch back to a restrictive carrier.
-        mPolicyTracker.mConfigRestrictsAvoidBadWifi = true;
+        doReturn(0).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
         mPolicyTracker.reevaluate();
         defaultCallback.expectAvailableCallbacksUnvalidated(mWiFiNetworkAgent);
         assertEquals(mCm.getActiveNetwork(), wifiNetwork);
@@ -5539,6 +5568,8 @@ public class ConnectivityServiceTest {
             // the follow-up network disconnection will be processed first.
             mWiFiNetworkAgent.setKeepaliveResponseDelay(3 * TIMEOUT_MS);
             ka.stop();
+            // Call stop() twice shouldn't result in crash, b/182586681.
+            ka.stop();
 
             // Make sure the stop has been processed. Wait for executor idle is needed to prevent
             // flaky since the actual stop call to the service is delegated to executor thread.
@@ -5836,37 +5867,59 @@ public class ConnectivityServiceTest {
     @Test
     public void testNetworkCallbackMaximum() throws Exception {
         final int MAX_REQUESTS = 100;
-        final int CALLBACKS = 89;
-        final int INTENTS = 11;
+        final int CALLBACKS = 87;
+        final int DIFF_INTENTS = 10;
+        final int SAME_INTENTS = 10;
         final int SYSTEM_ONLY_MAX_REQUESTS = 250;
-        assertEquals(MAX_REQUESTS, CALLBACKS + INTENTS);
+        // Assert 1 (Default request filed before testing) + CALLBACKS + DIFF_INTENTS +
+        // 1 (same intent) = MAX_REQUESTS - 1, since the capacity is MAX_REQUEST - 1.
+        assertEquals(MAX_REQUESTS - 1, 1 + CALLBACKS + DIFF_INTENTS + 1);
 
         NetworkRequest networkRequest = new NetworkRequest.Builder().build();
         ArrayList<Object> registered = new ArrayList<>();
 
-        int j = 0;
-        while (j++ < CALLBACKS / 2) {
-            NetworkCallback cb = new NetworkCallback();
-            mCm.requestNetwork(networkRequest, cb);
+        for (int j = 0; j < CALLBACKS; j++) {
+            final NetworkCallback cb = new NetworkCallback();
+            if (j < CALLBACKS / 2) {
+                mCm.requestNetwork(networkRequest, cb);
+            } else {
+                mCm.registerNetworkCallback(networkRequest, cb);
+            }
             registered.add(cb);
         }
-        while (j++ < CALLBACKS) {
-            NetworkCallback cb = new NetworkCallback();
-            mCm.registerNetworkCallback(networkRequest, cb);
-            registered.add(cb);
+
+        // Since ConnectivityService will de-duplicate the request with the same intent,
+        // register multiple times does not really increase multiple requests.
+        final PendingIntent same_pi = PendingIntent.getBroadcast(mContext, 0 /* requestCode */,
+                new Intent("same"), FLAG_IMMUTABLE);
+        for (int j = 0; j < SAME_INTENTS; j++) {
+            mCm.registerNetworkCallback(networkRequest, same_pi);
+            // Wait for the requests with the same intent to be de-duplicated. Because
+            // ConnectivityService side incrementCountOrThrow in binder, decrementCount in handler
+            // thread, waitForIdle is needed to ensure decrementCount being invoked for same intent
+            // requests before doing further tests.
+            waitForIdle();
         }
-        j = 0;
-        while (j++ < INTENTS / 2) {
-            final PendingIntent pi = PendingIntent.getBroadcast(mContext, 0 /* requestCode */,
-                    new Intent("a" + j), FLAG_IMMUTABLE);
-            mCm.requestNetwork(networkRequest, pi);
-            registered.add(pi);
+        for (int j = 0; j < SAME_INTENTS; j++) {
+            mCm.requestNetwork(networkRequest, same_pi);
+            // Wait for the requests with the same intent to be de-duplicated.
+            // Refer to the reason above.
+            waitForIdle();
         }
-        while (j++ < INTENTS) {
-            final PendingIntent pi = PendingIntent.getBroadcast(mContext, 0 /* requestCode */,
-                    new Intent("b" + j), FLAG_IMMUTABLE);
-            mCm.registerNetworkCallback(networkRequest, pi);
-            registered.add(pi);
+        registered.add(same_pi);
+
+        for (int j = 0; j < DIFF_INTENTS; j++) {
+            if (j < DIFF_INTENTS / 2) {
+                final PendingIntent pi = PendingIntent.getBroadcast(mContext, 0 /* requestCode */,
+                        new Intent("a" + j), FLAG_IMMUTABLE);
+                mCm.requestNetwork(networkRequest, pi);
+                registered.add(pi);
+            } else {
+                final PendingIntent pi = PendingIntent.getBroadcast(mContext, 0 /* requestCode */,
+                        new Intent("b" + j), FLAG_IMMUTABLE);
+                mCm.registerNetworkCallback(networkRequest, pi);
+                registered.add(pi);
+            }
         }
 
         // Test that the limit is enforced when MAX_REQUESTS simultaneous requests are added.
@@ -5916,10 +5969,10 @@ public class ConnectivityServiceTest {
 
         for (Object o : registered) {
             if (o instanceof NetworkCallback) {
-                mCm.unregisterNetworkCallback((NetworkCallback)o);
+                mCm.unregisterNetworkCallback((NetworkCallback) o);
             }
             if (o instanceof PendingIntent) {
-                mCm.unregisterNetworkCallback((PendingIntent)o);
+                mCm.unregisterNetworkCallback((PendingIntent) o);
             }
         }
         waitForIdle();
@@ -10286,6 +10339,9 @@ public class ConnectivityServiceTest {
     public void testConnectivityDiagnosticsCallbackOnConnectivityReported() throws Exception {
         setUpConnectivityDiagnosticsCallback();
 
+        // reset to ignore callbacks from setup
+        reset(mConnectivityDiagnosticsCallback);
+
         final Network n = mCellNetworkAgent.getNetwork();
         final boolean hasConnectivity = true;
         mService.reportNetworkConnectivity(n, hasConnectivity);
@@ -10296,6 +10352,8 @@ public class ConnectivityServiceTest {
         // Verify onNetworkConnectivityReported fired
         verify(mConnectivityDiagnosticsCallback)
                 .onNetworkConnectivityReported(eq(n), eq(hasConnectivity));
+        verify(mConnectivityDiagnosticsCallback).onConnectivityReportAvailable(
+                argThat(report -> areConnDiagCapsRedacted(report.getNetworkCapabilities())));
 
         final boolean noConnectivity = false;
         mService.reportNetworkConnectivity(n, noConnectivity);
@@ -10306,6 +10364,54 @@ public class ConnectivityServiceTest {
         // Wait for onNetworkConnectivityReported to fire
         verify(mConnectivityDiagnosticsCallback)
                 .onNetworkConnectivityReported(eq(n), eq(noConnectivity));
+
+        // Also expect a ConnectivityReport after NetworkMonitor asynchronously re-validates
+        verify(mConnectivityDiagnosticsCallback, timeout(TIMEOUT_MS).times(2))
+                .onConnectivityReportAvailable(
+                        argThat(report ->
+                                areConnDiagCapsRedacted(report.getNetworkCapabilities())));
+    }
+
+    @Test
+    public void testConnectivityDiagnosticsCallbackOnConnectivityReportedSeparateUid()
+            throws Exception {
+        setUpConnectivityDiagnosticsCallback();
+
+        // reset to ignore callbacks from setup
+        reset(mConnectivityDiagnosticsCallback);
+
+        // report known Connectivity from a different uid. Verify that network is not re-validated
+        // and this callback is not notified.
+        final Network n = mCellNetworkAgent.getNetwork();
+        final boolean hasConnectivity = true;
+        doAsUid(Process.myUid() + 1, () -> mService.reportNetworkConnectivity(n, hasConnectivity));
+
+        // Block until all other events are done processing.
+        HandlerUtils.waitForIdle(mCsHandlerThread, TIMEOUT_MS);
+
+        // Verify onNetworkConnectivityReported did not fire
+        verify(mConnectivityDiagnosticsCallback, never())
+                .onNetworkConnectivityReported(any(), anyBoolean());
+        verify(mConnectivityDiagnosticsCallback, never())
+                .onConnectivityReportAvailable(any());
+
+        // report different Connectivity from a different uid. Verify that network is re-validated
+        // and that this callback is notified.
+        final boolean noConnectivity = false;
+        doAsUid(Process.myUid() + 1, () -> mService.reportNetworkConnectivity(n, noConnectivity));
+
+        // Block until all other events are done processing.
+        HandlerUtils.waitForIdle(mCsHandlerThread, TIMEOUT_MS);
+
+        // Wait for onNetworkConnectivityReported to fire
+        verify(mConnectivityDiagnosticsCallback, timeout(TIMEOUT_MS))
+                .onNetworkConnectivityReported(eq(n), eq(noConnectivity));
+
+        // Also expect a ConnectivityReport after NetworkMonitor asynchronously re-validates
+        verify(mConnectivityDiagnosticsCallback, timeout(TIMEOUT_MS))
+                .onConnectivityReportAvailable(
+                        argThat(report ->
+                                areConnDiagCapsRedacted(report.getNetworkCapabilities())));
     }
 
     @Test
@@ -13450,43 +13556,43 @@ public class ConnectivityServiceTest {
     }
 
     @Test
-    public void testSetMobileDataPreferredUids_noIssueToFactory() throws Exception {
-        // First set mobile data preferred uid to create a multi-layer requests: 1. listen for
+    public void testMultilayerRequestsOfSetMobileDataPreferredUids() throws Exception {
+        // First set mobile data preferred uid to create a multi-layer requests: 1. request for
         // cellular, 2. track the default network for fallback.
         setAndUpdateMobileDataPreferredUids(
                 Set.of(PRIMARY_USER_HANDLE.getUid(TEST_PACKAGE_UID)));
 
         final HandlerThread handlerThread = new HandlerThread("MockFactory");
         handlerThread.start();
-        NetworkCapabilities internetFilter = new NetworkCapabilities()
+        final NetworkCapabilities cellFilter = new NetworkCapabilities()
+                .addTransportType(TRANSPORT_CELLULAR)
                 .addCapability(NET_CAPABILITY_INTERNET)
                 .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED);
-        final MockNetworkFactory internetFactory = new MockNetworkFactory(handlerThread.getLooper(),
-                mServiceContext, "internetFactory", internetFilter, mCsHandlerThread);
-        internetFactory.setScoreFilter(40);
+        final MockNetworkFactory cellFactory = new MockNetworkFactory(handlerThread.getLooper(),
+                mServiceContext, "cellFactory", cellFilter, mCsHandlerThread);
+        cellFactory.setScoreFilter(40);
 
         try {
-            internetFactory.register();
-            // Default internet request only. The first request is listen for cellular network,
-            // which is never sent to factories (it's a LISTEN, not requestable). The second
-            // fallback request is TRACK_DEFAULT which is also not sent to factories.
-            internetFactory.expectRequestAdds(1);
-            internetFactory.assertRequestCountEquals(1);
+            cellFactory.register();
+            // Default internet request and the mobile data preferred request.
+            cellFactory.expectRequestAdds(2);
+            cellFactory.assertRequestCountEquals(2);
 
-            mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
-            mCellNetworkAgent.connect(true);
+            mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+            mWiFiNetworkAgent.connect(true);
 
-            // The internet factory however is outscored, and should lose its requests.
-            internetFactory.expectRequestRemove();
-            internetFactory.assertRequestCountEquals(0);
+            // The cellFactory however is outscored, and should lose default internet request.
+            // But it should still see mobile data preferred request.
+            cellFactory.expectRequestRemove();
+            cellFactory.assertRequestCountEquals(1);
 
-            mCellNetworkAgent.disconnect();
+            mWiFiNetworkAgent.disconnect();
             // The network satisfying the default internet request has disconnected, so the
-            // internetFactory sees the default request again.
-            internetFactory.expectRequestAdds(1);
-            internetFactory.assertRequestCountEquals(1);
+            // cellFactory sees the default internet requests again.
+            cellFactory.expectRequestAdd();
+            cellFactory.assertRequestCountEquals(2);
         } finally {
-            internetFactory.terminate();
+            cellFactory.terminate();
             handlerThread.quitSafely();
         }
     }
