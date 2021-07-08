@@ -21,17 +21,18 @@ import static org.junit.Assert.assertNotEquals;
 
 import android.os.Build;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
 
 /** Unit tests for {@link IpSecTransform}. */
 @SmallTest
-@RunWith(JUnit4.class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecTransformTest {
 
     @Test

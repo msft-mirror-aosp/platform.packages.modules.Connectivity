@@ -26,9 +26,10 @@ import android.os.Bundle;
 import android.os.Parcel;
 import android.os.StrictMode;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -38,9 +39,9 @@ import java.net.UnknownHostException;
 import java.util.Arrays;
 import java.util.Map;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NsdServiceInfoTest {
 
     public final static InetAddress LOCALHOST;

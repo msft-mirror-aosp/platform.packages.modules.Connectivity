@@ -31,12 +31,12 @@ import android.os.Build;
 import android.test.mock.MockContext;
 import android.util.SparseArray;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.net.VpnProfile;
 import com.android.internal.util.MessageUtils;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -44,8 +44,8 @@ import org.junit.runner.RunWith;
 
 /** Unit tests for {@link VpnManager}. */
 @SmallTest
-@RunWith(AndroidJUnit4.class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class VpnManagerTest {
     private static final String PKG_NAME = "fooPackage";
 

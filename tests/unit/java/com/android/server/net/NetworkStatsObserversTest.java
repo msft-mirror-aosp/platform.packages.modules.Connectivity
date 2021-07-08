@@ -51,11 +51,11 @@ import android.os.UserHandle;
 import android.telephony.TelephonyManager;
 import android.util.ArrayMap;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.server.net.NetworkStatsServiceTest.LatchedHandler;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
 
 import org.junit.Before;
@@ -70,9 +70,9 @@ import java.util.Objects;
 /**
  * Tests for {@link NetworkStatsObservers}.
  */
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsObserversTest {
     private static final String TEST_IFACE = "test0";
     private static final String TEST_IFACE2 = "test1";

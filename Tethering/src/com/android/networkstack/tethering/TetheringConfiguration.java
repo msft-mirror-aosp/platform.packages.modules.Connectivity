@@ -170,13 +170,23 @@ public class TetheringConfiguration {
 
         mUsbTetheringFunction = getUsbTetheringFunction(res);
 
-        tetherableUsbRegexs = getResourceStringArray(res, R.array.config_tether_usb_regexs);
-        tetherableNcmRegexs = getResourceStringArray(res, R.array.config_tether_ncm_regexs);
+        final String[] ncmRegexs = getResourceStringArray(res, R.array.config_tether_ncm_regexs);
+        // If usb tethering use NCM and config_tether_ncm_regexs is not empty, use
+        // config_tether_ncm_regexs for tetherableUsbRegexs.
+        if (isUsingNcm() && (ncmRegexs.length != 0)) {
+            tetherableUsbRegexs = ncmRegexs;
+            tetherableNcmRegexs = EMPTY_STRING_ARRAY;
+        } else {
+            tetherableUsbRegexs = getResourceStringArray(res, R.array.config_tether_usb_regexs);
+            tetherableNcmRegexs = ncmRegexs;
+        }
         // TODO: Evaluate deleting this altogether now that Wi-Fi always passes
         // us an interface name. Careful consideration needs to be given to
         // implications for Settings and for provisioning checks.
         tetherableWifiRegexs = getResourceStringArray(res, R.array.config_tether_wifi_regexs);
-        tetherableWigigRegexs = getResourceStringArray(res, R.array.config_tether_wigig_regexs);
+        // TODO: Remove entire wigig code once tethering module no longer support R devices.
+        tetherableWigigRegexs = SdkLevel.isAtLeastS()
+                ? new String[0] : getResourceStringArray(res, R.array.config_tether_wigig_regexs);
         tetherableWifiP2pRegexs = getResourceStringArray(
                 res, R.array.config_tether_wifi_p2p_regexs);
         tetherableBluetoothRegexs = getResourceStringArray(

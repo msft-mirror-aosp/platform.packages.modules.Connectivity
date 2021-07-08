@@ -64,13 +64,14 @@ import android.system.Os;
 import android.test.mock.MockContext;
 import android.util.ArraySet;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
 
 import com.android.server.IpSecService.TunnelInterfaceRecord;
+import com.android.testutils.DevSdkIgnoreRule;
 
 import org.junit.Before;
 import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -84,8 +85,10 @@ import java.util.Set;
 /** Unit tests for {@link IpSecService}. */
 @SmallTest
 @RunWith(Parameterized.class)
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
 public class IpSecServiceParameterizedTest {
+    @Rule
+    public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule(
+            Build.VERSION_CODES.R /* ignoreClassUpTo */);
 
     private static final int TEST_SPI = 0xD1201D;
 

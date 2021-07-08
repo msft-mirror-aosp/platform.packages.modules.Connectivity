@@ -21,9 +21,9 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.NetworkScore.KEEP_CONNECTED_NONE
 import android.os.Build
-import androidx.test.filters.SdkSuppress
 import androidx.test.filters.SmallTest
-import androidx.test.runner.AndroidJUnit4
+import com.android.testutils.DevSdkIgnoreRule
+import com.android.testutils.DevSdkIgnoreRunner
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers.eq
@@ -34,9 +34,9 @@ import kotlin.test.assertTrue
 
 const val POLICY_NONE = 0L
 
-@RunWith(AndroidJUnit4::class)
+@RunWith(DevSdkIgnoreRunner::class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 class NetworkOfferTest {
     val mockCallback = mock(INetworkOfferCallback::class.java)
 

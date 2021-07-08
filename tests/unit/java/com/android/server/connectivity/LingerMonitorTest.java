@@ -46,13 +46,13 @@ import android.os.Binder;
 import android.os.Build;
 import android.text.format.DateUtils;
 
-import androidx.test.filters.SdkSuppress;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.connectivity.resources.R;
 import com.android.server.ConnectivityService;
 import com.android.server.connectivity.NetworkNotificationManager.NotificationType;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.After;
 import org.junit.Before;
@@ -61,9 +61,9 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class LingerMonitorTest {
     static final String CELLULAR = "CELLULAR";
     static final String WIFI     = "WIFI";

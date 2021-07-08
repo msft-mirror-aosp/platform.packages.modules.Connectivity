@@ -31,11 +31,11 @@ import android.telephony.SubscriptionInfo
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import android.test.mock.MockContentResolver
-import androidx.test.filters.SdkSuppress
 import androidx.test.filters.SmallTest
-import androidx.test.runner.AndroidJUnit4
 import com.android.connectivity.resources.R
 import com.android.internal.util.test.FakeSettingsProvider
+import com.android.testutils.DevSdkIgnoreRule
+import com.android.testutils.DevSdkIgnoreRunner
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -59,9 +59,9 @@ import org.mockito.Mockito.verify
  * Build, install and run with:
  * atest android.net.util.MultinetworkPolicyTrackerTest
  */
-@RunWith(AndroidJUnit4::class)
+@RunWith(DevSdkIgnoreRunner::class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 class MultinetworkPolicyTrackerTest {
     private val resources = mock(Resources::class.java).also {
         doReturn(R.integer.config_networkAvoidBadWifi).`when`(it).getIdentifier(

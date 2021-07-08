@@ -121,15 +121,23 @@ public class PermissionMonitor {
         @Override
         public void onReceive(Context context, Intent intent) {
             final String action = intent.getAction();
-            final int uid = intent.getIntExtra(Intent.EXTRA_UID, -1);
-            final Uri packageData = intent.getData();
-            final String packageName =
-                    packageData != null ? packageData.getSchemeSpecificPart() : null;
 
             if (Intent.ACTION_PACKAGE_ADDED.equals(action)) {
+                final int uid = intent.getIntExtra(Intent.EXTRA_UID, -1);
+                final Uri packageData = intent.getData();
+                final String packageName =
+                        packageData != null ? packageData.getSchemeSpecificPart() : null;
                 onPackageAdded(packageName, uid);
             } else if (Intent.ACTION_PACKAGE_REMOVED.equals(action)) {
+                final int uid = intent.getIntExtra(Intent.EXTRA_UID, -1);
+                final Uri packageData = intent.getData();
+                final String packageName =
+                        packageData != null ? packageData.getSchemeSpecificPart() : null;
                 onPackageRemoved(packageName, uid);
+            } else if (Intent.ACTION_EXTERNAL_APPLICATIONS_AVAILABLE.equals(action)) {
+                final String[] pkgList =
+                        intent.getStringArrayExtra(Intent.EXTRA_CHANGED_PACKAGE_LIST);
+                onExternalApplicationsAvailable(pkgList);
             } else {
                 Log.wtf(TAG, "received unexpected intent: " + action);
             }
@@ -194,6 +202,12 @@ public class PermissionMonitor {
                 mIntentReceiver, intentFilter, null /* broadcastPermission */,
                 null /* scheduler */);
 
+        final IntentFilter externalIntentFilter =
+                new IntentFilter(Intent.ACTION_EXTERNAL_APPLICATIONS_AVAILABLE);
+        userAllContext.registerReceiver(
+                mIntentReceiver, externalIntentFilter, null /* broadcastPermission */,
+                null /* scheduler */);
+
         // Register UIDS_ALLOWED_ON_RESTRICTED_NETWORKS setting observer
         mDeps.registerContentObserver(
                 userAllContext,
@@ -230,11 +244,11 @@ public class PermissionMonitor {
             boolean hasRestrictedPermission = hasRestrictedNetworkPermission(app);
 
             if (isNetwork || hasRestrictedPermission) {
-                Boolean permission = mApps.get(uid);
+                Boolean permission = mApps.get(UserHandle.getAppId(uid));
                 // If multiple packages share a UID (cf: android:sharedUserId) and ask for different
                 // permissions, don't downgrade (i.e., if it's already SYSTEM, leave it as is).
                 if (permission == null || permission == NETWORK) {
-                    mApps.put(uid, hasRestrictedPermission);
+                    mApps.put(UserHandle.getAppId(uid), hasRestrictedPermission);
                 }
             }
 
@@ -325,14 +339,14 @@ public class PermissionMonitor {
         // networks. mApps contains the result of checks for both hasNetworkPermission and
         // hasRestrictedNetworkPermission. If uid is in the mApps list that means uid has one of
         // permissions at least.
-        return mApps.containsKey(uid);
+        return mApps.containsKey(UserHandle.getAppId(uid));
     }
 
     /**
      * Returns whether the given uid has permission to use restricted networks.
      */
     public synchronized boolean hasRestrictedNetworksPermission(int uid) {
-        return Boolean.TRUE.equals(mApps.get(uid));
+        return Boolean.TRUE.equals(mApps.get(UserHandle.getAppId(uid)));
     }
 
     private void update(Set<UserHandle> users, Map<Integer, Boolean> apps, boolean add) {
@@ -452,12 +466,13 @@ public class PermissionMonitor {
 
         // If multiple packages share a UID (cf: android:sharedUserId) and ask for different
         // permissions, don't downgrade (i.e., if it's already SYSTEM, leave it as is).
-        final Boolean permission = highestPermissionForUid(mApps.get(uid), packageName);
-        if (permission != mApps.get(uid)) {
-            mApps.put(uid, permission);
+        final int appId = UserHandle.getAppId(uid);
+        final Boolean permission = highestPermissionForUid(mApps.get(appId), packageName);
+        if (permission != mApps.get(appId)) {
+            mApps.put(appId, permission);
 
             Map<Integer, Boolean> apps = new HashMap<>();
-            apps.put(uid, permission);
+            apps.put(appId, permission);
             update(mUsers, apps, true);
         }
 
@@ -472,7 +487,7 @@ public class PermissionMonitor {
                 updateVpnUids(vpn.getKey(), changedUids, true);
             }
         }
-        mAllApps.add(UserHandle.getAppId(uid));
+        mAllApps.add(appId);
     }
 
     private Boolean highestUidNetworkPermission(int uid) {
@@ -529,16 +544,17 @@ public class PermissionMonitor {
             return;
         }
 
-        if (permission == mApps.get(uid)) {
+        final int appId = UserHandle.getAppId(uid);
+        if (permission == mApps.get(appId)) {
             // The permissions of this UID have not changed. Nothing to do.
             return;
         } else if (permission != null) {
-            mApps.put(uid, permission);
-            apps.put(uid, permission);
+            mApps.put(appId, permission);
+            apps.put(appId, permission);
             update(mUsers, apps, true);
         } else {
-            mApps.remove(uid);
-            apps.put(uid, NETWORK);  // doesn't matter which permission we pick here
+            mApps.remove(appId);
+            apps.put(appId, NETWORK);  // doesn't matter which permission we pick here
             update(mUsers, apps, false);
         }
     }
@@ -653,7 +669,7 @@ public class PermissionMonitor {
      */
     private void removeBypassingUids(Set<Integer> uids, int vpnAppUid) {
         uids.remove(vpnAppUid);
-        uids.removeIf(uid -> mApps.getOrDefault(uid, NETWORK) == SYSTEM);
+        uids.removeIf(uid -> mApps.getOrDefault(UserHandle.getAppId(uid), NETWORK) == SYSTEM);
     }
 
     /**
@@ -795,18 +811,34 @@ public class PermissionMonitor {
         for (Integer uid : uidsToUpdate) {
             final Boolean permission = highestUidNetworkPermission(uid);
 
+            final int appId = UserHandle.getAppId(uid);
             if (null == permission) {
-                removedUids.put(uid, NETWORK); // Doesn't matter which permission is set here.
-                mApps.remove(uid);
+                removedUids.put(appId, NETWORK); // Doesn't matter which permission is set here.
+                mApps.remove(appId);
             } else {
-                updatedUids.put(uid, permission);
-                mApps.put(uid, permission);
+                updatedUids.put(appId, permission);
+                mApps.put(appId, permission);
             }
         }
 
         // Step3. Update or revoke permission for uids with netd.
         update(mUsers, updatedUids, true /* add */);
         update(mUsers, removedUids, false /* add */);
+    }
+
+    private synchronized void onExternalApplicationsAvailable(String[] pkgList) {
+        if (CollectionUtils.isEmpty(pkgList)) {
+            Log.e(TAG, "No available external application.");
+            return;
+        }
+
+        for (String app : pkgList) {
+            final PackageInfo info = getPackageInfo(app);
+            if (info == null || info.applicationInfo == null) continue;
+
+            final int appId = info.applicationInfo.uid;
+            onPackageAdded(app, appId); // Use onPackageAdded to add package one by one.
+        }
     }
 
     /** Dump info to dumpsys */

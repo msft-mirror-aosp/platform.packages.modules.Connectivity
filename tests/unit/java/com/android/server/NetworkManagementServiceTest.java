@@ -45,12 +45,11 @@ import android.os.RemoteException;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.util.ArrayMap;
 
-import androidx.test.filters.SdkSuppress;
-import androidx.test.runner.AndroidJUnit4;
-
 import com.android.internal.app.IBatteryStats;
 import com.android.server.NetworkManagementService.Dependencies;
 import com.android.server.net.BaseNetworkObserver;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.After;
 import org.junit.Before;
@@ -66,9 +65,9 @@ import java.util.function.BiFunction;
 /**
  * Tests for {@link NetworkManagementService}.
  */
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@SdkSuppress(minSdkVersion = Build.VERSION_CODES.S, codeName = "S")
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkManagementServiceTest {
     private NetworkManagementService mNMService;
     @Mock private Context mContext;
