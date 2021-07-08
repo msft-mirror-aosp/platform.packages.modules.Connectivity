@@ -1102,10 +1102,10 @@ public class ConnectivityManagerTest {
         }
     }
 
-    private void waitForActiveNetworkMetered(final int targetTransportType,
+    private Network waitForActiveNetworkMetered(final int targetTransportType,
             final boolean requestedMeteredness, final boolean useSystemDefault)
             throws Exception {
-        final CountDownLatch latch = new CountDownLatch(1);
+        final CompletableFuture<Network> networkFuture = new CompletableFuture<>();
         final NetworkCallback networkCallback = new NetworkCallback() {
             @Override
             public void onCapabilitiesChanged(Network network, NetworkCapabilities nc) {
@@ -1113,7 +1113,7 @@ public class ConnectivityManagerTest {
 
                 final boolean metered = !nc.hasCapability(NET_CAPABILITY_NOT_METERED);
                 if (metered == requestedMeteredness) {
-                    latch.countDown();
+                    networkFuture.complete(network);
                 }
             }
         };
@@ -1133,18 +1133,20 @@ public class ConnectivityManagerTest {
 
             // Changing meteredness on wifi involves reconnecting, which can take several seconds
             // (involves re-associating, DHCP...).
-            if (!latch.await(NETWORK_CALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                fail("Timed out waiting for active network metered status to change to "
-                        + requestedMeteredness + " ; network = " + mCm.getActiveNetwork());
-            }
+            return networkFuture.get(NETWORK_CALLBACK_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            throw new AssertionError("Timed out waiting for active network metered status to "
+                    + "change to " + requestedMeteredness + " ; network = "
+                    + mCm.getActiveNetwork(), e);
         } finally {
             mCm.unregisterNetworkCallback(networkCallback);
         }
     }
 
-    private void setWifiMeteredStatusAndWait(String ssid, boolean isMetered) throws Exception {
+    private Network setWifiMeteredStatusAndWait(String ssid, boolean isMetered) throws Exception {
         setWifiMeteredStatus(ssid, Boolean.toString(isMetered) /* metered */);
-        waitForActiveNetworkMetered(TRANSPORT_WIFI,
+        mCtsNetUtils.ensureWifiConnected();
+        return waitForActiveNetworkMetered(TRANSPORT_WIFI,
                 isMetered /* requestedMeteredness */,
                 true /* useSystemDefault */);
     }
@@ -1210,8 +1212,7 @@ public class ConnectivityManagerTest {
                     Integer.toString(newMeteredPreference));
             // Wifi meterness changes from unmetered to metered will disconnect and reconnect since
             // R.
-            setWifiMeteredStatusAndWait(ssid, true);
-            final Network network = mCtsNetUtils.ensureWifiConnected();
+            final Network network = setWifiMeteredStatusAndWait(ssid, true);
             assertEquals(ssid, unquoteSSID(mWifiManager.getConnectionInfo().getSSID()));
             assertEquals(mCm.getNetworkCapabilities(network).hasCapability(
                     NET_CAPABILITY_NOT_METERED), false);
@@ -2880,6 +2881,10 @@ public class ConnectivityManagerTest {
     public void testUidsAllowedOnRestrictedNetworks() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
 
+        // TODO (b/175199465): figure out a reasonable permission check for
+        //  setUidsAllowedOnRestrictedNetworks that allows tests but not system-external callers.
+        assumeTrue(Build.isDebuggable());
+
         final int uid = mPackageManager.getPackageUid(mContext.getPackageName(), 0 /* flag */);
         final Set<Integer> originalUidsAllowedOnRestrictedNetworks =
                 ConnectivitySettingsManager.getUidsAllowedOnRestrictedNetworks(mContext);
@@ -2887,8 +2892,9 @@ public class ConnectivityManagerTest {
         // because it has been just installed to device. In case the uid is existed in setting
         // mistakenly, try to remove the uid and set correct uids to setting.
         originalUidsAllowedOnRestrictedNetworks.remove(uid);
-        ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext,
-                originalUidsAllowedOnRestrictedNetworks);
+        runWithShellPermissionIdentity(() ->
+                ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
+                        mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
 
         final Handler h = new Handler(Looper.getMainLooper());
         final TestableNetworkCallback testNetworkCb = new TestableNetworkCallback();
@@ -2935,8 +2941,9 @@ public class ConnectivityManagerTest {
             final Set<Integer> newUidsAllowedOnRestrictedNetworks =
                     new ArraySet<>(originalUidsAllowedOnRestrictedNetworks);
             newUidsAllowedOnRestrictedNetworks.add(uid);
-            ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext,
-                    newUidsAllowedOnRestrictedNetworks);
+            runWithShellPermissionIdentity(() ->
+                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
+                            mContext, newUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
             // Wait a while for sending allowed uids on the restricted network to netd.
             // TODD: Have a significant signal to know the uids has been send to netd.
             assertBindSocketToNetworkSuccess(network);
@@ -2945,8 +2952,9 @@ public class ConnectivityManagerTest {
             agent.unregister();
 
             // Restore setting.
-            ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(mContext,
-                    originalUidsAllowedOnRestrictedNetworks);
+            runWithShellPermissionIdentity(() ->
+                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
+                            mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
         }
     }
 }
