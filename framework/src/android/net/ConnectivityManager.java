@@ -1187,7 +1187,8 @@ public class ConnectivityManager {
      *
      * @return a {@link Network} object for the current default network for the
      *         given UID or {@code null} if no default network is currently active
-     * TODO: b/183465229 Cleanup getActiveNetworkForUid once b/165835257 is fixed
+     *
+     * @hide
      */
     @RequiresPermission(android.Manifest.permission.NETWORK_STACK)
     @Nullable
@@ -4939,7 +4940,7 @@ public class ConnectivityManager {
                 Log.e(TAG, "Can't set proxy properties", e);
             }
             // Must flush DNS cache as new network may have different DNS resolutions.
-            InetAddressCompat.clearDnsCache();
+            InetAddress.clearDnsCache();
             // Must flush socket pool as idle sockets will be bound to previous network and may
             // cause subsequent fetches to be performed on old network.
             NetworkEventDispatcher.getInstance().dispatchNetworkConfigurationChange();
