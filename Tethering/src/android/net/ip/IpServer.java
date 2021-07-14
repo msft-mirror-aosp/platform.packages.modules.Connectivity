@@ -26,6 +26,7 @@ import static android.net.util.TetheringMessageBase.BASE_IPSERVER;
 import static android.system.OsConstants.RT_SCOPE_UNIVERSE;
 
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
+import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
 
 import android.net.INetd;
 import android.net.INetworkStackStatusCallback;
@@ -596,6 +597,7 @@ public class IpServer extends StateMachine {
         // into calls to InterfaceController, shared with startIPv4().
         mInterfaceCtrl.clearIPv4Address();
         mPrivateAddressCoordinator.releaseDownstream(this);
+        mBpfCoordinator.tetherOffloadClientClear(this);
         mIpv4Address = null;
         mStaticIpv4ServerAddr = null;
         mStaticIpv4ClientAddr = null;
@@ -754,6 +756,9 @@ public class IpServer extends StateMachine {
         // deprecation of any existing RA data.
 
         setRaParams(params);
+        // Be aware that updateIpv6ForwardingRules use mLastIPv6LinkProperties, so this line should
+        // be eariler than updateIpv6ForwardingRules.
+        // TODO: avoid this dependencies and move this logic into BpfCoordinator.
         mLastIPv6LinkProperties = v6only;
 
         updateIpv6ForwardingRules(mLastIPv6UpstreamIfindex, upstreamIfIndex, null);
@@ -891,12 +896,20 @@ public class IpServer extends StateMachine {
         mBpfCoordinator.tetherOffloadRuleUpdate(this, newIfindex);
     }
 
+    private boolean isIpv6VcnNetworkInterface() {
+        if (mLastIPv6LinkProperties == null) return false;
+
+        return isVcnInterface(mLastIPv6LinkProperties.getInterfaceName());
+    }
+
     // Handles all updates to IPv6 forwarding rules. These can currently change only if the upstream
     // changes or if a neighbor event is received.
     private void updateIpv6ForwardingRules(int prevUpstreamIfindex, int upstreamIfindex,
             NeighborEvent e) {
-        // If we no longer have an upstream, clear forwarding rules and do nothing else.
-        if (upstreamIfindex == 0) {
+        // If no longer have an upstream or it is virtual network, clear forwarding rules and do
+        // nothing else.
+        // TODO: Rather than always clear rules, ensure whether ipv6 ever enable first.
+        if (upstreamIfindex == 0 || isIpv6VcnNetworkInterface()) {
             clearIpv6ForwardingRules();
             return;
         }
@@ -949,7 +962,6 @@ public class IpServer extends StateMachine {
         if (e.isValid()) {
             mBpfCoordinator.tetherOffloadClientAdd(this, clientInfo);
         } else {
-            // TODO: Delete all related offload rules which are using this client.
             mBpfCoordinator.tetherOffloadClientRemove(this, clientInfo);
         }
     }
@@ -1054,8 +1066,16 @@ public class IpServer extends StateMachine {
         mLastRaParams = newParams;
     }
 
-    private void logMessage(State state, int what) {
-        mLog.log(state.getName() + " got " + sMagicDecoderRing.get(what, Integer.toString(what)));
+    private void maybeLogMessage(State state, int what) {
+        switch (what) {
+            // Suppress some CMD_* to avoid log flooding.
+            case CMD_IPV6_TETHER_UPDATE:
+            case CMD_NEIGHBOR_EVENT:
+                break;
+            default:
+                mLog.log(state.getName() + " got "
+                        + sMagicDecoderRing.get(what, Integer.toString(what)));
+        }
     }
 
     private void sendInterfaceState(int newInterfaceState) {
@@ -1095,7 +1115,7 @@ public class IpServer extends StateMachine {
 
         @Override
         public boolean processMessage(Message message) {
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLastError = TetheringManager.TETHER_ERROR_NO_ERROR;
@@ -1180,7 +1200,6 @@ public class IpServer extends StateMachine {
 
         @Override
         public boolean processMessage(Message message) {
-            logMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_UNREQUESTED:
                     transitionTo(mInitialState);
@@ -1238,7 +1257,7 @@ public class IpServer extends StateMachine {
         public boolean processMessage(Message message) {
             if (super.processMessage(message)) return true;
 
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLog.e("CMD_TETHER_REQUESTED while in local-only hotspot mode.");
@@ -1276,6 +1295,16 @@ public class IpServer extends StateMachine {
             super.exit();
         }
 
+        // Note that IPv4 offload rules cleanup is implemented in BpfCoordinator while upstream
+        // state is null or changed because IPv4 and IPv6 tethering have different code flow
+        // and behaviour. While upstream is switching from offload supported interface to
+        // offload non-supportted interface, event CMD_TETHER_CONNECTION_CHANGED calls
+        // #cleanupUpstreamInterface but #cleanupUpstream because new UpstreamIfaceSet is not null.
+        // This case won't happen in IPv6 tethering because IPv6 tethering upstream state is
+        // reported by IPv6TetheringCoordinator. #cleanupUpstream is also called by unwirding
+        // adding NAT failure. In that case, the IPv4 offload rules are removed by #stopIPv4
+        // in the state machine. Once there is any case out whish is not covered by previous cases,
+        // probably consider clearing rules in #cleanupUpstream as well.
         private void cleanupUpstream() {
             if (mUpstreamIfaceSet == null) return;
 
@@ -1306,7 +1335,7 @@ public class IpServer extends StateMachine {
         public boolean processMessage(Message message) {
             if (super.processMessage(message)) return true;
 
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_REQUESTED:
                     mLog.e("CMD_TETHER_REQUESTED while already tethering.");
@@ -1417,7 +1446,7 @@ public class IpServer extends StateMachine {
     class WaitingForRestartState extends State {
         @Override
         public boolean processMessage(Message message) {
-            logMessage(this, message.what);
+            maybeLogMessage(this, message.what);
             switch (message.what) {
                 case CMD_TETHER_UNREQUESTED:
                     transitionTo(mInitialState);
@@ -1426,7 +1455,7 @@ public class IpServer extends StateMachine {
                     break;
                 case CMD_INTERFACE_DOWN:
                     transitionTo(mUnavailableState);
-                    mLog.i("Untethered (interface down) and restarting" + mIfaceName);
+                    mLog.i("Untethered (interface down) and restarting " + mIfaceName);
                     mCallback.requestEnableTethering(mInterfaceType, true /* enabled */);
                     break;
                 default:
