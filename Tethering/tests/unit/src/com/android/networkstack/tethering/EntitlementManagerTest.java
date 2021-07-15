@@ -53,6 +53,9 @@ import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ModuleInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.net.util.SharedLog;
 import android.os.Bundle;
@@ -87,11 +90,13 @@ public final class EntitlementManagerTest {
     private static final String[] PROVISIONING_APP_NAME = {"some", "app"};
     private static final String PROVISIONING_NO_UI_APP_NAME = "no_ui_app";
     private static final String PROVISIONING_APP_RESPONSE = "app_response";
+    private static final String TEST_PACKAGE_NAME = "com.android.tethering.test";
 
     @Mock private CarrierConfigManager mCarrierConfigManager;
     @Mock private Context mContext;
     @Mock private Resources mResources;
     @Mock private SharedLog mLog;
+    @Mock private PackageManager mPm;
     @Mock private EntitlementManager.OnUiEntitlementFailedListener mEntitlementFailedListener;
 
     // Like so many Android system APIs, these cannot be mocked because it is marked final.
@@ -182,7 +187,7 @@ public final class EntitlementManagerTest {
     }
 
     @Before
-    public void setUp() {
+    public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         mMockingSession = mockitoSession()
                 .initMocks(this)
@@ -196,6 +201,10 @@ public final class EntitlementManagerTest {
                 eq(EntitlementManager.DISABLE_PROVISIONING_SYSPROP_KEY), anyBoolean()));
         doReturn(null).when(
                 () -> DeviceConfig.getProperty(eq(NAMESPACE_CONNECTIVITY), anyString()));
+        doReturn(mPm).when(mContext).getPackageManager();
+        doReturn(TEST_PACKAGE_NAME).when(mContext).getPackageName();
+        doReturn(new PackageInfo()).when(mPm).getPackageInfo(anyString(), anyInt());
+        doReturn(new ModuleInfo()).when(mPm).getModuleInfo(anyString(), anyInt());
 
         when(mResources.getStringArray(R.array.config_tether_dhcp_range))
                 .thenReturn(new String[0]);
@@ -217,7 +226,7 @@ public final class EntitlementManagerTest {
         mEnMgr = new WrappedEntitlementManager(mMockContext, new Handler(mLooper.getLooper()), mLog,
                 mPermissionChangeCallback);
         mEnMgr.setOnUiEntitlementFailedListener(mEntitlementFailedListener);
-        mConfig = new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        mConfig = new FakeTetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
         mEnMgr.setTetheringConfigurationFetcher(() -> {
             return mConfig;
         });
@@ -242,7 +251,7 @@ public final class EntitlementManagerTest {
         when(mCarrierConfigManager.getConfigForSubId(anyInt())).thenReturn(mCarrierConfig);
         mCarrierConfig.putBoolean(CarrierConfigManager.KEY_REQUIRE_ENTITLEMENT_CHECKS_BOOL, true);
         mCarrierConfig.putBoolean(CarrierConfigManager.KEY_CARRIER_CONFIG_APPLIED_BOOL, true);
-        mConfig = new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        mConfig = new FakeTetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
     }
 
     @Test
@@ -256,7 +265,7 @@ public final class EntitlementManagerTest {
         setupForRequiredProvisioning();
         when(mContext.getSystemService(Context.CARRIER_CONFIG_SERVICE))
             .thenReturn(null);
-        mConfig = new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        mConfig = new FakeTetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
         // Couldn't get the CarrierConfigManager, but still had a declared provisioning app.
         // Therefore provisioning still be required.
         assertTrue(mEnMgr.isTetherProvisioningRequired(mConfig));
@@ -266,7 +275,7 @@ public final class EntitlementManagerTest {
     public void toleratesCarrierConfigMissing() {
         setupForRequiredProvisioning();
         when(mCarrierConfigManager.getConfig()).thenReturn(null);
-        mConfig = new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        mConfig = new FakeTetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
         // We still have a provisioning app configured, so still require provisioning.
         assertTrue(mEnMgr.isTetherProvisioningRequired(mConfig));
     }
@@ -284,11 +293,11 @@ public final class EntitlementManagerTest {
         setupForRequiredProvisioning();
         when(mResources.getStringArray(R.array.config_mobile_hotspot_provision_app))
             .thenReturn(null);
-        mConfig = new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        mConfig = new FakeTetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
         assertFalse(mEnMgr.isTetherProvisioningRequired(mConfig));
         when(mResources.getStringArray(R.array.config_mobile_hotspot_provision_app))
             .thenReturn(new String[] {"malformedApp"});
-        mConfig = new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        mConfig = new FakeTetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
         assertFalse(mEnMgr.isTetherProvisioningRequired(mConfig));
     }
 

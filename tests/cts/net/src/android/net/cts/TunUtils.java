@@ -47,7 +47,7 @@ public class TunUtils {
     protected static final int IP6_PROTO_OFFSET = 6;
 
     private static final int DATA_BUFFER_LEN = 4096;
-    private static final int TIMEOUT = 1000;
+    private static final int TIMEOUT = 2000;
 
     private final List<byte[]> mPackets = new ArrayList<>();
     private final ParcelFileDescriptor mTunFd;
@@ -145,6 +145,10 @@ public class TunUtils {
         assertEquals(expectedPacketSize, espPkt.length);
 
         return espPkt; // We've found the packet we're looking for.
+    }
+
+    public byte[] awaitEspPacket(int spi, boolean useEncap) throws Exception {
+        return awaitPacket((pkt) -> isEsp(pkt, spi, useEncap));
     }
 
     private static boolean isSpiEqual(byte[] pkt, int espOffset, int spi) {
