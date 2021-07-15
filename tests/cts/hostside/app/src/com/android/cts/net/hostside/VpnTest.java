@@ -17,6 +17,7 @@
 package com.android.cts.net.hostside;
 
 import static android.Manifest.permission.NETWORK_SETTINGS;
+import static android.net.ConnectivityManager.TYPE_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.os.Process.INVALID_UID;
 import static android.system.OsConstants.AF_INET;
@@ -759,6 +760,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertEquals(vpnNetwork, mCM.getActiveNetwork());
         assertNotEqual(defaultNetwork, vpnNetwork);
         maybeExpectVpnTransportInfo(vpnNetwork);
+        assertEquals(TYPE_VPN, mCM.getNetworkInfo(vpnNetwork).getType());
 
         if (SdkLevel.isAtLeastS()) {
             // Check that system default network callback has not seen any network changes, even
