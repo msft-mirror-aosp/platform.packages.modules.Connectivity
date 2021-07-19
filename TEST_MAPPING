@@ -1,5 +1,8 @@
 {
   "presubmit": [
+    {
+      "name": "ConnectivityCoverageTests"
+    },
     // Run in addition to mainline-presubmit as mainline-presubmit is not
     // supported in every branch.
     // CtsNetTestCasesLatestSdk uses stable API shims, so does not exercise
@@ -19,11 +22,6 @@
       "name": "TetheringIntegrationTests"
     }
   ],
-  "postsubmit": [
-    {
-      "name": "ConnectivityCoverageTests"
-    }
-  ],
   "mainline-presubmit": [
     {
       "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
@@ -32,6 +30,9 @@
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
         }
       ]
+    },
+    {
+      "name": "ConnectivityCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
     }
   ],
   "mainline-postsubmit": [
@@ -42,9 +43,6 @@
     },
     {
       "name": "TetheringCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
-    },
-    {
-      "name": "ConnectivityCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
     }
   ],
   "imports": [

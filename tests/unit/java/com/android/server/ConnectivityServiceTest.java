@@ -1529,7 +1529,7 @@ public class ConnectivityServiceTest {
     }
 
     private <T> T doAsUid(final int uid, @NonNull final Supplier<T> what) {
-        when(mDeps.getCallingUid()).thenReturn(uid);
+        doReturn(uid).when(mDeps).getCallingUid();
         try {
             return what.get();
         } finally {
@@ -9860,9 +9860,9 @@ public class ConnectivityServiceTest {
         assertVpnUidRangesUpdated(true, vpnRange, vpnOwnerUid);
 
         final UnderlyingNetworkInfo underlyingNetworkInfo =
-                new UnderlyingNetworkInfo(vpnOwnerUid, VPN_IFNAME, new ArrayList<String>());
+                new UnderlyingNetworkInfo(vpnOwnerUid, VPN_IFNAME, new ArrayList<>());
         mMockVpn.setUnderlyingNetworkInfo(underlyingNetworkInfo);
-        when(mDeps.getConnectionOwnerUid(anyInt(), any(), any())).thenReturn(42);
+        doReturn(42).when(mDeps).getConnectionOwnerUid(anyInt(), any(), any());
     }
 
     private void setupConnectionOwnerUidAsVpnApp(int vpnOwnerUid, @VpnManager.VpnType int vpnType)
@@ -10254,13 +10254,13 @@ public class ConnectivityServiceTest {
     }
 
     private boolean areConnDiagCapsRedacted(NetworkCapabilities nc) {
-        TestTransportInfo ti = (TestTransportInfo) nc.getTransportInfo();
+        TestTransportInfo ti = getTestTransportInfo(nc);
         return nc.getUids() == null
                 && nc.getAdministratorUids().length == 0
                 && nc.getOwnerUid() == Process.INVALID_UID
-                && getTestTransportInfo(nc).locationRedacted
-                && getTestTransportInfo(nc).localMacAddressRedacted
-                && getTestTransportInfo(nc).settingsRedacted;
+                && ti.locationRedacted
+                && ti.localMacAddressRedacted
+                && ti.settingsRedacted;
     }
 
     @Test
