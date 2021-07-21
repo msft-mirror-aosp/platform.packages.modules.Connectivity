@@ -35,8 +35,6 @@ import android.net.IIntResultListener;
 import android.net.INetworkStackConnector;
 import android.net.ITetheringConnector;
 import android.net.ITetheringEventCallback;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
 import android.net.NetworkStack;
 import android.net.TetheringRequestParcel;
 import android.net.dhcp.DhcpServerCallbacks;
@@ -48,13 +46,14 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
-import android.provider.Settings;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.networkstack.apishim.SettingsShimImpl;
+import com.android.networkstack.apishim.common.SettingsShim;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -68,6 +67,7 @@ public class TetheringService extends Service {
     private static final String TAG = TetheringService.class.getSimpleName();
 
     private TetheringConnector mConnector;
+    private SettingsShim mSettingsShim;
 
     @Override
     public void onCreate() {
@@ -75,6 +75,8 @@ public class TetheringService extends Service {
         // The Tethering object needs a fully functional context to start, so this can't be done
         // in the constructor.
         mConnector = new TetheringConnector(makeTethering(deps), TetheringService.this);
+
+        mSettingsShim = SettingsShimImpl.newInstance();
     }
 
     /**
@@ -82,7 +84,6 @@ public class TetheringService extends Service {
      */
     @VisibleForTesting
     public Tethering makeTethering(TetheringDependencies deps) {
-        System.loadLibrary("tetherutilsjni");
         return new Tethering(deps);
     }
 
@@ -102,36 +103,34 @@ public class TetheringService extends Service {
         }
 
         @Override
-        public void tether(String iface, String callerPkg, IIntResultListener listener) {
-            if (checkAndNotifyCommonError(callerPkg, listener)) return;
+        public void tether(String iface, String callerPkg, String callingAttributionTag,
+                IIntResultListener listener) {
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
-            try {
-                listener.onResult(mTethering.tether(iface));
-            } catch (RemoteException e) { }
+            mTethering.tether(iface, IpServer.STATE_TETHERED, listener);
         }
 
         @Override
-        public void untether(String iface, String callerPkg, IIntResultListener listener) {
-            if (checkAndNotifyCommonError(callerPkg, listener)) return;
+        public void untether(String iface, String callerPkg, String callingAttributionTag,
+                IIntResultListener listener) {
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
-            try {
-                listener.onResult(mTethering.untether(iface));
-            } catch (RemoteException e) { }
+            mTethering.untether(iface, listener);
         }
 
         @Override
-        public void setUsbTethering(boolean enable, String callerPkg, IIntResultListener listener) {
-            if (checkAndNotifyCommonError(callerPkg, listener)) return;
+        public void setUsbTethering(boolean enable, String callerPkg, String callingAttributionTag,
+                IIntResultListener listener) {
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
-            try {
-                listener.onResult(mTethering.setUsbTethering(enable));
-            } catch (RemoteException e) { }
+            mTethering.setUsbTethering(enable, listener);
         }
 
         @Override
         public void startTethering(TetheringRequestParcel request, String callerPkg,
-                IIntResultListener listener) {
+                String callingAttributionTag, IIntResultListener listener) {
             if (checkAndNotifyCommonError(callerPkg,
+                    callingAttributionTag,
                     request.exemptFromEntitlementCheck /* onlyAllowPrivileged */,
                     listener)) {
                 return;
@@ -141,8 +140,9 @@ public class TetheringService extends Service {
         }
 
         @Override
-        public void stopTethering(int type, String callerPkg, IIntResultListener listener) {
-            if (checkAndNotifyCommonError(callerPkg, listener)) return;
+        public void stopTethering(int type, String callerPkg, String callingAttributionTag,
+                IIntResultListener listener) {
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
             try {
                 mTethering.stopTethering(type);
@@ -152,8 +152,8 @@ public class TetheringService extends Service {
 
         @Override
         public void requestLatestTetheringEntitlementResult(int type, ResultReceiver receiver,
-                boolean showEntitlementUi, String callerPkg) {
-            if (checkAndNotifyCommonError(callerPkg, receiver)) return;
+                boolean showEntitlementUi, String callerPkg, String callingAttributionTag) {
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, receiver)) return;
 
             mTethering.requestLatestTetheringEntitlementResult(type, receiver, showEntitlementUi);
         }
@@ -183,8 +183,9 @@ public class TetheringService extends Service {
         }
 
         @Override
-        public void stopAllTethering(String callerPkg, IIntResultListener listener) {
-            if (checkAndNotifyCommonError(callerPkg, listener)) return;
+        public void stopAllTethering(String callerPkg, String callingAttributionTag,
+                IIntResultListener listener) {
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
             try {
                 mTethering.untetherAll();
@@ -193,8 +194,9 @@ public class TetheringService extends Service {
         }
 
         @Override
-        public void isTetheringSupported(String callerPkg, IIntResultListener listener) {
-            if (checkAndNotifyCommonError(callerPkg, listener)) return;
+        public void isTetheringSupported(String callerPkg, String callingAttributionTag,
+                IIntResultListener listener) {
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
             try {
                 listener.onResult(TETHER_ERROR_NO_ERROR);
@@ -207,14 +209,18 @@ public class TetheringService extends Service {
             mTethering.dump(fd, writer, args);
         }
 
-        private boolean checkAndNotifyCommonError(String callerPkg, IIntResultListener listener) {
-            return checkAndNotifyCommonError(callerPkg, false /* onlyAllowPrivileged */, listener);
+        private boolean checkAndNotifyCommonError(final String callerPkg,
+                final String callingAttributionTag, final IIntResultListener listener) {
+            return checkAndNotifyCommonError(callerPkg, callingAttributionTag,
+                    false /* onlyAllowPrivileged */, listener);
         }
 
         private boolean checkAndNotifyCommonError(final String callerPkg,
-                final boolean onlyAllowPrivileged, final IIntResultListener listener) {
+                final String callingAttributionTag, final boolean onlyAllowPrivileged,
+                final IIntResultListener listener) {
             try {
-                if (!hasTetherChangePermission(callerPkg, onlyAllowPrivileged)) {
+                if (!hasTetherChangePermission(callerPkg, callingAttributionTag,
+                        onlyAllowPrivileged)) {
                     listener.onResult(TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION);
                     return true;
                 }
@@ -229,8 +235,10 @@ public class TetheringService extends Service {
             return false;
         }
 
-        private boolean checkAndNotifyCommonError(String callerPkg, ResultReceiver receiver) {
-            if (!hasTetherChangePermission(callerPkg, false /* onlyAllowPrivileged */)) {
+        private boolean checkAndNotifyCommonError(final String callerPkg,
+                final String callingAttributionTag, final ResultReceiver receiver) {
+            if (!hasTetherChangePermission(callerPkg, callingAttributionTag,
+                    false /* onlyAllowPrivileged */)) {
                 receiver.send(TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION, null);
                 return true;
             }
@@ -256,7 +264,7 @@ public class TetheringService extends Service {
         }
 
         private boolean hasTetherChangePermission(final String callerPkg,
-                final boolean onlyAllowPrivileged) {
+                final String callingAttributionTag, final boolean onlyAllowPrivileged) {
             if (onlyAllowPrivileged && !hasNetworkStackPermission()) return false;
 
             if (hasTetherPrivilegedPermission()) return true;
@@ -264,11 +272,12 @@ public class TetheringService extends Service {
             if (mTethering.isTetherProvisioningRequired()) return false;
 
             int uid = Binder.getCallingUid();
+
             // If callerPkg's uid is not same as Binder.getCallingUid(),
             // checkAndNoteWriteSettingsOperation will return false and the operation will be
             // denied.
             return mService.checkAndNoteWriteSettingsOperation(mService, uid, callerPkg,
-                    false /* throwException */);
+                    callingAttributionTag, false /* throwException */);
         }
 
         private boolean hasTetherAccessPermission() {
@@ -287,9 +296,10 @@ public class TetheringService extends Service {
      */
     @VisibleForTesting
     boolean checkAndNoteWriteSettingsOperation(@NonNull Context context, int uid,
-            @NonNull String callingPackage, boolean throwException) {
-        return Settings.checkAndNoteWriteSettingsOperation(context, uid, callingPackage,
-                throwException);
+            @NonNull String callingPackage, @Nullable String callingAttributionTag,
+            boolean throwException) {
+        return mSettingsShim.checkAndNoteWriteSettingsOperation(context, uid, callingPackage,
+                callingAttributionTag, throwException);
     }
 
     /**
@@ -298,19 +308,6 @@ public class TetheringService extends Service {
     @VisibleForTesting
     public TetheringDependencies makeTetheringDependencies() {
         return new TetheringDependencies() {
-            @Override
-            public NetworkRequest getDefaultNetworkRequest() {
-                // TODO: b/147280869, add a proper system API to replace this.
-                final NetworkRequest trackDefaultRequest = new NetworkRequest.Builder()
-                        .clearCapabilities()
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
-                        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                        .build();
-                return trackDefaultRequest;
-            }
-
             @Override
             public Looper getTetheringLooper() {
                 final HandlerThread tetherThread = new HandlerThread("android.tethering");

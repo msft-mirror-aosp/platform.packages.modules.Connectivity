@@ -26,8 +26,7 @@ import static android.net.TetheringManager.TETHERING_WIFI_P2P;
 import static android.net.TetheringManager.TETHER_ERROR_ENTITLEMENT_UNKNOWN;
 import static android.net.TetheringManager.TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION;
 import static android.net.TetheringManager.TETHER_ERROR_NO_ERROR;
-import static android.net.cts.util.CtsTetheringUtils.isIfaceMatch;
-import static android.net.cts.util.CtsTetheringUtils.isWifiTetheringSupported;
+import static android.net.cts.util.CtsTetheringUtils.isAnyIfaceMatch;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -48,6 +47,7 @@ import android.net.ConnectivityManager;
 import android.net.LinkAddress;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.TetheringInterface;
 import android.net.TetheringManager;
 import android.net.TetheringManager.OnTetheringEntitlementResultListener;
 import android.net.TetheringManager.TetheringInterfaceRegexps;
@@ -190,13 +190,13 @@ public class TetheringManagerTest {
         }
 
         private boolean isIfaceActive(final String[] ifaceRegexs, final TetherState state) {
-            return isIfaceMatch(ifaceRegexs, state.mActive);
+            return isAnyIfaceMatch(ifaceRegexs, state.mActive);
         }
 
         private void assertNoErroredIfaces(final TetherState state, final String[] ifaceRegexs) {
             if (state == null || state.mErrored == null) return;
 
-            if (isIfaceMatch(ifaceRegexs, state.mErrored)) {
+            if (isAnyIfaceMatch(ifaceRegexs, state.mErrored)) {
                 fail("Found failed tethering interfaces: " + Arrays.toString(state.mErrored.toArray()));
             }
         }
@@ -204,14 +204,15 @@ public class TetheringManagerTest {
 
     @Test
     public void testStartTetheringWithStateChangeBroadcast() throws Exception {
-        if (!mTM.isTetheringSupported()) return;
+        final TestTetheringEventCallback tetherEventCallback =
+                mCtsTetheringUtils.registerTetheringEventCallback();
+        try {
+            tetherEventCallback.assumeWifiTetheringSupported(mContext);
+        } finally {
+            mCtsTetheringUtils.unregisterTetheringEventCallback(tetherEventCallback);
+        }
 
         final String[] wifiRegexs = mTM.getTetherableWifiRegexs();
-        if (wifiRegexs.length == 0) return;
-
-        final String[] tetheredIfaces = mTM.getTetheredIfaces();
-        assertTrue(tetheredIfaces.length == 0);
-
         final StartTetheringCallback startTetheringCallback = new StartTetheringCallback();
         final TetheringRequest request = new TetheringRequest.Builder(TETHERING_WIFI)
                 .setShouldShowEntitlementUi(false).build();
@@ -252,33 +253,33 @@ public class TetheringManagerTest {
     public void testRegisterTetheringEventCallback() throws Exception {
         final TestTetheringEventCallback tetherEventCallback =
                 mCtsTetheringUtils.registerTetheringEventCallback();
-        tetherEventCallback.assumeTetheringSupported();
-
-        if (!isWifiTetheringSupported(tetherEventCallback)) {
-            mCtsTetheringUtils.unregisterTetheringEventCallback(tetherEventCallback);
-            return;
-        }
-
-        mCtsTetheringUtils.startWifiTethering(tetherEventCallback);
-
-        final List<String> tetheredIfaces = tetherEventCallback.getTetheredInterfaces();
-        assertEquals(1, tetheredIfaces.size());
-        final String wifiTetheringIface = tetheredIfaces.get(0);
-
-        mCtsTetheringUtils.stopWifiTethering(tetherEventCallback);
 
         try {
-            final int ret = mTM.tether(wifiTetheringIface);
+            tetherEventCallback.assumeWifiTetheringSupported(mContext);
+            tetherEventCallback.expectNoTetheringActive();
 
-            // There is no guarantee that the wifi interface will be available after disabling
-            // the hotspot, so don't fail the test if the call to tether() fails.
-            assumeTrue(ret == TETHER_ERROR_NO_ERROR);
+            final TetheringInterface tetheredIface =
+                    mCtsTetheringUtils.startWifiTethering(tetherEventCallback);
 
-            // If calling #tether successful, there is a callback to tell the result of tethering
-            // setup.
-            tetherEventCallback.expectErrorOrTethered(wifiTetheringIface);
+            assertNotNull(tetheredIface);
+            final String wifiTetheringIface = tetheredIface.getInterface();
+
+            mCtsTetheringUtils.stopWifiTethering(tetherEventCallback);
+
+            try {
+                final int ret = mTM.tether(wifiTetheringIface);
+                // There is no guarantee that the wifi interface will be available after disabling
+                // the hotspot, so don't fail the test if the call to tether() fails.
+                if (ret == TETHER_ERROR_NO_ERROR) {
+                    // If calling #tether successful, there is a callback to tell the result of
+                    // tethering setup.
+                    tetherEventCallback.expectErrorOrTethered(
+                            new TetheringInterface(TETHERING_WIFI, wifiTetheringIface));
+                }
+            } finally {
+                mTM.untether(wifiTetheringIface);
+            }
         } finally {
-            mTM.untether(wifiTetheringIface);
             mCtsTetheringUtils.unregisterTetheringEventCallback(tetherEventCallback);
         }
     }
@@ -311,10 +312,8 @@ public class TetheringManagerTest {
     public void testStopAllTethering() throws Exception {
         final TestTetheringEventCallback tetherEventCallback =
                 mCtsTetheringUtils.registerTetheringEventCallback();
-        tetherEventCallback.assumeTetheringSupported();
-
         try {
-            if (!isWifiTetheringSupported(tetherEventCallback)) return;
+            tetherEventCallback.assumeWifiTetheringSupported(mContext);
 
             // TODO: start ethernet tethering here when TetheringManagerTest is moved to
             // TetheringIntegrationTest.
@@ -322,7 +321,7 @@ public class TetheringManagerTest {
             mCtsTetheringUtils.startWifiTethering(tetherEventCallback);
 
             mTM.stopAllTethering();
-            tetherEventCallback.expectTetheredInterfacesChanged(null);
+            tetherEventCallback.expectNoTetheringActive();
         } finally {
             mCtsTetheringUtils.unregisterTetheringEventCallback(tetherEventCallback);
         }
@@ -362,6 +361,7 @@ public class TetheringManagerTest {
     @Test
     public void testRequestLatestEntitlementResult() throws Exception {
         assumeTrue(mTM.isTetheringSupported());
+        assumeTrue(mPm.hasSystemFeature(FEATURE_TELEPHONY));
         // Verify that requestLatestTetheringEntitlementResult() can get entitlement
         // result(TETHER_ERROR_ENTITLEMENT_UNKNOWN due to invalid downstream type) via listener.
         assertEntitlementResult(listener -> mTM.requestLatestTetheringEntitlementResult(
@@ -415,14 +415,16 @@ public class TetheringManagerTest {
         assumeTrue(mPm.hasSystemFeature(FEATURE_TELEPHONY));
         final TestTetheringEventCallback tetherEventCallback =
                 mCtsTetheringUtils.registerTetheringEventCallback();
-        tetherEventCallback.assumeTetheringSupported();
-        final boolean previousWifiEnabledState = mWm.isWifiEnabled();
+
+        boolean previousWifiEnabledState = false;
 
         try {
-            if (!isWifiTetheringSupported(tetherEventCallback)) return;
+            tetherEventCallback.assumeWifiTetheringSupported(mContext);
+            tetherEventCallback.expectNoTetheringActive();
 
+            previousWifiEnabledState = mWm.isWifiEnabled();
             if (previousWifiEnabledState) {
-                mCtsNetUtils.disconnectFromWifi(null);
+                mCtsNetUtils.ensureWifiDisconnected(null);
             }
 
             final TestNetworkCallback networkCallback = new TestNetworkCallback();
