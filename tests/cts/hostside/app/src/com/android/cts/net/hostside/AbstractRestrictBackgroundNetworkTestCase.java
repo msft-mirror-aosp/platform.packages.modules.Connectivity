@@ -99,6 +99,9 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             "com.android.cts.net.hostside.app2.action.FINISH_ACTIVITY";
     private static final String ACTION_FINISH_JOB =
             "com.android.cts.net.hostside.app2.action.FINISH_JOB";
+    // Copied from com.android.server.net.NetworkPolicyManagerService class
+    private static final String ACTION_SNOOZE_WARNING =
+            "com.android.server.net.action.SNOOZE_WARNING";
 
     private static final String ACTION_RECEIVER_READY =
             "com.android.cts.net.hostside.app2.action.RECEIVER_READY";
@@ -147,6 +150,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     private static final String APP_NOT_FOREGROUND_ERROR = "app_not_fg";
 
     protected static final long TEMP_POWERSAVE_WHITELIST_DURATION_MS = 5_000; // 5 sec
+
+    private static final long BROADCAST_TIMEOUT_MS = 15_000;
 
     protected Context mContext;
     protected Instrumentation mInstrumentation;
@@ -215,6 +220,12 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         } while (attempts <= maxAttempts);
         assertEquals("Number of expected broadcasts for " + receiverName + " not reached after "
                 + maxAttempts * SLEEP_TIME_SEC + " seconds", expectedCount, count);
+    }
+
+    protected void assertSnoozeWarningNotReceived() throws Exception {
+        // Wait for a while to take broadcast queue delays into account
+        SystemClock.sleep(BROADCAST_TIMEOUT_MS);
+        assertEquals(0, getNumberBroadcastsReceived(DYNAMIC_RECEIVER, ACTION_SNOOZE_WARNING));
     }
 
     protected String sendOrderedBroadcast(Intent intent) throws Exception {
@@ -850,8 +861,10 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     final String error = checkForAvailabilityInResultData(
                             resultData, expectAvailable);
                     if (error != null) {
-                        fail("Network is not available for expedited job in app2 (" + mUid + "): "
-                                + error);
+                        Log.d(TAG, "Network state is unexpected, checking again. " + error);
+                        // Right now we could end up in an unexpected state if expedited job
+                        // doesn't have network access immediately after starting, so check again.
+                        assertNetworkAccess(expectAvailable, false /* needScreenOn */);
                     }
                 } else {
                     fail("Unexpected resultCode=" + resultCode + "; received=[" + resultData + "]");

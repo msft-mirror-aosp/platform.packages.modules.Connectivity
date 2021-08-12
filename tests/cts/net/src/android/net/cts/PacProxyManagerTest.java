@@ -16,6 +16,7 @@
 
 package android.net.cts;
 
+import static android.Manifest.permission.INTERACT_ACROSS_USERS_FULL;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 
 import static com.android.testutils.TestPermissionUtil.runAsShell;
@@ -35,6 +36,7 @@ import android.net.Proxy;
 import android.net.ProxyInfo;
 import android.net.Uri;
 import android.os.Build;
+import android.platform.test.annotations.AppModeFull;
 import android.util.Log;
 import android.util.Range;
 
@@ -145,6 +147,7 @@ public final class PacProxyManagerTest {
         }
     }
 
+    @AppModeFull(reason = "Instant apps can't bind sockets to localhost for a test proxy server")
     @Test
     public void testSetCurrentProxyScriptUrl() throws Exception {
         // Register a PacProxyInstalledListener
@@ -166,7 +169,9 @@ public final class PacProxyManagerTest {
         mContext.registerReceiver(receiver, new IntentFilter(Proxy.PROXY_CHANGE_ACTION));
 
         // Call setCurrentProxyScriptUrl with the URL of the pac file.
-        runAsShell(NETWORK_SETTINGS, () -> {
+        // Note that the proxy script is global to device, and setting it from a different user
+        // should require INTERACT_ACROSS_USERS_FULL permission which the Settings app has.
+        runAsShell(NETWORK_SETTINGS, INTERACT_ACROSS_USERS_FULL, () -> {
             mPacProxyManager.setCurrentProxyScriptUrl(proxy);
         });
 
