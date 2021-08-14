@@ -204,6 +204,7 @@ import android.content.res.Resources;
 import android.location.LocationManager;
 import android.net.CaptivePortalData;
 import android.net.ConnectionInfo;
+import android.net.ConnectivityDiagnosticsManager.DataStallReport;
 import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.NetworkCallback;
 import android.net.ConnectivityManager.PacketKeepalive;
@@ -285,6 +286,7 @@ import android.os.Messenger;
 import android.os.Parcel;
 import android.os.ParcelFileDescriptor;
 import android.os.Parcelable;
+import android.os.PersistableBundle;
 import android.os.Process;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
@@ -4913,7 +4915,6 @@ public class ConnectivityServiceTest {
         testAvoidBadWifiConfig_controlledBySettings();
     }
 
-    @Ignore("Refactoring in progress b/178071397")
     @Test
     public void testAvoidBadWifi() throws Exception {
         final ContentResolver cr = mServiceContext.getContentResolver();
@@ -9549,6 +9550,19 @@ public class ConnectivityServiceTest {
     }
 
     @Test
+    public void testStartVpnProfileFromDiffPackage() throws Exception {
+        final String notMyVpnPkg = "com.not.my.vpn";
+        assertThrows(
+                SecurityException.class, () -> mVpnManagerService.startVpnProfile(notMyVpnPkg));
+    }
+
+    @Test
+    public void testStopVpnProfileFromDiffPackage() throws Exception {
+        final String notMyVpnPkg = "com.not.my.vpn";
+        assertThrows(SecurityException.class, () -> mVpnManagerService.stopVpnProfile(notMyVpnPkg));
+    }
+
+    @Test
     public void testUidUpdateChangesInterfaceFilteringRule() throws Exception {
         LinkProperties lp = new LinkProperties();
         lp.setInterfaceName("tun0");
@@ -10245,6 +10259,35 @@ public class ConnectivityServiceTest {
         assertTrue(mService.mConnectivityDiagnosticsCallbacks.containsKey(mIBinder));
     }
 
+    @Test(expected = NullPointerException.class)
+    public void testRegisterConnectivityDiagnosticsCallbackNullCallback() {
+        mService.registerConnectivityDiagnosticsCallback(
+                null /* callback */,
+                new NetworkRequest.Builder().build(),
+                mContext.getPackageName());
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void testRegisterConnectivityDiagnosticsCallbackNullNetworkRequest() {
+        mService.registerConnectivityDiagnosticsCallback(
+                mConnectivityDiagnosticsCallback,
+                null /* request */,
+                mContext.getPackageName());
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void testRegisterConnectivityDiagnosticsCallbackNullPackageName() {
+        mService.registerConnectivityDiagnosticsCallback(
+                mConnectivityDiagnosticsCallback,
+                new NetworkRequest.Builder().build(),
+                null /* callingPackageName */);
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void testUnregisterConnectivityDiagnosticsCallbackNullPackageName() {
+        mService.unregisterConnectivityDiagnosticsCallback(null /* callback */);
+    }
+
     public NetworkAgentInfo fakeMobileNai(NetworkCapabilities nc) {
         final NetworkCapabilities cellNc = new NetworkCapabilities.Builder(nc)
                 .addTransportType(TRANSPORT_CELLULAR).build();
@@ -10553,6 +10596,24 @@ public class ConnectivityServiceTest {
                 .onConnectivityReportAvailable(
                         argThat(report ->
                                 areConnDiagCapsRedacted(report.getNetworkCapabilities())));
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void testSimulateDataStallNullNetwork() {
+        mService.simulateDataStall(
+                DataStallReport.DETECTION_METHOD_DNS_EVENTS,
+                0L /* timestampMillis */,
+                null /* network */,
+                new PersistableBundle());
+    }
+
+    @Test(expected = NullPointerException.class)
+    public void testSimulateDataStallNullPersistableBundle() {
+        mService.simulateDataStall(
+                DataStallReport.DETECTION_METHOD_DNS_EVENTS,
+                0L /* timestampMillis */,
+                mock(Network.class),
+                null /* extras */);
     }
 
     @Test
