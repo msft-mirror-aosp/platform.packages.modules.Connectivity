@@ -31,9 +31,8 @@ import android.system.ErrnoException;
 import android.system.OsConstants;
 import android.util.ArrayMap;
 
-import androidx.test.runner.AndroidJUnit4;
-
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Before;
 import org.junit.BeforeClass;
@@ -45,7 +44,7 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @IgnoreUpTo(Build.VERSION_CODES.R)
 public final class BpfMapTest {
     // Sync from packages/modules/Connectivity/Tethering/bpf_progs/offload.c.
@@ -387,6 +386,17 @@ public final class BpfMapTest {
             // Expect that can't insert the entry anymore because the number of elements in the
             // map reached the limit. See man-pages/bpf.
             assertEquals(OsConstants.E2BIG, expected.errno);
+        }
+    }
+
+    @Test
+    public void testOpenNonexistentMap() throws Exception {
+        try {
+            final BpfMap<TetherDownstream6Key, Tether6Value> nonexistentMap = new BpfMap<>(
+                    "/sys/fs/bpf/tethering/nonexistent", BpfMap.BPF_F_RDWR,
+                    TetherDownstream6Key.class, Tether6Value.class);
+        } catch (ErrnoException expected) {
+            assertEquals(OsConstants.ENOENT, expected.errno);
         }
     }
 }
