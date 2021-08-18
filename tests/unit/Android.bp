@@ -62,6 +62,7 @@ android_library {
     jarjar_rules: "jarjar-rules.txt",
     static_libs: [
         "androidx.test.rules",
+        "androidx.test.uiautomator",
         "bouncycastle-repackaged-unbundled",
         "core-tests-support",
         "FrameworksNetCommonTests",
@@ -70,6 +71,7 @@ android_library {
         "framework-protos",
         "mockito-target-minus-junit4",
         "net-tests-utils",
+        "platform-compat-test-rules",
         "platform-test-annotations",
         "service-connectivity-pre-jarjar",
         "services.core",
