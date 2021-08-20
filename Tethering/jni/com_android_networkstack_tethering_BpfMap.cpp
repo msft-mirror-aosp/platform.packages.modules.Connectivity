@@ -27,40 +27,11 @@
 
 namespace android {
 
-static jclass sErrnoExceptionClass;
-static jmethodID sErrnoExceptionCtor2;
-static jmethodID sErrnoExceptionCtor3;
-
-static void throwErrnoException(JNIEnv* env, const char* functionName, int error) {
-    if (sErrnoExceptionClass == nullptr || sErrnoExceptionClass == nullptr) return;
-
-    jthrowable cause = nullptr;
-    if (env->ExceptionCheck()) {
-        cause = env->ExceptionOccurred();
-        env->ExceptionClear();
-    }
-
-    ScopedLocalRef<jstring> msg(env, env->NewStringUTF(functionName));
-
-    // Not really much we can do here if msg is null, let's try to stumble on...
-    if (msg.get() == nullptr) env->ExceptionClear();
-
-    jobject errnoException;
-    if (cause != nullptr) {
-        errnoException = env->NewObject(sErrnoExceptionClass, sErrnoExceptionCtor3, msg.get(),
-                error, cause);
-    } else {
-        errnoException = env->NewObject(sErrnoExceptionClass, sErrnoExceptionCtor2, msg.get(),
-                error);
-    }
-    env->Throw(static_cast<jthrowable>(errnoException));
-}
-
 static jint com_android_networkstack_tethering_BpfMap_closeMap(JNIEnv *env, jobject clazz,
         jint fd) {
     int ret = close(fd);
 
-    if (ret) throwErrnoException(env, "closeMap", errno);
+    if (ret) jniThrowErrnoException(env, "closeMap", errno);
 
     return ret;
 }
@@ -70,6 +41,8 @@ static jint com_android_networkstack_tethering_BpfMap_bpfFdGet(JNIEnv *env, jobj
     ScopedUtfChars pathname(env, path);
 
     jint fd = bpf::bpfFdGet(pathname.c_str(), static_cast<unsigned>(mode));
+
+    if (fd < 0) jniThrowErrnoException(env, "bpfFdGet", errno);
 
     return fd;
 }
@@ -82,13 +55,13 @@ static void com_android_networkstack_tethering_BpfMap_writeToMapEntry(JNIEnv *en
     int ret = bpf::writeToMapEntry(static_cast<int>(fd), keyRO.get(), valueRO.get(),
             static_cast<int>(flags));
 
-    if (ret) throwErrnoException(env, "writeToMapEntry", errno);
+    if (ret) jniThrowErrnoException(env, "writeToMapEntry", errno);
 }
 
 static jboolean throwIfNotEnoent(JNIEnv *env, const char* functionName, int ret, int err) {
     if (ret == 0) return true;
 
-    if (err != ENOENT) throwErrnoException(env, functionName, err);
+    if (err != ENOENT) jniThrowErrnoException(env, functionName, err);
     return false;
 }
 
@@ -155,18 +128,6 @@ static const JNINativeMethod gMethods[] = {
 };
 
 int register_com_android_networkstack_tethering_BpfMap(JNIEnv* env) {
-    sErrnoExceptionClass = static_cast<jclass>(env->NewGlobalRef(
-            env->FindClass("android/system/ErrnoException")));
-    if (sErrnoExceptionClass == nullptr) return JNI_ERR;
-
-    sErrnoExceptionCtor2 = env->GetMethodID(sErrnoExceptionClass, "<init>",
-            "(Ljava/lang/String;I)V");
-    if (sErrnoExceptionCtor2 == nullptr) return JNI_ERR;
-
-    sErrnoExceptionCtor3 = env->GetMethodID(sErrnoExceptionClass, "<init>",
-            "(Ljava/lang/String;ILjava/lang/Throwable;)V");
-    if (sErrnoExceptionCtor3 == nullptr) return JNI_ERR;
-
     return jniRegisterNativeMethods(env,
             "com/android/networkstack/tethering/BpfMap",
             gMethods, NELEM(gMethods));

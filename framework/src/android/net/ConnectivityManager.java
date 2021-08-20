@@ -4722,6 +4722,22 @@ public class ConnectivityManager {
     }
 
     /**
+     * Temporarily allow bad wifi to override {@code config_networkAvoidBadWifi} configuration.
+     *
+     * @param timeMs The expired current time. The value should be set within a limited time from
+     *               now.
+     *
+     * @hide
+     */
+    public void setTestAllowBadWifiUntil(long timeMs) {
+        try {
+            mService.setTestAllowBadWifiUntil(timeMs);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Requests that the system open the captive portal app on the specified network.
      *
      * <p>This is to be used on networks where a captive portal was detected, as per
@@ -4932,7 +4948,7 @@ public class ConnectivityManager {
                 Log.e(TAG, "Can't set proxy properties", e);
             }
             // Must flush DNS cache as new network may have different DNS resolutions.
-            InetAddressCompat.clearDnsCache();
+            InetAddress.clearDnsCache();
             // Must flush socket pool as idle sockets will be bound to previous network and may
             // cause subsequent fetches to be performed on old network.
             NetworkEventDispatcher.getInstance().dispatchNetworkConfigurationChange();

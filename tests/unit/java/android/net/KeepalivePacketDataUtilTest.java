@@ -24,18 +24,22 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import android.net.util.KeepalivePacketDataUtil;
+import android.os.Build;
 import android.util.Log;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
 
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
 
-@RunWith(JUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public final class KeepalivePacketDataUtilTest {
     private static final byte[] IPV4_KEEPALIVE_SRC_ADDR = {10, 0, 0, 1};
     private static final byte[] IPV4_KEEPALIVE_DST_ADDR = {10, 0, 0, 5};
@@ -164,8 +168,8 @@ public final class KeepalivePacketDataUtilTest {
         assertEquals(resultData.tos, tos);
         assertEquals(resultData.ttl, ttl);
 
-        final String expected = ""
-                + "android.net.TcpKeepalivePacketDataParcelable{srcAddress: [10, 0, 0, 1],"
+        final String expected = TcpKeepalivePacketDataParcelable.class.getName()
+                + "{srcAddress: [10, 0, 0, 1],"
                 + " srcPort: 1234, dstAddress: [10, 0, 0, 5], dstPort: 4321, seq: 286331153,"
                 + " ack: 572662306, rcvWnd: 48000, rcvWndScale: 2, tos: 4, ttl: 64}";
         assertEquals(expected, resultData.toString());
