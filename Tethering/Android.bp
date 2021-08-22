@@ -33,12 +33,13 @@ java_defaults {
         "NetworkStackApiStableShims",
         "androidx.annotation_annotation",
         "modules-utils-build",
-        "netlink-client",
         "networkstack-client",
         "android.hardware.tetheroffload.config-V1.0-java",
         "android.hardware.tetheroffload.control-V1.0-java",
+        "android.hardware.tetheroffload.control-V1.1-java",
         "net-utils-framework-common",
         "net-utils-device-common",
+        "net-utils-device-common-netlink",
         "netd-client",
     ],
     libs: [
@@ -146,14 +147,15 @@ android_app {
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
     // The permission configuration *must* be included to ensure security of the device
-    required: ["NetworkPermissionConfig"],
+    required: [
+        "NetworkPermissionConfig",
+        "privapp_whitelist_com.android.networkstack.tethering",
+    ],
     apex_available: ["com.android.tethering"],
     min_sdk_version: "30",
 }
 
 sdk {
     name: "tethering-module-sdk",
-    java_sdk_libs: [
-        "framework-tethering",
-    ],
+    bootclasspath_fragments: ["com.android.tethering-bootclasspath-fragment"],
 }

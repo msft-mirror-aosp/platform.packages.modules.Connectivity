@@ -24,8 +24,10 @@ apex {
     // cannot build as updatable unless service-connectivity builds against stable API).
     updatable: false,
     // min_sdk_version: "30",
+    bootclasspath_fragments: [
+        "com.android.tethering-bootclasspath-fragment",
+    ],
     java_libs: [
-        "framework-tethering",
         "service-connectivity",
     ],
     jni_libs: [
@@ -39,8 +41,12 @@ apex {
         "ServiceConnectivityResources",
         "Tethering",
     ],
+    prebuilts: ["current_sdkinfo"],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
+    // Indicates that pre-installed version of this apex can be compressed.
+    // Whether it actually will be compressed is controlled on per-device basis.
+    compressible: true,
 
     androidManifest: "AndroidManifest.xml",
 }
@@ -54,6 +60,27 @@ apex_key {
 android_app_certificate {
     name: "com.android.tethering.certificate",
     certificate: "com.android.tethering",
+}
+
+// Encapsulate the contributions made by the com.android.tethering to the bootclasspath.
+bootclasspath_fragment {
+    name: "com.android.tethering-bootclasspath-fragment",
+    contents: ["framework-tethering"],
+    apex_available: ["com.android.tethering"],
+
+    // The bootclasspath_fragments that provide APIs on which this depends.
+    fragments: [
+        {
+            apex: "com.android.art",
+            module: "art-bootclasspath-fragment",
+        },
+    ],
+
+    // Additional stubs libraries that this fragment's contents use which are
+    // not provided by another bootclasspath_fragment.
+    additional_stubs: [
+        "android-non-updatable",
+    ],
 }
 
 override_apex {
