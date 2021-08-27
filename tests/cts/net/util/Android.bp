@@ -15,6 +15,10 @@
 //
 
 // Common utilities for cts net tests.
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 java_library {
     name: "cts-net-utils",
     srcs: ["java/**/*.java", "java/**/*.kt"],
@@ -22,5 +26,7 @@ java_library {
         "compatibility-device-util-axt",
         "junit",
         "net-tests-utils",
+        "modules-utils-build",
+        "net-utils-framework-common",
     ],
 }

@@ -24,6 +24,9 @@ import android.os.FileUtils;
 import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
+import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.uiautomator.UiDevice;
+
 import com.android.compatibility.common.util.OnFailureRule;
 
 import org.junit.AssumptionViolatedException;
@@ -37,23 +40,21 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 
-import androidx.test.platform.app.InstrumentationRegistry;
-
 public class DumpOnFailureRule extends OnFailureRule {
     private File mDumpDir = new File(Environment.getExternalStorageDirectory(),
             "CtsHostsideNetworkTests");
 
     @Override
     public void onTestFailure(Statement base, Description description, Throwable throwable) {
-        final String testName = description.getClassName() + "_" + description.getMethodName();
-
         if (throwable instanceof AssumptionViolatedException) {
+            final String testName = description.getClassName() + "_" + description.getMethodName();
             Log.d(TAG, "Skipping test " + testName + ": " + throwable);
             return;
         }
 
         prepareDumpRootDir();
-        final File dumpFile = new File(mDumpDir, "dump-" + testName);
+        final String shortenedTestName = getShortenedTestName(description);
+        final File dumpFile = new File(mDumpDir, "dump-" + shortenedTestName);
         Log.i(TAG, "Dumping debug info for " + description + ": " + dumpFile.getPath());
         try (FileOutputStream out = new FileOutputStream(dumpFile)) {
             for (String cmd : new String[] {
@@ -69,6 +70,27 @@ public class DumpOnFailureRule extends OnFailureRule {
         } catch (IOException e) {
             Log.e(TAG, "Error closing file: " + dumpFile, e);
         }
+        final UiDevice uiDevice = UiDevice.getInstance(
+                InstrumentationRegistry.getInstrumentation());
+        final File screenshotFile = new File(mDumpDir, "sc-" + shortenedTestName + ".png");
+        uiDevice.takeScreenshot(screenshotFile);
+        final File windowHierarchyFile = new File(mDumpDir, "wh-" + shortenedTestName + ".xml");
+        try {
+            uiDevice.dumpWindowHierarchy(windowHierarchyFile);
+        } catch (IOException e) {
+            Log.e(TAG, "Error dumping window hierarchy", e);
+        }
+    }
+
+    private String getShortenedTestName(Description description) {
+        final String qualifiedClassName = description.getClassName();
+        final String className = qualifiedClassName.substring(
+                qualifiedClassName.lastIndexOf(".") + 1);
+        final String shortenedClassName = className.chars()
+                .filter(Character::isUpperCase)
+                .collect(StringBuilder::new, StringBuilder::appendCodePoint, StringBuilder::append)
+                .toString();
+        return shortenedClassName + "_" + description.getMethodName();
     }
 
     void dumpCommandOutput(FileOutputStream out, String cmd) {

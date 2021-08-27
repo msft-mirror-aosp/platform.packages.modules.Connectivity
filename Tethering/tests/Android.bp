@@ -14,11 +14,15 @@
 // limitations under the License.
 //
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 filegroup {
     name: "TetheringTestsJarJarRules",
     srcs: ["jarjar-rules.txt"],
     visibility: [
-        "//frameworks/base/packages/Tethering/tests:__subpackages__",
+        "//packages/modules/Connectivity/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
     ]
 }

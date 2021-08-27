@@ -14,18 +14,27 @@
 // limitations under the License.
 //
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 android_test_helper_app {
     name: "CtsHostsideNetworkTestsApp",
-    defaults: ["cts_support_defaults"],
-    //sdk_version: "current",
+    defaults: [
+        "cts_support_defaults",
+        "framework-connectivity-test-defaults",
+    ],
     platform_apis: true,
     static_libs: [
-        "androidx.test.rules",
-        "androidx.test.ext.junit",
-        "compatibility-device-util-axt",
-        "ctstestrunner-axt",
-        "ub-uiautomator",
         "CtsHostsideNetworkTestsAidl",
+        "androidx.test.ext.junit",
+        "androidx.test.rules",
+        "androidx.test.uiautomator_uiautomator",
+        "compatibility-device-util-axt",
+        "cts-net-utils",
+        "ctstestrunner-axt",
+        "modules-utils-build",
+        "ub-uiautomator",
     ],
     libs: [
         "android.test.runner",
@@ -35,7 +44,6 @@ android_test_helper_app {
     // Tag this module as a cts test artifact
     test_suites: [
         "cts",
-        "vts10",
         "general-tests",
     ],
 }
