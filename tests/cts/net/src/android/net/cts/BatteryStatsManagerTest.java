@@ -17,6 +17,7 @@
 package android.net.cts;
 
 import static android.Manifest.permission.UPDATE_DEVICE_STATS;
+import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
 
 import static androidx.test.InstrumentationRegistry.getContext;
 
@@ -28,9 +29,11 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.cts.util.CtsNetUtils;
+import android.net.wifi.WifiManager;
 import android.os.BatteryStatsManager;
 import android.os.Build;
 import android.os.connectivity.CellularBatteryStats;
@@ -38,6 +41,7 @@ import android.os.connectivity.WifiBatteryStats;
 import android.platform.test.annotations.AppModeFull;
 import android.util.Log;
 
+import androidx.test.filters.SdkSuppress;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.testutils.DevSdkIgnoreRule;
@@ -58,6 +62,7 @@ import java.util.function.Supplier;
  * Test for BatteryStatsManager.
  */
 @RunWith(AndroidJUnit4.class)
+@SdkSuppress(minSdkVersion = Build.VERSION_CODES.R) // BatteryStatsManager did not exist on Q
 public class BatteryStatsManagerTest{
     @Rule
     public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
@@ -70,6 +75,8 @@ public class BatteryStatsManagerTest{
     private Context mContext;
     private BatteryStatsManager mBsm;
     private ConnectivityManager mCm;
+    private WifiManager mWm;
+    private PackageManager mPm;
     private CtsNetUtils mCtsNetUtils;
 
     @Before
@@ -77,60 +84,104 @@ public class BatteryStatsManagerTest{
         mContext = getContext();
         mBsm = mContext.getSystemService(BatteryStatsManager.class);
         mCm = mContext.getSystemService(ConnectivityManager.class);
+        mWm = mContext.getSystemService(WifiManager.class);
+        mPm = mContext.getPackageManager();
         mCtsNetUtils = new CtsNetUtils(mContext);
     }
 
+    // reportNetworkInterfaceForTransports classifies one network interface as wifi or mobile, so
+    // check that the interface is classified properly by checking the data usage is reported
+    // properly.
     @Test
     @AppModeFull(reason = "Cannot get CHANGE_NETWORK_STATE to request wifi/cell in instant mode")
     @SkipPresubmit(reason = "Virtual hardware does not support wifi battery stats")
     public void testReportNetworkInterfaceForTransports() throws Exception {
         try {
-            final Network cellNetwork = mCtsNetUtils.connectToCell();
-            final URL url = new URL(TEST_URL);
+            // Simulate the device being unplugged from charging.
+            executeShellCommand("cmd battery unplug");
+            executeShellCommand("cmd battery set status " + BATTERY_STATUS_DISCHARGING);
+            // Reset all current stats before starting test.
+            executeShellCommand("dumpsys batterystats --reset");
+            // Do not automatically reset the stats when the devices are unplugging after the
+            // battery was last full or the level is 100, or have gone through a significant
+            // charge.
+            executeShellCommand("dumpsys batterystats enable no-auto-reset");
+            // Upon calling "cmd battery unplug" a task is scheduled on the battery
+            // stats worker thread. Because network battery stats are only recorded
+            // when the device is on battery, this test needs to wait until the
+            // battery status is recorded because causing traffic.
+            // Writing stats to disk is unnecessary, but --write waits for the worker
+            // thread to finish processing the enqueued tasks as a side effect. This
+            // side effect is the point of using --write here.
+            executeShellCommand("dumpsys batterystats --write");
 
             // Make sure wifi is disabled.
             mCtsNetUtils.ensureWifiDisconnected(null /* wifiNetworkToCheck */);
-            // Simulate the device being unplugged from charging.
-            executeShellCommand("dumpsys battery unplug");
-            executeShellCommand("dumpsys battery set status " + BATTERY_STATUS_DISCHARGING);
-            executeShellCommand("dumpsys batterystats enable pretend-screen-off");
 
-            // Get cellular battery stats
-            CellularBatteryStats cellularStatsBefore = runAsShell(UPDATE_DEVICE_STATS,
-                    mBsm::getCellularBatteryStats);
+            verifyGetCellBatteryStats();
+            verifyGetWifiBatteryStats();
 
-            // Generate traffic on cellular network.
-            generateNetworkTraffic(cellNetwork, url);
-
-            // The mobile battery stats are updated when a network stops being the default network.
-            // ConnectivityService will call BatteryStatsManager.reportMobileRadioPowerState when
-            // removing data activity tracking.
-            final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
-
-            // Check cellular battery stats are updated.
-            runAsShell(UPDATE_DEVICE_STATS,
-                    () -> assertStatsEventually(mBsm::getCellularBatteryStats,
-                        cellularStatsAfter -> cellularBatteryStatsIncreased(
-                        cellularStatsBefore, cellularStatsAfter)));
-
-            WifiBatteryStats wifiStatsBefore = runAsShell(UPDATE_DEVICE_STATS,
-                    mBsm::getWifiBatteryStats);
-
-            // Generate traffic on wifi network.
-            generateNetworkTraffic(wifiNetwork, url);
-            // Wifi battery stats are updated when wifi on.
-            mCtsNetUtils.toggleWifi();
-
-            // Check wifi battery stats are updated.
-            runAsShell(UPDATE_DEVICE_STATS,
-                    () -> assertStatsEventually(mBsm::getWifiBatteryStats,
-                        wifiStatsAfter -> wifiBatteryStatsIncreased(wifiStatsBefore,
-                        wifiStatsAfter)));
         } finally {
             // Reset battery settings.
-            executeShellCommand("dumpsys battery reset");
-            executeShellCommand("dumpsys batterystats disable pretend-screen-off");
+            executeShellCommand("dumpsys batterystats disable no-auto-reset");
+            executeShellCommand("cmd battery reset");
         }
+    }
+
+    private void verifyGetCellBatteryStats() throws Exception {
+        final boolean isTelephonySupported = mPm.hasSystemFeature(FEATURE_TELEPHONY);
+
+        if (!isTelephonySupported) {
+            Log.d(TAG, "Skip cell battery stats test because device does not support telephony.");
+            return;
+        }
+
+        final Network cellNetwork = mCtsNetUtils.connectToCell();
+        final URL url = new URL(TEST_URL);
+
+        // Get cellular battery stats
+        CellularBatteryStats cellularStatsBefore = runAsShell(UPDATE_DEVICE_STATS,
+                mBsm::getCellularBatteryStats);
+
+        // Generate traffic on cellular network.
+        Log.d(TAG, "Generate traffic on cellular network.");
+        generateNetworkTraffic(cellNetwork, url);
+
+        // The mobile battery stats are updated when a network stops being the default network.
+        // ConnectivityService will call BatteryStatsManager.reportMobileRadioPowerState when
+        // removing data activity tracking.
+        mCtsNetUtils.ensureWifiConnected();
+
+        // Check cellular battery stats are updated.
+        runAsShell(UPDATE_DEVICE_STATS,
+                () -> assertStatsEventually(mBsm::getCellularBatteryStats,
+                    cellularStatsAfter -> cellularBatteryStatsIncreased(
+                    cellularStatsBefore, cellularStatsAfter)));
+    }
+
+    private void verifyGetWifiBatteryStats() throws Exception {
+        final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
+        final URL url = new URL(TEST_URL);
+
+        if (!mWm.isEnhancedPowerReportingSupported()) {
+            Log.d(TAG, "Skip wifi stats test because wifi does not support link layer stats.");
+            return;
+        }
+
+        WifiBatteryStats wifiStatsBefore = runAsShell(UPDATE_DEVICE_STATS,
+                mBsm::getWifiBatteryStats);
+
+        // Generate traffic on wifi network.
+        Log.d(TAG, "Generate traffic on wifi network.");
+        generateNetworkTraffic(wifiNetwork, url);
+        // Wifi battery stats are updated when wifi on.
+        mCtsNetUtils.toggleWifi();
+
+        // Check wifi battery stats are updated.
+        runAsShell(UPDATE_DEVICE_STATS,
+                () -> assertStatsEventually(mBsm::getWifiBatteryStats,
+                    wifiStatsAfter -> wifiBatteryStatsIncreased(wifiStatsBefore,
+                    wifiStatsAfter)));
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
