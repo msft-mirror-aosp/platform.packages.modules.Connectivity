@@ -180,9 +180,9 @@ public class MultinetworkPolicyTracker {
      * The value works when the time set is more than {@link System.currentTimeMillis()}.
      */
     public void setTestAllowBadWifiUntil(long timeMs) {
-        Log.d(TAG, "setTestAllowBadWifiUntil: " + mTestAllowBadWifiUntilMs);
+        Log.d(TAG, "setTestAllowBadWifiUntil: " + timeMs);
         mTestAllowBadWifiUntilMs = timeMs;
-        updateAvoidBadWifi();
+        reevaluateInternal();
     }
 
     @VisibleForTesting

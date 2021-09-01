@@ -24,21 +24,26 @@ import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStats.UID_TETHERING;
 import static android.net.ip.ConntrackMonitor.ConntrackEvent;
-import static android.net.netlink.ConntrackMessage.DYING_MASK;
-import static android.net.netlink.ConntrackMessage.ESTABLISHED_MASK;
-import static android.net.netlink.ConntrackMessage.Tuple;
-import static android.net.netlink.ConntrackMessage.TupleIpv4;
-import static android.net.netlink.ConntrackMessage.TupleProto;
-import static android.net.netlink.NetlinkConstants.IPCTNL_MSG_CT_DELETE;
-import static android.net.netlink.NetlinkConstants.IPCTNL_MSG_CT_NEW;
 import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED;
 import static android.system.OsConstants.ETH_P_IP;
 import static android.system.OsConstants.ETH_P_IPV6;
 import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
+import static android.system.OsConstants.NETLINK_NETFILTER;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.staticMockMarker;
+import static com.android.net.module.util.netlink.ConntrackMessage.DYING_MASK;
+import static com.android.net.module.util.netlink.ConntrackMessage.ESTABLISHED_MASK;
+import static com.android.net.module.util.netlink.ConntrackMessage.Tuple;
+import static com.android.net.module.util.netlink.ConntrackMessage.TupleIpv4;
+import static com.android.net.module.util.netlink.ConntrackMessage.TupleProto;
+import static com.android.net.module.util.netlink.NetlinkConstants.IPCTNL_MSG_CT_DELETE;
+import static com.android.net.module.util.netlink.NetlinkConstants.IPCTNL_MSG_CT_NEW;
+import static com.android.networkstack.tethering.BpfCoordinator.CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS;
+import static com.android.networkstack.tethering.BpfCoordinator.NF_CONNTRACK_TCP_TIMEOUT_ESTABLISHED;
+import static com.android.networkstack.tethering.BpfCoordinator.NF_CONNTRACK_UDP_TIMEOUT_STREAM;
+import static com.android.networkstack.tethering.BpfCoordinator.NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS;
 import static com.android.networkstack.tethering.BpfCoordinator.StatsType;
 import static com.android.networkstack.tethering.BpfCoordinator.StatsType.STATS_PER_IFACE;
 import static com.android.networkstack.tethering.BpfCoordinator.StatsType.STATS_PER_UID;
@@ -47,6 +52,7 @@ import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -70,13 +76,14 @@ import android.net.InetAddresses;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.MacAddress;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.NetworkStats;
 import android.net.TetherOffloadRuleParcel;
 import android.net.TetherStatsParcel;
 import android.net.ip.ConntrackMonitor;
 import android.net.ip.ConntrackMonitor.ConntrackEventConsumer;
 import android.net.ip.IpServer;
-import android.net.netlink.NetlinkConstants;
 import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
 import android.os.Build;
@@ -90,8 +97,12 @@ import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.dx.mockito.inline.extended.ExtendedMockito;
+import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.NetworkStackConstants;
 import com.android.net.module.util.Struct;
+import com.android.net.module.util.netlink.ConntrackMessage;
+import com.android.net.module.util.netlink.NetlinkConstants;
+import com.android.net.module.util.netlink.NetlinkSocket;
 import com.android.networkstack.tethering.BpfCoordinator.BpfConntrackEventConsumer;
 import com.android.networkstack.tethering.BpfCoordinator.ClientInfo;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
@@ -126,6 +137,8 @@ import java.util.function.BiConsumer;
 public class BpfCoordinatorTest {
     @Rule
     public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
+
+    private static final int TEST_NET_ID = 24;
 
     private static final int UPSTREAM_IFINDEX = 1001;
     private static final int DOWNSTREAM_IFINDEX = 1002;
@@ -217,6 +230,7 @@ public class BpfCoordinatorTest {
     // it has to access the non-static function of BPF coordinator.
     private BpfConntrackEventConsumer mConsumer;
 
+    private long mElapsedRealtimeNanos = 0;
     private final ArgumentCaptor<ArrayList> mStringArrayCaptor =
             ArgumentCaptor.forClass(ArrayList.class);
     private final TestLooper mTestLooper = new TestLooper();
@@ -254,6 +268,10 @@ public class BpfCoordinatorTest {
                     @NonNull
                     public ConntrackMonitor getConntrackMonitor(ConntrackEventConsumer consumer) {
                         return mConntrackMonitor;
+                    }
+
+                    public long elapsedRealtimeNanos() {
+                        return mElapsedRealtimeNanos;
                     }
 
                     @Nullable
@@ -1113,6 +1131,7 @@ public class BpfCoordinatorTest {
             final String intIface1 = "wlan1";
             final String intIface2 = "rndis0";
             final String extIface = "rmnet_data0";
+            final String virtualIface = "ipsec0";
             final BpfUtils mockMarkerBpfUtils = staticMockMarker(BpfUtils.class);
             final BpfCoordinator coordinator = makeBpfCoordinator();
 
@@ -1148,6 +1167,14 @@ public class BpfCoordinatorTest {
             ExtendedMockito.verify(() -> BpfUtils.detachProgram(intIface1));
             ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
             ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
+
+            // [6] Skip attaching if upstream is virtual interface.
+            coordinator.maybeAttachProgram(intIface1, virtualIface);
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(extIface, DOWNSTREAM), never());
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface1, UPSTREAM), never());
+            ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
+            ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
+
         } finally {
             mockSession.finishMocking();
         }
@@ -1340,7 +1367,12 @@ public class BpfCoordinatorTest {
     }
 
     @NonNull
-    private ConntrackEvent makeTestConntrackEvent(short msgType, int proto) {
+    private Tether4Key makeDownstream4Key() {
+        return makeDownstream4Key(IPPROTO_TCP);
+    }
+
+    @NonNull
+    private ConntrackEvent makeTestConntrackEvent(short msgType, int proto, short remotePort) {
         if (msgType != IPCTNL_MSG_CT_NEW && msgType != IPCTNL_MSG_CT_DELETE) {
             fail("Not support message type " + msgType);
         }
@@ -1354,18 +1386,26 @@ public class BpfCoordinatorTest {
         return new ConntrackEvent(
                 (short) (NetlinkConstants.NFNL_SUBSYS_CTNETLINK << 8 | msgType),
                 new Tuple(new TupleIpv4(PRIVATE_ADDR, REMOTE_ADDR),
-                        new TupleProto((byte) proto, PRIVATE_PORT, REMOTE_PORT)),
+                        new TupleProto((byte) proto, PRIVATE_PORT, remotePort)),
                 new Tuple(new TupleIpv4(REMOTE_ADDR, PUBLIC_ADDR),
-                        new TupleProto((byte) proto, REMOTE_PORT, PUBLIC_PORT)),
+                        new TupleProto((byte) proto, remotePort, PUBLIC_PORT)),
                 status,
                 timeoutSec);
+    }
+
+    @NonNull
+    private ConntrackEvent makeTestConntrackEvent(short msgType, int proto) {
+        return makeTestConntrackEvent(msgType, proto, REMOTE_PORT);
     }
 
     private void setUpstreamInformationTo(final BpfCoordinator coordinator) {
         final LinkProperties lp = new LinkProperties();
         lp.setInterfaceName(UPSTREAM_IFACE);
         lp.addLinkAddress(new LinkAddress(PUBLIC_ADDR, 32 /* prefix length */));
-        coordinator.addUpstreamIfindexToMap(lp);
+        final NetworkCapabilities capabilities = new NetworkCapabilities()
+                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR);
+        coordinator.updateUpstreamNetworkState(new UpstreamNetworkState(lp, capabilities,
+                new Network(TEST_NET_ID)));
     }
 
     private void setDownstreamAndClientInformationTo(final BpfCoordinator coordinator) {
@@ -1379,8 +1419,11 @@ public class BpfCoordinatorTest {
         // was started.
         coordinator.startPolling();
 
-        // Needed because tetherOffloadRuleRemove of api31.BpfCoordinatorShimImpl only decreases
-        // the count while the entry is deleted. In the other words, deleteEntry returns true.
+        // Needed because two reasons: (1) BpfConntrackEventConsumer#accept only performs cleanup
+        // when both upstream and downstream rules are removed. (2) tetherOffloadRuleRemove of
+        // api31.BpfCoordinatorShimImpl only decreases the count while the entry is deleted.
+        // In the other words, deleteEntry returns true.
+        doReturn(true).when(mBpfUpstream4Map).deleteEntry(any());
         doReturn(true).when(mBpfDownstream4Map).deleteEntry(any());
 
         // Needed because BpfCoordinator#addUpstreamIfindexToMap queries interface parameter for
@@ -1493,5 +1536,140 @@ public class BpfCoordinatorTest {
 
         mConsumer.accept(makeTestConntrackEvent(IPCTNL_MSG_CT_NEW, IPPROTO_UDP));
         verify(mBpfDevMap, never()).updateEntry(any(), any());
+    }
+
+    private void setElapsedRealtimeNanos(long nanoSec) {
+        mElapsedRealtimeNanos = nanoSec;
+    }
+
+    private void checkRefreshConntrackTimeout(final TestBpfMap<Tether4Key, Tether4Value> bpfMap,
+            final Tether4Key tcpKey, final Tether4Value tcpValue, final Tether4Key udpKey,
+            final Tether4Value udpValue) throws Exception {
+        // Both system elapsed time since boot and the rule last used time are used to measure
+        // the rule expiration. In this test, all test rules are fixed the last used time to 0.
+        // Set the different testing elapsed time to make the rule to be valid or expired.
+        //
+        // Timeline:
+        // 0                                       60 (seconds)
+        // +---+---+---+---+--...--+---+---+---+---+---+- ..
+        // | CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS  |
+        // +---+---+---+---+--...--+---+---+---+---+---+- ..
+        // |<-          valid diff           ->|
+        // |<-          expired diff                 ->|
+        // ^                                   ^       ^
+        // last used time      elapsed time (valid)    elapsed time (expired)
+        final long validTime = (CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS - 1) * 1_000_000L;
+        final long expiredTime = (CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS + 1) * 1_000_000L;
+
+        // Static mocking for NetlinkSocket.
+        MockitoSession mockSession = ExtendedMockito.mockitoSession()
+                .mockStatic(NetlinkSocket.class)
+                .startMocking();
+        try {
+            final BpfCoordinator coordinator = makeBpfCoordinator();
+            coordinator.startPolling();
+            bpfMap.insertEntry(tcpKey, tcpValue);
+            bpfMap.insertEntry(udpKey, udpValue);
+
+            // [1] Don't refresh conntrack timeout.
+            setElapsedRealtimeNanos(expiredTime);
+            mTestLooper.moveTimeForward(CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS);
+            waitForIdle();
+            ExtendedMockito.verifyNoMoreInteractions(staticMockMarker(NetlinkSocket.class));
+            ExtendedMockito.clearInvocations(staticMockMarker(NetlinkSocket.class));
+
+            // [2] Refresh conntrack timeout.
+            setElapsedRealtimeNanos(validTime);
+            mTestLooper.moveTimeForward(CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS);
+            waitForIdle();
+            final byte[] expectedNetlinkTcp = ConntrackMessage.newIPv4TimeoutUpdateRequest(
+                    IPPROTO_TCP, PRIVATE_ADDR, (int) PRIVATE_PORT, REMOTE_ADDR,
+                    (int) REMOTE_PORT, NF_CONNTRACK_TCP_TIMEOUT_ESTABLISHED);
+            final byte[] expectedNetlinkUdp = ConntrackMessage.newIPv4TimeoutUpdateRequest(
+                    IPPROTO_UDP, PRIVATE_ADDR, (int) PRIVATE_PORT, REMOTE_ADDR,
+                    (int) REMOTE_PORT, NF_CONNTRACK_UDP_TIMEOUT_STREAM);
+            ExtendedMockito.verify(() -> NetlinkSocket.sendOneShotKernelMessage(
+                    eq(NETLINK_NETFILTER), eq(expectedNetlinkTcp)));
+            ExtendedMockito.verify(() -> NetlinkSocket.sendOneShotKernelMessage(
+                    eq(NETLINK_NETFILTER), eq(expectedNetlinkUdp)));
+            ExtendedMockito.verifyNoMoreInteractions(staticMockMarker(NetlinkSocket.class));
+            ExtendedMockito.clearInvocations(staticMockMarker(NetlinkSocket.class));
+
+            // [3] Don't refresh conntrack timeout if polling stopped.
+            coordinator.stopPolling();
+            mTestLooper.moveTimeForward(CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS);
+            waitForIdle();
+            ExtendedMockito.verifyNoMoreInteractions(staticMockMarker(NetlinkSocket.class));
+            ExtendedMockito.clearInvocations(staticMockMarker(NetlinkSocket.class));
+        } finally {
+            mockSession.finishMocking();
+        }
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    public void testRefreshConntrackTimeout_Upstream4Map() throws Exception {
+        // TODO: Replace the dependencies BPF map with a non-mocked TestBpfMap object.
+        final TestBpfMap<Tether4Key, Tether4Value> bpfUpstream4Map =
+                new TestBpfMap<>(Tether4Key.class, Tether4Value.class);
+        doReturn(bpfUpstream4Map).when(mDeps).getBpfUpstream4Map();
+
+        final Tether4Key tcpKey = makeUpstream4Key(IPPROTO_TCP);
+        final Tether4Key udpKey = makeUpstream4Key(IPPROTO_UDP);
+        final Tether4Value tcpValue = makeUpstream4Value();
+        final Tether4Value udpValue = makeUpstream4Value();
+
+        checkRefreshConntrackTimeout(bpfUpstream4Map, tcpKey, tcpValue, udpKey, udpValue);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    public void testRefreshConntrackTimeout_Downstream4Map() throws Exception {
+        // TODO: Replace the dependencies BPF map with a non-mocked TestBpfMap object.
+        final TestBpfMap<Tether4Key, Tether4Value> bpfDownstream4Map =
+                new TestBpfMap<>(Tether4Key.class, Tether4Value.class);
+        doReturn(bpfDownstream4Map).when(mDeps).getBpfDownstream4Map();
+
+        final Tether4Key tcpKey = makeDownstream4Key(IPPROTO_TCP);
+        final Tether4Key udpKey = makeDownstream4Key(IPPROTO_UDP);
+        final Tether4Value tcpValue = makeDownstream4Value();
+        final Tether4Value udpValue = makeDownstream4Value();
+
+        checkRefreshConntrackTimeout(bpfDownstream4Map, tcpKey, tcpValue, udpKey, udpValue);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    public void testNotAllowOffloadByConntrackMessageDestinationPort() throws Exception {
+        final BpfCoordinator coordinator = makeBpfCoordinator();
+        initBpfCoordinatorForRule4(coordinator);
+
+        final short offloadedPort = 42;
+        assertFalse(CollectionUtils.contains(NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS,
+                offloadedPort));
+        mConsumer.accept(makeTestConntrackEvent(IPCTNL_MSG_CT_NEW, IPPROTO_TCP, offloadedPort));
+        verify(mBpfUpstream4Map).insertEntry(any(), any());
+        verify(mBpfDownstream4Map).insertEntry(any(), any());
+        clearInvocations(mBpfUpstream4Map, mBpfDownstream4Map);
+
+        for (final short port : NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS) {
+            mConsumer.accept(makeTestConntrackEvent(IPCTNL_MSG_CT_NEW, IPPROTO_TCP, port));
+            verify(mBpfUpstream4Map, never()).insertEntry(any(), any());
+            verify(mBpfDownstream4Map, never()).insertEntry(any(), any());
+
+            mConsumer.accept(makeTestConntrackEvent(IPCTNL_MSG_CT_DELETE, IPPROTO_TCP, port));
+            verify(mBpfUpstream4Map, never()).deleteEntry(any());
+            verify(mBpfDownstream4Map, never()).deleteEntry(any());
+
+            mConsumer.accept(makeTestConntrackEvent(IPCTNL_MSG_CT_NEW, IPPROTO_UDP, port));
+            verify(mBpfUpstream4Map).insertEntry(any(), any());
+            verify(mBpfDownstream4Map).insertEntry(any(), any());
+            clearInvocations(mBpfUpstream4Map, mBpfDownstream4Map);
+
+            mConsumer.accept(makeTestConntrackEvent(IPCTNL_MSG_CT_DELETE, IPPROTO_UDP, port));
+            verify(mBpfUpstream4Map).deleteEntry(any());
+            verify(mBpfDownstream4Map).deleteEntry(any());
+            clearInvocations(mBpfUpstream4Map, mBpfDownstream4Map);
+        }
     }
 }

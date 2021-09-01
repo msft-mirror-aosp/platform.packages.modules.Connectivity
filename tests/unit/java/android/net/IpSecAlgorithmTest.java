@@ -29,9 +29,10 @@ import android.os.Build;
 import android.os.Parcel;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.CollectionUtils;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -45,7 +46,8 @@ import java.util.Set;
 
 /** Unit tests for {@link IpSecAlgorithm}. */
 @SmallTest
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecAlgorithmTest {
     private static final byte[] KEY_MATERIAL;
 
@@ -215,8 +217,11 @@ public class IpSecAlgorithmTest {
         final Set<String> optionalAlgoSet = getOptionalAlgos();
         final String[] optionalAlgos = optionalAlgoSet.toArray(new String[0]);
 
-        doReturn(optionalAlgos).when(mMockResources)
-                .getStringArray(com.android.internal.R.array.config_optionalIpSecAlgorithms);
+        // Query the identifier instead of using the R.array constant, as the test may be built
+        // separately from the platform and they may not match.
+        final int resId = Resources.getSystem().getIdentifier("config_optionalIpSecAlgorithms",
+                "array", "android");
+        doReturn(optionalAlgos).when(mMockResources).getStringArray(resId);
 
         final Set<String> enabledAlgos = new HashSet<>(IpSecAlgorithm.loadAlgos(mMockResources));
         final Set<String> expectedAlgos = ALGO_TO_REQUIRED_FIRST_SDK.keySet();
