@@ -61,6 +61,7 @@ import androidx.annotation.Nullable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.NetworkStackConstants;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.netlink.ConntrackMessage;
@@ -130,6 +131,12 @@ public class BpfCoordinator {
     static final int NF_CONNTRACK_TCP_TIMEOUT_ESTABLISHED = 432_000;
     @VisibleForTesting
     static final int NF_CONNTRACK_UDP_TIMEOUT_STREAM = 180;
+
+    // List of TCP port numbers which aren't offloaded because the packets require the netfilter
+    // conntrack helper. See also TetherController::setForwardRules in netd.
+    @VisibleForTesting
+    static final short [] NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS = new short [] {
+            21 /* ftp */, 1723 /* pptp */};
 
     @VisibleForTesting
     enum StatsType {
@@ -1556,7 +1563,15 @@ public class BpfCoordinator {
                     0 /* lastUsed, filled by bpf prog only */);
         }
 
+        private boolean allowOffload(ConntrackEvent e) {
+            if (e.tupleOrig.protoNum != OsConstants.IPPROTO_TCP) return true;
+            return !CollectionUtils.contains(
+                    NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS, e.tupleOrig.dstPort);
+        }
+
         public void accept(ConntrackEvent e) {
+            if (!allowOffload(e)) return;
+
             final ClientInfo tetherClient = getClientInfo(e.tupleOrig.srcIp);
             if (tetherClient == null) return;
 
