@@ -350,8 +350,11 @@ import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
+import org.mockito.MockingDetails;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.mockito.Spy;
+import org.mockito.exceptions.misusing.UnfinishedStubbingException;
 import org.mockito.stubbing.Answer;
 
 import java.io.FileDescriptor;
@@ -1734,7 +1737,15 @@ public class ConnectivityServiceTest {
     }
 
     private void returnRealCallingUid() {
-        doAnswer((invocationOnMock) -> Binder.getCallingUid()).when(mDeps).getCallingUid();
+        try {
+            doAnswer((invocationOnMock) -> Binder.getCallingUid()).when(mDeps).getCallingUid();
+        } catch (UnfinishedStubbingException e) {
+            final MockingDetails details = Mockito.mockingDetails(mDeps);
+            Log.e("ConnectivityServiceTest", "UnfinishedStubbingException,"
+                    + " Stubbings: " + TextUtils.join(", ", details.getStubbings())
+                    + " Invocations: " + details.printInvocations(), e);
+            throw e;
+        }
     }
 
     private ConnectivityService.Dependencies makeDependencies() {
@@ -6237,16 +6248,16 @@ public class ConnectivityServiceTest {
         mCm.unregisterNetworkCallback(networkCallback);
     }
 
-    private void expectNotifyNetworkStatus(List<Network> networks, String defaultIface,
+    private void expectNotifyNetworkStatus(List<Network> defaultNetworks, String defaultIface,
             Integer vpnUid, String vpnIfname, List<String> underlyingIfaces) throws Exception {
-        ArgumentCaptor<List<Network>> networksCaptor = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<List<Network>> defaultNetworksCaptor = ArgumentCaptor.forClass(List.class);
         ArgumentCaptor<List<UnderlyingNetworkInfo>> vpnInfosCaptor =
                 ArgumentCaptor.forClass(List.class);
 
-        verify(mStatsManager, atLeastOnce()).notifyNetworkStatus(networksCaptor.capture(),
+        verify(mStatsManager, atLeastOnce()).notifyNetworkStatus(defaultNetworksCaptor.capture(),
                 any(List.class), eq(defaultIface), vpnInfosCaptor.capture());
 
-        assertSameElements(networks, networksCaptor.getValue());
+        assertSameElements(defaultNetworks, defaultNetworksCaptor.getValue());
 
         List<UnderlyingNetworkInfo> infos = vpnInfosCaptor.getValue();
         if (vpnUid != null) {
@@ -6262,8 +6273,8 @@ public class ConnectivityServiceTest {
     }
 
     private void expectNotifyNetworkStatus(
-            List<Network> networks, String defaultIface) throws Exception {
-        expectNotifyNetworkStatus(networks, defaultIface, null, null, List.of());
+            List<Network> defaultNetworks, String defaultIface) throws Exception {
+        expectNotifyNetworkStatus(defaultNetworks, defaultIface, null, null, List.of());
     }
 
     @Test
@@ -12971,21 +12982,26 @@ public class ConnectivityServiceTest {
         assertLength(2, snapshots);
         assertContainsAll(snapshots, cellSnapshot, wifiSnapshot);
 
-        // Set cellular as suspended, verify the snapshots will not contain suspended networks.
-        // TODO: Consider include SUSPENDED networks, which should be considered as
-        //  temporary shortage of connectivity of a connected network.
+        // Set cellular as suspended, verify the snapshots will contain suspended networks.
         mCellNetworkAgent.suspend();
         waitForIdle();
+        final NetworkCapabilities cellSuspendedNc =
+                mCm.getNetworkCapabilities(mCellNetworkAgent.getNetwork());
+        assertFalse(cellSuspendedNc.hasCapability(NET_CAPABILITY_NOT_SUSPENDED));
+        final NetworkStateSnapshot cellSuspendedSnapshot = new NetworkStateSnapshot(
+                mCellNetworkAgent.getNetwork(), cellSuspendedNc, cellLp,
+                null, ConnectivityManager.TYPE_MOBILE);
         snapshots = mCm.getAllNetworkStateSnapshots();
-        assertLength(1, snapshots);
-        assertEquals(wifiSnapshot, snapshots.get(0));
+        assertLength(2, snapshots);
+        assertContainsAll(snapshots, cellSuspendedSnapshot, wifiSnapshot);
 
-        // Disconnect wifi, verify the snapshots contain nothing.
+        // Disconnect wifi, verify the snapshots contain only cellular.
         mWiFiNetworkAgent.disconnect();
         waitForIdle();
         snapshots = mCm.getAllNetworkStateSnapshots();
         assertEquals(mCellNetworkAgent.getNetwork(), mCm.getActiveNetwork());
-        assertLength(0, snapshots);
+        assertLength(1, snapshots);
+        assertEquals(cellSuspendedSnapshot, snapshots.get(0));
 
         mCellNetworkAgent.resume();
         waitForIdle();
