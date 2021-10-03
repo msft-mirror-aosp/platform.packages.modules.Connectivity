@@ -3014,9 +3014,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
         pw.println();
 
-        pw.print("Current per-app default networks: ");
+        pw.println("Current network preferences: ");
         pw.increaseIndent();
-        dumpPerAppNetworkPreferences(pw);
+        dumpNetworkPreferences(pw);
         pw.decreaseIndent();
         pw.println();
 
@@ -3144,37 +3144,55 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private void dumpPerAppNetworkPreferences(IndentingPrintWriter pw) {
-        pw.println("Per-App Network Preference:");
-        pw.increaseIndent();
-        if (0 == mOemNetworkPreferences.getNetworkPreferences().size()) {
-            pw.println("none");
-        } else {
-            pw.println(mOemNetworkPreferences.toString());
+    private void dumpNetworkPreferences(IndentingPrintWriter pw) {
+        if (!mProfileNetworkPreferences.isEmpty()) {
+            pw.println("Profile preferences:");
+            pw.increaseIndent();
+            pw.println(mProfileNetworkPreferences.preferences);
+            pw.decreaseIndent();
         }
-        pw.decreaseIndent();
+        if (!mOemNetworkPreferences.isEmpty()) {
+            pw.println("OEM preferences:");
+            pw.increaseIndent();
+            pw.println(mOemNetworkPreferences);
+            pw.decreaseIndent();
+        }
+        if (!mMobileDataPreferredUids.isEmpty()) {
+            pw.println("Mobile data preferred UIDs:");
+            pw.increaseIndent();
+            pw.println(mMobileDataPreferredUids);
+            pw.decreaseIndent();
+        }
 
+        pw.println("Default requests:");
+        pw.increaseIndent();
+        dumpPerAppDefaultRequests(pw);
+        pw.decreaseIndent();
+    }
+
+    private void dumpPerAppDefaultRequests(IndentingPrintWriter pw) {
         for (final NetworkRequestInfo defaultRequest : mDefaultNetworkRequests) {
             if (mDefaultRequest == defaultRequest) {
                 continue;
             }
 
-            final boolean isActive = null != defaultRequest.getSatisfier();
-            pw.println("Is per-app network active:");
-            pw.increaseIndent();
-            pw.println(isActive);
-            if (isActive) {
-                pw.println("Active network: " + defaultRequest.getSatisfier().network.netId);
-            }
-            pw.println("Tracked UIDs:");
-            pw.increaseIndent();
-            if (0 == defaultRequest.mRequests.size()) {
-                pw.println("none, this should never occur.");
+            final NetworkAgentInfo satisfier = defaultRequest.getSatisfier();
+            final String networkOutput;
+            if (null == satisfier) {
+                networkOutput = "null";
+            } else if (mNoServiceNetwork.equals(satisfier)) {
+                networkOutput = "no service network";
             } else {
-                pw.println(defaultRequest.mRequests.get(0).networkCapabilities.getUidRanges());
+                networkOutput = String.valueOf(satisfier.network.netId);
             }
-            pw.decreaseIndent();
-            pw.decreaseIndent();
+            final String asUidString = (defaultRequest.mAsUid == defaultRequest.mUid)
+                    ? "" : " asUid: " + defaultRequest.mAsUid;
+            final String requestInfo = "Request: [uid/pid:" + defaultRequest.mUid + "/"
+                    + defaultRequest.mPid + asUidString + "]";
+            final String satisfierOutput = "Satisfier: [" + networkOutput + "]"
+                    + " Preference order: " + defaultRequest.mPreferenceOrder
+                    + " Tracked UIDs: " + defaultRequest.getUids();
+            pw.println(requestInfo + " - " + satisfierOutput);
         }
     }
 
@@ -3848,9 +3866,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void handleNetworkAgentDisconnected(Message msg) {
         NetworkAgentInfo nai = (NetworkAgentInfo) msg.obj;
-        if (mNetworkAgentInfos.contains(nai)) {
-            disconnectAndDestroyNetwork(nai);
-        }
+        disconnectAndDestroyNetwork(nai);
     }
 
     // Destroys a network, remove references to it from the internal state managed by
@@ -3858,6 +3874,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     // Must be called on the Handler thread.
     private void disconnectAndDestroyNetwork(NetworkAgentInfo nai) {
         ensureRunningOnConnectivityServiceThread();
+
+        if (!mNetworkAgentInfos.contains(nai)) return;
+
         if (DBG) {
             log(nai.toShortString() + " disconnected, was satisfying " + nai.numNetworkRequests());
         }
@@ -3943,7 +3962,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         try {
             mNetd.networkSetPermissionForNetwork(nai.network.netId, INetd.PERMISSION_SYSTEM);
         } catch (RemoteException e) {
-            Log.d(TAG, "Error marking network restricted during teardown: " + e);
+            Log.d(TAG, "Error marking network restricted during teardown: ", e);
         }
         mHandler.postDelayed(() -> destroyNetwork(nai), nai.teardownDelayMs);
     }
@@ -6901,7 +6920,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (DBG) {
             log("unregister offer from providerId " + noi.offer.providerId + " : " + noi.offer);
         }
-        mNetworkOffers.remove(noi);
+
+        // If the provider removes the offer and dies immediately afterwards this
+        // function may be called twice in a row, but the array will no longer contain
+        // the offer.
+        if (!mNetworkOffers.remove(noi)) return;
         noi.offer.callback.asBinder().unlinkToDeath(noi, 0 /* flags */);
     }
 
