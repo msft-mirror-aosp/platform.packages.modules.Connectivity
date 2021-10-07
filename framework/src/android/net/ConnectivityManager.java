@@ -144,6 +144,11 @@ public class ConnectivityManager {
      * <p/>
      * For a disconnect event, the boolean extra EXTRA_NO_CONNECTIVITY
      * is set to {@code true} if there are no connected networks at all.
+     * <p />
+     * Note that this broadcast is deprecated and generally tries to implement backwards
+     * compatibility with older versions of Android. As such, it may not reflect new
+     * capabilities of the system, like multiple networks being connected at the same
+     * time, the details of newer technology, or changes in tethering state.
      *
      * @deprecated apps should use the more versatile {@link #requestNetwork},
      *             {@link #registerNetworkCallback} or {@link #registerDefaultNetworkCallback}
@@ -2335,6 +2340,7 @@ public class ConnectivityManager {
         void onNetworkActive();
     }
 
+    @GuardedBy("mNetworkActivityListeners")
     private final ArrayMap<OnNetworkActiveListener, INetworkActivityListener>
             mNetworkActivityListeners = new ArrayMap<>();
 
@@ -2351,18 +2357,20 @@ public class ConnectivityManager {
      * @param l The listener to be told when the network is active.
      */
     public void addDefaultNetworkActiveListener(final OnNetworkActiveListener l) {
-        INetworkActivityListener rl = new INetworkActivityListener.Stub() {
+        final INetworkActivityListener rl = new INetworkActivityListener.Stub() {
             @Override
             public void onNetworkActive() throws RemoteException {
                 l.onNetworkActive();
             }
         };
 
-        try {
-            mService.registerNetworkActivityListener(rl);
-            mNetworkActivityListeners.put(l, rl);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+        synchronized (mNetworkActivityListeners) {
+            try {
+                mService.registerNetworkActivityListener(rl);
+                mNetworkActivityListeners.put(l, rl);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
         }
     }
 
@@ -2373,14 +2381,17 @@ public class ConnectivityManager {
      * @param l Previously registered listener.
      */
     public void removeDefaultNetworkActiveListener(@NonNull OnNetworkActiveListener l) {
-        INetworkActivityListener rl = mNetworkActivityListeners.get(l);
-        if (rl == null) {
-            throw new IllegalArgumentException("Listener was not registered.");
-        }
-        try {
-            mService.unregisterNetworkActivityListener(rl);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
+        synchronized (mNetworkActivityListeners) {
+            final INetworkActivityListener rl = mNetworkActivityListeners.get(l);
+            if (rl == null) {
+                throw new IllegalArgumentException("Listener was not registered.");
+            }
+            try {
+                mService.unregisterNetworkActivityListener(rl);
+                mNetworkActivityListeners.remove(l);
+            } catch (RemoteException e) {
+                throw e.rethrowFromSystemServer();
+            }
         }
     }
 
