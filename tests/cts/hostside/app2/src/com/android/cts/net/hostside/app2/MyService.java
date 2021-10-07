@@ -18,12 +18,15 @@ package com.android.cts.net.hostside.app2;
 import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED;
 
 import static com.android.cts.net.hostside.app2.Common.ACTION_RECEIVER_READY;
+import static com.android.cts.net.hostside.app2.Common.ACTION_SNOOZE_WARNING;
 import static com.android.cts.net.hostside.app2.Common.DYNAMIC_RECEIVER;
 import static com.android.cts.net.hostside.app2.Common.TAG;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.app.job.JobInfo;
+import android.app.job.JobScheduler;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -65,6 +68,7 @@ public class MyService extends Service {
             context.registerReceiver(mReceiver, new IntentFilter(ACTION_RECEIVER_READY));
             context.registerReceiver(mReceiver,
                     new IntentFilter(ACTION_RESTRICT_BACKGROUND_CHANGED));
+            context.registerReceiver(mReceiver, new IntentFilter(ACTION_SNOOZE_WARNING));
             Log.d(TAG, "receiver registered");
         }
 
@@ -90,12 +94,12 @@ public class MyService extends Service {
         }
 
         @Override
-        public void registerNetworkCallback(INetworkCallback cb) {
+        public void registerNetworkCallback(final NetworkRequest request, INetworkCallback cb) {
             if (mNetworkCallback != null) {
                 Log.d(TAG, "unregister previous network callback: " + mNetworkCallback);
                 unregisterNetworkCallback();
             }
-            Log.d(TAG, "registering network callback");
+            Log.d(TAG, "registering network callback for " + request);
 
             mNetworkCallback = new ConnectivityManager.NetworkCallback() {
                 @Override
@@ -138,7 +142,7 @@ public class MyService extends Service {
                     }
                 }
             };
-            mCm.registerNetworkCallback(makeWifiNetworkRequest(), mNetworkCallback);
+            mCm.registerNetworkCallback(request, mNetworkCallback);
             try {
                 cb.asBinder().linkToDeath(() -> unregisterNetworkCallback(), 0);
             } catch (RemoteException e) {
@@ -154,14 +158,14 @@ public class MyService extends Service {
                 mNetworkCallback = null;
             }
         }
-      };
 
-    private NetworkRequest makeWifiNetworkRequest() {
-        return new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build();
-    }
+        @Override
+        public void scheduleJob(JobInfo jobInfo) {
+            final JobScheduler jobScheduler = getApplicationContext()
+                    .getSystemService(JobScheduler.class);
+            jobScheduler.schedule(jobInfo);
+        }
+      };
 
     @Override
     public IBinder onBind(Intent intent) {

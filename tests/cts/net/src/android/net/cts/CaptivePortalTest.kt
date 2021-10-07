@@ -20,12 +20,16 @@ import android.Manifest.permission.CONNECTIVITY_INTERNAL
 import android.Manifest.permission.NETWORK_SETTINGS
 import android.Manifest.permission.READ_DEVICE_CONFIG
 import android.content.pm.PackageManager.FEATURE_TELEPHONY
+import android.content.pm.PackageManager.FEATURE_WATCH
 import android.content.pm.PackageManager.FEATURE_WIFI
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
+import android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
+import android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED
+import android.net.NetworkCapabilities.TRANSPORT_CELLULAR
 import android.net.NetworkCapabilities.TRANSPORT_WIFI
 import android.net.NetworkRequest
 import android.net.Uri
@@ -42,16 +46,20 @@ import android.platform.test.annotations.AppModeFull
 import android.provider.DeviceConfig
 import android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY
 import android.text.TextUtils
+import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry.getInstrumentation
 import androidx.test.runner.AndroidJUnit4
+import com.android.testutils.RecorderCallback
 import com.android.testutils.TestHttpServer
 import com.android.testutils.TestHttpServer.Request
+import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.isDevSdkInRange
 import com.android.testutils.runAsShell
 import fi.iki.elonen.NanoHTTPD.Response.Status
 import junit.framework.AssertionFailedError
 import org.junit.After
 import org.junit.Assume.assumeTrue
+import org.junit.Assume.assumeFalse
 import org.junit.Before
 import org.junit.runner.RunWith
 import java.util.concurrent.CompletableFuture
@@ -71,6 +79,8 @@ private const val LOCALHOST_HOSTNAME = "localhost"
 // Re-connecting to the AP, obtaining an IP address, revalidating can take a long time
 private const val WIFI_CONNECT_TIMEOUT_MS = 120_000L
 private const val TEST_TIMEOUT_MS = 10_000L
+
+private const val TAG = "CaptivePortalTest"
 
 private fun <T> CompletableFuture<T>.assertGet(timeoutMs: Long, message: String): T {
     try {
@@ -123,19 +133,35 @@ class CaptivePortalTest {
     fun testCaptivePortalIsNotDefaultNetwork() {
         assumeTrue(pm.hasSystemFeature(FEATURE_TELEPHONY))
         assumeTrue(pm.hasSystemFeature(FEATURE_WIFI))
+        assumeFalse(pm.hasSystemFeature(FEATURE_WATCH))
         utils.ensureWifiConnected()
-        utils.connectToCell()
+        val cellNetwork = utils.connectToCell()
+
+        // Verify cell network is validated
+        val cellReq = NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_CELLULAR)
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .build()
+        val cellCb = TestableNetworkCallback(timeoutMs = TEST_TIMEOUT_MS)
+        cm.registerNetworkCallback(cellReq, cellCb)
+        val cb = cellCb.eventuallyExpectOrNull<RecorderCallback.CallbackEntry.CapabilitiesChanged> {
+            it.network == cellNetwork && it.caps.hasCapability(NET_CAPABILITY_VALIDATED)
+        }
+        assertNotNull(cb, "Mobile network $cellNetwork has no access to the internet. " +
+                "Check the mobile data connection.")
 
         // Have network validation use a local server that serves a HTTPS error / HTTP redirect
         server.addResponse(Request(TEST_PORTAL_URL_PATH), Status.OK,
                 content = "Test captive portal content")
         server.addResponse(Request(TEST_HTTPS_URL_PATH), Status.INTERNAL_ERROR)
-        server.addResponse(Request(TEST_HTTP_URL_PATH), Status.REDIRECT,
-                locationHeader = makeUrl(TEST_PORTAL_URL_PATH))
+        val headers = mapOf("Location" to makeUrl(TEST_PORTAL_URL_PATH))
+        server.addResponse(Request(TEST_HTTP_URL_PATH), Status.REDIRECT, headers)
         setHttpsUrlDeviceConfig(makeUrl(TEST_HTTPS_URL_PATH))
         setHttpUrlDeviceConfig(makeUrl(TEST_HTTP_URL_PATH))
+        Log.d(TAG, "Set portal URLs to $TEST_HTTPS_URL_PATH and $TEST_HTTP_URL_PATH")
         // URL expiration needs to be in the next 10 minutes
-        setUrlExpirationDeviceConfig(System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(9))
+        assertTrue(WIFI_CONNECT_TIMEOUT_MS < TimeUnit.MINUTES.toMillis(10))
+        setUrlExpirationDeviceConfig(System.currentTimeMillis() + WIFI_CONNECT_TIMEOUT_MS)
 
         // Wait for a captive portal to be detected on the network
         val wifiNetworkFuture = CompletableFuture<Network>()

@@ -41,7 +41,6 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.util.SharedLog;
 import android.os.Bundle;
-import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.Parcel;
 import android.os.PersistableBundle;
@@ -71,7 +70,8 @@ public class EntitlementManager {
 
     @VisibleForTesting
     protected static final String DISABLE_PROVISIONING_SYSPROP_KEY = "net.tethering.noprovisioning";
-    private static final String ACTION_PROVISIONING_ALARM =
+    @VisibleForTesting
+    protected static final String ACTION_PROVISIONING_ALARM =
             "com.android.networkstack.tethering.PROVISIONING_RECHECK_ALARM";
 
     private final ComponentName mSilentProvisioningService;
@@ -411,19 +411,23 @@ public class EntitlementManager {
         return intent;
     }
 
+    @VisibleForTesting
+    PendingIntent createRecheckAlarmIntent() {
+        final Intent intent = new Intent(ACTION_PROVISIONING_ALARM);
+        return PendingIntent.getBroadcast(mContext, 0, intent, PendingIntent.FLAG_IMMUTABLE);
+    }
+
     // Not needed to check if this don't run on the handler thread because it's private.
-    private void scheduleProvisioningRechecks(final TetheringConfiguration config) {
+    private void scheduleProvisioningRecheck(final TetheringConfiguration config) {
         if (mProvisioningRecheckAlarm == null) {
             final int period = config.provisioningCheckPeriod;
             if (period <= 0) return;
 
-            Intent intent = new Intent(ACTION_PROVISIONING_ALARM);
-            mProvisioningRecheckAlarm = PendingIntent.getBroadcast(mContext, 0, intent, 0);
+            mProvisioningRecheckAlarm = createRecheckAlarmIntent();
             AlarmManager alarmManager = (AlarmManager) mContext.getSystemService(
                     Context.ALARM_SERVICE);
-            long periodMs = period * MS_PER_HOUR;
-            long firstAlarmTime = SystemClock.elapsedRealtime() + periodMs;
-            alarmManager.setRepeating(AlarmManager.ELAPSED_REALTIME, firstAlarmTime, periodMs,
+            long triggerAtMillis = SystemClock.elapsedRealtime() + (period * MS_PER_HOUR);
+            alarmManager.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtMillis,
                     mProvisioningRecheckAlarm);
         }
     }
@@ -435,6 +439,11 @@ public class EntitlementManager {
             alarmManager.cancel(mProvisioningRecheckAlarm);
             mProvisioningRecheckAlarm = null;
         }
+    }
+
+    private void rescheduleProvisioningRecheck(final TetheringConfiguration config) {
+        cancelTetherProvisioningRechecks();
+        scheduleProvisioningRecheck(config);
     }
 
     private void evaluateCellularPermission(final TetheringConfiguration config) {
@@ -452,7 +461,7 @@ public class EntitlementManager {
         // Only schedule periodic re-check when tether is provisioned
         // and the result is ok.
         if (permitted && mCurrentEntitlementResults.size() > 0) {
-            scheduleProvisioningRechecks(config);
+            scheduleProvisioningRecheck(config);
         } else {
             cancelTetherProvisioningRechecks();
         }
@@ -493,6 +502,7 @@ public class EntitlementManager {
             if (ACTION_PROVISIONING_ALARM.equals(intent.getAction())) {
                 mLog.log("Received provisioning alarm");
                 final TetheringConfiguration config = mFetcher.fetchTetheringConfiguration();
+                rescheduleProvisioningRecheck(config);
                 reevaluateSimCardProvisioning(config);
             }
         }
@@ -515,25 +525,18 @@ public class EntitlementManager {
      * @param pw {@link PrintWriter} is used to print formatted
      */
     public void dump(PrintWriter pw) {
-        final ConditionVariable mWaiting = new ConditionVariable();
-        mHandler.post(() -> {
-            pw.print("isCellularUpstreamPermitted: ");
-            pw.println(isCellularUpstreamPermitted());
-            for (int type = mCurrentDownstreams.nextSetBit(0); type >= 0;
-                    type = mCurrentDownstreams.nextSetBit(type + 1)) {
-                pw.print("Type: ");
-                pw.print(typeString(type));
-                if (mCurrentEntitlementResults.indexOfKey(type) > -1) {
-                    pw.print(", Value: ");
-                    pw.println(errorString(mCurrentEntitlementResults.get(type)));
-                } else {
-                    pw.println(", Value: empty");
-                }
+        pw.print("isCellularUpstreamPermitted: ");
+        pw.println(isCellularUpstreamPermitted());
+        for (int type = mCurrentDownstreams.nextSetBit(0); type >= 0;
+                type = mCurrentDownstreams.nextSetBit(type + 1)) {
+            pw.print("Type: ");
+            pw.print(typeString(type));
+            if (mCurrentEntitlementResults.indexOfKey(type) > -1) {
+                pw.print(", Value: ");
+                pw.println(errorString(mCurrentEntitlementResults.get(type)));
+            } else {
+                pw.println(", Value: empty");
             }
-            mWaiting.open();
-        });
-        if (!mWaiting.block(DUMP_TIMEOUT)) {
-            pw.println("... dump timed out after " + DUMP_TIMEOUT + "ms");
         }
         pw.print("Exempted: [");
         for (int type = mExemptedDownstreams.nextSetBit(0); type >= 0;

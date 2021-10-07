@@ -14,27 +14,37 @@
 // limitations under the License.
 //
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 java_defaults {
     name: "TetheringAndroidLibraryDefaults",
     sdk_version: "module_current",
     min_sdk_version: "30",
     srcs: [
+        "apishim/**/*.java",
         "src/**/*.java",
-        ":framework-tethering-shared-srcs",
+        ":framework-connectivity-shared-srcs",
         ":tethering-module-utils-srcs",
         ":services-tethering-shared-srcs",
     ],
     static_libs: [
+        "NetworkStackApiStableShims",
         "androidx.annotation_annotation",
-        "netd_aidl_interface-java",
-        "netlink-client",
-        "networkstack-aidl-interfaces-java",
+        "modules-utils-build",
+        "networkstack-client",
         "android.hardware.tetheroffload.config-V1.0-java",
         "android.hardware.tetheroffload.control-V1.0-java",
+        "android.hardware.tetheroffload.control-V1.1-java",
         "net-utils-framework-common",
         "net-utils-device-common",
+        "net-utils-device-common-netlink",
+        "netd-client",
+        "NetworkStackApiCurrentShims",
     ],
     libs: [
+        "framework-connectivity",
         "framework-statsd.stubs.module_lib",
         "framework-tethering.impl",
         "framework-wifi",
@@ -59,8 +69,12 @@ cc_library {
         "com.android.tethering",
     ],
     min_sdk_version: "30",
+    header_libs: [
+        "bpf_syscall_wrappers",
+        "bpf_tethering_headers",
+    ],
     srcs: [
-        "jni/android_net_util_TetheringUtils.cpp",
+        "jni/*.cpp",
     ],
     shared_libs: [
         "liblog",
@@ -134,7 +148,15 @@ android_app {
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
     // The permission configuration *must* be included to ensure security of the device
-    required: ["NetworkPermissionConfig"],
+    required: [
+        "NetworkPermissionConfig",
+        "privapp_whitelist_com.android.networkstack.tethering",
+    ],
     apex_available: ["com.android.tethering"],
     min_sdk_version: "30",
+}
+
+sdk {
+    name: "tethering-module-sdk",
+    bootclasspath_fragments: ["com.android.tethering-bootclasspath-fragment"],
 }

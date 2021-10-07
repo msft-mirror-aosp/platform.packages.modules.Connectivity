@@ -16,20 +16,19 @@
 
 package com.android.networkstack.tethering;
 
-import static android.net.netlink.StructNlMsgHdr.NLM_F_DUMP;
-import static android.net.netlink.StructNlMsgHdr.NLM_F_REQUEST;
 import static android.net.util.TetheringUtils.uint16;
 
+import static com.android.net.module.util.netlink.StructNlMsgHdr.NLM_F_DUMP;
+import static com.android.net.module.util.netlink.StructNlMsgHdr.NLM_F_REQUEST;
+
+import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.hardware.tetheroffload.config.V1_0.IOffloadConfig;
 import android.hardware.tetheroffload.control.V1_0.IOffloadControl;
-import android.hardware.tetheroffload.control.V1_0.ITetheringOffloadCallback;
 import android.hardware.tetheroffload.control.V1_0.NatTimeoutUpdate;
 import android.hardware.tetheroffload.control.V1_0.NetworkProtocol;
 import android.hardware.tetheroffload.control.V1_0.OffloadCallbackEvent;
-import android.net.netlink.NetlinkSocket;
-import android.net.netlink.StructNfGenMsg;
-import android.net.netlink.StructNlMsgHdr;
+import android.hardware.tetheroffload.control.V1_1.ITetheringOffloadCallback;
 import android.net.util.SharedLog;
 import android.net.util.SocketUtils;
 import android.os.Handler;
@@ -38,12 +37,19 @@ import android.os.RemoteException;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
+import android.util.Log;
+import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.netlink.NetlinkSocket;
+import com.android.net.module.util.netlink.StructNfGenMsg;
+import com.android.net.module.util.netlink.StructNlMsgHdr;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 import java.net.SocketAddress;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
@@ -82,6 +88,37 @@ public class OffloadHardwareInterface {
     private final SharedLog mLog;
     private final Dependencies mDeps;
     private IOffloadControl mOffloadControl;
+
+    // TODO: Use major-minor version control to prevent from defining new constants.
+    static final int OFFLOAD_HAL_VERSION_NONE = 0;
+    static final int OFFLOAD_HAL_VERSION_1_0 = 1;
+    static final int OFFLOAD_HAL_VERSION_1_1 = 2;
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(prefix = "OFFLOAD_HAL_VERSION_", value = {
+            OFFLOAD_HAL_VERSION_NONE,
+            OFFLOAD_HAL_VERSION_1_0,
+            OFFLOAD_HAL_VERSION_1_1
+    })
+    public @interface OffloadHalVersion {}
+    @OffloadHalVersion
+    private int mOffloadControlVersion = OFFLOAD_HAL_VERSION_NONE;
+
+    @NonNull
+    static String halVerToString(int version) {
+        switch(version) {
+            case OFFLOAD_HAL_VERSION_1_0:
+                return "1.0";
+            case OFFLOAD_HAL_VERSION_1_1:
+                return "1.1";
+            case OFFLOAD_HAL_VERSION_NONE:
+                return "None";
+            default:
+                throw new IllegalArgumentException("Unsupported version int " + version);
+        }
+
+    }
+
     private TetheringOffloadCallback mTetheringOffloadCallback;
     private ControlCallback mControlCallback;
 
@@ -105,6 +142,8 @@ public class OffloadHardwareInterface {
         public void onSupportAvailable() {}
         /** Offload stopped because of usage limit reached. */
         public void onStoppedLimitReached() {}
+        /** Indicate that data warning quota is reached. */
+        public void onWarningReached() {}
 
         /** Indicate to update NAT timeout. */
         public void onNatTimeoutUpdate(int proto,
@@ -167,13 +206,30 @@ public class OffloadHardwareInterface {
             }
         }
 
-        public IOffloadControl getOffloadControl() {
+        @NonNull
+        public Pair<IOffloadControl, Integer> getOffloadControl() {
+            IOffloadControl hal = null;
+            int version = OFFLOAD_HAL_VERSION_NONE;
             try {
-                return IOffloadControl.getService(true /*retry*/);
-            } catch (RemoteException | NoSuchElementException e) {
-                mLog.e("tethering offload control not supported: " + e);
-                return null;
+                hal = android.hardware.tetheroffload.control
+                        .V1_1.IOffloadControl.getService(true /*retry*/);
+                version = OFFLOAD_HAL_VERSION_1_1;
+            } catch (NoSuchElementException e) {
+                // Unsupported by device.
+            } catch (RemoteException e) {
+                mLog.e("Unable to get offload control " + OFFLOAD_HAL_VERSION_1_1);
             }
+            if (hal == null) {
+                try {
+                    hal = IOffloadControl.getService(true /*retry*/);
+                    version = OFFLOAD_HAL_VERSION_1_0;
+                } catch (NoSuchElementException e) {
+                    // Unsupported by device.
+                } catch (RemoteException e) {
+                    mLog.e("Unable to get offload control " + OFFLOAD_HAL_VERSION_1_0);
+                }
+            }
+            return new Pair<IOffloadControl, Integer>(hal, version);
         }
 
         public NativeHandle createConntrackSocket(final int groups) {
@@ -304,23 +360,33 @@ public class OffloadHardwareInterface {
         }
     }
 
-    /** Initialize the tethering offload HAL. */
-    public boolean initOffloadControl(ControlCallback controlCb) {
+    /**
+     * Initialize the tethering offload HAL.
+     *
+     * @return one of {@code OFFLOAD_HAL_VERSION_*} represents the HAL version, or
+     *         {@link #OFFLOAD_HAL_VERSION_NONE} if failed.
+     */
+    public int initOffloadControl(ControlCallback controlCb) {
         mControlCallback = controlCb;
 
         if (mOffloadControl == null) {
-            mOffloadControl = mDeps.getOffloadControl();
+            final Pair<IOffloadControl, Integer> halAndVersion = mDeps.getOffloadControl();
+            mOffloadControl = halAndVersion.first;
+            mOffloadControlVersion = halAndVersion.second;
             if (mOffloadControl == null) {
                 mLog.e("tethering IOffloadControl.getService() returned null");
-                return false;
+                return OFFLOAD_HAL_VERSION_NONE;
             }
+            mLog.i("tethering offload control version "
+                    + halVerToString(mOffloadControlVersion) + " is supported.");
         }
 
         final String logmsg = String.format("initOffloadControl(%s)",
                 (controlCb == null) ? "null"
                         : "0x" + Integer.toHexString(System.identityHashCode(controlCb)));
 
-        mTetheringOffloadCallback = new TetheringOffloadCallback(mHandler, mControlCallback, mLog);
+        mTetheringOffloadCallback = new TetheringOffloadCallback(
+                mHandler, mControlCallback, mLog, mOffloadControlVersion);
         final CbResults results = new CbResults();
         try {
             mOffloadControl.initOffload(
@@ -331,11 +397,11 @@ public class OffloadHardwareInterface {
                     });
         } catch (RemoteException e) {
             record(logmsg, e);
-            return false;
+            return OFFLOAD_HAL_VERSION_NONE;
         }
 
         record(logmsg, results);
-        return results.mSuccess;
+        return results.mSuccess ? mOffloadControlVersion : OFFLOAD_HAL_VERSION_NONE;
     }
 
     /** Stop IOffloadControl. */
@@ -410,6 +476,33 @@ public class OffloadHardwareInterface {
                         results.mSuccess = success;
                         results.mErrMsg = errMsg;
                     });
+        } catch (RemoteException e) {
+            record(logmsg, e);
+            return false;
+        }
+
+        record(logmsg, results);
+        return results.mSuccess;
+    }
+
+    /** Set data warning and limit value to offload management process. */
+    public boolean setDataWarningAndLimit(String iface, long warning, long limit) {
+        if (mOffloadControlVersion < OFFLOAD_HAL_VERSION_1_1) {
+            throw new IllegalArgumentException(
+                    "setDataWarningAndLimit is not supported below HAL V1.1");
+        }
+        final String logmsg =
+                String.format("setDataWarningAndLimit(%s, %d, %d)", iface, warning, limit);
+
+        final CbResults results = new CbResults();
+        try {
+            ((android.hardware.tetheroffload.control.V1_1.IOffloadControl) mOffloadControl)
+                    .setDataWarningAndLimit(
+                            iface, warning, limit,
+                            (boolean success, String errMsg) -> {
+                                results.mSuccess = success;
+                                results.mErrMsg = errMsg;
+                            });
         } catch (RemoteException e) {
             record(logmsg, e);
             return false;
@@ -504,35 +597,64 @@ public class OffloadHardwareInterface {
         public final Handler handler;
         public final ControlCallback controlCb;
         public final SharedLog log;
+        private final int mOffloadControlVersion;
 
-        TetheringOffloadCallback(Handler h, ControlCallback cb, SharedLog sharedLog) {
+        TetheringOffloadCallback(
+                Handler h, ControlCallback cb, SharedLog sharedLog, int offloadControlVersion) {
             handler = h;
             controlCb = cb;
             log = sharedLog;
+            this.mOffloadControlVersion = offloadControlVersion;
+        }
+
+        private void handleOnEvent(int event) {
+            switch (event) {
+                case OffloadCallbackEvent.OFFLOAD_STARTED:
+                    controlCb.onStarted();
+                    break;
+                case OffloadCallbackEvent.OFFLOAD_STOPPED_ERROR:
+                    controlCb.onStoppedError();
+                    break;
+                case OffloadCallbackEvent.OFFLOAD_STOPPED_UNSUPPORTED:
+                    controlCb.onStoppedUnsupported();
+                    break;
+                case OffloadCallbackEvent.OFFLOAD_SUPPORT_AVAILABLE:
+                    controlCb.onSupportAvailable();
+                    break;
+                case OffloadCallbackEvent.OFFLOAD_STOPPED_LIMIT_REACHED:
+                    controlCb.onStoppedLimitReached();
+                    break;
+                case android.hardware.tetheroffload.control
+                        .V1_1.OffloadCallbackEvent.OFFLOAD_WARNING_REACHED:
+                    controlCb.onWarningReached();
+                    break;
+                default:
+                    log.e("Unsupported OffloadCallbackEvent: " + event);
+            }
         }
 
         @Override
         public void onEvent(int event) {
+            // The implementation should never call onEvent()) if the event is already reported
+            // through newer callback.
+            if (mOffloadControlVersion > OFFLOAD_HAL_VERSION_1_0) {
+                Log.wtf(TAG, "onEvent(" + event + ") fired on HAL "
+                        + halVerToString(mOffloadControlVersion));
+            }
             handler.post(() -> {
-                switch (event) {
-                    case OffloadCallbackEvent.OFFLOAD_STARTED:
-                        controlCb.onStarted();
-                        break;
-                    case OffloadCallbackEvent.OFFLOAD_STOPPED_ERROR:
-                        controlCb.onStoppedError();
-                        break;
-                    case OffloadCallbackEvent.OFFLOAD_STOPPED_UNSUPPORTED:
-                        controlCb.onStoppedUnsupported();
-                        break;
-                    case OffloadCallbackEvent.OFFLOAD_SUPPORT_AVAILABLE:
-                        controlCb.onSupportAvailable();
-                        break;
-                    case OffloadCallbackEvent.OFFLOAD_STOPPED_LIMIT_REACHED:
-                        controlCb.onStoppedLimitReached();
-                        break;
-                    default:
-                        log.e("Unsupported OffloadCallbackEvent: " + event);
-                }
+                handleOnEvent(event);
+            });
+        }
+
+        @Override
+        public void onEvent_1_1(int event) {
+            if (mOffloadControlVersion < OFFLOAD_HAL_VERSION_1_1) {
+                Log.wtf(TAG, "onEvent_1_1(" + event + ") fired on HAL "
+                        + halVerToString(mOffloadControlVersion));
+                return;
+            }
+            handler.post(() -> {
+                handleOnEvent(event);
             });
         }
 

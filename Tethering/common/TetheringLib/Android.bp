@@ -13,14 +13,38 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 java_sdk_library {
     name: "framework-tethering",
     defaults: ["framework-module-defaults"],
     impl_library_visibility: [
-        "//packages/modules/Connectivity/Tethering:__subpackages__"
+        "//packages/modules/Connectivity/Tethering:__subpackages__",
+
+        // Using for test only
+        "//cts/tests/netlegacy22.api",
+        "//external/sl4a:__subpackages__",
+        "//frameworks/base/packages/Connectivity/tests:__subpackages__",
+        "//frameworks/libs/net/common/testutils",
+        "//frameworks/libs/net/common/tests:__subpackages__",
+        "//frameworks/opt/telephony/tests/telephonytests",
+        "//packages/modules/CaptivePortalLogin/tests",
+        "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
+        "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/NetworkStack/tests:__subpackages__",
+        "//packages/modules/Wifi/service/tests/wifitests",
     ],
 
     srcs: [":framework-tethering-srcs"],
+    libs: ["framework-connectivity.stubs.module_lib"],
+    stub_only_libs: ["framework-connectivity.stubs.module_lib"],
+    aidl: {
+        include_dirs: [
+            "packages/modules/Connectivity/framework/aidl-export",
+        ],
+    },
 
     jarjar_rules: "jarjar-rules.txt",
     installable: true,
@@ -45,6 +69,8 @@ filegroup {
         "src/android/net/TetheringConfigurationParcel.aidl",
         "src/android/net/TetheringRequestParcel.aidl",
         "src/android/net/TetherStatesParcel.aidl",
+        "src/android/net/TetheringInterface.aidl",
+        "src/android/net/TetheringInterface.java",
     ],
     path: "src"
 }

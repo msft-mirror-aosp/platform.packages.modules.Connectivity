@@ -42,11 +42,17 @@ import android.os.Handler;
 import android.util.Log;
 import android.util.SparseIntArray;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.StateMachine;
+import com.android.networkstack.apishim.ConnectivityManagerShimImpl;
+import com.android.networkstack.apishim.common.ConnectivityManagerShim;
 
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Objects;
 import java.util.Set;
 
 
@@ -60,7 +66,7 @@ import java.util.Set;
  * Calling #startObserveAllNetworks() to observe all networks. Listening all
  * networks is necessary while the expression of preferred upstreams remains
  * a list of legacy connectivity types.  In future, this can be revisited.
- * Calling #registerMobileNetworkRequest() to bring up mobile DUN/HIPRI network.
+ * Calling #setTryCell() to request bringing up mobile DUN or HIPRI.
  *
  * The methods and data members of this class are only to be accessed and
  * modified from the tethering main state machine thread. Any other
@@ -82,6 +88,7 @@ public class UpstreamNetworkMonitor {
     public static final int EVENT_ON_CAPABILITIES   = 1;
     public static final int EVENT_ON_LINKPROPERTIES = 2;
     public static final int EVENT_ON_LOST           = 3;
+    public static final int EVENT_DEFAULT_SWITCHED  = 4;
     public static final int NOTIFY_LOCAL_PREFIXES   = 10;
     // This value is used by deprecated preferredUpstreamIfaceTypes selection which is default
     // disabled.
@@ -114,13 +121,21 @@ public class UpstreamNetworkMonitor {
     private NetworkCallback mListenAllCallback;
     private NetworkCallback mDefaultNetworkCallback;
     private NetworkCallback mMobileNetworkCallback;
+
+    /** Whether Tethering has requested a cellular upstream. */
+    private boolean mTryCell;
+    /** Whether the carrier requires DUN. */
     private boolean mDunRequired;
+    /** Whether automatic upstream selection is enabled. */
+    private boolean mAutoUpstream;
+
     // Whether the current default upstream is mobile or not.
     private boolean mIsDefaultCellularUpstream;
     // The current system default network (not really used yet).
     private Network mDefaultInternetNetwork;
     // The current upstream network used for tethering.
     private Network mTetheringUpstreamNetwork;
+    private boolean mPreferTestNetworks;
 
     public UpstreamNetworkMonitor(Context ctx, StateMachine tgt, SharedLog log, int what) {
         mContext = ctx;
@@ -130,34 +145,24 @@ public class UpstreamNetworkMonitor {
         mWhat = what;
         mLocalPrefixes = new HashSet<>();
         mIsDefaultCellularUpstream = false;
-    }
-
-    @VisibleForTesting
-    public UpstreamNetworkMonitor(
-            ConnectivityManager cm, StateMachine tgt, SharedLog log, int what) {
-        this((Context) null, tgt, log, what);
-        mCM = cm;
+        mCM = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
     }
 
     /**
-     * Tracking the system default network. This method should be called when system is ready.
+     * Tracking the system default network. This method should be only called once when system is
+     * ready, and the callback is never unregistered.
      *
-     * @param defaultNetworkRequest should be the same as ConnectivityService default request
      * @param entitle a EntitlementManager object to communicate between EntitlementManager and
      * UpstreamNetworkMonitor
      */
-    public void startTrackDefaultNetwork(NetworkRequest defaultNetworkRequest,
-            EntitlementManager entitle) {
-
-        // defaultNetworkRequest is not really a "request", just a way of tracking the system
-        // default network. It's guaranteed not to actually bring up any networks because it's
-        // the should be the same request as the ConnectivityService default request, and thus
-        // shares fate with it. We can't use registerDefaultNetworkCallback because it will not
-        // track the system default network if there is a VPN that applies to our UID.
-        if (mDefaultNetworkCallback == null) {
-            mDefaultNetworkCallback = new UpstreamNetworkCallback(CALLBACK_DEFAULT_INTERNET);
-            cm().requestNetwork(defaultNetworkRequest, mDefaultNetworkCallback, mHandler);
+    public void startTrackDefaultNetwork(EntitlementManager entitle) {
+        if (mDefaultNetworkCallback != null) {
+            Log.wtf(TAG, "default network callback is already registered");
+            return;
         }
+        ConnectivityManagerShim mCmShim = ConnectivityManagerShimImpl.newInstance(mContext);
+        mDefaultNetworkCallback = new UpstreamNetworkCallback(CALLBACK_DEFAULT_INTERNET);
+        mCmShim.registerSystemDefaultNetworkCallback(mDefaultNetworkCallback, mHandler);
         if (mEntitlementMgr == null) {
             mEntitlementMgr = entitle;
         }
@@ -181,7 +186,7 @@ public class UpstreamNetworkMonitor {
      * check even tethering is not active yet.
      */
     public void stop() {
-        releaseMobileNetworkRequest();
+        setTryCell(false);
 
         releaseCallback(mListenAllCallback);
         mListenAllCallback = null;
@@ -190,14 +195,40 @@ public class UpstreamNetworkMonitor {
         mNetworkMap.clear();
     }
 
-    /** Setup or teardown DUN connection according to |dunRequired|. */
-    public void updateMobileRequiresDun(boolean dunRequired) {
-        final boolean valueChanged = (mDunRequired != dunRequired);
+    private void reevaluateUpstreamRequirements(boolean tryCell, boolean autoUpstream,
+            boolean dunRequired) {
+        final boolean mobileRequestRequired = tryCell && (dunRequired || !autoUpstream);
+        final boolean dunRequiredChanged = (mDunRequired != dunRequired);
+
+        mTryCell = tryCell;
         mDunRequired = dunRequired;
-        if (valueChanged && mobileNetworkRequested()) {
-            releaseMobileNetworkRequest();
+        mAutoUpstream = autoUpstream;
+
+        if (mobileRequestRequired && !mobileNetworkRequested()) {
             registerMobileNetworkRequest();
+        } else if (mobileNetworkRequested() && !mobileRequestRequired) {
+            releaseMobileNetworkRequest();
+        } else if (mobileNetworkRequested() && dunRequiredChanged) {
+            releaseMobileNetworkRequest();
+            if (mobileRequestRequired) {
+                registerMobileNetworkRequest();
+            }
         }
+    }
+
+    /**
+     * Informs UpstreamNetworkMonitor that a cellular upstream is desired.
+     *
+     * This may result in filing a NetworkRequest for DUN if it is required, or for MOBILE_HIPRI if
+     * automatic upstream selection is disabled and MOBILE_HIPRI is the preferred upstream.
+     */
+    public void setTryCell(boolean tryCell) {
+        reevaluateUpstreamRequirements(tryCell, mAutoUpstream, mDunRequired);
+    }
+
+    /** Informs UpstreamNetworkMonitor of upstream configuration parameters. */
+    public void setUpstreamConfig(boolean autoUpstream, boolean dunRequired) {
+        reevaluateUpstreamRequirements(mTryCell, autoUpstream, dunRequired);
     }
 
     /** Whether mobile network is requested. */
@@ -206,7 +237,7 @@ public class UpstreamNetworkMonitor {
     }
 
     /** Request mobile network if mobile upstream is permitted. */
-    public void registerMobileNetworkRequest() {
+    private void registerMobileNetworkRequest() {
         if (!isCellularUpstreamPermitted()) {
             mLog.i("registerMobileNetworkRequest() is not permitted");
             releaseMobileNetworkRequest();
@@ -241,14 +272,16 @@ public class UpstreamNetworkMonitor {
         // TODO: Change the timeout from 0 (no onUnavailable callback) to some
         // moderate callback timeout. This might be useful for updating some UI.
         // Additionally, we log a message to aid in any subsequent debugging.
-        mLog.i("requesting mobile upstream network: " + mobileUpstreamRequest);
+        mLog.i("requesting mobile upstream network: " + mobileUpstreamRequest
+                + " mTryCell=" + mTryCell + " mAutoUpstream=" + mAutoUpstream
+                + " mDunRequired=" + mDunRequired);
 
         cm().requestNetwork(mobileUpstreamRequest, 0, legacyType, mHandler,
                 mMobileNetworkCallback);
     }
 
     /** Release mobile network request. */
-    public void releaseMobileNetworkRequest() {
+    private void releaseMobileNetworkRequest() {
         if (mMobileNetworkCallback == null) return;
 
         cm().unregisterNetworkCallback(mMobileNetworkCallback);
@@ -278,18 +311,6 @@ public class UpstreamNetworkMonitor {
                 if (!mIsDefaultCellularUpstream) {
                     mEntitlementMgr.maybeRunProvisioning();
                 }
-                // If we're on DUN, put our own grab on it.
-                registerMobileNetworkRequest();
-                break;
-            case TYPE_NONE:
-                // If we found NONE and mobile upstream is permitted we don't want to do this
-                // as we want any previous requests to keep trying to bring up something we can use.
-                if (!isCellularUpstreamPermitted()) releaseMobileNetworkRequest();
-                break;
-            default:
-                // If we've found an active upstream connection that's not DUN/HIPRI
-                // we should stop any outstanding DUN/HIPRI requests.
-                releaseMobileNetworkRequest();
                 break;
         }
 
@@ -305,6 +326,11 @@ public class UpstreamNetworkMonitor {
         final UpstreamNetworkState dfltState = (mDefaultInternetNetwork != null)
                 ? mNetworkMap.get(mDefaultInternetNetwork)
                 : null;
+        if (mPreferTestNetworks) {
+            final UpstreamNetworkState testState = findFirstTestNetwork(mNetworkMap.values());
+            if (testState != null) return testState;
+        }
+
         if (isNetworkUsableAndNotCellular(dfltState)) return dfltState;
 
         if (!isCellularUpstreamPermitted()) return null;
@@ -363,13 +389,20 @@ public class UpstreamNetworkMonitor {
         notifyTarget(EVENT_ON_CAPABILITIES, network);
     }
 
-    private void handleLinkProp(Network network, LinkProperties newLp) {
+    private @Nullable UpstreamNetworkState updateLinkProperties(@NonNull Network network,
+            LinkProperties newLp) {
         final UpstreamNetworkState prev = mNetworkMap.get(network);
         if (prev == null || newLp.equals(prev.linkProperties)) {
             // Ignore notifications about networks for which we have not yet
             // received onAvailable() (should never happen) and any duplicate
             // notifications (e.g. matching more than one of our callbacks).
-            return;
+            //
+            // Also, it can happen that onLinkPropertiesChanged is called after
+            // onLost removed the state from mNetworkMap. This is due to a bug
+            // in disconnectAndDestroyNetwork, which calls nai.clatd.update()
+            // after the onLost callbacks. This was fixed in S.
+            // TODO: make this method void when R is no longer supported.
+            return null;
         }
 
         if (VDBG) {
@@ -377,11 +410,17 @@ public class UpstreamNetworkMonitor {
                     network, newLp));
         }
 
-        mNetworkMap.put(network, new UpstreamNetworkState(
-                newLp, prev.networkCapabilities, network));
-        // TODO: If sufficient information is available to select a more
-        // preferable upstream, do so now and notify the target.
-        notifyTarget(EVENT_ON_LINKPROPERTIES, network);
+        final UpstreamNetworkState ns = new UpstreamNetworkState(newLp, prev.networkCapabilities,
+                network);
+        mNetworkMap.put(network, ns);
+        return ns;
+    }
+
+    private void handleLinkProp(Network network, LinkProperties newLp) {
+        final UpstreamNetworkState ns = updateLinkProperties(network, newLp);
+        if (ns != null) {
+            notifyTarget(EVENT_ON_LINKPROPERTIES, ns);
+        }
     }
 
     private void handleLost(Network network) {
@@ -408,6 +447,24 @@ public class UpstreamNetworkMonitor {
         // if the current upstream network is gone, notify the target of the
         // fact that we now have no upstream at all.
         notifyTarget(EVENT_ON_LOST, mNetworkMap.remove(network));
+    }
+
+    private void maybeHandleNetworkSwitch(@NonNull Network network) {
+        if (Objects.equals(mDefaultInternetNetwork, network)) return;
+
+        final UpstreamNetworkState ns = mNetworkMap.get(network);
+        if (ns == null) {
+            // Can never happen unless there is a bug in ConnectivityService. Entries are only
+            // removed from mNetworkMap when receiving onLost, and onLost for a given network can
+            // never be followed by any other callback on that network.
+            Log.wtf(TAG, "maybeHandleNetworkSwitch: no UpstreamNetworkState for " + network);
+            return;
+        }
+
+        // Default network changed. Update local data and notify tethering.
+        Log.d(TAG, "New default Internet network: " + network);
+        mDefaultInternetNetwork = network;
+        notifyTarget(EVENT_DEFAULT_SWITCHED, ns);
     }
 
     private void recomputeLocalPrefixes() {
@@ -447,7 +504,22 @@ public class UpstreamNetworkMonitor {
         @Override
         public void onCapabilitiesChanged(Network network, NetworkCapabilities newNc) {
             if (mCallbackType == CALLBACK_DEFAULT_INTERNET) {
-                mDefaultInternetNetwork = network;
+                // mDefaultInternetNetwork is not updated here because upstream selection must only
+                // run when the LinkProperties have been updated as well as the capabilities. If
+                // this callback is due to a default network switch, then the system will invoke
+                // onLinkPropertiesChanged right after this method and mDefaultInternetNetwork will
+                // be updated then.
+                //
+                // Technically, not updating here isn't necessary, because the notifications to
+                // Tethering sent by notifyTarget are messages sent to a state machine running on
+                // the same thread as this method, and so cannot arrive until after this method has
+                // returned. However, it is not a good idea to rely on that because fact that
+                // Tethering uses multiple state machines running on the same thread is a major
+                // source of race conditions and something that should be fixed.
+                //
+                // TODO: is it correct that this code always updates EntitlementManager?
+                // This code runs when the default network connects or changes capabilities, but the
+                // default network might not be the tethering upstream.
                 final boolean newIsCellular = isCellular(newNc);
                 if (mIsDefaultCellularUpstream != newIsCellular) {
                     mIsDefaultCellularUpstream = newIsCellular;
@@ -461,7 +533,15 @@ public class UpstreamNetworkMonitor {
 
         @Override
         public void onLinkPropertiesChanged(Network network, LinkProperties newLp) {
-            if (mCallbackType == CALLBACK_DEFAULT_INTERNET) return;
+            if (mCallbackType == CALLBACK_DEFAULT_INTERNET) {
+                updateLinkProperties(network, newLp);
+                // When the default network callback calls onLinkPropertiesChanged, it means that
+                // all the network information for the default network is known (because
+                // onLinkPropertiesChanged is called after onAvailable and onCapabilitiesChanged).
+                // Inform tethering that the default network might have changed.
+                maybeHandleNetworkSwitch(network);
+                return;
+            }
 
             handleLinkProp(network, newLp);
             // Any non-LISTEN_ALL callback will necessarily concern a network that will
@@ -478,6 +558,8 @@ public class UpstreamNetworkMonitor {
                 mDefaultInternetNetwork = null;
                 mIsDefaultCellularUpstream = false;
                 mEntitlementMgr.notifyUpstream(false);
+                Log.d(TAG, "Lost default Internet network: " + network);
+                notifyTarget(EVENT_DEFAULT_SWITCHED, null);
                 return;
             }
 
@@ -551,7 +633,8 @@ public class UpstreamNetworkMonitor {
         return prefixSet;
     }
 
-    private static boolean isCellular(UpstreamNetworkState ns) {
+    /** Check whether upstream is cellular. */
+    static boolean isCellular(UpstreamNetworkState ns) {
         return (ns != null) && isCellular(ns.networkCapabilities);
     }
 
@@ -574,6 +657,20 @@ public class UpstreamNetworkMonitor {
             Iterable<UpstreamNetworkState> netStates) {
         for (UpstreamNetworkState ns : netStates) {
             if (isCellular(ns) && hasCapability(ns, NET_CAPABILITY_DUN)) return ns;
+        }
+
+        return null;
+    }
+
+    static boolean isTestNetwork(UpstreamNetworkState ns) {
+        return ((ns != null) && (ns.networkCapabilities != null)
+                && ns.networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_TEST));
+    }
+
+    private UpstreamNetworkState findFirstTestNetwork(
+            Iterable<UpstreamNetworkState> netStates) {
+        for (UpstreamNetworkState ns : netStates) {
+            if (isTestNetwork(ns)) return ns;
         }
 
         return null;
@@ -603,5 +700,10 @@ public class UpstreamNetworkMonitor {
             builder.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         }
         return builder.build();
+    }
+
+    /** Set test network as preferred upstream. */
+    public void setPreferTestNetworks(boolean prefer) {
+        mPreferTestNetworks = prefer;
     }
 }

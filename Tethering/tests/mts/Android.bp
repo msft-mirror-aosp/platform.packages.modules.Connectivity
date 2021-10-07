@@ -12,10 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 android_test {
     // This tests for functionality that is not required for devices that
     // don't use Tethering mainline module.
-    name: "MtsTetheringTest",
+    name: "MtsTetheringTestLatestSdk",
+
+    min_sdk_version: "30",
+    target_sdk_version: "30",
 
     libs: [
         "android.test.base",
@@ -43,12 +50,14 @@ android_test {
         "libstaticjvmtiagent",
     ],
 
+    defaults: ["framework-connectivity-test-defaults"],
+
     platform_apis: true,
 
     // Tag this module as a mts test artifact
     test_suites: [
         "general-tests",
-        "mts",
+        "mts-tethering",
     ],
 
     // Include both the 32 and 64 bit versions

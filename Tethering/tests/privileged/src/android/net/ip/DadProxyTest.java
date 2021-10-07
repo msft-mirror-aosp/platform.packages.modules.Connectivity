@@ -17,64 +17,64 @@
 package android.net.ip;
 
 import static android.system.OsConstants.IPPROTO_ICMPV6;
-import static android.system.OsConstants.IPPROTO_TCP;
 
-import static com.android.internal.util.BitUtils.uint16;
+import static com.android.net.module.util.IpUtils.icmpv6Checksum;
+import static com.android.net.module.util.NetworkStackConstants.ETHER_SRC_ADDR_OFFSET;
 
-import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
 
 import android.app.Instrumentation;
 import android.content.Context;
 import android.net.INetd;
 import android.net.InetAddresses;
 import android.net.MacAddress;
-import android.net.TestNetworkInterface;
-import android.net.TestNetworkManager;
 import android.net.util.InterfaceParams;
-import android.net.util.IpUtils;
 import android.net.util.TetheringUtils;
+import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
-import android.system.ErrnoException;
-import android.system.Os;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
+import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.TapPacketReader;
+import com.android.testutils.TapPacketReaderRule;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.BeforeClass;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.MockitoAnnotations;
 
-import java.io.FileDescriptor;
+import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.concurrent.atomic.AtomicReference;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@IgnoreUpTo(Build.VERSION_CODES.R)
 @SmallTest
 public class DadProxyTest {
     private static final int DATA_BUFFER_LEN = 4096;
-    private static final int PACKET_TIMEOUT_MS = 5_000;
+    private static final int PACKET_TIMEOUT_MS = 2_000;  // Long enough for DAD to succeed.
 
-    // TODO: make NetworkStackConstants accessible to this test and use the constant from there.
-    private static final int ETHER_SRC_ADDR_OFFSET = 6;
+    // Start the readers manually on a common handler shared with DadProxy, for simplicity
+    @Rule
+    public final TapPacketReaderRule mUpstreamReader = new TapPacketReaderRule(
+            DATA_BUFFER_LEN, false /* autoStart */);
+    @Rule
+    public final TapPacketReaderRule mTetheredReader = new TapPacketReaderRule(
+            DATA_BUFFER_LEN, false /* autoStart */);
 
-    private DadProxy mProxy;
-    TestNetworkInterface mUpstreamTestIface, mTetheredTestIface;
     private InterfaceParams mUpstreamParams, mTetheredParams;
     private HandlerThread mHandlerThread;
     private Handler mHandler;
     private TapPacketReader mUpstreamPacketReader, mTetheredPacketReader;
-    private FileDescriptor mUpstreamTapFd, mTetheredTapFd;
 
     private static INetd sNetd;
 
@@ -106,12 +106,12 @@ public class DadProxyTest {
 
     @After
     public void tearDown() throws Exception {
+        mUpstreamReader.stop();
+        mTetheredReader.stop();
+
         if (mHandlerThread != null) {
-            mHandler.post(mUpstreamPacketReader::stop); // Also closes the socket
-            mHandler.post(mTetheredPacketReader::stop); // Also closes the socket
-            mUpstreamTapFd = null;
-            mTetheredTapFd = null;
             mHandlerThread.quitSafely();
+            mHandlerThread.join(PACKET_TIMEOUT_MS);
         }
 
         if (mTetheredParams != null) {
@@ -120,54 +120,22 @@ public class DadProxyTest {
         if (mUpstreamParams != null) {
             sNetd.networkRemoveInterface(INetd.LOCAL_NET_ID, mUpstreamParams.name);
         }
-
-        if (mUpstreamTestIface != null) {
-            try {
-                Os.close(mUpstreamTestIface.getFileDescriptor().getFileDescriptor());
-            } catch (ErrnoException e) { }
-        }
-
-        if (mTetheredTestIface != null) {
-            try {
-                Os.close(mTetheredTestIface.getFileDescriptor().getFileDescriptor());
-            } catch (ErrnoException e) { }
-        }
     }
 
-    private TestNetworkInterface setupTapInterface() {
-        final Instrumentation inst = InstrumentationRegistry.getInstrumentation();
-        AtomicReference<TestNetworkInterface> iface = new AtomicReference<>();
-
-        inst.getUiAutomation().adoptShellPermissionIdentity();
-        try {
-            final TestNetworkManager tnm = (TestNetworkManager) inst.getContext().getSystemService(
-                    Context.TEST_NETWORK_SERVICE);
-            iface.set(tnm.createTapInterface());
-        } finally {
-            inst.getUiAutomation().dropShellPermissionIdentity();
-        }
-
-        return iface.get();
-    }
-
-    private void setupTapInterfaces() {
+    private void setupTapInterfaces() throws Exception {
         // Create upstream test iface.
-        mUpstreamTestIface = setupTapInterface();
-        mUpstreamParams = InterfaceParams.getByName(mUpstreamTestIface.getInterfaceName());
+        mUpstreamReader.start(mHandler);
+        final String upstreamIface = mUpstreamReader.iface.getInterfaceName();
+        mUpstreamParams = InterfaceParams.getByName(upstreamIface);
         assertNotNull(mUpstreamParams);
-        mUpstreamTapFd = mUpstreamTestIface.getFileDescriptor().getFileDescriptor();
-        mUpstreamPacketReader = new TapPacketReader(mHandler, mUpstreamTapFd,
-                                                    DATA_BUFFER_LEN);
-        mHandler.post(mUpstreamPacketReader::start);
+        mUpstreamPacketReader = mUpstreamReader.getReader();
 
         // Create tethered test iface.
-        mTetheredTestIface = setupTapInterface();
-        mTetheredParams = InterfaceParams.getByName(mTetheredTestIface.getInterfaceName());
+        mTetheredReader.start(mHandler);
+        final String tetheredIface = mTetheredReader.getIface().getInterfaceName();
+        mTetheredParams = InterfaceParams.getByName(tetheredIface);
         assertNotNull(mTetheredParams);
-        mTetheredTapFd = mTetheredTestIface.getFileDescriptor().getFileDescriptor();
-        mTetheredPacketReader = new TapPacketReader(mHandler, mTetheredTapFd,
-                                                    DATA_BUFFER_LEN);
-        mHandler.post(mTetheredPacketReader::start);
+        mTetheredPacketReader = mTetheredReader.getReader();
     }
 
     private static final int IPV6_HEADER_LEN = 40;
@@ -176,31 +144,6 @@ public class DadProxyTest {
     private static final int LL_TARGET_OPTION_LEN = 8;
     private static final int ICMPV6_CHECKSUM_OFFSET = 2;
     private static final int ETHER_TYPE_IPV6 = 0x86dd;
-
-    // TODO: move the IpUtils code to frameworks/lib/net and link it statically.
-    private static int checksumFold(int sum) {
-        while (sum > 0xffff) {
-            sum = (sum >> 16) + (sum & 0xffff);
-        }
-        return sum;
-    }
-
-    // TODO: move the IpUtils code to frameworks/lib/net and link it statically.
-    private static short checksumAdjust(short checksum, short oldWord, short newWord) {
-        checksum = (short) ~checksum;
-        int tempSum = checksumFold(uint16(checksum) + uint16(newWord) + 0xffff - uint16(oldWord));
-        return (short) ~tempSum;
-    }
-
-    // TODO: move the IpUtils code to frameworks/lib/net and link it statically.
-    private static short icmpv6Checksum(ByteBuffer buf, int ipOffset, int transportOffset,
-            int transportLen) {
-        // The ICMPv6 checksum is the same as the TCP checksum, except the pseudo-header uses
-        // 58 (ICMPv6) instead of 6 (TCP). Calculate the TCP checksum, and then do an incremental
-        // checksum adjustment  for the change in the next header byte.
-        short checksum = IpUtils.tcpChecksum(buf, ipOffset, transportOffset, transportLen);
-        return checksumAdjust(checksum, (short) IPPROTO_TCP, (short) IPPROTO_ICMPV6);
-    }
 
     private static ByteBuffer createDadPacket(int type) {
         // Refer to buildArpPacket()
@@ -286,6 +229,12 @@ public class DadProxyTest {
         return false;
     }
 
+    private ByteBuffer copy(ByteBuffer buf) {
+        // There does not seem to be a way to copy ByteBuffers. ByteBuffer does not implement
+        // clone() and duplicate() copies the metadata but shares the contents.
+        return ByteBuffer.wrap(buf.array().clone());
+    }
+
     private void updateDstMac(ByteBuffer buf, MacAddress mac) {
         buf.put(mac.toByteArray());
         buf.rewind();
@@ -296,14 +245,50 @@ public class DadProxyTest {
         buf.rewind();
     }
 
+    private void receivePacketAndMaybeExpectForwarded(boolean expectForwarded,
+            ByteBuffer in, TapPacketReader inReader, ByteBuffer out, TapPacketReader outReader)
+            throws IOException {
+
+        inReader.sendResponse(in);
+        if (waitForPacket(out, outReader)) return;
+
+        // When the test runs, DAD may be in progress, because the interface has just been created.
+        // If so, the DAD proxy will get EADDRNOTAVAIL when trying to send packets. It is not
+        // possible to work around this using IPV6_FREEBIND or IPV6_TRANSPARENT options because the
+        // kernel rawv6 code doesn't consider those options either when binding or when sending, and
+        // doesn't get the source address from the packet even in IPPROTO_RAW/HDRINCL mode (it only
+        // gets it from the socket or from cmsg).
+        //
+        // If DAD was in progress when the above was attempted, try again and expect the packet to
+        // be forwarded. Don't disable DAD in the test because if we did, the test would not notice
+        // if, for example, the DAD proxy code just crashed if it received EADDRNOTAVAIL.
+        final String msg = expectForwarded
+                ? "Did not receive expected packet even after waiting for DAD:"
+                : "Unexpectedly received packet:";
+
+        inReader.sendResponse(in);
+        assertEquals(msg, expectForwarded, waitForPacket(out, outReader));
+    }
+
+    private void receivePacketAndExpectForwarded(ByteBuffer in, TapPacketReader inReader,
+            ByteBuffer out, TapPacketReader outReader) throws IOException {
+        receivePacketAndMaybeExpectForwarded(true, in, inReader, out, outReader);
+    }
+
+    private void receivePacketAndExpectNotForwarded(ByteBuffer in, TapPacketReader inReader,
+            ByteBuffer out, TapPacketReader outReader) throws IOException {
+        receivePacketAndMaybeExpectForwarded(false, in, inReader, out, outReader);
+    }
+
     @Test
     public void testNaForwardingFromUpstreamToTether() throws Exception {
         ByteBuffer na = createDadPacket(NeighborPacketForwarder.ICMPV6_NEIGHBOR_ADVERTISEMENT);
 
-        mUpstreamPacketReader.sendResponse(na);
-        updateDstMac(na, MacAddress.fromString("33:33:00:00:00:01"));
-        updateSrcMac(na, mTetheredParams);
-        assertTrue(waitForPacket(na, mTetheredPacketReader));
+        ByteBuffer out = copy(na);
+        updateDstMac(out, MacAddress.fromString("33:33:00:00:00:01"));
+        updateSrcMac(out, mTetheredParams);
+
+        receivePacketAndExpectForwarded(na, mUpstreamPacketReader, out, mTetheredPacketReader);
     }
 
     @Test
@@ -311,19 +296,21 @@ public class DadProxyTest {
     public void testNaForwardingFromTetherToUpstream() throws Exception {
         ByteBuffer na = createDadPacket(NeighborPacketForwarder.ICMPV6_NEIGHBOR_ADVERTISEMENT);
 
-        mTetheredPacketReader.sendResponse(na);
-        updateDstMac(na, MacAddress.fromString("33:33:00:00:00:01"));
-        updateSrcMac(na, mTetheredParams);
-        assertFalse(waitForPacket(na, mUpstreamPacketReader));
+        ByteBuffer out = copy(na);
+        updateDstMac(out, MacAddress.fromString("33:33:00:00:00:01"));
+        updateSrcMac(out, mTetheredParams);
+
+        receivePacketAndExpectNotForwarded(na, mTetheredPacketReader, out, mUpstreamPacketReader);
     }
 
     @Test
     public void testNsForwardingFromTetherToUpstream() throws Exception {
         ByteBuffer ns = createDadPacket(NeighborPacketForwarder.ICMPV6_NEIGHBOR_SOLICITATION);
 
-        mTetheredPacketReader.sendResponse(ns);
-        updateSrcMac(ns, mUpstreamParams);
-        assertTrue(waitForPacket(ns, mUpstreamPacketReader));
+        ByteBuffer out = copy(ns);
+        updateSrcMac(out, mUpstreamParams);
+
+        receivePacketAndExpectForwarded(ns, mTetheredPacketReader, out, mUpstreamPacketReader);
     }
 
     @Test
@@ -331,8 +318,9 @@ public class DadProxyTest {
     public void testNsForwardingFromUpstreamToTether() throws Exception {
         ByteBuffer ns = createDadPacket(NeighborPacketForwarder.ICMPV6_NEIGHBOR_SOLICITATION);
 
-        mUpstreamPacketReader.sendResponse(ns);
+        ByteBuffer out = copy(ns);
         updateSrcMac(ns, mUpstreamParams);
-        assertFalse(waitForPacket(ns, mTetheredPacketReader));
+
+        receivePacketAndExpectNotForwarded(ns, mUpstreamPacketReader, out, mTetheredPacketReader);
     }
 }

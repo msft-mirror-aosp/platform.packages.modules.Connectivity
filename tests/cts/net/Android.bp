@@ -12,9 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 java_defaults {
     name: "CtsNetTestCasesDefaults",
-    defaults: ["cts_defaults"],
+    defaults: [
+        "cts_defaults",
+        "framework-connectivity-test-defaults",
+    ],
 
     // Include both the 32 and 64 bit versions
     compile_multilib: "both",
@@ -34,16 +41,18 @@ java_defaults {
     srcs: [
         "src/**/*.java",
         "src/**/*.kt",
+        ":ike-aes-xcbc",
     ],
     jarjar_rules: "jarjar-rules-shared.txt",
     static_libs: [
+        "bouncycastle-unbundled",
         "FrameworksNetCommonTests",
-        "TestNetworkStackLib",
         "core-tests-support",
         "cts-net-utils",
         "ctstestrunner-axt",
         "junit",
         "junit-params",
+        "modules-utils-build",
         "net-utils-framework-common",
         "truth-prebuilt",
     ],
@@ -60,9 +69,12 @@ java_defaults {
 android_test {
     name: "CtsNetTestCases",
     defaults: ["CtsNetTestCasesDefaults"],
+    // TODO: CTS should not depend on the entirety of the networkstack code.
+    static_libs: [
+        "NetworkStackApiCurrentLib",
+    ],
     test_suites: [
         "cts",
-        "vts10",
         "general-tests",
     ],
     test_config_template: "AndroidTestTemplate.xml",
@@ -74,12 +86,19 @@ android_test {
 android_test {
     name: "CtsNetTestCasesLatestSdk",
     defaults: ["CtsNetTestCasesDefaults"],
+    // TODO: CTS should not depend on the entirety of the networkstack code.
+    static_libs: [
+        "NetworkStackApiStableLib",
+    ],
     jni_uses_sdk_apis: true,
     min_sdk_version: "29",
     target_sdk_version: "30",
     test_suites: [
         "general-tests",
-        "mts",
+        "mts-dnsresolver",
+        "mts-networking",
+        "mts-tethering",
+        "mts-wifi",
     ],
     test_config_template: "AndroidTestTemplate.xml",
 }
