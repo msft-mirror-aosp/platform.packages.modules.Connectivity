@@ -852,7 +852,7 @@ public final class NetworkCapabilities implements Parcelable {
             // SubIds are only allowed for Test Networks that only declare TRANSPORT_TEST.
             setSubscriptionIds(originalSubIds);
         } else {
-            // If the test transport is restricted, then it may declare any transport.
+            // If the test network is restricted, then it may declare any transport.
             mTransportTypes = (originalTransportTypes | (1 << TRANSPORT_TEST));
         }
         mNetworkCapabilities = originalCapabilities & TEST_NETWORKS_ALLOWED_CAPABILITIES;
@@ -1053,6 +1053,14 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public boolean hasTransport(@Transport int transportType) {
         return isValidTransport(transportType) && ((mTransportTypes & (1 << transportType)) != 0);
+    }
+
+    /**
+     * Returns true iff this NetworkCapabilities has the specified transport and no other.
+     * @hide
+     */
+    public boolean hasSingleTransport(@Transport int transportType) {
+        return mTransportTypes == (1 << transportType);
     }
 
     private void combineTransportTypes(NetworkCapabilities nc) {
