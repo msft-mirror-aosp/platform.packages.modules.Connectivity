@@ -108,10 +108,9 @@ public class FullScore {
     // and all bits managed by FullScore unset. As bits are handled from 0 up in NetworkScore and
     // from 63 down in FullScore, cut at the 32nd bit for simplicity, but change this if some day
     // there are more than 32 bits handled on either side.
-    // YIELD_TO_BAD_WIFI is temporarily handled by ConnectivityService, but the factory is still
-    // allowed to set it, so that it's possible to transition from handling it in CS to handling
-    // it in the factory.
-    private static final long EXTERNAL_POLICIES_MASK = 0x00000000FFFFFFFFL;
+    // YIELD_TO_BAD_WIFI is temporarily handled by ConnectivityService.
+    private static final long EXTERNAL_POLICIES_MASK =
+            0x00000000FFFFFFFFL & ~(1L << POLICY_YIELD_TO_BAD_WIFI);
 
     @VisibleForTesting
     static @NonNull String policyNameOf(final int policy) {
@@ -184,7 +183,7 @@ public class FullScore {
      * @return a FullScore appropriate for comparing to actual network's scores.
      */
     public static FullScore makeProspectiveScore(@NonNull final NetworkScore score,
-            @NonNull final NetworkCapabilities caps) {
+            @NonNull final NetworkCapabilities caps, final boolean yieldToBadWiFi) {
         // If the network offers Internet access, it may validate.
         final boolean mayValidate = caps.hasCapability(NET_CAPABILITY_INTERNET);
         // VPN transports are known in advance.
@@ -198,8 +197,6 @@ public class FullScore {
         final boolean everUserSelected = false;
         // Don't assume the user will accept unvalidated connectivity.
         final boolean acceptUnvalidated = false;
-        // Don't assume clinging to bad wifi
-        final boolean yieldToBadWiFi = false;
         // A prospective score is invincible if the legacy int in the filter is over the maximum
         // score.
         final boolean invincible = score.getLegacyInt() > NetworkRanker.LEGACY_INT_MAX;
@@ -257,6 +254,16 @@ public class FullScore {
                 | (yieldToBadWiFi    ? 1L << POLICY_YIELD_TO_BAD_WIFI : 0)
                 | (invincible        ? 1L << POLICY_IS_INVINCIBLE : 0),
                 keepConnectedReason);
+    }
+
+    /**
+     * Returns this score but with the specified yield to bad wifi policy.
+     */
+    public FullScore withYieldToBadWiFi(final boolean newYield) {
+        return new FullScore(mLegacyInt,
+                newYield ? mPolicies | (1L << POLICY_YIELD_TO_BAD_WIFI)
+                        : mPolicies & ~(1L << POLICY_YIELD_TO_BAD_WIFI),
+                mKeepConnectedReason);
     }
 
     /**

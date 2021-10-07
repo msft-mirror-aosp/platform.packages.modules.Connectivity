@@ -26,6 +26,7 @@ import static android.net.util.TetheringMessageBase.BASE_IPSERVER;
 import static android.system.OsConstants.RT_SCOPE_UNIVERSE;
 
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
+import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
 
 import android.net.INetd;
 import android.net.INetworkStackStatusCallback;
@@ -51,7 +52,6 @@ import android.net.util.InterfaceParams;
 import android.net.util.InterfaceSet;
 import android.net.util.PrefixUtils;
 import android.net.util.SharedLog;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -66,6 +66,7 @@ import androidx.annotation.Nullable;
 import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.networkstack.tethering.BpfCoordinator;
 import com.android.networkstack.tethering.BpfCoordinator.ClientInfo;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
@@ -596,6 +597,7 @@ public class IpServer extends StateMachine {
         // into calls to InterfaceController, shared with startIPv4().
         mInterfaceCtrl.clearIPv4Address();
         mPrivateAddressCoordinator.releaseDownstream(this);
+        mBpfCoordinator.tetherOffloadClientClear(this);
         mIpv4Address = null;
         mStaticIpv4ServerAddr = null;
         mStaticIpv4ClientAddr = null;
@@ -674,9 +676,7 @@ public class IpServer extends StateMachine {
             return false;
         }
 
-        // TODO: use ShimUtils instead of explicitly checking the version here.
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R || "S".equals(Build.VERSION.CODENAME)
-                    || "T".equals(Build.VERSION.CODENAME)) {
+        if (SdkLevel.isAtLeastS()) {
             // DAD Proxy starts forwarding packets after IPv6 upstream is present.
             mDadProxy = mDeps.getDadProxy(getHandler(), mInterfaceParams);
         }
@@ -754,6 +754,9 @@ public class IpServer extends StateMachine {
         // deprecation of any existing RA data.
 
         setRaParams(params);
+        // Be aware that updateIpv6ForwardingRules use mLastIPv6LinkProperties, so this line should
+        // be eariler than updateIpv6ForwardingRules.
+        // TODO: avoid this dependencies and move this logic into BpfCoordinator.
         mLastIPv6LinkProperties = v6only;
 
         updateIpv6ForwardingRules(mLastIPv6UpstreamIfindex, upstreamIfIndex, null);
@@ -891,12 +894,20 @@ public class IpServer extends StateMachine {
         mBpfCoordinator.tetherOffloadRuleUpdate(this, newIfindex);
     }
 
+    private boolean isIpv6VcnNetworkInterface() {
+        if (mLastIPv6LinkProperties == null) return false;
+
+        return isVcnInterface(mLastIPv6LinkProperties.getInterfaceName());
+    }
+
     // Handles all updates to IPv6 forwarding rules. These can currently change only if the upstream
     // changes or if a neighbor event is received.
     private void updateIpv6ForwardingRules(int prevUpstreamIfindex, int upstreamIfindex,
             NeighborEvent e) {
-        // If we no longer have an upstream, clear forwarding rules and do nothing else.
-        if (upstreamIfindex == 0) {
+        // If no longer have an upstream or it is virtual network, clear forwarding rules and do
+        // nothing else.
+        // TODO: Rather than always clear rules, ensure whether ipv6 ever enable first.
+        if (upstreamIfindex == 0 || isIpv6VcnNetworkInterface()) {
             clearIpv6ForwardingRules();
             return;
         }
@@ -949,7 +960,6 @@ public class IpServer extends StateMachine {
         if (e.isValid()) {
             mBpfCoordinator.tetherOffloadClientAdd(this, clientInfo);
         } else {
-            // TODO: Delete all related offload rules which are using this client.
             mBpfCoordinator.tetherOffloadClientRemove(this, clientInfo);
         }
     }
@@ -1283,6 +1293,16 @@ public class IpServer extends StateMachine {
             super.exit();
         }
 
+        // Note that IPv4 offload rules cleanup is implemented in BpfCoordinator while upstream
+        // state is null or changed because IPv4 and IPv6 tethering have different code flow
+        // and behaviour. While upstream is switching from offload supported interface to
+        // offload non-supportted interface, event CMD_TETHER_CONNECTION_CHANGED calls
+        // #cleanupUpstreamInterface but #cleanupUpstream because new UpstreamIfaceSet is not null.
+        // This case won't happen in IPv6 tethering because IPv6 tethering upstream state is
+        // reported by IPv6TetheringCoordinator. #cleanupUpstream is also called by unwirding
+        // adding NAT failure. In that case, the IPv4 offload rules are removed by #stopIPv4
+        // in the state machine. Once there is any case out whish is not covered by previous cases,
+        // probably consider clearing rules in #cleanupUpstream as well.
         private void cleanupUpstream() {
             if (mUpstreamIfaceSet == null) return;
 

@@ -42,6 +42,7 @@ import android.net.NetworkIdentity;
 import android.net.NetworkStats;
 import android.net.NetworkStatsHistory;
 import android.net.NetworkTemplate;
+import android.os.Build;
 import android.os.Process;
 import android.os.UserHandle;
 import android.telephony.SubscriptionPlan;
@@ -51,9 +52,10 @@ import android.util.RecurrenceRule;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.frameworks.tests.net.R;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import libcore.io.IoUtils;
 import libcore.io.Streams;
@@ -79,8 +81,9 @@ import java.util.List;
 /**
  * Tests for {@link NetworkStatsCollection}.
  */
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsCollectionTest {
 
     private static final String TEST_FILE = "test.bin";
@@ -95,14 +98,11 @@ public class NetworkStatsCollectionTest {
     @Before
     public void setUp() throws Exception {
         sOriginalClock = RecurrenceRule.sClock;
-        // ignore any device overlay while testing
-        NetworkTemplate.forceAllNetworkTypes();
     }
 
     @After
     public void tearDown() throws Exception {
         RecurrenceRule.sClock = sOriginalClock;
-        NetworkTemplate.resetForceAllNetworkTypes();
     }
 
     private void setClock(Instant instant) {
@@ -120,7 +120,7 @@ public class NetworkStatsCollectionTest {
 
         // verify that history read correctly
         assertSummaryTotal(collection, buildTemplateMobileAll(TEST_IMSI),
-                636016770L, 709306L, 88038768L, 518836L, NetworkStatsAccess.Level.DEVICE);
+                636014522L, 709291L, 88037144L, 518820L, NetworkStatsAccess.Level.DEVICE);
 
         // now export into a unified format
         final ByteArrayOutputStream bos = new ByteArrayOutputStream();
@@ -134,7 +134,7 @@ public class NetworkStatsCollectionTest {
         // and read back into structure, verifying that totals are same
         collection.read(new ByteArrayInputStream(bos.toByteArray()));
         assertSummaryTotal(collection, buildTemplateMobileAll(TEST_IMSI),
-                636016770L, 709306L, 88038768L, 518836L, NetworkStatsAccess.Level.DEVICE);
+                636014522L, 709291L, 88037144L, 518820L, NetworkStatsAccess.Level.DEVICE);
     }
 
     @Test
@@ -148,7 +148,7 @@ public class NetworkStatsCollectionTest {
 
         // verify that history read correctly
         assertSummaryTotal(collection, buildTemplateMobileAll(TEST_IMSI),
-                637076152L, 711413L, 88343717L, 521022L, NetworkStatsAccess.Level.DEVICE);
+                637073904L, 711398L, 88342093L, 521006L, NetworkStatsAccess.Level.DEVICE);
 
         // now export into a unified format
         final ByteArrayOutputStream bos = new ByteArrayOutputStream();
@@ -162,7 +162,7 @@ public class NetworkStatsCollectionTest {
         // and read back into structure, verifying that totals are same
         collection.read(new ByteArrayInputStream(bos.toByteArray()));
         assertSummaryTotal(collection, buildTemplateMobileAll(TEST_IMSI),
-                637076152L, 711413L, 88343717L, 521022L, NetworkStatsAccess.Level.DEVICE);
+                637073904L, 711398L, 88342093L, 521006L, NetworkStatsAccess.Level.DEVICE);
     }
 
     @Test

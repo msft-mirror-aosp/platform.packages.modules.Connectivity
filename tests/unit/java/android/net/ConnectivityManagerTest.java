@@ -37,6 +37,8 @@ import static android.net.NetworkRequest.Type.REQUEST;
 import static android.net.NetworkRequest.Type.TRACK_DEFAULT;
 import static android.net.NetworkRequest.Type.TRACK_SYSTEM_DEFAULT;
 
+import static com.android.testutils.MiscAsserts.assertThrows;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
@@ -45,6 +47,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
+import static org.mockito.Mockito.after;
 import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.mock;
@@ -68,7 +71,9 @@ import android.os.Messenger;
 import android.os.Process;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -77,9 +82,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
+@DevSdkIgnoreRule.IgnoreUpTo(VERSION_CODES.R)
 public class ConnectivityManagerTest {
+    private static final int TIMEOUT_MS = 30_000;
+    private static final int SHORT_TIMEOUT_MS = 150;
 
     @Mock Context mCtx;
     @Mock IConnectivityManager mService;
@@ -228,7 +236,7 @@ public class ConnectivityManagerTest {
 
         // callback triggers
         captor.getValue().send(makeMessage(request, ConnectivityManager.CALLBACK_AVAILABLE));
-        verify(callback, timeout(500).times(1)).onAvailable(any(Network.class),
+        verify(callback, timeout(TIMEOUT_MS).times(1)).onAvailable(any(Network.class),
                 any(NetworkCapabilities.class), any(LinkProperties.class), anyBoolean());
 
         // unregister callback
@@ -237,7 +245,7 @@ public class ConnectivityManagerTest {
 
         // callback does not trigger anymore.
         captor.getValue().send(makeMessage(request, ConnectivityManager.CALLBACK_LOSING));
-        verify(callback, timeout(500).times(0)).onLosing(any(), anyInt());
+        verify(callback, after(SHORT_TIMEOUT_MS).never()).onLosing(any(), anyInt());
     }
 
     @Test
@@ -257,7 +265,7 @@ public class ConnectivityManagerTest {
 
         // callback triggers
         captor.getValue().send(makeMessage(req1, ConnectivityManager.CALLBACK_AVAILABLE));
-        verify(callback, timeout(100).times(1)).onAvailable(any(Network.class),
+        verify(callback, timeout(TIMEOUT_MS).times(1)).onAvailable(any(Network.class),
                 any(NetworkCapabilities.class), any(LinkProperties.class), anyBoolean());
 
         // unregister callback
@@ -266,7 +274,7 @@ public class ConnectivityManagerTest {
 
         // callback does not trigger anymore.
         captor.getValue().send(makeMessage(req1, ConnectivityManager.CALLBACK_LOSING));
-        verify(callback, timeout(100).times(0)).onLosing(any(), anyInt());
+        verify(callback, after(SHORT_TIMEOUT_MS).never()).onLosing(any(), anyInt());
 
         // callback can be registered again
         when(mService.requestNetwork(anyInt(), any(), anyInt(), captor.capture(), anyInt(), any(),
@@ -275,7 +283,7 @@ public class ConnectivityManagerTest {
 
         // callback triggers
         captor.getValue().send(makeMessage(req2, ConnectivityManager.CALLBACK_LOST));
-        verify(callback, timeout(100).times(1)).onLost(any());
+        verify(callback, timeout(TIMEOUT_MS).times(1)).onLost(any());
 
         // unregister callback
         manager.unregisterNetworkCallback(callback);
@@ -308,6 +316,21 @@ public class ConnectivityManagerTest {
 
         // unregistering the callback should make it registrable again.
         manager.requestNetwork(request, callback);
+    }
+
+    @Test
+    public void testDefaultNetworkActiveListener() throws Exception {
+        final ConnectivityManager manager = new ConnectivityManager(mCtx, mService);
+        final ConnectivityManager.OnNetworkActiveListener listener =
+                mock(ConnectivityManager.OnNetworkActiveListener.class);
+        assertThrows(IllegalArgumentException.class,
+                () -> manager.removeDefaultNetworkActiveListener(listener));
+        manager.addDefaultNetworkActiveListener(listener);
+        verify(mService, times(1)).registerNetworkActivityListener(any());
+        manager.removeDefaultNetworkActiveListener(listener);
+        verify(mService, times(1)).unregisterNetworkActivityListener(any());
+        assertThrows(IllegalArgumentException.class,
+                () -> manager.removeDefaultNetworkActiveListener(listener));
     }
 
     @Test

@@ -814,11 +814,24 @@ public final class NetworkCapabilities implements Parcelable {
     }
 
     /**
+     * @see #restrictCapabilitiesForTestNetwork(int)
+     * @deprecated Use {@link #restrictCapabilitiesForTestNetwork(int)} (without the typo) instead.
+     * @hide
+     */
+    @Deprecated
+    public void restrictCapabilitesForTestNetwork(int creatorUid) {
+        // Do not remove without careful consideration: this method has a typo in its name but is
+        // called by the first S CTS releases, therefore it cannot be removed from the connectivity
+        // module as long as such CTS releases are valid for testing S devices.
+        restrictCapabilitiesForTestNetwork(creatorUid);
+    }
+
+    /**
      * Test networks have strong restrictions on what capabilities they can have. Enforce these
      * restrictions.
      * @hide
      */
-    public void restrictCapabilitesForTestNetwork(int creatorUid) {
+    public void restrictCapabilitiesForTestNetwork(int creatorUid) {
         final long originalCapabilities = mNetworkCapabilities;
         final long originalTransportTypes = mTransportTypes;
         final NetworkSpecifier originalSpecifier = mNetworkSpecifier;
@@ -828,7 +841,7 @@ public final class NetworkCapabilities implements Parcelable {
         final TransportInfo originalTransportInfo = getTransportInfo();
         final Set<Integer> originalSubIds = getSubscriptionIds();
         clearAll();
-        if (0 != (originalCapabilities & NET_CAPABILITY_NOT_RESTRICTED)) {
+        if (0 != (originalCapabilities & (1 << NET_CAPABILITY_NOT_RESTRICTED))) {
             // If the test network is not restricted, then it is only allowed to declare some
             // specific transports. This is to minimize impact on running apps in case an app
             // run from the shell creates a test a network.
@@ -839,7 +852,7 @@ public final class NetworkCapabilities implements Parcelable {
             // SubIds are only allowed for Test Networks that only declare TRANSPORT_TEST.
             setSubscriptionIds(originalSubIds);
         } else {
-            // If the test transport is restricted, then it may declare any transport.
+            // If the test network is restricted, then it may declare any transport.
             mTransportTypes = (originalTransportTypes | (1 << TRANSPORT_TEST));
         }
         mNetworkCapabilities = originalCapabilities & TEST_NETWORKS_ALLOWED_CAPABILITIES;
@@ -1040,6 +1053,14 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public boolean hasTransport(@Transport int transportType) {
         return isValidTransport(transportType) && ((mTransportTypes & (1 << transportType)) != 0);
+    }
+
+    /**
+     * Returns true iff this NetworkCapabilities has the specified transport and no other.
+     * @hide
+     */
+    public boolean hasSingleTransport(@Transport int transportType) {
+        return mTransportTypes == (1 << transportType);
     }
 
     private void combineTransportTypes(NetworkCapabilities nc) {
