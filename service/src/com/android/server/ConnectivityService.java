@@ -15,6 +15,7 @@
  */
 
 package com.android.server;
+
 import static android.Manifest.permission.RECEIVE_DATA_ACTIVITY_CHANGE;
 import static android.content.pm.PackageManager.FEATURE_BLUETOOTH;
 import static android.content.pm.PackageManager.FEATURE_WATCH;
@@ -1200,35 +1201,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 mUidToNetworkRequestCount.put(uid, newRequestCount);
             }
         }
-
-        /**
-         * Used to adjust the request counter for the per-app API flows. Directly adjusting the
-         * counter is not ideal however in the per-app flows, the nris can't be removed until they
-         * are used to create the new nris upon set. Therefore the request count limit can be
-         * artificially hit. This method is used as a workaround for this particular case so that
-         * the request counts are accounted for correctly.
-         * @param uid the uid to adjust counts for
-         * @param numOfNewRequests the new request count to account for
-         * @param r the runnable to execute
-         */
-        public void transact(final int uid, final int numOfNewRequests, @NonNull final Runnable r) {
-            // This should only be used on the handler thread as per all current and foreseen
-            // use-cases. ensureRunningOnConnectivityServiceThread() can't be used because there is
-            // no ref to the outer ConnectivityService.
-            synchronized (mUidToNetworkRequestCount) {
-                final int reqCountOverage = getCallingUidRequestCountOverage(uid, numOfNewRequests);
-                decrementCount(uid, reqCountOverage);
-                r.run();
-                incrementCountOrThrow(uid, reqCountOverage);
-            }
-        }
-
-        private int getCallingUidRequestCountOverage(final int uid, final int numOfNewRequests) {
-            final int newUidRequestCount = mUidToNetworkRequestCount.get(uid, 0)
-                    + numOfNewRequests;
-            return newUidRequestCount >= MAX_NETWORK_REQUESTS_PER_SYSTEM_UID
-                    ? newUidRequestCount - (MAX_NETWORK_REQUESTS_PER_SYSTEM_UID - 1) : 0;
-        }
     }
 
     /**
@@ -1596,12 +1568,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 ConnectivitySettingsManager.WIFI_ALWAYS_REQUESTED, false /* defaultValue */);
         final boolean vehicleAlwaysRequested = mResources.get().getBoolean(
                 R.bool.config_vehicleInternalNetworkAlwaysRequested);
-        // TODO (b/183076074): remove legacy fallback after migrating overlays
-        final boolean legacyAlwaysRequested = mContext.getResources().getBoolean(
-                mContext.getResources().getIdentifier(
-                        "config_vehicleInternalNetworkAlwaysRequested", "bool", "android"));
-        handleAlwaysOnNetworkRequest(mDefaultVehicleRequest,
-                vehicleAlwaysRequested || legacyAlwaysRequested);
+        handleAlwaysOnNetworkRequest(mDefaultVehicleRequest, vehicleAlwaysRequested);
     }
 
     // Note that registering observer for setting do not get initial callback when registering,
@@ -2258,10 +2225,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void restrictRequestUidsForCallerAndSetRequestorInfo(NetworkCapabilities nc,
             int callerUid, String callerPackageName) {
+        // There is no need to track the effective UID of the request here. If the caller
+        // lacks the settings permission, the effective UID is the same as the calling ID.
         if (!checkSettingsPermission()) {
-            // There is no need to track the effective UID of the request here. If the caller lacks
-            // the settings permission, the effective UID is the same as the calling ID.
-            nc.setSingleUid(callerUid);
+            // Unprivileged apps can only pass in null or their own UID.
+            if (nc.getUids() == null) {
+                // If the caller passes in null, the callback will also match networks that do not
+                // apply to its UID, similarly to what it would see if it called getAllNetworks.
+                // In this case, redact everything in the request immediately. This ensures that the
+                // app is not able to get any redacted information by filing an unredacted request
+                // and observing whether the request matches something.
+                if (nc.getNetworkSpecifier() != null) {
+                    nc.setNetworkSpecifier(nc.getNetworkSpecifier().redact());
+                }
+            } else {
+                nc.setSingleUid(callerUid);
+            }
         }
         nc.setRequestorUidAndPackageName(callerUid, callerPackageName);
         nc.setAdministratorUids(new int[0]);
@@ -4304,8 +4283,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (null != nri.getActiveRequest()) {
             if (!nri.getActiveRequest().isListen()) {
                 removeSatisfiedNetworkRequestFromNetwork(nri);
-            } else {
-                nri.setSatisfier(null, null);
             }
         }
 
@@ -4370,7 +4347,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 wasKept = true;
             }
-            nri.setSatisfier(null, null);
             if (!wasBackgroundNetwork && nai.isBackgroundNetwork()) {
                 // Went from foreground to background.
                 updateCapabilitiesForNetwork(nai);
@@ -6890,7 +6866,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (DBG) log("Received offer from an unregistered provider");
             return;
         }
-
         final NetworkOfferInfo existingOffer = findNetworkOfferInfoByCallback(newOffer.callback);
         if (null != existingOffer) {
             handleUnregisterNetworkOffer(existingOffer);
@@ -7072,14 +7047,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         int mark = mResources.get().getInteger(R.integer.config_networkWakeupPacketMark);
         int mask = mResources.get().getInteger(R.integer.config_networkWakeupPacketMask);
-
-        // TODO (b/183076074): remove legacy fallback after migrating overlays
-        final int legacyMark = mContext.getResources().getInteger(mContext.getResources()
-                .getIdentifier("config_networkWakeupPacketMark", "integer", "android"));
-        final int legacyMask = mContext.getResources().getInteger(mContext.getResources()
-                .getIdentifier("config_networkWakeupPacketMask", "integer", "android"));
-        mark = mark == 0 ? legacyMark : mark;
-        mask = mask == 0 ? legacyMask : mask;
 
         // Mask/mark of zero will not detect anything interesting.
         // Don't install rules unless both values are nonzero.
@@ -10113,13 +10080,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         validateNetworkCapabilitiesOfProfileNetworkPreference(preference.capabilities);
 
         mProfileNetworkPreferences = mProfileNetworkPreferences.plus(preference);
-        mSystemNetworkRequestCounter.transact(
-                mDeps.getCallingUid(), mProfileNetworkPreferences.preferences.size(),
-                () -> {
-                    final ArraySet<NetworkRequestInfo> nris =
-                            createNrisFromProfileNetworkPreferences(mProfileNetworkPreferences);
-                    replaceDefaultNetworkRequestsForPreference(nris, PREFERENCE_ORDER_PROFILE);
-                });
+        removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_PROFILE);
+        addPerAppDefaultNetworkRequests(
+                createNrisFromProfileNetworkPreferences(mProfileNetworkPreferences));
         // Finally, rematch.
         rematchAllNetworksAndRequests();
 
@@ -10164,14 +10127,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void handleMobileDataPreferredUidsChanged() {
         mMobileDataPreferredUids = ConnectivitySettingsManager.getMobileDataPreferredUids(mContext);
-        mSystemNetworkRequestCounter.transact(
-                mDeps.getCallingUid(), 1 /* numOfNewRequests */,
-                () -> {
-                    final ArraySet<NetworkRequestInfo> nris =
-                            createNrisFromMobileDataPreferredUids(mMobileDataPreferredUids);
-                    replaceDefaultNetworkRequestsForPreference(nris,
-                            PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED);
-                });
+        removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED);
+        addPerAppDefaultNetworkRequests(
+                createNrisFromMobileDataPreferredUids(mMobileDataPreferredUids));
         // Finally, rematch.
         rematchAllNetworksAndRequests();
     }
@@ -10260,16 +10218,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         mOemNetworkPreferencesLogs.log("UPDATE INITIATED: " + preference);
-        final int uniquePreferenceCount = new ArraySet<>(
-                preference.getNetworkPreferences().values()).size();
-        mSystemNetworkRequestCounter.transact(
-                mDeps.getCallingUid(), uniquePreferenceCount,
-                () -> {
-                    final ArraySet<NetworkRequestInfo> nris =
-                            new OemNetworkRequestFactory()
-                                    .createNrisFromOemNetworkPreferences(preference);
-                    replaceDefaultNetworkRequestsForPreference(nris, PREFERENCE_ORDER_OEM);
-                });
+        removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_OEM);
+        addPerAppDefaultNetworkRequests(new OemNetworkRequestFactory()
+                .createNrisFromOemNetworkPreferences(preference));
         mOemNetworkPreferences = preference;
 
         if (null != listener) {
@@ -10281,14 +10232,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private void replaceDefaultNetworkRequestsForPreference(
-            @NonNull final Set<NetworkRequestInfo> nris, final int preferenceOrder) {
+    private void removeDefaultNetworkRequestsForPreference(final int preferenceOrder) {
         // Skip the requests which are set by other network preference. Because the uid range rules
         // should stay in netd.
         final Set<NetworkRequestInfo> requests = new ArraySet<>(mDefaultNetworkRequests);
         requests.removeIf(request -> request.mPreferenceOrder != preferenceOrder);
         handleRemoveNetworkRequests(requests);
-        addPerAppDefaultNetworkRequests(nris);
     }
 
     private void addPerAppDefaultNetworkRequests(@NonNull final Set<NetworkRequestInfo> nris) {
@@ -10297,14 +10246,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final ArraySet<NetworkRequestInfo> perAppCallbackRequestsToUpdate =
                 getPerAppCallbackRequestsToUpdate();
         final ArraySet<NetworkRequestInfo> nrisToRegister = new ArraySet<>(nris);
-        mSystemNetworkRequestCounter.transact(
-                mDeps.getCallingUid(), perAppCallbackRequestsToUpdate.size(),
-                () -> {
-                    nrisToRegister.addAll(
-                            createPerAppCallbackRequestsToRegister(perAppCallbackRequestsToUpdate));
-                    handleRemoveNetworkRequests(perAppCallbackRequestsToUpdate);
-                    handleRegisterNetworkRequests(nrisToRegister);
-                });
+        handleRemoveNetworkRequests(perAppCallbackRequestsToUpdate);
+        nrisToRegister.addAll(
+                createPerAppCallbackRequestsToRegister(perAppCallbackRequestsToUpdate));
+        handleRegisterNetworkRequests(nrisToRegister);
     }
 
     /**
