@@ -505,7 +505,7 @@ public class TetheringManager {
      * @return the context's attribution tag
      */
     private @Nullable String getAttributionTag() {
-        return null;
+        return mContext.getAttributionTag();
     }
 
     /**
@@ -1537,5 +1537,26 @@ public class TetheringManager {
                         // is if the call results in a TETHER_STATE_CHANGE broadcast.
                     }
                 }));
+    }
+
+    /**
+     * Whether to treat networks that have TRANSPORT_TEST as Tethering upstreams. The effects of
+     * this method apply to any test networks that are already present on the system.
+     *
+     * @throws SecurityException If the caller doesn't have the NETWORK_SETTINGS permission.
+     * @hide
+     */
+    @RequiresPermission(android.Manifest.permission.NETWORK_SETTINGS)
+    public void setPreferTestNetworks(final boolean prefer) {
+        Log.i(TAG, "setPreferTestNetworks caller: " + mContext.getOpPackageName());
+
+        final RequestDispatcher dispatcher = new RequestDispatcher();
+        final int ret = dispatcher.waitForResult((connector, listener) -> {
+            try {
+                connector.setPreferTestNetworks(prefer, listener);
+            } catch (RemoteException e) {
+                throw new IllegalStateException(e);
+            }
+        });
     }
 }
