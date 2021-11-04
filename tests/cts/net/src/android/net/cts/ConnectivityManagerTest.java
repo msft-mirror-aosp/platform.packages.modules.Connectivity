@@ -155,6 +155,7 @@ import android.util.Pair;
 import android.util.Range;
 
 import androidx.test.InstrumentationRegistry;
+import androidx.test.filters.RequiresDevice;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.ArrayUtils;
@@ -168,7 +169,6 @@ import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRuleKt;
 import com.android.testutils.RecorderCallback.CallbackEntry;
-import com.android.testutils.SkipPresubmit;
 import com.android.testutils.TestHttpServer;
 import com.android.testutils.TestNetworkTracker;
 import com.android.testutils.TestableNetworkCallback;
@@ -559,7 +559,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
-    @SkipPresubmit(reason = "Virtual devices use a single internet connection for all networks")
+    @RequiresDevice // Virtual devices use a single internet connection for all networks
     public void testOpenConnection() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_TELEPHONY));
@@ -714,6 +714,12 @@ public class ConnectivityManagerTest {
                 .build();
     }
 
+    private boolean hasPrivateDnsValidated(CallbackEntry entry, Network networkForPrivateDns) {
+        if (!networkForPrivateDns.equals(entry.getNetwork())) return false;
+        final NetworkCapabilities nc = ((CallbackEntry.CapabilitiesChanged) entry).getCaps();
+        return !nc.isPrivateDnsBroken() && nc.hasCapability(NET_CAPABILITY_VALIDATED);
+    }
+
     @AppModeFull(reason = "WRITE_SECURE_SETTINGS permission can't be granted to instant apps")
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testIsPrivateDnsBroken() throws InterruptedException {
@@ -727,8 +733,7 @@ public class ConnectivityManagerTest {
             mCtsNetUtils.setPrivateDnsStrictMode(goodPrivateDnsServer);
             final Network networkForPrivateDns =  mCtsNetUtils.ensureWifiConnected();
             cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED, NETWORK_CALLBACK_TIMEOUT_MS,
-                    entry -> (!((CallbackEntry.CapabilitiesChanged) entry).getCaps()
-                    .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
+                    entry -> hasPrivateDnsValidated(entry, networkForPrivateDns));
 
             // Verifying the broken private DNS sever
             mCtsNetUtils.setPrivateDnsStrictMode(invalidPrivateDnsServer);
@@ -1183,6 +1188,7 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testGetMultipathPreference() throws Exception {
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
         final ContentResolver resolver = mContext.getContentResolver();
         mCtsNetUtils.ensureWifiConnected();
         final String ssid = unquoteSSID(mWifiManager.getConnectionInfo().getSSID());
@@ -1419,7 +1425,7 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
-    @SkipPresubmit(reason = "Keepalive is not supported on virtual hardware")
+    @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testCreateTcpKeepalive() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
@@ -1626,7 +1632,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
-    @SkipPresubmit(reason = "Keepalive is not supported on virtual hardware")
+    @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testSocketKeepaliveLimitWifi() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
@@ -1676,7 +1682,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot request network in instant app mode")
     @Test
-    @SkipPresubmit(reason = "Keepalive is not supported on virtual hardware")
+    @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testSocketKeepaliveLimitTelephony() throws Exception {
         if (!mPackageManager.hasSystemFeature(FEATURE_TELEPHONY)) {
             Log.i(TAG, "testSocketKeepaliveLimitTelephony cannot execute unless device"
@@ -1722,7 +1728,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
-    @SkipPresubmit(reason = "Keepalive is not supported on virtual hardware")
+    @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testSocketKeepaliveUnprivileged() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
@@ -1797,6 +1803,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
+    @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testRestrictedNetworkPermission() throws Exception {
         // Ensure that CONNECTIVITY_USE_RESTRICTED_NETWORKS isn't granted to this package.
         final PackageInfo app = mPackageManager.getPackageInfo(mContext.getPackageName(),
@@ -2827,6 +2834,19 @@ public class ConnectivityManagerTest {
             });
     }
 
+    /**
+     *  The networks used in this test are real networks and as such they can see seemingly random
+     *  updates of their capabilities or link properties as conditions change, e.g. the network
+     *  loses validation or IPv4 shows up. Many tests should simply treat these callbacks as
+     *  spurious.
+     */
+    private void assertNoCallbackExceptCapOrLpChange(
+            @NonNull final TestableNetworkCallback cb) {
+        cb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS,
+                c -> !(c instanceof CallbackEntry.CapabilitiesChanged
+                        || c instanceof CallbackEntry.LinkPropertiesChanged));
+    }
+
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testMobileDataPreferredUids() throws Exception {
@@ -2859,8 +2879,7 @@ public class ConnectivityManagerTest {
             // CtsNetTestCases uid is not listed in MOBILE_DATA_PREFERRED_UIDS setting, so the
             // per-app default network should be same as system default network.
             waitForAvailable(systemDefaultCb, wifiNetwork);
-            defaultTrackingCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
-                    entry -> wifiNetwork.equals(entry.getNetwork()));
+            waitForAvailable(defaultTrackingCb, wifiNetwork);
             // Active network for CtsNetTestCases uid should be wifi now.
             assertEquals(wifiNetwork, mCm.getActiveNetwork());
 
@@ -2870,10 +2889,10 @@ public class ConnectivityManagerTest {
             newMobileDataPreferredUids.add(uid);
             ConnectivitySettingsManager.setMobileDataPreferredUids(
                     mContext, newMobileDataPreferredUids);
-            defaultTrackingCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
-                    entry -> cellNetwork.equals(entry.getNetwork()));
-            // System default network doesn't change.
-            systemDefaultCb.assertNoCallback();
+            waitForAvailable(defaultTrackingCb, cellNetwork);
+            // No change for system default network. Expect no callback except CapabilitiesChanged
+            // or LinkPropertiesChanged which may be triggered randomly from wifi network.
+            assertNoCallbackExceptCapOrLpChange(systemDefaultCb);
             // Active network for CtsNetTestCases uid should change to cell, too.
             assertEquals(cellNetwork, mCm.getActiveNetwork());
 
@@ -2882,10 +2901,10 @@ public class ConnectivityManagerTest {
             newMobileDataPreferredUids.remove(uid);
             ConnectivitySettingsManager.setMobileDataPreferredUids(
                     mContext, newMobileDataPreferredUids);
-            defaultTrackingCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
-                    entry -> wifiNetwork.equals(entry.getNetwork()));
-            // System default network still doesn't change.
-            systemDefaultCb.assertNoCallback();
+            waitForAvailable(defaultTrackingCb, wifiNetwork);
+            // No change for system default network. Expect no callback except CapabilitiesChanged
+            // or LinkPropertiesChanged which may be triggered randomly from wifi network.
+            assertNoCallbackExceptCapOrLpChange(systemDefaultCb);
             // Active network for CtsNetTestCases uid should change back to wifi.
             assertEquals(wifiNetwork, mCm.getActiveNetwork());
         } finally {
