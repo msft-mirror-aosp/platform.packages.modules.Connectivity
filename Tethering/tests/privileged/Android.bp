@@ -26,6 +26,7 @@ java_defaults {
         "libtetherutilsjni",
     ],
     jni_uses_sdk_apis: true,
+    jarjar_rules: ":TetheringTestsJarJarRules",
     visibility: ["//visibility:private"],
 }
 
@@ -42,7 +43,7 @@ android_test {
     platform_apis: true,
     test_suites: [
         "device-tests",
-        "mts",
+        "mts-tethering",
     ],
     static_libs: [
         "androidx.test.rules",
