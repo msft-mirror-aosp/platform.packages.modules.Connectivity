@@ -80,7 +80,7 @@ DEFINE_BPF_MAP_GRW(tether_error_map, ARRAY, uint32_t, uint32_t, BPF_TETHER_ERR__
 } while(0)
 
 #define TC_DROP(counter) COUNT_AND_RETURN(counter, TC_ACT_SHOT)
-#define TC_PUNT(counter) COUNT_AND_RETURN(counter, TC_ACT_OK)
+#define TC_PUNT(counter) COUNT_AND_RETURN(counter, TC_ACT_PIPE)
 
 #define XDP_DROP(counter) COUNT_AND_RETURN(counter, XDP_DROP)
 #define XDP_PUNT(counter) COUNT_AND_RETURN(counter, XDP_PASS)
@@ -108,10 +108,10 @@ DEFINE_BPF_MAP_GRW(tether_upstream6_map, HASH, TetherUpstream6Key, Tether6Value,
 static inline __always_inline int do_forward6(struct __sk_buff* skb, const bool is_ethernet,
         const bool downstream) {
     // Must be meta-ethernet IPv6 frame
-    if (skb->protocol != htons(ETH_P_IPV6)) return TC_ACT_OK;
+    if (skb->protocol != htons(ETH_P_IPV6)) return TC_ACT_PIPE;
 
     // Require ethernet dst mac address to be our unicast address.
-    if (is_ethernet && (skb->pkt_type != PACKET_HOST)) return TC_ACT_OK;
+    if (is_ethernet && (skb->pkt_type != PACKET_HOST)) return TC_ACT_PIPE;
 
     const int l2_header_size = is_ethernet ? sizeof(struct ethhdr) : 0;
 
@@ -127,10 +127,10 @@ static inline __always_inline int do_forward6(struct __sk_buff* skb, const bool 
     struct ipv6hdr* ip6 = is_ethernet ? (void*)(eth + 1) : data;
 
     // Must have (ethernet and) ipv6 header
-    if (data + l2_header_size + sizeof(*ip6) > data_end) return TC_ACT_OK;
+    if (data + l2_header_size + sizeof(*ip6) > data_end) return TC_ACT_PIPE;
 
     // Ethertype - if present - must be IPv6
-    if (is_ethernet && (eth->h_proto != htons(ETH_P_IPV6))) return TC_ACT_OK;
+    if (is_ethernet && (eth->h_proto != htons(ETH_P_IPV6))) return TC_ACT_PIPE;
 
     // IP version must be 6
     if (ip6->version != 6) TC_PUNT(INVALID_IP_VERSION);
@@ -182,7 +182,7 @@ static inline __always_inline int do_forward6(struct __sk_buff* skb, const bool 
                                  : bpf_tether_upstream6_map_lookup_elem(&ku);
 
     // If we don't find any offload information then simply let the core stack handle it...
-    if (!v) return TC_ACT_OK;
+    if (!v) return TC_ACT_PIPE;
 
     uint32_t stat_and_limit_k = downstream ? skb->ifindex : v->oif;
 
@@ -337,13 +337,13 @@ DEFINE_OPTIONAL_BPF_PROG_KVER_RANGE("schedcls/tether_upstream6_rawip$4_14",
 DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_downstream6_rawip$stub", AID_ROOT, AID_NETWORK_STACK,
                            sched_cls_tether_downstream6_rawip_stub, KVER_NONE, KVER(5, 4, 0))
 (struct __sk_buff* skb) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
 }
 
 DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_upstream6_rawip$stub", AID_ROOT, AID_NETWORK_STACK,
                            sched_cls_tether_upstream6_rawip_stub, KVER_NONE, KVER(5, 4, 0))
 (struct __sk_buff* skb) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
 }
 
 // ----- IPv4 Support -----
@@ -355,10 +355,10 @@ DEFINE_BPF_MAP_GRW(tether_upstream4_map, HASH, Tether4Key, Tether4Value, 1024, A
 static inline __always_inline int do_forward4(struct __sk_buff* skb, const bool is_ethernet,
         const bool downstream, const bool updatetime) {
     // Require ethernet dst mac address to be our unicast address.
-    if (is_ethernet && (skb->pkt_type != PACKET_HOST)) return TC_ACT_OK;
+    if (is_ethernet && (skb->pkt_type != PACKET_HOST)) return TC_ACT_PIPE;
 
     // Must be meta-ethernet IPv4 frame
-    if (skb->protocol != htons(ETH_P_IP)) return TC_ACT_OK;
+    if (skb->protocol != htons(ETH_P_IP)) return TC_ACT_PIPE;
 
     const int l2_header_size = is_ethernet ? sizeof(struct ethhdr) : 0;
 
@@ -374,10 +374,10 @@ static inline __always_inline int do_forward4(struct __sk_buff* skb, const bool 
     struct iphdr* ip = is_ethernet ? (void*)(eth + 1) : data;
 
     // Must have (ethernet and) ipv4 header
-    if (data + l2_header_size + sizeof(*ip) > data_end) return TC_ACT_OK;
+    if (data + l2_header_size + sizeof(*ip) > data_end) return TC_ACT_PIPE;
 
     // Ethertype - if present - must be IPv4
-    if (is_ethernet && (eth->h_proto != htons(ETH_P_IP))) return TC_ACT_OK;
+    if (is_ethernet && (eth->h_proto != htons(ETH_P_IP))) return TC_ACT_PIPE;
 
     // IP version must be 4
     if (ip->version != 4) TC_PUNT(INVALID_IP_VERSION);
@@ -495,7 +495,7 @@ static inline __always_inline int do_forward4(struct __sk_buff* skb, const bool 
                                  : bpf_tether_upstream4_map_lookup_elem(&k);
 
     // If we don't find any offload information then simply let the core stack handle it...
-    if (!v) return TC_ACT_OK;
+    if (!v) return TC_ACT_PIPE;
 
     uint32_t stat_and_limit_k = downstream ? skb->ifindex : v->oif;
 
@@ -569,6 +569,16 @@ static inline __always_inline int do_forward4(struct __sk_buff* skb, const bool 
     // For a rawip tx interface it will simply be a bunch of zeroes and later stripped.
     *eth = v->macHeader;
 
+    // Decrement the IPv4 TTL, we already know it's greater than 1.
+    // u8 TTL field is followed by u8 protocol to make a u16 for ipv4 header checksum update.
+    // Since we're keeping the ipv4 checksum valid (which means the checksum of the entire
+    // ipv4 header remains 0), the overall checksum of the entire packet does not change.
+    const int sz2 = sizeof(__be16);
+    const __be16 old_ttl_proto = *(__be16 *)&ip->ttl;
+    const __be16 new_ttl_proto = old_ttl_proto - htons(0x0100);
+    bpf_l3_csum_replace(skb, ETH_IP4_OFFSET(check), old_ttl_proto, new_ttl_proto, sz2);
+    bpf_skb_store_bytes(skb, ETH_IP4_OFFSET(ttl), &new_ttl_proto, sz2, 0);
+
     const int l4_offs_csum = is_tcp ? ETH_IP4_TCP_OFFSET(check) : ETH_IP4_UDP_OFFSET(check);
     const int sz4 = sizeof(__be32);
     // UDP 0 is special and stored as FFFF (this flag also causes a csum of 0 to be unmodified)
@@ -586,7 +596,6 @@ static inline __always_inline int do_forward4(struct __sk_buff* skb, const bool 
     bpf_l3_csum_replace(skb, ETH_IP4_OFFSET(check), old_saddr, new_saddr, sz4);
     bpf_skb_store_bytes(skb, ETH_IP4_OFFSET(saddr), &new_saddr, sz4, 0);
 
-    const int sz2 = sizeof(__be16);
     // The offsets for TCP and UDP ports: source (u16 @ L4 offset 0) & dest (u16 @ L4 offset 2) are
     // actually the same, so the compiler should just optimize them both down to a constant.
     bpf_l4_csum_replace(skb, l4_offs_csum, k.srcPort, v->srcPort, sz2 | l4_flags);
@@ -596,8 +605,6 @@ static inline __always_inline int do_forward4(struct __sk_buff* skb, const bool 
     bpf_l4_csum_replace(skb, l4_offs_csum, k.dstPort, v->dstPort, sz2 | l4_flags);
     bpf_skb_store_bytes(skb, is_tcp ? ETH_IP4_TCP_OFFSET(dest) : ETH_IP4_UDP_OFFSET(dest),
                         &v->dstPort, sz2, 0);
-
-    // TEMP HACK: lack of TTL decrement
 
     // This requires the bpf_ktime_get_boot_ns() helper which was added in 5.8,
     // and backported to all Android Common Kernel 4.14+ trees.
@@ -742,13 +749,13 @@ DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_upstream4_ether$4_14", AID_ROOT, AID
 DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_downstream4_rawip$stub", AID_ROOT, AID_NETWORK_STACK,
                            sched_cls_tether_downstream4_rawip_stub, KVER_NONE, KVER(5, 4, 0))
 (struct __sk_buff* skb) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
 }
 
 DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_upstream4_rawip$stub", AID_ROOT, AID_NETWORK_STACK,
                            sched_cls_tether_upstream4_rawip_stub, KVER_NONE, KVER(5, 4, 0))
 (struct __sk_buff* skb) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
 }
 
 // ETHER: 4.9-P/Q kernel
@@ -756,13 +763,13 @@ DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_upstream4_rawip$stub", AID_ROOT, AID
 DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_downstream4_ether$stub", AID_ROOT, AID_NETWORK_STACK,
                            sched_cls_tether_downstream4_ether_stub, KVER_NONE, KVER(4, 14, 0))
 (struct __sk_buff* skb) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
 }
 
 DEFINE_BPF_PROG_KVER_RANGE("schedcls/tether_upstream4_ether$stub", AID_ROOT, AID_NETWORK_STACK,
                            sched_cls_tether_upstream4_ether_stub, KVER_NONE, KVER(4, 14, 0))
 (struct __sk_buff* skb) {
-    return TC_ACT_OK;
+    return TC_ACT_PIPE;
 }
 
 // ----- XDP Support -----

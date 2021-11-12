@@ -29,6 +29,8 @@ import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.content.Context;
 import android.net.ConnectivityManager.MultipathPreference;
+import android.os.Binder;
+import android.os.Build;
 import android.os.Process;
 import android.os.UserHandle;
 import android.provider.Settings;
@@ -562,7 +564,7 @@ public class ConnectivitySettingsManager {
     public static void setNetworkSwitchNotificationMaximumDailyCount(@NonNull Context context,
             @IntRange(from = 0) int count) {
         if (count < 0) {
-            throw new IllegalArgumentException("Count must be 0~10.");
+            throw new IllegalArgumentException("Count must be more than 0.");
         }
         Settings.Global.putInt(
                 context.getContentResolver(), NETWORK_SWITCH_NOTIFICATION_DAILY_LIMIT, count);
@@ -585,6 +587,7 @@ public class ConnectivitySettingsManager {
 
     /**
      * Set minimum duration (to {@link Settings}) between each switching network notifications.
+     * The duration will be rounded down to the next millisecond, and must be positive.
      *
      * @param context The {@link Context} to set the setting.
      * @param duration The minimum duration between notifications when switching networks.
@@ -612,10 +615,11 @@ public class ConnectivitySettingsManager {
 
     /**
      * Set URL (to {@link Settings}) used for HTTP captive portal detection upon a new connection.
-     * This URL should respond with a 204 response to a GET request to indicate no captive portal is
-     * present. And this URL must be HTTP as redirect responses are used to find captive portal
-     * sign-in pages. If the URL set to null or be incorrect, it will result in captive portal
-     * detection failed and lost the connection.
+     * The URL is accessed to check for connectivity and presence of a captive portal on a network.
+     * The URL should respond with HTTP status 204 to a GET request, and the stack will use
+     * redirection status as a signal for captive portal detection.
+     * If the URL is set to null or is otherwise incorrect or inaccessible, the stack will fail to
+     * detect connectivity and portals. This will often result in loss of connectivity.
      *
      * @param context The {@link Context} to set the setting.
      * @param url The URL used for HTTP captive portal detection upon a new connection.
@@ -819,6 +823,7 @@ public class ConnectivitySettingsManager {
 
     /**
      * Set duration (to {@link Settings}) to keep a PendingIntent-based request.
+     * The duration will be rounded down to the next millisecond, and must be positive.
      *
      * @param context The {@link Context} to set the setting.
      * @param duration The duration to keep a PendingIntent-based request.
@@ -1036,6 +1041,15 @@ public class ConnectivitySettingsManager {
         return getUidSetFromString(uidList);
     }
 
+    private static boolean isCallingFromSystem() {
+        final int uid = Binder.getCallingUid();
+        final int pid = Binder.getCallingPid();
+        if (uid == Process.SYSTEM_UID && pid == Process.myPid()) {
+            return true;
+        }
+        return false;
+    }
+
     /**
      * Set the list of uids(from {@link Settings}) that is allowed to use restricted networks.
      *
@@ -1044,6 +1058,15 @@ public class ConnectivitySettingsManager {
      */
     public static void setUidsAllowedOnRestrictedNetworks(@NonNull Context context,
             @NonNull Set<Integer> uidList) {
+        final boolean calledFromSystem = isCallingFromSystem();
+        if (!calledFromSystem) {
+            // Enforce NETWORK_SETTINGS check if it's debug build. This is for MTS test only.
+            if (!Build.isDebuggable()) {
+                throw new SecurityException("Only system can set this setting.");
+            }
+            context.enforceCallingOrSelfPermission(android.Manifest.permission.NETWORK_SETTINGS,
+                    "Requires NETWORK_SETTINGS permission");
+        }
         final String uids = getUidStringFromSet(uidList);
         Settings.Global.putString(context.getContentResolver(), UIDS_ALLOWED_ON_RESTRICTED_NETWORKS,
                 uids);

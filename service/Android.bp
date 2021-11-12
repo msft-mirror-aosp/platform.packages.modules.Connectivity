@@ -53,13 +53,10 @@ java_library {
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
         ":services-connectivity-shared-srcs",
-        // TODO: move to net-utils-device-common, enable shrink optimization to avoid extra classes
-        ":net-module-utils-srcs",
+        // TODO: move to net-utils-device-common
+        ":connectivity-module-utils-srcs",
     ],
     libs: [
-        // TODO (b/183097033) remove once system_server_current includes core_current
-        "stable.core.platform.api.stubs",
-        "android_system_server_stubs_current",
         "framework-annotations-lib",
         "framework-connectivity.impl",
         "framework-tethering.stubs.module_lib",
@@ -68,12 +65,14 @@ java_library {
         "ServiceConnectivityResources",
     ],
     static_libs: [
-        "dnsresolver_aidl_interface-V8-java",
-        "modules-utils-os",
+        "dnsresolver_aidl_interface-V9-java",
+        "modules-utils-build",
+        "modules-utils-shell-command-handler",
+        "modules-utils-statemachine",
         "net-utils-device-common",
+        "net-utils-device-common-netlink",
         "net-utils-framework-common",
         "netd-client",
-        "netlink-client",
         "networkstack-client",
         "PlatformProperties",
         "service-connectivity-protos",
@@ -111,4 +110,10 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
+}
+
+filegroup {
+    name: "connectivity-jarjar-rules",
+    srcs: ["jarjar-rules.txt"],
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
