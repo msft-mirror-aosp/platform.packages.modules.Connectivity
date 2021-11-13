@@ -413,20 +413,26 @@ public class IpSecManagerTest extends IpSecBaseTest {
 
             // Check that iface stats are within an acceptable range; data might be sent
             // on the local interface by other apps.
-            assertApproxEquals(
-                    ifaceTxBytes, newIfaceTxBytes, expectedTxByteDelta, ERROR_MARGIN_BYTES);
-            assertApproxEquals(
-                    ifaceRxBytes, newIfaceRxBytes, expectedRxByteDelta, ERROR_MARGIN_BYTES);
-            assertApproxEquals(
-                    ifaceTxPackets, newIfaceTxPackets, expectedTxPacketDelta, ERROR_MARGIN_PKTS);
-            assertApproxEquals(
-                    ifaceRxPackets, newIfaceRxPackets, expectedRxPacketDelta, ERROR_MARGIN_PKTS);
+            assertApproxEquals("TX bytes", ifaceTxBytes, newIfaceTxBytes, expectedTxByteDelta,
+                    ERROR_MARGIN_BYTES);
+            assertApproxEquals("RX bytes", ifaceRxBytes, newIfaceRxBytes, expectedRxByteDelta,
+                    ERROR_MARGIN_BYTES);
+            assertApproxEquals("TX packets", ifaceTxPackets, newIfaceTxPackets,
+                    expectedTxPacketDelta, ERROR_MARGIN_PKTS);
+            assertApproxEquals("RX packets",  ifaceRxPackets, newIfaceRxPackets,
+                    expectedRxPacketDelta, ERROR_MARGIN_PKTS);
         }
 
         private static void assertApproxEquals(
-                long oldStats, long newStats, int expectedDelta, double errorMargin) {
-            assertTrue(expectedDelta <= newStats - oldStats);
-            assertTrue((expectedDelta * errorMargin) > newStats - oldStats);
+                String what, long oldStats, long newStats, int expectedDelta, double errorMargin) {
+            assertTrue(
+                    "Expected at least " + expectedDelta + " " + what
+                            + ", got "  + (newStats - oldStats),
+                    newStats - oldStats >= expectedDelta);
+            assertTrue(
+                    "Expected at most " + errorMargin + " * " + expectedDelta + " " + what
+                            + ", got " + (newStats - oldStats),
+                    newStats - oldStats < (expectedDelta * errorMargin));
         }
 
         private static void initStatsChecker() throws Exception {
@@ -717,11 +723,10 @@ public class IpSecManagerTest extends IpSecBaseTest {
         algoToRequiredMinSdk.put(AUTH_HMAC_SHA512, Build.VERSION_CODES.P);
         algoToRequiredMinSdk.put(AUTH_CRYPT_AES_GCM, Build.VERSION_CODES.P);
 
-        // TODO: b/170424293 Use Build.VERSION_CODES.S when is finalized
-        algoToRequiredMinSdk.put(CRYPT_AES_CTR, Build.VERSION_CODES.R + 1);
-        algoToRequiredMinSdk.put(AUTH_AES_CMAC, Build.VERSION_CODES.R + 1);
-        algoToRequiredMinSdk.put(AUTH_AES_XCBC, Build.VERSION_CODES.R + 1);
-        algoToRequiredMinSdk.put(AUTH_CRYPT_CHACHA20_POLY1305, Build.VERSION_CODES.R + 1);
+        algoToRequiredMinSdk.put(CRYPT_AES_CTR, Build.VERSION_CODES.S);
+        algoToRequiredMinSdk.put(AUTH_AES_CMAC, Build.VERSION_CODES.S);
+        algoToRequiredMinSdk.put(AUTH_AES_XCBC, Build.VERSION_CODES.S);
+        algoToRequiredMinSdk.put(AUTH_CRYPT_CHACHA20_POLY1305, Build.VERSION_CODES.S);
 
         final Set<String> supportedAlgos = IpSecAlgorithm.getSupportedAlgorithms();
 
