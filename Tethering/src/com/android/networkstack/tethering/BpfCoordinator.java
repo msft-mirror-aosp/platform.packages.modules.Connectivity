@@ -32,6 +32,7 @@ import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
 import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
+import static com.android.networkstack.tethering.util.TetheringUtils.getTetheringJniLibraryName;
 
 import android.app.usage.NetworkStatsManager;
 import android.net.INetd;
@@ -45,7 +46,6 @@ import android.net.ip.IpServer;
 import android.net.netstats.provider.NetworkStatsProvider;
 import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
-import android.net.util.TetheringUtils.ForwardedStats;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.system.ErrnoException;
@@ -69,6 +69,7 @@ import com.android.net.module.util.netlink.ConntrackMessage;
 import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkSocket;
 import com.android.networkstack.tethering.apishim.common.BpfCoordinatorShim;
+import com.android.networkstack.tethering.util.TetheringUtils.ForwardedStats;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -99,7 +100,7 @@ public class BpfCoordinator {
     // TetherService, but for tests it needs to be either loaded here or loaded by every test.
     // TODO: is there a better way?
     static {
-        System.loadLibrary("tetherutilsjni");
+        System.loadLibrary(getTetheringJniLibraryName());
     }
 
     private static final String TAG = BpfCoordinator.class.getSimpleName();
