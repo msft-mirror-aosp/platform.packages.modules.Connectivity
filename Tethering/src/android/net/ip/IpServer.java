@@ -21,12 +21,12 @@ import static android.net.TetheringManager.TetheringRequest.checkStaticAddressCo
 import static android.net.dhcp.IDhcpServer.STATUS_SUCCESS;
 import static android.net.util.NetworkConstants.RFC7421_PREFIX_LENGTH;
 import static android.net.util.NetworkConstants.asByte;
-import static android.net.util.PrefixUtils.asIpPrefix;
-import static android.net.util.TetheringMessageBase.BASE_IPSERVER;
 import static android.system.OsConstants.RT_SCOPE_UNIVERSE;
 
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
 import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
+import static com.android.networkstack.tethering.util.PrefixUtils.asIpPrefix;
+import static com.android.networkstack.tethering.util.TetheringMessageBase.BASE_IPSERVER;
 
 import android.net.INetd;
 import android.net.INetworkStackStatusCallback;
@@ -46,13 +46,8 @@ import android.net.dhcp.IDhcpEventCallbacks;
 import android.net.dhcp.IDhcpServer;
 import android.net.ip.IpNeighborMonitor.NeighborEvent;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
-import android.net.shared.NetdUtils;
-import android.net.shared.RouteUtils;
 import android.net.util.InterfaceParams;
-import android.net.util.InterfaceSet;
-import android.net.util.PrefixUtils;
 import android.net.util.SharedLog;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -67,10 +62,14 @@ import androidx.annotation.Nullable;
 import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.NetdUtils;
 import com.android.networkstack.tethering.BpfCoordinator;
 import com.android.networkstack.tethering.BpfCoordinator.ClientInfo;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
 import com.android.networkstack.tethering.PrivateAddressCoordinator;
+import com.android.networkstack.tethering.util.InterfaceSet;
+import com.android.networkstack.tethering.util.PrefixUtils;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -676,9 +675,7 @@ public class IpServer extends StateMachine {
             return false;
         }
 
-        // TODO: use ShimUtils instead of explicitly checking the version here.
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R || "S".equals(Build.VERSION.CODENAME)
-                    || "T".equals(Build.VERSION.CODENAME)) {
+        if (SdkLevel.isAtLeastS()) {
             // DAD Proxy starts forwarding packets after IPv6 upstream is present.
             mDadProxy = mDeps.getDadProxy(getHandler(), mInterfaceParams);
         }
@@ -769,7 +766,7 @@ public class IpServer extends StateMachine {
     }
 
     private void removeRoutesFromLocalNetwork(@NonNull final List<RouteInfo> toBeRemoved) {
-        final int removalFailures = RouteUtils.removeRoutesFromLocalNetwork(
+        final int removalFailures = NetdUtils.removeRoutesFromLocalNetwork(
                 mNetd, toBeRemoved);
         if (removalFailures > 0) {
             mLog.e(String.format("Failed to remove %d IPv6 routes from local table.",
@@ -787,7 +784,7 @@ public class IpServer extends StateMachine {
             try {
                 // Add routes from local network. Note that adding routes that
                 // already exist does not cause an error (EEXIST is silently ignored).
-                RouteUtils.addRoutesToLocalNetwork(mNetd, mIfaceName, toBeAdded);
+                NetdUtils.addRoutesToLocalNetwork(mNetd, mIfaceName, toBeAdded);
             } catch (IllegalStateException e) {
                 mLog.e("Failed to add IPv4/v6 routes to local table: " + e);
                 return;

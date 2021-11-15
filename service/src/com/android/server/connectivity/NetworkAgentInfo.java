@@ -377,6 +377,9 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
         this.creatorUid = creatorUid;
         mLingerDurationMs = lingerDurationMs;
         mQosCallbackTracker = qosCallbackTracker;
+        declaredUnderlyingNetworks = (nc.getUnderlyingNetworks() != null)
+                ? nc.getUnderlyingNetworks().toArray(new Network[0])
+                : null;
     }
 
     private class AgentDeathMonitor implements IBinder.DeathRecipient {
@@ -1187,6 +1190,7 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
                         ? " underlying{" + Arrays.toString(declaredUnderlyingNetworks) + "}" : "")
                 + "  lp{" + linkProperties + "}"
                 + "  nc{" + networkCapabilities + "}"
+                + "  factorySerialNumber=" + factorySerialNumber
                 + "}";
     }
 

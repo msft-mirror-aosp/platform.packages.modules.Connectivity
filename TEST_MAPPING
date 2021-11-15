@@ -12,6 +12,9 @@
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
         }
       ]
     },
@@ -22,13 +25,20 @@
       "name": "TetheringIntegrationTests"
     }
   ],
+  "postsubmit": [
+    {
+      "name": "TetheringPrivilegedTests"
+    }
+  ],
   "mainline-presubmit": [
     {
-      // TODO: add back the tethering modules when updatable in this branch
-      "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex]",
+      "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
         }
       ]
     },
