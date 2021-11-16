@@ -20,6 +20,7 @@ import static android.system.OsConstants.IPPROTO_ICMPV6;
 
 import static com.android.net.module.util.IpUtils.icmpv6Checksum;
 import static com.android.net.module.util.NetworkStackConstants.ETHER_SRC_ADDR_OFFSET;
+import static com.android.networkstack.tethering.util.TetheringUtils.getTetheringJniLibraryName;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -30,7 +31,6 @@ import android.net.INetd;
 import android.net.InetAddresses;
 import android.net.MacAddress;
 import android.net.util.InterfaceParams;
-import android.net.util.TetheringUtils;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -40,6 +40,7 @@ import android.os.Looper;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
+import com.android.networkstack.tethering.util.TetheringUtils;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.TapPacketReader;
@@ -80,7 +81,7 @@ public class DadProxyTest {
 
     @BeforeClass
     public static void setupOnce() {
-        System.loadLibrary("tetherutilsjni");
+        System.loadLibrary(getTetheringJniLibraryName());
 
         final Instrumentation inst = InstrumentationRegistry.getInstrumentation();
         final IBinder netdIBinder =
