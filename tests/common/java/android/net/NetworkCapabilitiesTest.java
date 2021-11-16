@@ -50,6 +50,7 @@ import static android.os.Process.INVALID_UID;
 
 import static com.android.modules.utils.build.SdkLevel.isAtLeastR;
 import static com.android.modules.utils.build.SdkLevel.isAtLeastS;
+import static com.android.modules.utils.build.SdkLevel.isAtLeastT;
 import static com.android.testutils.MiscAsserts.assertEmpty;
 import static com.android.testutils.MiscAsserts.assertThrows;
 import static com.android.testutils.ParcelUtils.assertParcelSane;
@@ -84,11 +85,14 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
 
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Set;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
+@ConnectivityModuleTest
 public class NetworkCapabilitiesTest {
     private static final String TEST_SSID = "TEST_SSID";
     private static final String DIFFERENT_TEST_SSID = "DIFFERENT_TEST_SSID";
@@ -342,8 +346,16 @@ public class NetworkCapabilitiesTest {
     }
 
     private void testParcelSane(NetworkCapabilities cap) {
+        // This test can be run as unit test against the latest system image, as CTS to verify
+        // an Android release that is as recent as the test, or as MTS to verify the
+        // Connectivity module. In the first two cases NetworkCapabilities will be as recent
+        // as the test. In the last case, starting from S NetworkCapabilities is updated as part
+        // of Connectivity, so it is also as recent as the test. For MTS on Q and R,
+        // NetworkCapabilities is not updatable, so it may have a different number of fields.
         if (isAtLeastS()) {
-            assertParcelSane(cap, 16);
+            // When this test is run on S+, NetworkCapabilities is as recent as the test,
+            // so this should be the most recent known number of fields.
+            assertParcelSane(cap, 17);
         } else if (isAtLeastR()) {
             assertParcelSane(cap, 15);
         } else {
@@ -709,6 +721,47 @@ public class NetworkCapabilitiesTest {
             }
             assertEquals(nc1, nc2);
         }
+    }
+
+    @Test
+    public void testUnderlyingNetworks() {
+        assumeTrue(isAtLeastT());
+        final NetworkCapabilities nc = new NetworkCapabilities();
+        final Network network1 = new Network(100);
+        final Network network2 = new Network(101);
+        final ArrayList<Network> inputNetworks = new ArrayList<>();
+        inputNetworks.add(network1);
+        inputNetworks.add(network2);
+        nc.setUnderlyingNetworks(inputNetworks);
+        final ArrayList<Network> outputNetworks = new ArrayList<>(nc.getUnderlyingNetworks());
+        assertEquals(network1, outputNetworks.get(0));
+        assertEquals(network2, outputNetworks.get(1));
+        nc.setUnderlyingNetworks(null);
+        assertNull(nc.getUnderlyingNetworks());
+    }
+
+    @Test
+    public void testEqualsForUnderlyingNetworks() {
+        assumeTrue(isAtLeastT());
+        final NetworkCapabilities nc1 = new NetworkCapabilities();
+        final NetworkCapabilities nc2 = new NetworkCapabilities();
+        assertEquals(nc1, nc2);
+        final Network network = new Network(100);
+        final ArrayList<Network> inputNetworks = new ArrayList<>();
+        final ArrayList<Network> emptyList = new ArrayList<>();
+        inputNetworks.add(network);
+        nc1.setUnderlyingNetworks(inputNetworks);
+        assertNotEquals(nc1, nc2);
+        nc2.setUnderlyingNetworks(inputNetworks);
+        assertEquals(nc1, nc2);
+        nc1.setUnderlyingNetworks(emptyList);
+        assertNotEquals(nc1, nc2);
+        nc2.setUnderlyingNetworks(emptyList);
+        assertEquals(nc1, nc2);
+        nc1.setUnderlyingNetworks(null);
+        assertNotEquals(nc1, nc2);
+        nc2.setUnderlyingNetworks(null);
+        assertEquals(nc1, nc2);
     }
 
     @Test
@@ -1109,7 +1162,7 @@ public class NetworkCapabilitiesTest {
         final TransportInfo transportInfo = new TransportInfo() {};
         final String ssid = "TEST_SSID";
         final String packageName = "com.google.test.networkcapabilities";
-        final NetworkCapabilities nc = new NetworkCapabilities.Builder()
+        final NetworkCapabilities.Builder capBuilder = new NetworkCapabilities.Builder()
                 .addTransportType(TRANSPORT_WIFI)
                 .addTransportType(TRANSPORT_CELLULAR)
                 .removeTransportType(TRANSPORT_CELLULAR)
@@ -1125,8 +1178,14 @@ public class NetworkCapabilitiesTest {
                 .setSignalStrength(signalStrength)
                 .setSsid(ssid)
                 .setRequestorUid(requestUid)
-                .setRequestorPackageName(packageName)
-                .build();
+                .setRequestorPackageName(packageName);
+        final Network network1 = new Network(100);
+        final Network network2 = new Network(101);
+        final List<Network> inputNetworks = List.of(network1, network2);
+        if (isAtLeastT()) {
+            capBuilder.setUnderlyingNetworks(inputNetworks);
+        }
+        final NetworkCapabilities nc = capBuilder.build();
         assertEquals(1, nc.getTransportTypes().length);
         assertEquals(TRANSPORT_WIFI, nc.getTransportTypes()[0]);
         assertTrue(nc.hasCapability(NET_CAPABILITY_EIMS));
@@ -1144,6 +1203,11 @@ public class NetworkCapabilitiesTest {
         assertEquals(ssid, nc.getSsid());
         assertEquals(requestUid, nc.getRequestorUid());
         assertEquals(packageName, nc.getRequestorPackageName());
+        if (isAtLeastT()) {
+            final List<Network> outputNetworks = nc.getUnderlyingNetworks();
+            assertEquals(network1, outputNetworks.get(0));
+            assertEquals(network2, outputNetworks.get(1));
+        }
         // Cannot assign null into NetworkCapabilities.Builder
         try {
             final NetworkCapabilities.Builder builder = new NetworkCapabilities.Builder(null);
@@ -1169,12 +1233,12 @@ public class NetworkCapabilitiesTest {
         assertEquals(0, nc.getCapabilities().length);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testRestrictCapabilitiesForTestNetworkByNotOwnerWithNonRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithNonRestrictedNc(false /* isOwner */);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testRestrictCapabilitiesForTestNetworkByOwnerWithNonRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithNonRestrictedNc(true /* isOwner */);
     }
@@ -1219,12 +1283,12 @@ public class NetworkCapabilitiesTest {
         assertEquals(expectedNcBuilder.build(), nonRestrictedNc);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testRestrictCapabilitiesForTestNetworkByNotOwnerWithRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithRestrictedNc(false /* isOwner */);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testRestrictCapabilitiesForTestNetworkByOwnerWithRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithRestrictedNc(true /* isOwner */);
     }

@@ -27,7 +27,6 @@ import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.net.ConnectivityManager.NetworkCallback;
-import android.net.wifi.WifiNetworkSuggestion;
 import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -42,7 +41,10 @@ import com.android.net.module.util.NetworkCapabilitiesUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.StringJoiner;
@@ -129,6 +131,11 @@ public final class NetworkCapabilities implements Parcelable {
     // Set to true when private DNS is broken.
     private boolean mPrivateDnsBroken;
 
+    // Underlying networks, if any. VPNs and VCNs typically have underlying networks.
+    // This is an unmodifiable list and it will be returned as is in the getter.
+    @Nullable
+    private List<Network> mUnderlyingNetworks;
+
     /**
      * Uid of the app making the request.
      */
@@ -184,6 +191,7 @@ public final class NetworkCapabilities implements Parcelable {
         mRequestorUid = Process.INVALID_UID;
         mRequestorPackageName = null;
         mSubIds = new ArraySet<>();
+        mUnderlyingNetworks = null;
     }
 
     /**
@@ -213,6 +221,9 @@ public final class NetworkCapabilities implements Parcelable {
         mRequestorUid = nc.mRequestorUid;
         mRequestorPackageName = nc.mRequestorPackageName;
         mSubIds = new ArraySet<>(nc.mSubIds);
+        // mUnderlyingNetworks is an unmodifiable list if non-null, so a defensive copy is not
+        // necessary.
+        mUnderlyingNetworks = nc.mUnderlyingNetworks;
     }
 
     /**
@@ -699,6 +710,41 @@ public final class NetworkCapabilities implements Parcelable {
     }
 
     /**
+     * Set the underlying networks of this network.
+     *
+     * @param networks The underlying networks of this network.
+     *
+     * @hide
+     */
+    public void setUnderlyingNetworks(@Nullable List<Network> networks) {
+        mUnderlyingNetworks =
+                (networks == null) ? null : Collections.unmodifiableList(new ArrayList<>(networks));
+    }
+
+    /**
+     * Get the underlying networks of this network. If the caller is not system privileged, this is
+     * always redacted to null and it will be never useful to the caller.
+     *
+     * @return <li>If the list is null, this network hasn't declared underlying networks.</li>
+     *         <li>If the list is empty, this network has declared that it has no underlying
+     *         networks or it doesn't run on any of the available networks.</li>
+     *         <li>The list can contain multiple underlying networks, e.g. a VPN running over
+     *         multiple networks at the same time.</li>
+     *
+     * @hide
+     */
+    @SuppressLint("NullableCollection")
+    @Nullable
+    @SystemApi
+    public List<Network> getUnderlyingNetworks() {
+        return mUnderlyingNetworks;
+    }
+
+    private boolean equalsUnderlyingNetworks(@NonNull NetworkCapabilities nc) {
+        return Objects.equals(getUnderlyingNetworks(), nc.getUnderlyingNetworks());
+    }
+
+    /**
      * Tests for the presence of a capability on this instance.
      *
      * @param capability the capabilities to be tested for.
@@ -1145,14 +1191,14 @@ public final class NetworkCapabilities implements Parcelable {
      *
      * <p>
      * This field will only be populated for VPN and wifi network suggestor apps (i.e using
-     * {@link WifiNetworkSuggestion}), and only for the network they own.
-     * In the case of wifi network suggestors apps, this field is also location sensitive, so the
-     * app needs to hold {@link android.Manifest.permission#ACCESS_FINE_LOCATION} permission. If the
-     * app targets SDK version greater than or equal to {@link Build.VERSION_CODES#S}, then they
-     * also need to use {@link NetworkCallback#FLAG_INCLUDE_LOCATION_INFO} to get the info in their
-     * callback. If the apps targets SDK version equal to {{@link Build.VERSION_CODES#R}, this field
-     * will always be included. The app will be blamed for location access if this field is
-     * included.
+     * {@link android.net.wifi.WifiNetworkSuggestion WifiNetworkSuggestion}), and only for the
+     * network they own. In the case of wifi network suggestors apps, this field is also location
+     * sensitive, so the app needs to hold {@link android.Manifest.permission#ACCESS_FINE_LOCATION}
+     * permission. If the app targets SDK version greater than or equal to
+     * {@link Build.VERSION_CODES#S}, then they also need to use
+     * {@link NetworkCallback#FLAG_INCLUDE_LOCATION_INFO} to get the info in their callback. If the
+     * apps targets SDK version equal to {{@link Build.VERSION_CODES#R}, this field will always be
+     * included. The app will be blamed for location access if this field is included.
      * </p>
      */
     public int getOwnerUid() {
@@ -1901,7 +1947,8 @@ public final class NetworkCapabilities implements Parcelable {
                 && equalsPrivateDnsBroken(that)
                 && equalsRequestor(that)
                 && equalsAdministratorUids(that)
-                && equalsSubscriptionIds(that);
+                && equalsSubscriptionIds(that)
+                && equalsUnderlyingNetworks(that);
     }
 
     @Override
@@ -1924,7 +1971,8 @@ public final class NetworkCapabilities implements Parcelable {
                 + Objects.hashCode(mRequestorUid) * 53
                 + Objects.hashCode(mRequestorPackageName) * 59
                 + Arrays.hashCode(mAdministratorUids) * 61
-                + Objects.hashCode(mSubIds) * 67;
+                + Objects.hashCode(mSubIds) * 67
+                + Objects.hashCode(mUnderlyingNetworks) * 71;
     }
 
     @Override
@@ -1959,6 +2007,7 @@ public final class NetworkCapabilities implements Parcelable {
         dest.writeInt(mRequestorUid);
         dest.writeString(mRequestorPackageName);
         dest.writeIntArray(CollectionUtils.toIntArray(mSubIds));
+        dest.writeTypedList(mUnderlyingNetworks);
     }
 
     public static final @android.annotation.NonNull Creator<NetworkCapabilities> CREATOR =
@@ -1987,6 +2036,7 @@ public final class NetworkCapabilities implements Parcelable {
                 for (int i = 0; i < subIdInts.length; i++) {
                     netCap.mSubIds.add(subIdInts[i]);
                 }
+                netCap.setUnderlyingNetworks(in.createTypedArrayList(Network.CREATOR));
                 return netCap;
             }
             @Override
@@ -2076,6 +2126,19 @@ public final class NetworkCapabilities implements Parcelable {
 
         if (!mSubIds.isEmpty()) {
             sb.append(" SubscriptionIds: ").append(mSubIds);
+        }
+
+        sb.append(" UnderlyingNetworks: ");
+        if (mUnderlyingNetworks != null) {
+            sb.append("[");
+            final StringJoiner joiner = new StringJoiner(",");
+            for (int i = 0; i < mUnderlyingNetworks.size(); i++) {
+                joiner.add(mUnderlyingNetworks.get(i).toString());
+            }
+            sb.append(joiner.toString());
+            sb.append("]");
+        } else {
+            sb.append("Null");
         }
 
         sb.append("]");
@@ -2792,6 +2855,17 @@ public final class NetworkCapabilities implements Parcelable {
         @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
         public Builder setUids(@Nullable Set<Range<Integer>> uids) {
             mCaps.setUids(uids);
+            return this;
+        }
+
+        /**
+         * Set the underlying networks of this network.
+         *
+         * @param networks The underlying networks of this network.
+         */
+        @NonNull
+        public Builder setUnderlyingNetworks(@Nullable List<Network> networks) {
+            mCaps.setUnderlyingNetworks(networks);
             return this;
         }
 
