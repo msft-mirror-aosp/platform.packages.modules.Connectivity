@@ -80,6 +80,9 @@ java_sdk_library {
         "framework-wifi.stubs.module_lib",
         "net-utils-device-common",
     ],
+    static_libs: [
+        "modules-utils-build",
+    ],
     libs: [
         "unsupportedappusage",
     ],
@@ -109,6 +112,7 @@ java_sdk_library {
     apex_available: [
         "com.android.tethering",
     ],
+    lint: { strict_updatability_linting: true },
 }
 
 cc_library_shared {

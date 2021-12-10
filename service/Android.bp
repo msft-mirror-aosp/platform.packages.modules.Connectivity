@@ -68,7 +68,6 @@ java_library {
         "dnsresolver_aidl_interface-V9-java",
         "modules-utils-build",
         "modules-utils-shell-command-handler",
-        "modules-utils-statemachine",
         "net-utils-device-common",
         "net-utils-device-common-netlink",
         "net-utils-framework-common",
@@ -80,6 +79,7 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
+    lint: { strict_updatability_linting: true },
 }
 
 java_library {
@@ -96,6 +96,7 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
+    lint: { strict_updatability_linting: true },
 }
 
 java_library {
@@ -110,6 +111,7 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
+    lint: { strict_updatability_linting: true },
 }
 
 filegroup {
