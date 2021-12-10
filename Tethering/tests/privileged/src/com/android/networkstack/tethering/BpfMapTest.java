@@ -18,6 +18,8 @@ package com.android.networkstack.tethering;
 
 import static android.system.OsConstants.ETH_P_IPV6;
 
+import static com.android.networkstack.tethering.util.TetheringUtils.getTetheringJniLibraryName;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -31,6 +33,7 @@ import android.system.ErrnoException;
 import android.system.OsConstants;
 import android.util.ArrayMap;
 
+import com.android.net.module.util.BpfMap;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRunner;
 
@@ -47,7 +50,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RunWith(DevSdkIgnoreRunner.class)
 @IgnoreUpTo(Build.VERSION_CODES.R)
 public final class BpfMapTest {
-    // Sync from packages/modules/Connectivity/Tethering/bpf_progs/offload.c.
+    // Sync from packages/modules/Connectivity/bpf_progs/offload.c.
     private static final int TEST_MAP_SIZE = 16;
     private static final String TETHER_DOWNSTREAM6_FS_PATH =
             "/sys/fs/bpf/tethering/map_test_tether_downstream6_map";
@@ -58,7 +61,7 @@ public final class BpfMapTest {
 
     @BeforeClass
     public static void setupOnce() {
-        System.loadLibrary("tetherutilsjni");
+        System.loadLibrary(getTetheringJniLibraryName());
     }
 
     @Before

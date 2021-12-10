@@ -30,9 +30,18 @@ import static android.system.OsConstants.POLLIN;
 import static android.system.OsConstants.SOCK_DGRAM;
 import static android.test.MoreAsserts.assertNotEqual;
 
+import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
+
 import static com.android.compatibility.common.util.SystemUtil.runWithShellPermissionIdentity;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
 import android.annotation.Nullable;
+import android.app.Activity;
 import android.app.DownloadManager;
 import android.app.DownloadManager.Query;
 import android.app.DownloadManager.Request;
@@ -71,14 +80,20 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructPollfd;
-import android.test.InstrumentationTestCase;
 import android.test.MoreAsserts;
 import android.text.TextUtils;
 import android.util.Log;
 
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+
 import com.android.compatibility.common.util.BlockingBroadcastReceiver;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.testutils.TestableNetworkCallback;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
 
 import java.io.Closeable;
 import java.io.FileDescriptor;
@@ -127,7 +142,8 @@ import java.util.concurrent.TimeUnit;
  *   https://source.android.com/devices/tech/config/kernel_network_tests.html
  *
  */
-public class VpnTest extends InstrumentationTestCase {
+@RunWith(AndroidJUnit4.class)
+public class VpnTest {
 
     // These are neither public nor @TestApi.
     // TODO: add them to @TestApi.
@@ -161,17 +177,24 @@ public class VpnTest extends InstrumentationTestCase {
         return !pm.hasSystemFeature("android.hardware.type.watch");
     }
 
-    @Override
-    public void setUp() throws Exception {
-        super.setUp();
+    public final <T extends Activity> T launchActivity(String packageName, Class<T> activityClass) {
+        final Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.setClassName(packageName, activityClass.getName());
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        final T activity = (T) getInstrumentation().startActivitySync(intent);
+        getInstrumentation().waitForIdleSync();
+        return activity;
+    }
 
+    @Before
+    public void setUp() throws Exception {
         mNetwork = null;
         mCallback = null;
         storePrivateDnsSetting();
 
         mDevice = UiDevice.getInstance(getInstrumentation());
         mActivity = launchActivity(getInstrumentation().getTargetContext().getPackageName(),
-                MyActivity.class, null);
+                MyActivity.class);
         mPackageName = mActivity.getPackageName();
         mCM = (ConnectivityManager) mActivity.getSystemService(Context.CONNECTIVITY_SERVICE);
         mWifiManager = (WifiManager) mActivity.getSystemService(Context.WIFI_SERVICE);
@@ -180,7 +203,7 @@ public class VpnTest extends InstrumentationTestCase {
         mDevice.waitForIdle();
     }
 
-    @Override
+    @After
     public void tearDown() throws Exception {
         restorePrivateDnsSetting();
         mRemoteSocketFactoryClient.unbind();
@@ -190,7 +213,6 @@ public class VpnTest extends InstrumentationTestCase {
         Log.i(TAG, "Stopping VPN");
         stopVpn();
         mActivity.finish();
-        super.tearDown();
     }
 
     private void prepareVpn() throws Exception {
@@ -702,13 +724,18 @@ public class VpnTest extends InstrumentationTestCase {
         setAndVerifyPrivateDns(initialMode);
     }
 
+    @Test
     public void testDefault() throws Exception {
         if (!supportedHardware()) return;
-        // If adb TCP port opened, this test may running by adb over network.
-        // All of socket would be destroyed in this test. So this test don't
-        // support adb over network, see b/119382723.
-        if (SystemProperties.getInt("persist.adb.tcp.port", -1) > -1
-                || SystemProperties.getInt("service.adb.tcp.port", -1) > -1) {
+        if (!SdkLevel.isAtLeastS() && (
+                SystemProperties.getInt("persist.adb.tcp.port", -1) > -1
+                        || SystemProperties.getInt("service.adb.tcp.port", -1) > -1)) {
+            // If adb TCP port opened, this test may running by adb over network.
+            // All of socket would be destroyed in this test. So this test don't
+            // support adb over network, see b/119382723.
+            // This is fixed in S, but still affects previous Android versions,
+            // and this test must be backwards compatible.
+            // TODO: Delete this code entirely when R is no longer supported.
             Log.i(TAG, "adb is running over the network, so skip this test");
             return;
         }
@@ -762,6 +789,15 @@ public class VpnTest extends InstrumentationTestCase {
         maybeExpectVpnTransportInfo(vpnNetwork);
         assertEquals(TYPE_VPN, mCM.getNetworkInfo(vpnNetwork).getType());
 
+        if (SdkLevel.isAtLeastT()) {
+            runWithShellPermissionIdentity(() -> {
+                final NetworkCapabilities nc = mCM.getNetworkCapabilities(vpnNetwork);
+                assertNotNull(nc);
+                assertNotNull(nc.getUnderlyingNetworks());
+                assertEquals(defaultNetwork, new ArrayList<>(nc.getUnderlyingNetworks()).get(0));
+            }, NETWORK_SETTINGS);
+        }
+
         if (SdkLevel.isAtLeastS()) {
             // Check that system default network callback has not seen any network changes, even
             // though the app's default network changed. Also check that otherUidCallback saw no
@@ -781,6 +817,7 @@ public class VpnTest extends InstrumentationTestCase {
         receiver.unregisterQuietly();
     }
 
+    @Test
     public void testAppAllowed() throws Exception {
         if (!supportedHardware()) return;
 
@@ -801,6 +838,7 @@ public class VpnTest extends InstrumentationTestCase {
         checkStrictModePrivateDns();
     }
 
+    @Test
     public void testAppDisallowed() throws Exception {
         if (!supportedHardware()) return;
 
@@ -808,11 +846,16 @@ public class VpnTest extends InstrumentationTestCase {
         FileDescriptor remoteFd = openSocketFdInOtherApp(TEST_HOST, 80, TIMEOUT_MS);
 
         String disallowedApps = mRemoteSocketFactoryClient.getPackageName() + "," + mPackageName;
-        // If adb TCP port opened, this test may running by adb over TCP.
-        // Add com.android.shell appllication into blacklist to exclude adb socket for VPN test,
-        // see b/119382723.
-        // Note: The test don't support running adb over network for root device
-        disallowedApps = disallowedApps + ",com.android.shell";
+        if (!SdkLevel.isAtLeastS()) {
+            // If adb TCP port opened, this test may running by adb over TCP.
+            // Add com.android.shell application into disallowedApps to exclude adb socket for VPN
+            // test, see b/119382723 (the test doesn't support adb over TCP when adb runs as root).
+            //
+            // This is fixed in S, but still affects previous Android versions,
+            // and this test must be backwards compatible.
+            // TODO: Delete this code entirely when R is no longer supported.
+            disallowedApps = disallowedApps + ",com.android.shell";
+        }
         Log.i(TAG, "Append shell app to disallowedApps: " + disallowedApps);
         startVpn(new String[] {"192.0.2.2/32", "2001:db8:1:2::ffe/128"},
                  new String[] {"192.0.2.0/24", "2001:db8::/32"},
@@ -829,6 +872,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertFalse(nc.hasTransport(TRANSPORT_VPN));
     }
 
+    @Test
     public void testGetConnectionOwnerUidSecurity() throws Exception {
         if (!supportedHardware()) return;
 
@@ -850,6 +894,7 @@ public class VpnTest extends InstrumentationTestCase {
         }
     }
 
+    @Test
     public void testSetProxy() throws  Exception {
         if (!supportedHardware()) return;
         ProxyInfo initialProxy = mCM.getDefaultProxy();
@@ -889,15 +934,22 @@ public class VpnTest extends InstrumentationTestCase {
         assertDefaultProxy(initialProxy);
     }
 
+    @Test
     public void testSetProxyDisallowedApps() throws Exception {
         if (!supportedHardware()) return;
         ProxyInfo initialProxy = mCM.getDefaultProxy();
 
-        // If adb TCP port opened, this test may running by adb over TCP.
-        // Add com.android.shell appllication into blacklist to exclude adb socket for VPN test,
-        // see b/119382723.
-        // Note: The test don't support running adb over network for root device
-        String disallowedApps = mPackageName + ",com.android.shell";
+        String disallowedApps = mPackageName;
+        if (!SdkLevel.isAtLeastS()) {
+            // If adb TCP port opened, this test may running by adb over TCP.
+            // Add com.android.shell application into disallowedApps to exclude adb socket for VPN
+            // test, see b/119382723 (the test doesn't support adb over TCP when adb runs as root).
+            //
+            // This is fixed in S, but still affects previous Android versions,
+            // and this test must be backwards compatible.
+            // TODO: Delete this code entirely when R is no longer supported.
+            disallowedApps += ",com.android.shell";
+        }
         ProxyInfo testProxyInfo = ProxyInfo.buildDirectProxy("10.0.0.1", 8888);
         startVpn(new String[] {"192.0.2.2/32", "2001:db8:1:2::ffe/128"},
                 new String[] {"0.0.0.0/0", "::/0"}, "", disallowedApps,
@@ -908,6 +960,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertDefaultProxy(initialProxy);
     }
 
+    @Test
     public void testNoProxy() throws Exception {
         if (!supportedHardware()) return;
         ProxyInfo initialProxy = mCM.getDefaultProxy();
@@ -942,6 +995,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertNetworkHasExpectedProxy(initialProxy, mCM.getActiveNetwork());
     }
 
+    @Test
     public void testBindToNetworkWithProxy() throws Exception {
         if (!supportedHardware()) return;
         String allowedApps = mPackageName;
@@ -966,6 +1020,7 @@ public class VpnTest extends InstrumentationTestCase {
         assertDefaultProxy(initialProxy);
     }
 
+    @Test
     public void testVpnMeterednessWithNoUnderlyingNetwork() throws Exception {
         if (!supportedHardware()) {
             return;
@@ -986,8 +1041,18 @@ public class VpnTest extends InstrumentationTestCase {
         assertTrue(mCM.isActiveNetworkMetered());
 
         maybeExpectVpnTransportInfo(mCM.getActiveNetwork());
+
+        if (SdkLevel.isAtLeastT()) {
+            runWithShellPermissionIdentity(() -> {
+                final NetworkCapabilities nc = mCM.getNetworkCapabilities(mNetwork);
+                assertNotNull(nc);
+                assertNotNull(nc.getUnderlyingNetworks());
+                assertEquals(underlyingNetworks, new ArrayList<>(nc.getUnderlyingNetworks()));
+            }, NETWORK_SETTINGS);
+        }
     }
 
+    @Test
     public void testVpnMeterednessWithNullUnderlyingNetwork() throws Exception {
         if (!supportedHardware()) {
             return;
@@ -1016,6 +1081,7 @@ public class VpnTest extends InstrumentationTestCase {
         maybeExpectVpnTransportInfo(mCM.getActiveNetwork());
     }
 
+    @Test
     public void testVpnMeterednessWithNonNullUnderlyingNetwork() throws Exception {
         if (!supportedHardware()) {
             return;
@@ -1043,8 +1109,21 @@ public class VpnTest extends InstrumentationTestCase {
         assertEquals(isNetworkMetered(mNetwork), mCM.isActiveNetworkMetered());
 
         maybeExpectVpnTransportInfo(mCM.getActiveNetwork());
+
+        if (SdkLevel.isAtLeastT()) {
+            final Network vpnNetwork = mCM.getActiveNetwork();
+            assertNotEqual(underlyingNetwork, vpnNetwork);
+            runWithShellPermissionIdentity(() -> {
+                final NetworkCapabilities nc = mCM.getNetworkCapabilities(vpnNetwork);
+                assertNotNull(nc);
+                assertNotNull(nc.getUnderlyingNetworks());
+                final List<Network> underlying = nc.getUnderlyingNetworks();
+                assertEquals(underlyingNetwork, underlying.get(0));
+            }, NETWORK_SETTINGS);
+        }
     }
 
+    @Test
     public void testAlwaysMeteredVpnWithNullUnderlyingNetwork() throws Exception {
         if (!supportedHardware()) {
             return;
@@ -1071,6 +1150,7 @@ public class VpnTest extends InstrumentationTestCase {
         maybeExpectVpnTransportInfo(mCM.getActiveNetwork());
     }
 
+    @Test
     public void testAlwaysMeteredVpnWithNonNullUnderlyingNetwork() throws Exception {
         if (!supportedHardware()) {
             return;
@@ -1096,8 +1176,21 @@ public class VpnTest extends InstrumentationTestCase {
         assertTrue(mCM.isActiveNetworkMetered());
 
         maybeExpectVpnTransportInfo(mCM.getActiveNetwork());
+
+        if (SdkLevel.isAtLeastT()) {
+            final Network vpnNetwork = mCM.getActiveNetwork();
+            assertNotEqual(underlyingNetwork, vpnNetwork);
+            runWithShellPermissionIdentity(() -> {
+                final NetworkCapabilities nc = mCM.getNetworkCapabilities(vpnNetwork);
+                assertNotNull(nc);
+                assertNotNull(nc.getUnderlyingNetworks());
+                final List<Network> underlying = nc.getUnderlyingNetworks();
+                assertEquals(underlyingNetwork, underlying.get(0));
+            }, NETWORK_SETTINGS);
+        }
     }
 
+    @Test
     public void testB141603906() throws Exception {
         if (!supportedHardware()) {
             return;
@@ -1176,7 +1269,7 @@ public class VpnTest extends InstrumentationTestCase {
         private boolean received;
 
         public ProxyChangeBroadcastReceiver() {
-            super(VpnTest.this.getInstrumentation().getContext(), Proxy.PROXY_CHANGE_ACTION);
+            super(getInstrumentation().getContext(), Proxy.PROXY_CHANGE_ACTION);
             received = false;
         }
 
@@ -1196,6 +1289,7 @@ public class VpnTest extends InstrumentationTestCase {
      * allowed list.
      * See b/165774987.
      */
+    @Test
     public void testDownloadWithDownloadManagerDisallowed() throws Exception {
         if (!supportedHardware()) return;
 
@@ -1205,7 +1299,7 @@ public class VpnTest extends InstrumentationTestCase {
                 "" /* allowedApps */, "com.android.providers.downloads", null /* proxyInfo */,
                 null /* underlyingNetworks */, false /* isAlwaysMetered */);
 
-        final Context context = VpnTest.this.getInstrumentation().getContext();
+        final Context context = getInstrumentation().getContext();
         final DownloadManager dm = context.getSystemService(DownloadManager.class);
         final DownloadCompleteReceiver receiver = new DownloadCompleteReceiver();
         try {

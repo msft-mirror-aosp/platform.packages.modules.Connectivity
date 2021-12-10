@@ -32,6 +32,7 @@ import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
 import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
+import static com.android.networkstack.tethering.util.TetheringUtils.getTetheringJniLibraryName;
 
 import android.app.usage.NetworkStatsManager;
 import android.net.INetd;
@@ -45,7 +46,6 @@ import android.net.ip.IpServer;
 import android.net.netstats.provider.NetworkStatsProvider;
 import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
-import android.net.util.TetheringUtils.ForwardedStats;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.system.ErrnoException;
@@ -61,12 +61,15 @@ import androidx.annotation.Nullable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.BpfMap;
+import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.NetworkStackConstants;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.netlink.ConntrackMessage;
 import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkSocket;
 import com.android.networkstack.tethering.apishim.common.BpfCoordinatorShim;
+import com.android.networkstack.tethering.util.TetheringUtils.ForwardedStats;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -97,7 +100,7 @@ public class BpfCoordinator {
     // TetherService, but for tests it needs to be either loaded here or loaded by every test.
     // TODO: is there a better way?
     static {
-        System.loadLibrary("tetherutilsjni");
+        System.loadLibrary(getTetheringJniLibraryName());
     }
 
     private static final String TAG = BpfCoordinator.class.getSimpleName();
@@ -133,6 +136,7 @@ public class BpfCoordinator {
 
     // List of TCP port numbers which aren't offloaded because the packets require the netfilter
     // conntrack helper. See also TetherController::setForwardRules in netd.
+    @VisibleForTesting
     static final short [] NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS = new short [] {
             21 /* ftp */, 1723 /* pptp */};
 
@@ -1561,17 +1565,14 @@ public class BpfCoordinator {
                     0 /* lastUsed, filled by bpf prog only */);
         }
 
-        private boolean requireOffload(ConntrackEvent e) {
+        private boolean allowOffload(ConntrackEvent e) {
             if (e.tupleOrig.protoNum != OsConstants.IPPROTO_TCP) return true;
-
-            for (final short port : NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS) {
-                if (port == e.tupleOrig.dstPort) return false;
-            }
-            return true;
+            return !CollectionUtils.contains(
+                    NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS, e.tupleOrig.dstPort);
         }
 
         public void accept(ConntrackEvent e) {
-            if (!requireOffload(e)) return;
+            if (!allowOffload(e)) return;
 
             final ClientInfo tetherClient = getClientInfo(e.tupleOrig.srcIp);
             if (tetherClient == null) return;
