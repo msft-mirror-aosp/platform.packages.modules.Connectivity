@@ -66,7 +66,7 @@ android_test {
     min_sdk_version: "30",
     // TODO: change to 31 as soon as it is available
     target_sdk_version: "30",
-    test_suites: ["general-tests", "mts"],
+    test_suites: ["general-tests", "mts-tethering"],
     defaults: [
         "framework-connectivity-test-defaults",
         "FrameworksNetTests-jni-defaults",
@@ -89,7 +89,7 @@ android_test {
         "libstaticjvmtiagent",
         // For NetworkStackUtils included in NetworkStackBase
         "libnetworkstackutilsjni",
-        "libtetherutilsjni",
+        "libcom_android_networkstack_tethering_util_jni",
         // For framework tests
         "libservice-connectivity",
     ],

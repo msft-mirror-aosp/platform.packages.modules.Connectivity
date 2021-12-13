@@ -60,6 +60,7 @@ java_defaults {
     // uncomment when b/13249961 is fixed
     // sdk_version: "current",
     platform_apis: true,
+    required: ["ConnectivityChecker"],
 }
 
 // Networking CTS tests for development and release. These tests always target the platform SDK
@@ -68,7 +69,7 @@ java_defaults {
 // devices.
 android_test {
     name: "CtsNetTestCases",
-    defaults: ["CtsNetTestCasesDefaults"],
+    defaults: ["CtsNetTestCasesDefaults", "NetworkStackNextEnableDefaults"],
     // TODO: CTS should not depend on the entirety of the networkstack code.
     static_libs: [
         "NetworkStackApiCurrentLib",
