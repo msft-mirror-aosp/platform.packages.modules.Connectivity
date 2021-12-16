@@ -787,18 +787,6 @@ public final class NetworkCapabilities implements Parcelable {
         }
     }
 
-    private void combineNetCapabilities(@NonNull NetworkCapabilities nc) {
-        final long wantedCaps = this.mNetworkCapabilities | nc.mNetworkCapabilities;
-        final long forbiddenCaps =
-                this.mForbiddenNetworkCapabilities | nc.mForbiddenNetworkCapabilities;
-        if ((wantedCaps & forbiddenCaps) != 0) {
-            throw new IllegalArgumentException(
-                    "Cannot have the same capability in wanted and forbidden lists.");
-        }
-        this.mNetworkCapabilities = wantedCaps;
-        this.mForbiddenNetworkCapabilities = forbiddenCaps;
-    }
-
     /**
      * Convenience function that returns a human-readable description of the first mutable
      * capability we find. Used to present an error message to apps that request mutable
@@ -1109,10 +1097,6 @@ public final class NetworkCapabilities implements Parcelable {
         return mTransportTypes == (1 << transportType);
     }
 
-    private void combineTransportTypes(NetworkCapabilities nc) {
-        this.mTransportTypes |= nc.mTransportTypes;
-    }
-
     private boolean satisfiedByTransportTypes(NetworkCapabilities nc) {
         return ((this.mTransportTypes == 0)
                 || ((this.mTransportTypes & nc.mTransportTypes) != 0));
@@ -1293,26 +1277,6 @@ public final class NetworkCapabilities implements Parcelable {
     }
 
     /**
-     * Combine the administrator UIDs of the capabilities.
-     *
-     * <p>This is only legal if either of the administrators lists are empty, or if they are equal.
-     * Combining administrator UIDs is only possible for combining non-overlapping sets of UIDs.
-     *
-     * <p>If both administrator lists are non-empty but not equal, they conflict with each other. In
-     * this case, it would not make sense to add them together.
-     */
-    private void combineAdministratorUids(@NonNull final NetworkCapabilities nc) {
-        if (nc.mAdministratorUids.length == 0) return;
-        if (mAdministratorUids.length == 0) {
-            mAdministratorUids = Arrays.copyOf(nc.mAdministratorUids, nc.mAdministratorUids.length);
-            return;
-        }
-        if (!equalsAdministratorUids(nc)) {
-            throw new IllegalStateException("Can't combine two different administrator UID lists");
-        }
-    }
-
-    /**
      * Value indicating that link bandwidth is unspecified.
      * @hide
      */
@@ -1374,12 +1338,6 @@ public final class NetworkCapabilities implements Parcelable {
         return mLinkDownBandwidthKbps;
     }
 
-    private void combineLinkBandwidths(NetworkCapabilities nc) {
-        this.mLinkUpBandwidthKbps =
-                Math.max(this.mLinkUpBandwidthKbps, nc.mLinkUpBandwidthKbps);
-        this.mLinkDownBandwidthKbps =
-                Math.max(this.mLinkDownBandwidthKbps, nc.mLinkDownBandwidthKbps);
-    }
     private boolean satisfiedByLinkBandwidths(NetworkCapabilities nc) {
         return !(this.mLinkUpBandwidthKbps > nc.mLinkUpBandwidthKbps
                 || this.mLinkDownBandwidthKbps > nc.mLinkDownBandwidthKbps);
@@ -1466,13 +1424,6 @@ public final class NetworkCapabilities implements Parcelable {
         return mTransportInfo;
     }
 
-    private void combineSpecifiers(NetworkCapabilities nc) {
-        if (mNetworkSpecifier != null && !mNetworkSpecifier.equals(nc.mNetworkSpecifier)) {
-            throw new IllegalStateException("Can't combine two networkSpecifiers");
-        }
-        setNetworkSpecifier(nc.mNetworkSpecifier);
-    }
-
     private boolean satisfiedBySpecifier(NetworkCapabilities nc) {
         return mNetworkSpecifier == null || mNetworkSpecifier.canBeSatisfiedBy(nc.mNetworkSpecifier)
                 || nc.mNetworkSpecifier instanceof MatchAllNetworkSpecifier;
@@ -1480,13 +1431,6 @@ public final class NetworkCapabilities implements Parcelable {
 
     private boolean equalsSpecifier(NetworkCapabilities nc) {
         return Objects.equals(mNetworkSpecifier, nc.mNetworkSpecifier);
-    }
-
-    private void combineTransportInfos(NetworkCapabilities nc) {
-        if (mTransportInfo != null && !mTransportInfo.equals(nc.mTransportInfo)) {
-            throw new IllegalStateException("Can't combine two TransportInfos");
-        }
-        setTransportInfo(nc.mTransportInfo);
     }
 
     private boolean equalsTransportInfo(NetworkCapabilities nc) {
@@ -1541,10 +1485,6 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public int getSignalStrength() {
         return mSignalStrength;
-    }
-
-    private void combineSignalStrength(NetworkCapabilities nc) {
-        this.mSignalStrength = Math.max(this.mSignalStrength, nc.mSignalStrength);
     }
 
     private boolean satisfiedBySignalStrength(NetworkCapabilities nc) {
@@ -1652,28 +1592,6 @@ public final class NetworkCapabilities implements Parcelable {
     }
 
     /**
-     * Compare if the given NetworkCapabilities have the same UIDs.
-     *
-     * @hide
-     */
-    public static boolean hasSameUids(@Nullable NetworkCapabilities nc1,
-            @Nullable NetworkCapabilities nc2) {
-        final Set<UidRange> uids1 = (nc1 == null) ? null : nc1.mUids;
-        final Set<UidRange> uids2 = (nc2 == null) ? null : nc2.mUids;
-        if (null == uids1) return null == uids2;
-        if (null == uids2) return false;
-        // Make a copy so it can be mutated to check that all ranges in uids2 also are in uids.
-        final Set<UidRange> uids = new ArraySet<>(uids2);
-        for (UidRange range : uids1) {
-            if (!uids.contains(range)) {
-                return false;
-            }
-            uids.remove(range);
-        }
-        return uids.isEmpty();
-    }
-
-    /**
      * Tests if the set of UIDs that this network applies to is the same as the passed network.
      * <p>
      * This test only checks whether equal range objects are in both sets. It will
@@ -1683,13 +1601,13 @@ public final class NetworkCapabilities implements Parcelable {
      * Note that this method is not very optimized, which is fine as long as it's not used very
      * often.
      * <p>
-     * nc is assumed nonnull.
+     * nc is assumed nonnull, else NPE.
      *
      * @hide
      */
     @VisibleForTesting
     public boolean equalsUids(@NonNull NetworkCapabilities nc) {
-        return hasSameUids(nc, this);
+        return UidRange.hasSameUids(nc.mUids, mUids);
     }
 
     /**
@@ -1729,7 +1647,7 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     @VisibleForTesting
-    public boolean appliesToUidRange(@Nullable UidRange requiredRange) {
+    public boolean appliesToUidRange(@NonNull UidRange requiredRange) {
         if (null == mUids) return true;
         for (UidRange uidRange : mUids) {
             if (uidRange.containsRange(requiredRange)) {
@@ -1738,20 +1656,6 @@ public final class NetworkCapabilities implements Parcelable {
         }
         return false;
     }
-
-    /**
-     * Combine the UIDs this network currently applies to with the UIDs the passed
-     * NetworkCapabilities apply to.
-     * nc is assumed nonnull.
-     */
-    private void combineUids(@NonNull NetworkCapabilities nc) {
-        if (null == nc.mUids || null == mUids) {
-            mUids = null;
-            return;
-        }
-        mUids.addAll(nc.mUids);
-    }
-
 
     /**
      * The SSID of the network, or null if not applicable or unknown.
@@ -1793,42 +1697,6 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public boolean satisfiedBySSID(@NonNull NetworkCapabilities nc) {
         return mSSID == null || mSSID.equals(nc.mSSID);
-    }
-
-    /**
-     * Combine SSIDs of the capabilities.
-     * <p>
-     * This is only legal if either the SSID of this object is null, or both SSIDs are
-     * equal.
-     * @hide
-     */
-    private void combineSSIDs(@NonNull NetworkCapabilities nc) {
-        if (mSSID != null && !mSSID.equals(nc.mSSID)) {
-            throw new IllegalStateException("Can't combine two SSIDs");
-        }
-        setSSID(nc.mSSID);
-    }
-
-    /**
-     * Combine a set of Capabilities to this one.  Useful for coming up with the complete set.
-     * <p>
-     * Note that this method may break an invariant of having a particular capability in either
-     * wanted or forbidden lists but never in both.  Requests that have the same capability in
-     * both lists will never be satisfied.
-     * @hide
-     */
-    public void combineCapabilities(@NonNull NetworkCapabilities nc) {
-        combineNetCapabilities(nc);
-        combineTransportTypes(nc);
-        combineLinkBandwidths(nc);
-        combineSpecifiers(nc);
-        combineTransportInfos(nc);
-        combineSignalStrength(nc);
-        combineUids(nc);
-        combineSSIDs(nc);
-        combineRequestor(nc);
-        combineAdministratorUids(nc);
-        combineSubscriptionIds(nc);
     }
 
     /**
@@ -2406,25 +2274,6 @@ public final class NetworkCapabilities implements Parcelable {
         return TextUtils.equals(mRequestorPackageName, nc.mRequestorPackageName);
     }
 
-    /**
-     * Combine requestor info of the capabilities.
-     * <p>
-     * This is only legal if either the requestor info of this object is reset, or both info are
-     * equal.
-     * nc is assumed nonnull.
-     */
-    private void combineRequestor(@NonNull NetworkCapabilities nc) {
-        if (mRequestorUid != Process.INVALID_UID && mRequestorUid != nc.mOwnerUid) {
-            throw new IllegalStateException("Can't combine two uids");
-        }
-        if (mRequestorPackageName != null
-                && !mRequestorPackageName.equals(nc.mRequestorPackageName)) {
-            throw new IllegalStateException("Can't combine two package names");
-        }
-        setRequestorUid(nc.mRequestorUid);
-        setRequestorPackageName(nc.mRequestorPackageName);
-    }
-
     private boolean equalsRequestor(NetworkCapabilities nc) {
         return mRequestorUid == nc.mRequestorUid
                 && TextUtils.equals(mRequestorPackageName, nc.mRequestorPackageName);
@@ -2481,20 +2330,6 @@ public final class NetworkCapabilities implements Parcelable {
             if (mSubIds.contains(subId)) return true;
         }
         return false;
-    }
-
-    /**
-     * Combine subscription ID set of the capabilities.
-     *
-     * <p>This is only legal if the subscription Ids are equal.
-     *
-     * <p>If both subscription IDs are not equal, they belong to different subscription
-     * (or no subscription). In this case, it would not make sense to add them together.
-     */
-    private void combineSubscriptionIds(@NonNull NetworkCapabilities nc) {
-        if (!Objects.equals(mSubIds, nc.mSubIds)) {
-            throw new IllegalStateException("Can't combine two subscription ID sets");
-        }
     }
 
     /**
