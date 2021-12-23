@@ -274,6 +274,7 @@ public final class NetworkCapabilities implements Parcelable {
             NET_CAPABILITY_VSIM,
             NET_CAPABILITY_BIP,
             NET_CAPABILITY_HEAD_UNIT,
+            NET_CAPABILITY_MMTEL,
     })
     public @interface NetCapability { }
 
@@ -512,8 +513,13 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public static final int NET_CAPABILITY_HEAD_UNIT = 32;
 
+    /**
+     * Indicates that this network has ability to support MMTEL (Multimedia Telephony service).
+     */
+    public static final int NET_CAPABILITY_MMTEL = 33;
+
     private static final int MIN_NET_CAPABILITY = NET_CAPABILITY_MMS;
-    private static final int MAX_NET_CAPABILITY = NET_CAPABILITY_HEAD_UNIT;
+    private static final int MAX_NET_CAPABILITY = NET_CAPABILITY_MMTEL;
 
     /**
      * Network capabilities that are expected to be mutable, i.e., can change while a particular
@@ -1592,28 +1598,6 @@ public final class NetworkCapabilities implements Parcelable {
     }
 
     /**
-     * Compare if the given NetworkCapabilities have the same UIDs.
-     *
-     * @hide
-     */
-    public static boolean hasSameUids(@Nullable NetworkCapabilities nc1,
-            @Nullable NetworkCapabilities nc2) {
-        final Set<UidRange> uids1 = (nc1 == null) ? null : nc1.mUids;
-        final Set<UidRange> uids2 = (nc2 == null) ? null : nc2.mUids;
-        if (null == uids1) return null == uids2;
-        if (null == uids2) return false;
-        // Make a copy so it can be mutated to check that all ranges in uids2 also are in uids.
-        final Set<UidRange> uids = new ArraySet<>(uids2);
-        for (UidRange range : uids1) {
-            if (!uids.contains(range)) {
-                return false;
-            }
-            uids.remove(range);
-        }
-        return uids.isEmpty();
-    }
-
-    /**
      * Tests if the set of UIDs that this network applies to is the same as the passed network.
      * <p>
      * This test only checks whether equal range objects are in both sets. It will
@@ -1623,13 +1607,13 @@ public final class NetworkCapabilities implements Parcelable {
      * Note that this method is not very optimized, which is fine as long as it's not used very
      * often.
      * <p>
-     * nc is assumed nonnull.
+     * nc is assumed nonnull, else NPE.
      *
      * @hide
      */
     @VisibleForTesting
     public boolean equalsUids(@NonNull NetworkCapabilities nc) {
-        return hasSameUids(nc, this);
+        return UidRange.hasSameUids(nc.mUids, mUids);
     }
 
     /**
@@ -2112,6 +2096,7 @@ public final class NetworkCapabilities implements Parcelable {
             case NET_CAPABILITY_VSIM:                 return "VSIM";
             case NET_CAPABILITY_BIP:                  return "BIP";
             case NET_CAPABILITY_HEAD_UNIT:            return "HEAD_UNIT";
+            case NET_CAPABILITY_MMTEL:                return "MMTEL";
             default:                                  return Integer.toString(capability);
         }
     }
