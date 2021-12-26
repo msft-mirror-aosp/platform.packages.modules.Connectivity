@@ -44,12 +44,15 @@ apex {
     bootclasspath_fragments: [
         "com.android.tethering-bootclasspath-fragment",
     ],
-    java_libs: [
-        "service-connectivity",
+    systemserverclasspath_fragments: [
+        "com.android.tethering-systemserverclasspath-fragment",
     ],
     multilib: {
         first: {
-            jni_libs: ["libservice-connectivity"],
+            jni_libs: [
+                "libservice-connectivity",
+                "libcom_android_connectivity_com_android_net_module_util_jni"
+            ],
         },
         both: {
             jni_libs: ["libframework-connectivity-jni"],
@@ -112,6 +115,12 @@ bootclasspath_fragment {
         max_target_o_low_priority: ["hiddenapi/hiddenapi-max-target-o-low-priority.txt"],
         unsupported: ["hiddenapi/hiddenapi-unsupported.txt"],
     },
+}
+
+systemserverclasspath_fragment {
+    name: "com.android.tethering-systemserverclasspath-fragment",
+    standalone_contents: ["service-connectivity"],
+    apex_available: ["com.android.tethering"],
 }
 
 override_apex {
