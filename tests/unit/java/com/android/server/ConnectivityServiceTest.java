@@ -38,7 +38,6 @@ import static android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED;
 import static android.content.pm.PackageManager.FEATURE_WIFI;
 import static android.content.pm.PackageManager.FEATURE_WIFI_DIRECT;
 import static android.content.pm.PackageManager.GET_PERMISSIONS;
-import static android.content.pm.PackageManager.MATCH_ANY_USER;
 import static android.content.pm.PackageManager.PERMISSION_DENIED;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.ACTION_CAPTIVE_PORTAL_SIGN_IN;
@@ -82,6 +81,7 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_IA;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_IMS;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_MMS;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_MMTEL;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED;
@@ -2006,7 +2006,7 @@ public class ConnectivityServiceTest {
                 buildPackageInfo(/* SYSTEM */ false, APP1_UID),
                 buildPackageInfo(/* SYSTEM */ false, APP2_UID),
                 buildPackageInfo(/* SYSTEM */ false, VPN_UID)
-        })).when(mPackageManager).getInstalledPackages(eq(GET_PERMISSIONS | MATCH_ANY_USER));
+        })).when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS), anyInt());
 
         // Create a fake always-on VPN package.
         final int userId = UserHandle.getCallingUserId();
@@ -3334,7 +3334,7 @@ public class ConnectivityServiceTest {
     private void grantUsingBackgroundNetworksPermissionForUid(
             final int uid, final String packageName) throws Exception {
         doReturn(buildPackageInfo(true /* hasSystemPermission */, uid)).when(mPackageManager)
-                .getPackageInfo(eq(packageName), eq(GET_PERMISSIONS | MATCH_ANY_USER));
+                .getPackageInfo(eq(packageName), eq(GET_PERMISSIONS));
         mService.mPermissionMonitor.onPackageAdded(packageName, uid);
     }
 
@@ -3587,7 +3587,7 @@ public class ConnectivityServiceTest {
                 || capability == NET_CAPABILITY_IA || capability == NET_CAPABILITY_IMS
                 || capability == NET_CAPABILITY_RCS || capability == NET_CAPABILITY_XCAP
                 || capability == NET_CAPABILITY_VSIM || capability == NET_CAPABILITY_BIP
-                || capability == NET_CAPABILITY_ENTERPRISE) {
+                || capability == NET_CAPABILITY_ENTERPRISE || capability == NET_CAPABILITY_MMTEL) {
             assertFalse(nc.hasCapability(NET_CAPABILITY_NOT_RESTRICTED));
         } else {
             assertTrue(nc.hasCapability(NET_CAPABILITY_NOT_RESTRICTED));
@@ -3715,6 +3715,7 @@ public class ConnectivityServiceTest {
         tryNetworkFactoryRequests(NET_CAPABILITY_WIFI_P2P);
         tryNetworkFactoryRequests(NET_CAPABILITY_IA);
         tryNetworkFactoryRequests(NET_CAPABILITY_RCS);
+        tryNetworkFactoryRequests(NET_CAPABILITY_MMTEL);
         tryNetworkFactoryRequests(NET_CAPABILITY_XCAP);
         tryNetworkFactoryRequests(NET_CAPABILITY_ENTERPRISE);
         tryNetworkFactoryRequests(NET_CAPABILITY_EIMS);
@@ -14665,5 +14666,12 @@ public class ConnectivityServiceTest {
         assertNoCallbacks(mProfileDefaultNetworkCallback, mTestPackageDefaultNetworkCallback);
         mDefaultNetworkCallback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
         mDefaultNetworkCallback.expectAvailableCallbacksValidated(mCellNetworkAgent);
+    }
+
+    @Test
+    public void testRequestRouteToHostAddress_PackageDoesNotBelongToCaller() {
+        assertThrows(SecurityException.class, () -> mService.requestRouteToHostAddress(
+                ConnectivityManager.TYPE_NONE, null /* hostAddress */, "com.not.package.owner",
+                null /* callingAttributionTag */));
     }
 }

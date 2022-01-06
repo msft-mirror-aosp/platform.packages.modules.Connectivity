@@ -98,6 +98,7 @@ import static java.util.Map.Entry;
 import android.Manifest;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.TargetApi;
 import android.app.AppOpsManager;
 import android.app.BroadcastOptions;
 import android.app.PendingIntent;
@@ -853,6 +854,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mTypeLists = new ArrayList[ConnectivityManager.MAX_NETWORK_TYPE + 1];
         }
 
+        // TODO: Set the mini sdk to 31 and remove @TargetApi annotation when b/205923322 is
+        //  addressed.
+        @TargetApi(Build.VERSION_CODES.S)
         public void loadSupportedTypes(@NonNull Context ctx, @NonNull TelephonyManager tm) {
             final PackageManager pm = ctx.getPackageManager();
             if (pm.hasSystemFeature(FEATURE_WIFI)) {
@@ -2356,6 +2360,26 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return false;
     }
 
+    private int getAppUid(final String app, final UserHandle user) {
+        final PackageManager pm =
+                mContext.createContextAsUser(user, 0 /* flags */).getPackageManager();
+        final long token = Binder.clearCallingIdentity();
+        try {
+            return pm.getPackageUid(app, 0 /* flags */);
+        } catch (PackageManager.NameNotFoundException e) {
+            return -1;
+        } finally {
+            Binder.restoreCallingIdentity(token);
+        }
+    }
+
+    private void verifyCallingUidAndPackage(String packageName, int callingUid) {
+        final UserHandle user = UserHandle.getUserHandleForUid(callingUid);
+        if (getAppUid(packageName, user) != callingUid) {
+            throw new SecurityException(packageName + " does not belong to uid " + callingUid);
+        }
+    }
+
     /**
      * Ensure that a network route exists to deliver traffic to the specified
      * host via the specified network interface.
@@ -2371,6 +2395,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (disallowedBecauseSystemCaller()) {
             return false;
         }
+        verifyCallingUidAndPackage(callingPackageName, mDeps.getCallingUid());
         enforceChangePermission(callingPackageName, callingAttributionTag);
         if (mProtectedNetworks.contains(networkType)) {
             enforceConnectivityRestrictedNetworksPermission();
@@ -2760,6 +2785,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         sendStickyBroadcast(makeGeneralIntent(info, bcastType));
     }
 
+    // TODO: Set the mini sdk to 31 and remove @TargetApi annotation when b/205923322 is addressed.
+    @TargetApi(Build.VERSION_CODES.S)
     private void sendStickyBroadcast(Intent intent) {
         synchronized (this) {
             if (!mSystemReady
@@ -6109,6 +6136,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    // TODO: Set the mini sdk to 31 and remove @TargetApi annotation when b/205923322 is addressed.
+    @TargetApi(Build.VERSION_CODES.S)
     private boolean isTargetSdkAtleast(int version, int callingUid,
             @NonNull String callingPackageName) {
         final UserHandle user = UserHandle.getUserHandleForUid(callingUid);
@@ -7676,7 +7705,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // changed.
         // TODO: Try to track the default network that apps use and only send a proxy broadcast when
         //  that happens to prevent false alarms.
-        if (nai.isVPN() && nai.everConnected && !NetworkCapabilities.hasSameUids(prevNc, newNc)
+        final Set<UidRange> prevUids = prevNc == null ? null : prevNc.getUidRanges();
+        final Set<UidRange> newUids = newNc == null ? null : newNc.getUidRanges();
+        if (nai.isVPN() && nai.everConnected && !UidRange.hasSameUids(prevUids, newUids)
                 && (nai.linkProperties.getHttpProxy() != null || isProxySetOnAnyDefaultNetwork())) {
             mProxyTracker.sendProxyBroadcast();
         }
@@ -10204,12 +10235,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceAutomotiveDevice() {
-        final boolean isAutomotiveDevice =
-                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE);
-        if (!isAutomotiveDevice) {
-            throw new UnsupportedOperationException(
-                    "setOemNetworkPreference() is only available on automotive devices.");
-        }
+        PermissionUtils.enforceSystemFeature(mContext, PackageManager.FEATURE_AUTOMOTIVE,
+                "setOemNetworkPreference() is only available on automotive devices.");
     }
 
     /**

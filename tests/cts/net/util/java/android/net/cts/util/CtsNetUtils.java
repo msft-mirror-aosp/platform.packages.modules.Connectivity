@@ -380,6 +380,12 @@ public final class CtsNetUtils {
         return mCellNetworkCallback != null;
     }
 
+    public void tearDown() {
+        if (cellConnectAttempted()) {
+            disconnectFromCell();
+        }
+    }
+
     private NetworkRequest makeWifiNetworkRequest() {
         return new NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -476,6 +482,7 @@ public final class CtsNetUtils {
         NetworkCallback callback = new NetworkCallback() {
             @Override
             public void onLinkPropertiesChanged(Network n, LinkProperties lp) {
+                Log.i(TAG, "Link properties of network " + n + " changed to " + lp);
                 if (requiresValidatedServer && lp.getValidatedPrivateDnsServers().isEmpty()) {
                     return;
                 }

@@ -18,20 +18,41 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// Defaults to enable/disable java targets which uses development APIs. "enabled" may have a
+// different value depending on the branch.
+java_defaults {
+    name: "ConnectivityNextEnableDefaults",
+    enabled: true,
+}
+apex_defaults {
+    name: "ConnectivityApexDefaults",
+    // Tethering app to include in the AOSP apex. Branches that disable the "next" targets may use
+    // a stable tethering app instead, but will generally override the AOSP apex to use updatable
+    // package names and keys, so that apex will be unused anyway.
+    apps: ["TetheringNext"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
+}
+// This is a placeholder comment to avoid merge conflicts
+// as the above target may have different "enabled" values
+// depending on the branch
+
 apex {
     name: "com.android.tethering",
+    defaults: ["ConnectivityApexDefaults"],
     compile_multilib: "both",
     updatable: true,
     min_sdk_version: "30",
     bootclasspath_fragments: [
         "com.android.tethering-bootclasspath-fragment",
     ],
-    java_libs: [
-        "service-connectivity",
+    systemserverclasspath_fragments: [
+        "com.android.tethering-systemserverclasspath-fragment",
     ],
     multilib: {
         first: {
-            jni_libs: ["libservice-connectivity"],
+            jni_libs: [
+                "libservice-connectivity",
+                "libcom_android_connectivity_com_android_net_module_util_jni"
+            ],
         },
         both: {
             jni_libs: ["libframework-connectivity-jni"],
@@ -43,7 +64,6 @@ apex {
     ],
     apps: [
         "ServiceConnectivityResources",
-        "TetheringNext",
     ],
     prebuilts: ["current_sdkinfo"],
     manifest: "manifest.json",
@@ -95,6 +115,12 @@ bootclasspath_fragment {
         max_target_o_low_priority: ["hiddenapi/hiddenapi-max-target-o-low-priority.txt"],
         unsupported: ["hiddenapi/hiddenapi-unsupported.txt"],
     },
+}
+
+systemserverclasspath_fragment {
+    name: "com.android.tethering-systemserverclasspath-fragment",
+    standalone_contents: ["service-connectivity"],
+    apex_available: ["com.android.tethering"],
 }
 
 override_apex {
