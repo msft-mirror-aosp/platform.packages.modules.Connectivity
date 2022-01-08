@@ -7705,7 +7705,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // changed.
         // TODO: Try to track the default network that apps use and only send a proxy broadcast when
         //  that happens to prevent false alarms.
-        if (nai.isVPN() && nai.everConnected && !NetworkCapabilities.hasSameUids(prevNc, newNc)
+        final Set<UidRange> prevUids = prevNc == null ? null : prevNc.getUidRanges();
+        final Set<UidRange> newUids = newNc == null ? null : newNc.getUidRanges();
+        if (nai.isVPN() && nai.everConnected && !UidRange.hasSameUids(prevUids, newUids)
                 && (nai.linkProperties.getHttpProxy() != null || isProxySetOnAnyDefaultNetwork())) {
             mProxyTracker.sendProxyBroadcast();
         }
@@ -10233,12 +10235,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceAutomotiveDevice() {
-        final boolean isAutomotiveDevice =
-                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE);
-        if (!isAutomotiveDevice) {
-            throw new UnsupportedOperationException(
-                    "setOemNetworkPreference() is only available on automotive devices.");
-        }
+        PermissionUtils.enforceSystemFeature(mContext, PackageManager.FEATURE_AUTOMOTIVE,
+                "setOemNetworkPreference() is only available on automotive devices.");
     }
 
     /**
