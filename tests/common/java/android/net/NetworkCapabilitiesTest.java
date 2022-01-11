@@ -22,6 +22,12 @@ import static android.net.NetworkCapabilities.MIN_TRANSPORT;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_CBS;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_EIMS;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_3;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_4;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_5;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_FOREGROUND;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_MMS;
@@ -285,18 +291,10 @@ public class NetworkCapabilitiesTest {
             assertFalse(netCap2.satisfiedByUids(netCap));
             assertFalse(netCap.appliesToUid(650));
             assertTrue(netCap2.appliesToUid(650));
-            netCap.combineCapabilities(netCap2);
+            netCap.setUids(uids);
             assertTrue(netCap2.satisfiedByUids(netCap));
             assertTrue(netCap.appliesToUid(650));
             assertFalse(netCap.appliesToUid(500));
-
-            assertTrue(new NetworkCapabilities().satisfiedByUids(netCap));
-            netCap.combineCapabilities(new NetworkCapabilities());
-            assertTrue(netCap.appliesToUid(500));
-            assertTrue(netCap.appliesToUidRange(new UidRange(1, 100000)));
-            assertFalse(netCap2.appliesToUid(500));
-            assertFalse(netCap2.appliesToUidRange(new UidRange(1, 100000)));
-            assertTrue(new NetworkCapabilities().satisfiedByUids(netCap));
 
             // Null uids satisfies everything.
             netCap.setUids(null);
@@ -355,7 +353,7 @@ public class NetworkCapabilitiesTest {
         if (isAtLeastS()) {
             // When this test is run on S+, NetworkCapabilities is as recent as the test,
             // so this should be the most recent known number of fields.
-            assertParcelSane(cap, 17);
+            assertParcelSane(cap, 18);
         } else if (isAtLeastR()) {
             assertParcelSane(cap, 15);
         } else {
@@ -590,103 +588,6 @@ public class NetworkCapabilitiesTest {
     }
 
     @Test
-    public void testCombineCapabilities() {
-        NetworkCapabilities nc1 = new NetworkCapabilities();
-        NetworkCapabilities nc2 = new NetworkCapabilities();
-
-        if (isAtLeastS()) {
-            nc1.addForbiddenCapability(NET_CAPABILITY_CAPTIVE_PORTAL);
-        }
-        nc1.addCapability(NET_CAPABILITY_NOT_ROAMING);
-        assertNotEquals(nc1, nc2);
-        nc2.combineCapabilities(nc1);
-        assertEquals(nc1, nc2);
-        assertTrue(nc2.hasCapability(NET_CAPABILITY_NOT_ROAMING));
-        if (isAtLeastS()) {
-            assertTrue(nc2.hasForbiddenCapability(NET_CAPABILITY_CAPTIVE_PORTAL));
-        }
-
-        if (isAtLeastS()) {
-            // This will effectively move NOT_ROAMING capability from required to forbidden for nc1.
-            nc1.addForbiddenCapability(NET_CAPABILITY_NOT_ROAMING);
-            // It is not allowed to have the same capability in both wanted and forbidden list.
-            assertThrows(IllegalArgumentException.class, () -> nc2.combineCapabilities(nc1));
-            // Remove forbidden capability to continue other tests.
-            nc1.removeForbiddenCapability(NET_CAPABILITY_NOT_ROAMING);
-        }
-
-        nc1.setSSID(TEST_SSID);
-        nc2.combineCapabilities(nc1);
-        if (isAtLeastR()) {
-            assertTrue(TEST_SSID.equals(nc2.getSsid()));
-        }
-
-        // Because they now have the same SSID, the following call should not throw
-        nc2.combineCapabilities(nc1);
-
-        nc1.setSSID(DIFFERENT_TEST_SSID);
-        try {
-            nc2.combineCapabilities(nc1);
-            fail("Expected IllegalStateException: can't combine different SSIDs");
-        } catch (IllegalStateException expected) {}
-        nc1.setSSID(TEST_SSID);
-
-        if (isAtLeastS()) {
-            nc1.setUids(uidRanges(10, 13));
-            assertNotEquals(nc1, nc2);
-            nc2.combineCapabilities(nc1);  // Everything + 10~13 is still everything.
-            assertNotEquals(nc1, nc2);
-            nc1.combineCapabilities(nc2);  // 10~13 + everything is everything.
-            assertEquals(nc1, nc2);
-            nc1.setUids(uidRanges(10, 13));
-            nc2.setUids(uidRanges(20, 23));
-            assertNotEquals(nc1, nc2);
-            nc1.combineCapabilities(nc2);
-            assertTrue(nc1.appliesToUid(12));
-            assertFalse(nc2.appliesToUid(12));
-            assertTrue(nc1.appliesToUid(22));
-            assertTrue(nc2.appliesToUid(22));
-
-            // Verify the subscription id list can be combined only when they are equal.
-            nc1.setSubscriptionIds(Set.of(TEST_SUBID1, TEST_SUBID2));
-            nc2.setSubscriptionIds(Set.of(TEST_SUBID2));
-            assertThrows(IllegalStateException.class, () -> nc2.combineCapabilities(nc1));
-
-            nc2.setSubscriptionIds(Set.of());
-            assertThrows(IllegalStateException.class, () -> nc2.combineCapabilities(nc1));
-
-            nc2.setSubscriptionIds(Set.of(TEST_SUBID2, TEST_SUBID1));
-            nc2.combineCapabilities(nc1);
-            assertEquals(Set.of(TEST_SUBID2, TEST_SUBID1), nc2.getSubscriptionIds());
-        }
-    }
-
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
-    public void testCombineCapabilities_AdministratorUids() {
-        final NetworkCapabilities nc1 = new NetworkCapabilities();
-        final NetworkCapabilities nc2 = new NetworkCapabilities();
-
-        final int[] adminUids = {3, 6, 12};
-        nc1.setAdministratorUids(adminUids);
-        nc2.combineCapabilities(nc1);
-        assertTrue(nc2.equalsAdministratorUids(nc1));
-        assertArrayEquals(nc2.getAdministratorUids(), adminUids);
-
-        final int[] adminUidsOtherOrder = {3, 12, 6};
-        nc1.setAdministratorUids(adminUidsOtherOrder);
-        assertTrue(nc2.equalsAdministratorUids(nc1));
-
-        final int[] adminUids2 = {11, 1, 12, 3, 6};
-        nc1.setAdministratorUids(adminUids2);
-        assertFalse(nc2.equalsAdministratorUids(nc1));
-        assertFalse(Arrays.equals(nc2.getAdministratorUids(), adminUids2));
-        try {
-            nc2.combineCapabilities(nc1);
-            fail("Shouldn't be able to combine different lists of admin UIDs");
-        } catch (IllegalStateException expected) { }
-    }
-
-    @Test
     public void testSetCapabilities() {
         final int[] REQUIRED_CAPABILITIES = new int[] {
                 NET_CAPABILITY_INTERNET, NET_CAPABILITY_NOT_VPN };
@@ -802,29 +703,6 @@ public class NetworkCapabilitiesTest {
     }
 
     @Test
-    public void testCombineTransportInfo() {
-        NetworkCapabilities nc1 = new NetworkCapabilities();
-        nc1.setTransportInfo(new TestTransportInfo());
-
-        NetworkCapabilities nc2 = new NetworkCapabilities();
-        // new TransportInfo so that object is not #equals to nc1's TransportInfo (that's where
-        // combine fails)
-        nc2.setTransportInfo(new TestTransportInfo());
-
-        try {
-            nc1.combineCapabilities(nc2);
-            fail("Should not be able to combine NetworkCabilities which contain TransportInfos");
-        } catch (IllegalStateException expected) {
-            // empty
-        }
-
-        // verify that can combine with identical TransportInfo objects
-        NetworkCapabilities nc3 = new NetworkCapabilities();
-        nc3.setTransportInfo(nc1.getTransportInfo());
-        nc1.combineCapabilities(nc3);
-    }
-
-    @Test
     public void testSet() {
         NetworkCapabilities nc1 = new NetworkCapabilities();
         NetworkCapabilities nc2 = new NetworkCapabilities();
@@ -923,6 +801,87 @@ public class NetworkCapabilitiesTest {
             fail("Must have a single transport type. Without transport type or multiple transport"
                     + " types is invalid.");
         } catch (IllegalStateException expected) { }
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.S)
+    public void testEnterpriseCapabilitySubLevel() {
+        final NetworkCapabilities nc1 = new NetworkCapabilities.Builder()
+                .addCapability(NET_CAPABILITY_ENTERPRISE)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .build();
+        assertEquals(1, nc1.getEnterpriseCapabilitySubLevels().length);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1,
+                nc1.getEnterpriseCapabilitySubLevels()[0]);
+        final NetworkCapabilities nc2 = new NetworkCapabilities.Builder()
+                .addCapability(NET_CAPABILITY_ENTERPRISE)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2)
+                .build();
+        assertEquals(2, nc2.getEnterpriseCapabilitySubLevels().length);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1,
+                nc2.getEnterpriseCapabilitySubLevels()[0]);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2,
+                nc2.getEnterpriseCapabilitySubLevels()[1]);
+        final NetworkCapabilities nc3 = new NetworkCapabilities.Builder()
+                .addCapability(NET_CAPABILITY_ENTERPRISE)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_3)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_4)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_5)
+                .build();
+        assertEquals(5, nc3.getEnterpriseCapabilitySubLevels().length);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1,
+                nc3.getEnterpriseCapabilitySubLevels()[0]);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2,
+                nc3.getEnterpriseCapabilitySubLevels()[1]);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_3,
+                nc3.getEnterpriseCapabilitySubLevels()[2]);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_4,
+                nc3.getEnterpriseCapabilitySubLevels()[3]);
+        assertEquals(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_5,
+                nc3.getEnterpriseCapabilitySubLevels()[4]);
+
+        final Class<IllegalArgumentException> illegalArgumentExceptionClass =
+                IllegalArgumentException.class;
+        assertThrows(illegalArgumentExceptionClass, () -> new NetworkCapabilities.Builder()
+                .addEnterpriseCapabilitySubLevel(6)
+                .build());
+        assertThrows(illegalArgumentExceptionClass, () -> new NetworkCapabilities.Builder()
+                .removeEnterpriseCapabilitySubLevel(6)
+                .build());
+
+        final Class<IllegalStateException> illegalStateException =
+                IllegalStateException.class;
+        assertThrows(illegalStateException, () -> new NetworkCapabilities.Builder()
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .build());
+
+        final NetworkCapabilities nc4 = new NetworkCapabilities.Builder()
+                .addCapability(NET_CAPABILITY_ENTERPRISE)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2)
+                .removeEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .removeEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2)
+                .build();
+        assertEquals(0, nc4.getEnterpriseCapabilitySubLevels().length);
+
+        final NetworkCapabilities nc5 = new NetworkCapabilities.Builder()
+                .addCapability(NET_CAPABILITY_CBS)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .addEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2)
+                .removeEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1)
+                .removeEnterpriseCapabilitySubLevel(NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2)
+                .build();
+
+        assertTrue(nc4.satisfiedByNetworkCapabilities(nc1));
+        assertFalse(nc1.satisfiedByNetworkCapabilities(nc4));
+
+        assertFalse(nc3.satisfiedByNetworkCapabilities(nc2));
+        assertTrue(nc2.satisfiedByNetworkCapabilities(nc3));
+
+        assertFalse(nc1.satisfiedByNetworkCapabilities(nc5));
+        assertFalse(nc5.satisfiedByNetworkCapabilities(nc1));
     }
 
     @Test
