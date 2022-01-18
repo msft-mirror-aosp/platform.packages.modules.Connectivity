@@ -64,8 +64,7 @@ android_test {
     name: "ConnectivityCoverageTests",
     // Tethering started on SDK 30
     min_sdk_version: "30",
-    // TODO: change to 31 as soon as it is available
-    target_sdk_version: "30",
+    target_sdk_version: "31",
     test_suites: ["general-tests", "mts-tethering"],
     defaults: [
         "framework-connectivity-test-defaults",
@@ -115,6 +114,7 @@ java_defaults {
         // meaning @hide APIs in framework-connectivity are resolved before @SystemApi
         // stubs in framework
         "framework-connectivity.impl",
+        "framework-connectivity-tiramisu.impl",
         "framework-tethering.impl",
         "framework",
 

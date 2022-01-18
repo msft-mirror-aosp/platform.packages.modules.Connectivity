@@ -19,6 +19,33 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// The library name match the service-connectivity jarjar rules that put the JNI utils in the
+// com.android.connectivity.com.android.net.module.util package.
+cc_library_shared {
+    name: "libcom_android_connectivity_com_android_net_module_util_jni",
+    min_sdk_version: "30",
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wno-unused-parameter",
+        "-Wthread-safety",
+    ],
+    srcs: [
+        "jni/com_android_net_module_util/onload.cpp",
+    ],
+    stl: "libc++_static",
+    static_libs: [
+        "libnet_utils_device_common_bpfjni",
+    ],
+    shared_libs: [
+        "liblog",
+        "libnativehelper",
+    ],
+    apex_available: [
+        "com.android.tethering",
+    ],
+}
+
 cc_library_shared {
     name: "libservice-connectivity",
     min_sdk_version: "30",
@@ -68,8 +95,8 @@ java_library {
         "dnsresolver_aidl_interface-V9-java",
         "modules-utils-build",
         "modules-utils-shell-command-handler",
-        "modules-utils-statemachine",
         "net-utils-device-common",
+        "net-utils-device-common-bpf",
         "net-utils-device-common-netlink",
         "net-utils-framework-common",
         "netd-client",
@@ -79,6 +106,11 @@ java_library {
     ],
     apex_available: [
         "com.android.tethering",
+    ],
+    lint: { strict_updatability_linting: true },
+    visibility: [
+        "//packages/modules/Connectivity/service-t",
+        "//packages/modules/Connectivity/tests:__subpackages__",
     ],
 }
 
@@ -96,6 +128,7 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
+    lint: { strict_updatability_linting: true },
 }
 
 java_library {
@@ -103,13 +136,19 @@ java_library {
     sdk_version: "system_server_current",
     min_sdk_version: "30",
     installable: true,
+    // This library combines system server jars that have access to different bootclasspath jars.
+    // Lower SDK service jars must not depend on higher SDK jars as that would let them
+    // transitively depend on the wrong bootclasspath jars. Sources also cannot be added here as
+    // they would transitively depend on bootclasspath jars that may not be available.
     static_libs: [
         "service-connectivity-pre-jarjar",
+        "service-connectivity-tiramisu-pre-jarjar",
     ],
     jarjar_rules: "jarjar-rules.txt",
     apex_available: [
         "com.android.tethering",
     ],
+    lint: { strict_updatability_linting: true },
 }
 
 filegroup {

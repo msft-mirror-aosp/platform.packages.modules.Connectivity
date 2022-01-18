@@ -25,7 +25,7 @@ java_defaults {
         "ld-android",
         "libbase",
         "libbinder",
-        "libbpf",
+        "libbpf_bcc",
         "libbpf_android",
         "libc++",
         "libcgrouprc",
@@ -69,8 +69,7 @@ filegroup {
         "java/android/net/IpSecTransformTest.java",
         "java/android/net/KeepalivePacketDataUtilTest.java",
         "java/android/net/NetworkIdentityTest.kt",
-        "java/android/net/NetworkStatsTest.java",
-        "java/android/net/NetworkStatsHistoryTest.java",
+        "java/android/net/NetworkStats*.java",
         "java/android/net/NetworkTemplateTest.kt",
         "java/android/net/TelephonyNetworkSpecifierTest.java",
         "java/android/net/VpnManagerTest.java",
@@ -91,6 +90,17 @@ filegroup {
         "java/com/android/server/net/ipmemorystore/*.java",
         "java/com/android/server/net/NetworkStats*.java",
     ]
+}
+
+// Subset of services-core used to by ConnectivityService tests to test VPN realistically.
+// This is stripped by jarjar (see rules below) from other unrelated classes, so tests do not
+// include most classes from services-core, which are unrelated and cause wrong code coverage
+// calculations.
+java_library {
+    name: "services.core-vpn",
+    static_libs: ["services.core"],
+    jarjar_rules: "vpn-jarjar-rules.txt",
+    visibility: ["//visibility:private"],
 }
 
 android_library {
@@ -116,11 +126,12 @@ android_library {
         "framework-protos",
         "mockito-target-minus-junit4",
         "net-tests-utils",
+        "net-utils-services-common",
         "platform-compat-test-rules",
         "platform-test-annotations",
         "service-connectivity-pre-jarjar",
-        "services.core",
-        "services.net",
+        "service-connectivity-tiramisu-pre-jarjar",
+        "services.core-vpn",
     ],
     libs: [
         "android.net.ipsec.ike.stubs.module_lib",
@@ -144,6 +155,8 @@ android_test {
     srcs: [":non-connectivity-module-test"],
     test_suites: ["device-tests"],
     static_libs: [
+        "services.core",
+        "services.net",
         "FrameworksNetTestsLib",
     ],
     libs: [

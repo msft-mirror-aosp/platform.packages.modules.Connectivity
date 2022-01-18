@@ -66,6 +66,7 @@ java_sdk_library {
         ":net-utils-framework-common-srcs",
     ],
     aidl: {
+        generate_get_transaction_name: true,
         include_dirs: [
             // Include directories for parcelables that are part of the stable API, and need a
             // one-line "parcelable X" .aidl declaration to be used in AIDL interfaces.
@@ -93,6 +94,7 @@ java_sdk_library {
         // In preparation for future move
         "//packages/modules/Connectivity/apex",
         "//packages/modules/Connectivity/service",
+        "//packages/modules/Connectivity/service-t",
         "//frameworks/base/packages/Connectivity/service",
         "//frameworks/base",
 
@@ -112,6 +114,7 @@ java_sdk_library {
     apex_available: [
         "com.android.tethering",
     ],
+    lint: { strict_updatability_linting: true },
 }
 
 cc_library_shared {
