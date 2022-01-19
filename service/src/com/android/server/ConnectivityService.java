@@ -5674,7 +5674,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mPermissionMonitor.onUserRemoved(user);
         // If there was a network preference for this user, remove it.
         handleSetProfileNetworkPreference(
-                List.of(new ProfileNetworkPreferenceList.Preference(user, null)),
+                List.of(new ProfileNetworkPreferenceList.Preference(user, null, true)),
                 null /* listener */);
         if (mOemNetworkPreferences.getNetworkPreferences().size() > 0) {
             handleSetOemNetworkPreference(mOemNetworkPreferences, null);
@@ -10139,12 +10139,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         final List<ProfileNetworkPreferenceList.Preference> preferenceList =
                 new ArrayList<ProfileNetworkPreferenceList.Preference>();
+        boolean allowFallback = true;
         for (final ProfileNetworkPreference preference : preferences) {
             final NetworkCapabilities nc;
             switch (preference.getPreference()) {
                 case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_DEFAULT:
                     nc = null;
                     break;
+                case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK:
+                    allowFallback = false;
+                    // continue to process the enterprise preference.
                 case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE:
                     final UidRange uids = UidRange.createForUser(profile);
                     nc = createDefaultNetworkCapabilitiesForUidRange(uids);
@@ -10155,8 +10159,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     throw new IllegalArgumentException(
                             "Invalid preference in setProfileNetworkPreferences");
             }
-            preferenceList.add(
-                    new ProfileNetworkPreferenceList.Preference(profile, nc));
+            preferenceList.add(new ProfileNetworkPreferenceList.Preference(
+                    profile, nc, allowFallback));
         }
         mHandler.sendMessage(mHandler.obtainMessage(EVENT_SET_PROFILE_NETWORK_PREFERENCE,
                 new Pair<>(preferenceList, listener)));
@@ -10172,17 +10176,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
             @NonNull final ProfileNetworkPreferenceList prefs) {
         final ArraySet<NetworkRequestInfo> result = new ArraySet<>();
         for (final ProfileNetworkPreferenceList.Preference pref : prefs.preferences) {
-            // The NRI for a user should be comprised of two layers:
-            // - The request for the capabilities
-            // - The request for the default network, for fallback. Create an image of it to
-            //   have the correct UIDs in it (also a request can only be part of one NRI, because
-            //   of lookups in 1:1 associations like mNetworkRequests).
-            // Note that denying a fallback can be implemented simply by not adding the second
-            // request.
+            // The NRI for a user should contain the request for capabilities.
+            // If fallback to default network is needed then NRI should include
+            // the request for the default network. Create an image of it to
+            // have the correct UIDs in it (also a request can only be part of one NRI, because
+            // of lookups in 1:1 associations like mNetworkRequests).
             final ArrayList<NetworkRequest> nrs = new ArrayList<>();
             nrs.add(createNetworkRequest(NetworkRequest.Type.REQUEST, pref.capabilities));
-            nrs.add(createDefaultInternetRequestForTransport(
-                    TYPE_NONE, NetworkRequest.Type.TRACK_DEFAULT));
+            if (pref.allowFallback) {
+                nrs.add(createDefaultInternetRequestForTransport(
+                        TYPE_NONE, NetworkRequest.Type.TRACK_DEFAULT));
+            }
             setNetworkRequestUids(nrs, UidRange.fromIntRanges(pref.capabilities.getUids()));
             final NetworkRequestInfo nri = new NetworkRequestInfo(Process.myUid(), nrs,
                     PREFERENCE_ORDER_PROFILE);
@@ -10606,6 +10610,66 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 mNetd.bandwidthRemoveNaughtyApp(uid);
             }
+        } catch (RemoteException | ServiceSpecificException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
+    public void updateFirewallRule(final int chain, final int uid, final boolean allow) {
+        enforceNetworkStackOrSettingsPermission();
+
+        try {
+            mNetd.firewallSetUidRule(chain, uid,
+                    allow ? INetd.FIREWALL_RULE_ALLOW : INetd.FIREWALL_RULE_DENY);
+        } catch (RemoteException | ServiceSpecificException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
+    public void setFirewallChainEnabled(final int chain, final boolean enable) {
+        enforceNetworkStackOrSettingsPermission();
+
+        try {
+            mNetd.firewallEnableChildChain(chain, enable);
+        } catch (RemoteException | ServiceSpecificException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
+    public void replaceFirewallChain(final int chain, final int[] uids) {
+        enforceNetworkStackOrSettingsPermission();
+
+        try {
+            switch (chain) {
+                case ConnectivityManager.FIREWALL_CHAIN_DOZABLE:
+                    mNetd.firewallReplaceUidChain("fw_dozable", true /* isAllowList */, uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_STANDBY:
+                    mNetd.firewallReplaceUidChain("fw_standby", false /* isAllowList */, uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_POWERSAVE:
+                    mNetd.firewallReplaceUidChain("fw_powersave", true /* isAllowList */, uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_RESTRICTED:
+                    mNetd.firewallReplaceUidChain("fw_restricted", true /* isAllowList */, uids);
+                    break;
+                default:
+                    throw new IllegalArgumentException("replaceFirewallChain with invalid chain: "
+                            + chain);
+            }
+        } catch (RemoteException | ServiceSpecificException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Override
+    public void swapActiveStatsMap() {
+        enforceNetworkStackOrSettingsPermission();
+        try {
+            mNetd.trafficSwapActiveStatsMap();
         } catch (RemoteException | ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
