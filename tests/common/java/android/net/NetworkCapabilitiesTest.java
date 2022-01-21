@@ -57,9 +57,9 @@ import static android.os.Process.INVALID_UID;
 import static com.android.modules.utils.build.SdkLevel.isAtLeastR;
 import static com.android.modules.utils.build.SdkLevel.isAtLeastS;
 import static com.android.modules.utils.build.SdkLevel.isAtLeastT;
+import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 import static com.android.testutils.MiscAsserts.assertEmpty;
 import static com.android.testutils.MiscAsserts.assertThrows;
-import static com.android.testutils.ParcelUtils.assertParcelSane;
 import static com.android.testutils.ParcelUtils.assertParcelingIsLossless;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -344,21 +344,7 @@ public class NetworkCapabilitiesTest {
     }
 
     private void testParcelSane(NetworkCapabilities cap) {
-        // This test can be run as unit test against the latest system image, as CTS to verify
-        // an Android release that is as recent as the test, or as MTS to verify the
-        // Connectivity module. In the first two cases NetworkCapabilities will be as recent
-        // as the test. In the last case, starting from S NetworkCapabilities is updated as part
-        // of Connectivity, so it is also as recent as the test. For MTS on Q and R,
-        // NetworkCapabilities is not updatable, so it may have a different number of fields.
-        if (isAtLeastS()) {
-            // When this test is run on S+, NetworkCapabilities is as recent as the test,
-            // so this should be the most recent known number of fields.
-            assertParcelSane(cap, 18);
-        } else if (isAtLeastR()) {
-            assertParcelSane(cap, 15);
-        } else {
-            assertParcelSane(cap, 11);
-        }
+        assertParcelingIsLossless(cap);
     }
 
     private static NetworkCapabilities createNetworkCapabilitiesWithTransportInfo() {
@@ -803,7 +789,7 @@ public class NetworkCapabilitiesTest {
         } catch (IllegalStateException expected) { }
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.S)
+    @Test @IgnoreUpTo(SC_V2) // TODO: Use to Build.VERSION_CODES.SC_V2 when available
     public void testEnterpriseCapabilitySubLevel() {
         final NetworkCapabilities nc1 = new NetworkCapabilities.Builder()
                 .addCapability(NET_CAPABILITY_ENTERPRISE)
