@@ -61,7 +61,10 @@ apex {
     binaries: [
         "clatd",
     ],
+    canned_fs_config: "canned_fs_config",
     bpfs: [
+        "clatd.o_mainline",
+        "netd.o_mainline",
         "offload.o",
         "test.o",
     ],
@@ -94,6 +97,7 @@ bootclasspath_fragment {
     name: "com.android.tethering-bootclasspath-fragment",
     contents: [
         "framework-connectivity",
+        "framework-connectivity-tiramisu",
         "framework-tethering",
     ],
     apex_available: ["com.android.tethering"],
@@ -115,7 +119,13 @@ bootclasspath_fragment {
     // Additional hidden API flag files to override the defaults. This must only be
     // modified by the Soong or platform compat team.
     hidden_api: {
-        max_target_o_low_priority: ["hiddenapi/hiddenapi-max-target-o-low-priority.txt"],
+        max_target_r_low_priority: [
+            "hiddenapi/hiddenapi-max-target-r-loprio.txt",
+	],
+        max_target_o_low_priority: [
+            "hiddenapi/hiddenapi-max-target-o-low-priority.txt",
+            "hiddenapi/hiddenapi-max-target-o-low-priority-tiramisu.txt",
+	],
         unsupported: ["hiddenapi/hiddenapi-unsupported.txt"],
     },
 }

@@ -43,6 +43,7 @@ cc_library_headers {
         // calls to JNI in libservices.core.
         "//frameworks/base/services/core/jni",
         "//packages/modules/Connectivity/Tethering",
+        "//packages/modules/Connectivity/service/native",
         "//packages/modules/Connectivity/tests/unit/jni",
         // TODO: remove system/netd/* when all BPF code is moved out of Netd.
         "//system/netd/libnetdbpf",
@@ -70,4 +71,30 @@ bpf {
         "-Wall",
         "-Werror",
     ],
+}
+
+bpf {
+    name: "clatd.o_mainline",
+    srcs: ["clatd.c"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+    include_dirs: [
+        "frameworks/libs/net/common/netd/libnetdutils/include",
+    ],
+    sub_dir: "net_shared",
+}
+
+bpf {
+    name: "netd.o_mainline",
+    srcs: ["netd.c"],
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+    include_dirs: [
+        "frameworks/libs/net/common/netd/libnetdutils/include",
+    ],
+    sub_dir: "net_shared",
 }
