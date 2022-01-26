@@ -13,24 +13,39 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#define LOG_TAG "jniClatCoordinator"
 
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/if_tun.h>
 #include <linux/ioctl.h>
+#include <log/log.h>
 #include <nativehelper/JNIHelp.h>
 #include <net/if.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <string>
 
 #include <netjniutils/netjniutils.h>
 
+#include "libclat/bpfhelper.h"
 #include "libclat/clatutils.h"
 #include "nativehelper/scoped_utf_chars.h"
 
 // Sync from system/netd/include/netid_client.h
 #define MARK_UNSET 0u
 
+// Sync from system/netd/server/NetdConstants.h
+#define __INT_STRLEN(i) sizeof(#i)
+#define _INT_STRLEN(i) __INT_STRLEN(i)
+#define INT32_STRLEN _INT_STRLEN(INT32_MIN)
+
+#define DEVICEPREFIX "v4-"
+
 namespace android {
+static const char* kClatdPath = "/apex/com.android.tethering/bin/for-system/clatd";
+
 static void throwIOException(JNIEnv* env, const char* msg, int error) {
     jniThrowExceptionFmt(env, "java/io/IOException", "%s: %s", msg, strerror(error));
 }
@@ -237,6 +252,242 @@ static void com_android_server_connectivity_ClatCoordinator_configurePacketSocke
     }
 }
 
+int initTracker(const std::string& iface, const std::string& pfx96, const std::string& v4,
+        const std::string& v6, net::clat::ClatdTracker* output) {
+    strlcpy(output->iface, iface.c_str(), sizeof(output->iface));
+    output->ifIndex = if_nametoindex(iface.c_str());
+    if (output->ifIndex == 0) {
+        ALOGE("interface %s not found", output->iface);
+        return -1;
+    }
+
+    unsigned len = snprintf(output->v4iface, sizeof(output->v4iface),
+            "%s%s", DEVICEPREFIX, iface.c_str());
+    if (len >= sizeof(output->v4iface)) {
+        ALOGE("interface name too long '%s'", output->v4iface);
+        return -1;
+    }
+
+    output->v4ifIndex = if_nametoindex(output->v4iface);
+    if (output->v4ifIndex == 0) {
+        ALOGE("v4-interface %s not found", output->v4iface);
+        return -1;
+    }
+
+    if (!inet_pton(AF_INET6, pfx96.c_str(), &output->pfx96)) {
+        ALOGE("invalid IPv6 address specified for plat prefix: %s", pfx96.c_str());
+        return -1;
+    }
+
+    if (!inet_pton(AF_INET, v4.c_str(), &output->v4)) {
+        ALOGE("Invalid IPv4 address %s", v4.c_str());
+        return -1;
+    }
+
+    if (!inet_pton(AF_INET6, v6.c_str(), &output->v6)) {
+        ALOGE("Invalid source address %s", v6.c_str());
+        return -1;
+    }
+
+    return 0;
+}
+
+static jint com_android_server_connectivity_ClatCoordinator_startClatd(
+        JNIEnv* env, jobject clazz, jobject tunJavaFd, jobject readSockJavaFd,
+        jobject writeSockJavaFd, jstring iface, jstring pfx96, jstring v4, jstring v6) {
+    ScopedUtfChars ifaceStr(env, iface);
+    ScopedUtfChars pfx96Str(env, pfx96);
+    ScopedUtfChars v4Str(env, v4);
+    ScopedUtfChars v6Str(env, v6);
+
+    int tunFd = netjniutils::GetNativeFileDescriptor(env, tunJavaFd);
+    if (tunFd < 0) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid tun file descriptor");
+        return -1;
+    }
+
+    int readSock = netjniutils::GetNativeFileDescriptor(env, readSockJavaFd);
+    if (readSock < 0) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid read socket");
+        return -1;
+    }
+
+    int writeSock = netjniutils::GetNativeFileDescriptor(env, writeSockJavaFd);
+    if (writeSock < 0) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid write socket");
+        return -1;
+    }
+
+    // 1. create a throwaway socket to reserve a file descriptor number
+    int passedTunFd = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (passedTunFd == -1) {
+        throwIOException(env, "socket(ipv6/udp) for tun fd failed", errno);
+        return -1;
+    }
+    int passedSockRead = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (passedSockRead == -1) {
+        throwIOException(env, "socket(ipv6/udp) for read socket failed", errno);
+        return -1;
+    }
+    int passedSockWrite = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (passedSockWrite == -1) {
+        throwIOException(env, "socket(ipv6/udp) for write socket failed", errno);
+        return -1;
+    }
+
+    // these are the FD we'll pass to clatd on the cli, so need it as a string
+    char passedTunFdStr[INT32_STRLEN];
+    char passedSockReadStr[INT32_STRLEN];
+    char passedSockWriteStr[INT32_STRLEN];
+    snprintf(passedTunFdStr, sizeof(passedTunFdStr), "%d", passedTunFd);
+    snprintf(passedSockReadStr, sizeof(passedSockReadStr), "%d", passedSockRead);
+    snprintf(passedSockWriteStr, sizeof(passedSockWriteStr), "%d", passedSockWrite);
+
+    // 2. we're going to use this as argv[0] to clatd to make ps output more useful
+    std::string progname("clatd-");
+    progname += ifaceStr.c_str();
+
+    // clang-format off
+    const char* args[] = {progname.c_str(),
+                          "-i", ifaceStr.c_str(),
+                          "-p", pfx96Str.c_str(),
+                          "-4", v4Str.c_str(),
+                          "-6", v6Str.c_str(),
+                          "-t", passedTunFdStr,
+                          "-r", passedSockReadStr,
+                          "-w", passedSockWriteStr,
+                          nullptr};
+    // clang-format on
+
+    // 3. register vfork requirement
+    posix_spawnattr_t attr;
+    if (int ret = posix_spawnattr_init(&attr)) {
+        throwIOException(env, "posix_spawnattr_init failed", ret);
+        return -1;
+    }
+
+    // TODO: use android::base::ScopeGuard.
+    if (int ret = posix_spawnattr_setflags(&attr, POSIX_SPAWN_USEVFORK)) {
+        posix_spawnattr_destroy(&attr);
+        throwIOException(env, "posix_spawnattr_setflags failed", ret);
+        return -1;
+    }
+
+    // 4. register dup2() action: this is what 'clears' the CLOEXEC flag
+    // on the tun fd that we want the child clatd process to inherit
+    // (this will happen after the vfork, and before the execve)
+    posix_spawn_file_actions_t fa;
+    if (int ret = posix_spawn_file_actions_init(&fa)) {
+        posix_spawnattr_destroy(&attr);
+        throwIOException(env, "posix_spawn_file_actions_init failed", ret);
+        return -1;
+    }
+
+    if (int ret = posix_spawn_file_actions_adddup2(&fa, tunFd, passedTunFd)) {
+        posix_spawnattr_destroy(&attr);
+        posix_spawn_file_actions_destroy(&fa);
+        throwIOException(env, "posix_spawn_file_actions_adddup2 for tun fd failed", ret);
+        return -1;
+    }
+    if (int ret = posix_spawn_file_actions_adddup2(&fa, readSock, passedSockRead)) {
+        posix_spawnattr_destroy(&attr);
+        posix_spawn_file_actions_destroy(&fa);
+        throwIOException(env, "posix_spawn_file_actions_adddup2 for read socket failed", ret);
+        return -1;
+    }
+    if (int ret = posix_spawn_file_actions_adddup2(&fa, writeSock, passedSockWrite)) {
+        posix_spawnattr_destroy(&attr);
+        posix_spawn_file_actions_destroy(&fa);
+        throwIOException(env, "posix_spawn_file_actions_adddup2 for write socket failed", ret);
+        return -1;
+    }
+
+    // 5. actually perform vfork/dup2/execve
+    pid_t pid;
+    if (int ret = posix_spawn(&pid, kClatdPath, &fa, &attr, (char* const*)args, nullptr)) {
+        posix_spawnattr_destroy(&attr);
+        posix_spawn_file_actions_destroy(&fa);
+        throwIOException(env, "posix_spawn failed", ret);
+        return -1;
+    }
+
+    posix_spawnattr_destroy(&attr);
+    posix_spawn_file_actions_destroy(&fa);
+
+    // 5. Start BPF if any
+    if (!net::clat::initMaps()) {
+        net::clat::ClatdTracker tracker = {};
+        if (!initTracker(ifaceStr.c_str(), pfx96Str.c_str(), v4Str.c_str(), v6Str.c_str(),
+                &tracker)) {
+            net::clat::maybeStartBpf(tracker);
+        }
+    }
+
+    return pid;
+}
+
+// Stop clatd process. SIGTERM with timeout first, if fail, SIGKILL.
+// See stopProcess() in system/netd/server/NetdConstants.cpp.
+// TODO: have a function stopProcess(int pid, const char *name) in common location and call it.
+static constexpr int WAITPID_ATTEMPTS = 50;
+static constexpr int WAITPID_RETRY_INTERVAL_US = 100000;
+
+static void stopClatdProcess(int pid) {
+    int err = kill(pid, SIGTERM);
+    if (err) {
+        err = errno;
+    }
+    if (err == ESRCH) {
+        ALOGE("clatd child process %d unexpectedly disappeared", pid);
+        return;
+    }
+    if (err) {
+        ALOGE("Error killing clatd child process %d: %s", pid, strerror(err));
+    }
+    int status = 0;
+    int ret = 0;
+    for (int count = 0; ret == 0 && count < WAITPID_ATTEMPTS; count++) {
+        usleep(WAITPID_RETRY_INTERVAL_US);
+        ret = waitpid(pid, &status, WNOHANG);
+    }
+    if (ret == 0) {
+        ALOGE("Failed to SIGTERM clatd pid=%d, try SIGKILL", pid);
+        // TODO: fix that kill failed or waitpid doesn't return.
+        kill(pid, SIGKILL);
+        ret = waitpid(pid, &status, 0);
+    }
+    if (ret == -1) {
+        ALOGE("Error waiting for clatd child process %d: %s", pid, strerror(errno));
+    } else {
+        ALOGD("clatd process %d terminated status=%d", pid, status);
+    }
+}
+
+static void com_android_server_connectivity_ClatCoordinator_stopClatd(JNIEnv* env, jobject clazz,
+                                                                      jstring iface, jstring pfx96,
+                                                                      jstring v4, jstring v6,
+                                                                      jint pid) {
+    ScopedUtfChars ifaceStr(env, iface);
+    ScopedUtfChars pfx96Str(env, pfx96);
+    ScopedUtfChars v4Str(env, v4);
+    ScopedUtfChars v6Str(env, v6);
+
+    if (pid <= 0) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid pid");
+        return;
+    }
+
+    if (!net::clat::initMaps()) {
+        net::clat::ClatdTracker tracker = {};
+        if (!initTracker(ifaceStr.c_str(), pfx96Str.c_str(), v4Str.c_str(), v6Str.c_str(),
+                &tracker)) {
+            net::clat::maybeStopBpf(tracker);
+        }
+    }
+
+    stopClatdProcess(pid);
+}
+
 /*
  * JNI registration.
  */
@@ -259,6 +510,13 @@ static const JNINativeMethod gMethods[] = {
          (void*)com_android_server_connectivity_ClatCoordinator_addAnycastSetsockopt},
         {"native_configurePacketSocket", "(Ljava/io/FileDescriptor;Ljava/lang/String;I)V",
          (void*)com_android_server_connectivity_ClatCoordinator_configurePacketSocket},
+        {"native_startClatd",
+         "(Ljava/io/FileDescriptor;Ljava/io/FileDescriptor;Ljava/io/FileDescriptor;Ljava/lang/"
+         "String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
+         (void*)com_android_server_connectivity_ClatCoordinator_startClatd},
+        {"native_stopClatd",
+         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
+         (void*)com_android_server_connectivity_ClatCoordinator_stopClatd},
 };
 
 int register_android_server_connectivity_ClatCoordinator(JNIEnv* env) {
