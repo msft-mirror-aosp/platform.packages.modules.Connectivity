@@ -38,8 +38,8 @@ java_defaults {
         "liblog",
         "liblzma",
         "libnativehelper",
-        "libnetdbpf",
         "libnetdutils",
+        "libnetworkstats",
         "libnetworkstatsfactorytestjni",
         "libpackagelistparser",
         "libpcre2",
@@ -88,7 +88,9 @@ filegroup {
         "java/com/android/server/connectivity/NetdEventListenerServiceTest.java",
         "java/com/android/server/connectivity/VpnTest.java",
         "java/com/android/server/net/ipmemorystore/*.java",
+        "java/com/android/server/net/BpfInterfaceMapUpdaterTest.java",
         "java/com/android/server/net/NetworkStats*.java",
+        "java/com/android/server/net/TestableUsageCallback.kt",
     ]
 }
 
@@ -130,6 +132,7 @@ android_library {
         "platform-compat-test-rules",
         "platform-test-annotations",
         "service-connectivity-pre-jarjar",
+        "service-connectivity-tiramisu-pre-jarjar",
         "services.core-vpn",
     ],
     libs: [
@@ -140,6 +143,7 @@ android_library {
         "ServiceConnectivityResources",
     ],
     visibility: ["//packages/modules/Connectivity/tests:__subpackages__"],
+    exclude_kotlinc_generated_files: false,
 }
 
 android_test {
