@@ -23,6 +23,12 @@
     },
     {
       "name": "TetheringIntegrationTests"
+    },
+    {
+      "name": "traffic_controller_unit_test"
+    },
+    {
+      "name": "libnetworkstats_test"
     }
   ],
   "postsubmit": [
@@ -35,6 +41,13 @@
     },
     {
       "name": "libclat_test"
+    },
+    {
+      "name": "traffic_controller_unit_test",
+      "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
+    },
+    {
+      "name": "libnetworkstats_test"
     }
   ],
   "mainline-presubmit": [
@@ -51,6 +64,12 @@
     },
     {
       "name": "ConnectivityCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
+    },
+    {
+      "name": "traffic_controller_unit_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
+    },
+    {
+      "name": "libnetworkstats_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
     }
   ],
   "mainline-postsubmit": [

@@ -17,11 +17,16 @@
 package android.net
 
 import android.content.Context
+import android.net.ConnectivityManager.MAX_NETWORK_TYPE
+import android.net.ConnectivityManager.TYPE_ETHERNET
 import android.net.ConnectivityManager.TYPE_MOBILE
+import android.net.ConnectivityManager.TYPE_NONE
+import android.net.ConnectivityManager.TYPE_WIFI
 import android.net.NetworkIdentity.OEM_NONE
 import android.net.NetworkIdentity.OEM_PAID
 import android.net.NetworkIdentity.OEM_PRIVATE
 import android.net.NetworkIdentity.getOemBitfield
+import android.app.usage.NetworkStatsManager
 import android.telephony.TelephonyManager
 import android.os.Build
 import com.android.testutils.DevSdkIgnoreRule
@@ -30,10 +35,12 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.mock
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 private const val TEST_IMSI = "testimsi"
+private const val TEST_WIFI_KEY = "testwifikey"
 
 @RunWith(DevSdkIgnoreRunner::class)
 @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
@@ -126,6 +133,93 @@ class NetworkIdentityTest {
         assertEquals(identFromLegacyBuild, identFromSnapshot)
         assertEquals(identFromConstructor, identFromSnapshot)
 
-        // TODO: Add test cases for wifiNetworkKey and ratType.
+        // Assert non-wifi can't have wifi network key.
+        assertFailsWith<IllegalArgumentException> {
+            NetworkIdentity.Builder()
+                    .setType(TYPE_ETHERNET)
+                    .setWifiNetworkKey(TEST_WIFI_KEY)
+                    .build()
+        }
+
+        // Assert non-mobile can't have ratType.
+        assertFailsWith<IllegalArgumentException> {
+            NetworkIdentity.Builder()
+                    .setType(TYPE_WIFI)
+                    .setRatType(TelephonyManager.NETWORK_TYPE_LTE)
+                    .build()
+        }
+    }
+
+    @Test
+    fun testBuilder_type() {
+        // Assert illegal type values cannot make an identity.
+        listOf(Integer.MIN_VALUE, TYPE_NONE - 1, MAX_NETWORK_TYPE + 1, Integer.MAX_VALUE)
+                .forEach { type ->
+                    assertFailsWith<IllegalArgumentException> {
+                        NetworkIdentity.Builder().setType(type).build()
+                    }
+                }
+
+        // Verify legitimate type values can make an identity.
+        for (type in TYPE_NONE..MAX_NETWORK_TYPE) {
+            NetworkIdentity.Builder().setType(type).build().also {
+                assertEquals(it.type, type)
+            }
+        }
+    }
+
+    @Test
+    fun testBuilder_ratType() {
+        // Assert illegal ratTypes cannot make an identity.
+        listOf(Integer.MIN_VALUE, NetworkTemplate.NETWORK_TYPE_ALL,
+                NetworkStatsManager.NETWORK_TYPE_5G_NSA - 1, Integer.MAX_VALUE)
+                .forEach {
+                    assertFailsWith<IllegalArgumentException> {
+                        NetworkIdentity.Builder()
+                                .setType(TYPE_MOBILE)
+                                .setRatType(it)
+                                .build()
+                    }
+                }
+
+        // Verify legitimate ratTypes can make an identity.
+        TelephonyManager.getAllNetworkTypes().toMutableList().also {
+            it.add(TelephonyManager.NETWORK_TYPE_UNKNOWN)
+            it.add(NetworkStatsManager.NETWORK_TYPE_5G_NSA)
+        }.forEach { rat ->
+            NetworkIdentity.Builder()
+                    .setType(TYPE_MOBILE)
+                    .setRatType(rat)
+                    .build().also {
+                        assertEquals(it.ratType, rat)
+                    }
+        }
+    }
+
+    @Test
+    fun testBuilder_oemManaged() {
+        // Assert illegal oemManage values cannot make an identity.
+        listOf(Integer.MIN_VALUE, NetworkTemplate.OEM_MANAGED_ALL, NetworkTemplate.OEM_MANAGED_YES,
+                Integer.MAX_VALUE)
+                .forEach { oemManaged ->
+                    assertFailsWith<IllegalArgumentException> {
+                        NetworkIdentity.Builder()
+                                .setType(TYPE_MOBILE)
+                                .setOemManaged(oemManaged)
+                                .build()
+                    }
+                }
+
+        // Verify legitimate oem managed values can make an identity.
+        listOf(NetworkTemplate.OEM_MANAGED_NO, NetworkTemplate.OEM_MANAGED_PAID,
+                NetworkTemplate.OEM_MANAGED_PRIVATE, NetworkTemplate.OEM_MANAGED_PAID or
+                NetworkTemplate.OEM_MANAGED_PRIVATE)
+                .forEach { oemManaged ->
+                    NetworkIdentity.Builder()
+                            .setOemManaged(oemManaged)
+                            .build().also {
+                                assertEquals(it.oemManaged, oemManaged)
+                            }
+                }
     }
 }

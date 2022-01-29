@@ -31,6 +31,7 @@ apex_defaults {
     // package names and keys, so that apex will be unused anyway.
     apps: ["Tethering"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
 }
+enable_tethering_next_apex = false
 // This is a placeholder comment to avoid merge conflicts
 // as the above target may have different "enabled" values
 // depending on the branch
@@ -51,7 +52,8 @@ apex {
         first: {
             jni_libs: [
                 "libservice-connectivity",
-                "libcom_android_connectivity_com_android_net_module_util_jni"
+                "libcom_android_connectivity_com_android_net_module_util_jni",
+                "libtraffic_controller_jni",
             ],
         },
         both: {
@@ -65,6 +67,7 @@ apex {
     bpfs: [
         "clatd.o_mainline",
         "netd.o_mainline",
+        "dscp_policy.o",
         "offload.o",
         "test.o",
     ],
@@ -136,6 +139,7 @@ override_apex {
     name: "com.android.tethering.inprocess",
     base: "com.android.tethering",
     package_name: "com.android.tethering.inprocess",
+    enabled: enable_tethering_next_apex,
     apps: [
         "ServiceConnectivityResources",
         "InProcessTethering",
