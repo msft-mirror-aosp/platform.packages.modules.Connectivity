@@ -73,6 +73,8 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_OEM_PAID;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
+import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_1;
+import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_5;
 import static android.net.NetworkCapabilities.REDACT_FOR_ACCESS_FINE_LOCATION;
 import static android.net.NetworkCapabilities.REDACT_FOR_LOCAL_MAC_ADDRESS;
 import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
@@ -124,6 +126,7 @@ import android.net.ConnectivityResources;
 import android.net.ConnectivitySettingsManager;
 import android.net.DataStallReportParcelable;
 import android.net.DnsResolverServiceManager;
+import android.net.DscpPolicy;
 import android.net.ICaptivePortal;
 import android.net.IConnectivityDiagnosticsCallback;
 import android.net.IConnectivityManager;
@@ -218,6 +221,7 @@ import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
 import android.sysprop.NetworkProperties;
+import android.system.ErrnoException;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -248,6 +252,7 @@ import com.android.server.connectivity.AutodestructReference;
 import com.android.server.connectivity.ConnectivityFlags;
 import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
+import com.android.server.connectivity.DscpPolicyTracker;
 import com.android.server.connectivity.FullScore;
 import com.android.server.connectivity.KeepaliveTracker;
 import com.android.server.connectivity.LingerMonitor;
@@ -387,6 +392,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     protected IDnsResolver mDnsResolver;
     @VisibleForTesting
     protected INetd mNetd;
+    private DscpPolicyTracker mDscpPolicyTracker = null;
     private NetworkStatsManager mStatsManager;
     private NetworkPolicyManager mPolicyManager;
     private final NetdCallback mNetdCallback;
@@ -1487,6 +1493,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 new NetworkScore.Builder().setLegacyInt(0).build(), mContext, null,
                 new NetworkAgentConfig(), this, null, null, 0, INVALID_UID,
                 mLingerDelayMs, mQosCallbackTracker, mDeps);
+
+        try {
+            // DscpPolicyTracker cannot run on S because on S the tethering module can only load
+            // BPF programs/maps into /sys/fs/tethering/bpf, which the system server cannot access.
+            // Even if it could, running on S would at least require mocking out the BPF map,
+            // otherwise the unit tests will fail on pre-T devices where the seccomp filter blocks
+            // the bpf syscall. http://aosp/1907693
+            if (SdkLevel.isAtLeastT()) {
+                mDscpPolicyTracker = new DscpPolicyTracker();
+            }
+        } catch (ErrnoException e) {
+            loge("Unable to create DscpPolicyTracker");
+        }
     }
 
     private static NetworkCapabilities createDefaultNetworkCapabilitiesForUid(int uid) {
@@ -3404,6 +3423,25 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     nai.setLingerDuration((int) arg.second);
                     break;
                 }
+                case NetworkAgent.EVENT_ADD_DSCP_POLICY: {
+                    DscpPolicy policy = (DscpPolicy) arg.second;
+                    if (mDscpPolicyTracker != null) {
+                        mDscpPolicyTracker.addDscpPolicy(nai, policy);
+                    }
+                    break;
+                }
+                case NetworkAgent.EVENT_REMOVE_DSCP_POLICY: {
+                    if (mDscpPolicyTracker != null) {
+                        mDscpPolicyTracker.removeDscpPolicy(nai, (int) arg.second);
+                    }
+                    break;
+                }
+                case NetworkAgent.EVENT_REMOVE_ALL_DSCP_POLICIES: {
+                    if (mDscpPolicyTracker != null) {
+                        mDscpPolicyTracker.removeAllDscpPolicies(nai);
+                    }
+                    break;
+                }
             }
         }
 
@@ -4044,7 +4082,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 config = new NativeNetworkConfig(nai.network.getNetId(), NativeNetworkType.VIRTUAL,
                         INetd.PERMISSION_NONE,
                         (nai.networkAgentConfig == null || !nai.networkAgentConfig.allowBypass),
-                        getVpnType(nai), /*excludeLocalRoutes=*/ false);
+                        getVpnType(nai), nai.networkAgentConfig.excludeLocalRouteVpn);
             } else {
                 config = new NativeNetworkConfig(nai.network.getNetId(), NativeNetworkType.PHYSICAL,
                         getNetworkPermission(nai.networkCapabilities), /*secure=*/ false,
@@ -10147,11 +10185,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
             switch (preference.getPreference()) {
                 case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_DEFAULT:
                     nc = null;
+                    if (preference.getPreferenceEnterpriseId() != 0) {
+                        throw new IllegalArgumentException(
+                                "Invalid enterprise identifier in setProfileNetworkPreferences");
+                    }
                     break;
                 case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK:
                     allowFallback = false;
                     // continue to process the enterprise preference.
                 case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE:
+                    if (!isEnterpriseIdentifierValid(preference.getPreferenceEnterpriseId())) {
+                        throw new IllegalArgumentException(
+                                "Invalid enterprise identifier in setProfileNetworkPreferences");
+                    }
                     final Set<UidRange> uidRangeSet =
                             getUidListToBeAppliedForNetworkPreference(profile, preference);
                     if (!isRangeAlreadyInPreferenceList(preferenceList, uidRangeSet)) {
@@ -10161,6 +10207,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                                 "Overlapping uid range in setProfileNetworkPreferences");
                     }
                     nc.addCapability(NET_CAPABILITY_ENTERPRISE);
+                    nc.addEnterpriseId(
+                            preference.getPreferenceEnterpriseId());
                     nc.removeCapability(NET_CAPABILITY_NOT_RESTRICTED);
                     break;
                 default:
@@ -10201,6 +10249,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
         }
         return uidRangeSet;
+    }
+
+    private boolean isEnterpriseIdentifierValid(
+            @NetworkCapabilities.EnterpriseId int identifier) {
+        if ((identifier >= NET_ENTERPRISE_ID_1)
+                && (identifier <= NET_ENTERPRISE_ID_5)) {
+            return true;
+        }
+        return false;
     }
 
     private void validateNetworkCapabilitiesOfProfileNetworkPreference(

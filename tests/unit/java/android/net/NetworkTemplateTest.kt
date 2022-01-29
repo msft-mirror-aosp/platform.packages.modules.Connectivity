@@ -16,6 +16,7 @@
 
 package android.net
 
+import android.app.usage.NetworkStatsManager.NETWORK_TYPE_5G_NSA
 import android.content.Context
 import android.net.ConnectivityManager.TYPE_MOBILE
 import android.net.ConnectivityManager.TYPE_WIFI
@@ -36,7 +37,6 @@ import android.net.NetworkTemplate.MATCH_MOBILE_WILDCARD
 import android.net.NetworkTemplate.MATCH_PROXY
 import android.net.NetworkTemplate.MATCH_WIFI
 import android.net.NetworkTemplate.MATCH_WIFI_WILDCARD
-import android.net.NetworkTemplate.NETWORK_TYPE_5G_NSA
 import android.net.NetworkTemplate.NETWORK_TYPE_ALL
 import android.net.NetworkTemplate.OEM_MANAGED_ALL
 import android.net.NetworkTemplate.OEM_MANAGED_NO
@@ -95,7 +95,7 @@ class NetworkTemplateTest {
         oemManaged: Int = OEM_NONE,
         metered: Boolean = true
     ): NetworkStateSnapshot {
-        `when`(mockWifiInfo.getCurrentNetworkKey()).thenReturn(wifiKey)
+        `when`(mockWifiInfo.getNetworkKey()).thenReturn(wifiKey)
         val lp = LinkProperties()
         val caps = NetworkCapabilities().apply {
             setCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED, !metered)

@@ -74,6 +74,12 @@ public class ClatCoordinator {
     private final Dependencies mDeps;
     @Nullable
     private String mIface = null;
+    @Nullable
+    private String mNat64Prefix = null;
+    @Nullable
+    private String mXlatLocalAddress4 = null;
+    @Nullable
+    private String mXlatLocalAddress6 = null;
     private int mPid = INVALID_PID;
 
     @VisibleForTesting
@@ -162,6 +168,23 @@ public class ClatCoordinator {
                 throws IOException {
             native_configurePacketSocket(sock, v6, ifindex);
         }
+
+        /**
+         * Start clatd.
+         */
+        public int startClatd(@NonNull FileDescriptor tunfd, @NonNull FileDescriptor readsock6,
+                @NonNull FileDescriptor writesock6, @NonNull String iface, @NonNull String pfx96,
+                @NonNull String v4, @NonNull String v6) throws IOException {
+            return native_startClatd(tunfd, readsock6, writesock6, iface, pfx96, v4, v6);
+        }
+
+        /**
+         * Stop clatd.
+         */
+        public void stopClatd(String iface, String pfx96, String v4, String v6, int pid)
+                throws IOException {
+            native_stopClatd(iface, pfx96, v4, v6, pid);
+        }
     }
 
     @VisibleForTesting
@@ -196,6 +219,9 @@ public class ClatCoordinator {
     public String clatStart(final String iface, final int netId,
             @NonNull final IpPrefix nat64Prefix)
             throws IOException {
+        if (mIface != null || mPid != INVALID_PID) {
+            throw new IOException("Clatd is already running on " + mIface + " (pid " + mPid + ")");
+        }
         if (nat64Prefix.getPrefixLength() != 96) {
             throw new IOException("Prefix must be 96 bits long: " + nat64Prefix);
         }
@@ -231,6 +257,7 @@ public class ClatCoordinator {
         try {
             mNetd.interfaceSetEnableIPv6(tunIface, false /* enabled */);
         } catch (RemoteException | ServiceSpecificException e) {
+            tunFd.close();
             Log.e(TAG, "Disable IPv6 on " + tunIface + " failed: " + e);
         }
 
@@ -247,6 +274,7 @@ public class ClatCoordinator {
         try {
             mNetd.interfaceSetMtu(tunIface, mtu);
         } catch (RemoteException | ServiceSpecificException e) {
+            tunFd.close();
             throw new IOException("Set MTU " + mtu + " on " + tunIface + " failed: " + e);
         }
         final InterfaceConfigurationParcel ifConfig = new InterfaceConfigurationParcel();
@@ -258,6 +286,7 @@ public class ClatCoordinator {
         try {
             mNetd.interfaceSetCfg(ifConfig);
         } catch (RemoteException | ServiceSpecificException e) {
+            tunFd.close();
             throw new IOException("Setting IPv4 address to " + ifConfig.ipv4Addr + "/"
                     + ifConfig.prefixLength + " failed on " + ifConfig.ifName + ": " + e);
         }
@@ -267,11 +296,12 @@ public class ClatCoordinator {
         final ParcelFileDescriptor readSock6;
         try {
             // Use a JNI call to get native file descriptor instead of Os.socket() because we would
-            // like to use ParcelFileDescriptor to close file descriptor automatically. But ctor
+            // like to use ParcelFileDescriptor to manage file descriptor. But ctor
             // ParcelFileDescriptor(FileDescriptor fd) is a @hide function. Need to use native file
             // descriptor to initialize ParcelFileDescriptor object instead.
             readSock6 = mDeps.adoptFd(mDeps.openPacketSocket());
         } catch (IOException e) {
+            tunFd.close();
             throw new IOException("Open packet socket failed: " + e);
         }
 
@@ -282,11 +312,16 @@ public class ClatCoordinator {
             // reason why we use jniOpenPacketSocket6().
             writeSock6 = mDeps.adoptFd(mDeps.openRawSocket6(fwmark));
         } catch (IOException e) {
+            tunFd.close();
+            readSock6.close();
             throw new IOException("Open raw socket failed: " + e);
         }
 
         final int ifaceIndex = mDeps.getInterfaceIndex(iface);
         if (ifaceIndex == INVALID_IFINDEX) {
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
             throw new IOException("Fail to get interface index for interface " + iface);
         }
 
@@ -294,6 +329,9 @@ public class ClatCoordinator {
         try {
             mDeps.addAnycastSetsockopt(writeSock6.getFileDescriptor(), v6, ifaceIndex);
         } catch (IOException e) {
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
             throw new IOException("add anycast sockopt failed: " + e);
         }
 
@@ -301,11 +339,50 @@ public class ClatCoordinator {
         try {
             mDeps.configurePacketSocket(readSock6.getFileDescriptor(), v6, ifaceIndex);
         } catch (IOException e) {
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
             throw new IOException("configure packet socket failed: " + e);
         }
 
-        // TODO: start clatd and returns local xlat464 v6 address.
-        return null;
+        // [5] Start clatd.
+        try {
+            mPid = mDeps.startClatd(tunFd.getFileDescriptor(), readSock6.getFileDescriptor(),
+                    writeSock6.getFileDescriptor(), iface, pfx96, v4, v6);
+            mIface = iface;
+            mNat64Prefix = pfx96;
+            mXlatLocalAddress4 = v4;
+            mXlatLocalAddress6 = v6;
+        } catch (IOException e) {
+            throw new IOException("Error start clatd on " + iface + ": " + e);
+        } finally {
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
+        }
+
+        return v6;
+    }
+
+    /**
+     * Stop clatd
+     */
+    public void clatStop() throws IOException {
+        if (mPid == INVALID_PID) {
+            throw new IOException("Clatd has not started");
+        }
+        Log.i(TAG, "Stopping clatd pid=" + mPid + " on " + mIface);
+
+        mDeps.stopClatd(mIface, mNat64Prefix, mXlatLocalAddress4, mXlatLocalAddress6, mPid);
+        // TODO: remove setIptablesDropRule
+
+        Log.i(TAG, "clatd on " + mIface + " stopped");
+
+        mIface = null;
+        mNat64Prefix = null;
+        mXlatLocalAddress4 = null;
+        mXlatLocalAddress6 = null;
+        mPid = INVALID_PID;
     }
 
     private static native String native_selectIpv4Address(String v4addr, int prefixlen)
@@ -321,4 +398,9 @@ public class ClatCoordinator {
             int ifindex) throws IOException;
     private static native void native_configurePacketSocket(FileDescriptor sock, String v6,
             int ifindex) throws IOException;
+    private static native int native_startClatd(FileDescriptor tunfd, FileDescriptor readsock6,
+            FileDescriptor writesock6, String iface, String pfx96, String v4, String v6)
+            throws IOException;
+    private static native void native_stopClatd(String iface, String pfx96, String v4, String v6,
+            int pid) throws IOException;
 }
