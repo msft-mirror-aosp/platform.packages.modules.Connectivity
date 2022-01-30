@@ -23,6 +23,7 @@ java_defaults {
     name: "FrameworksNetTests-jni-defaults",
     jni_libs: [
         "ld-android",
+        "libandroid_net_frameworktests_util_jni",
         "libbase",
         "libbinder",
         "libbpf_bcc",
@@ -38,8 +39,8 @@ java_defaults {
         "liblog",
         "liblzma",
         "libnativehelper",
-        "libnetdbpf",
         "libnetdutils",
+        "libnetworkstats",
         "libnetworkstatsfactorytestjni",
         "libpackagelistparser",
         "libpcre2",
@@ -74,6 +75,7 @@ filegroup {
         "java/android/net/TelephonyNetworkSpecifierTest.java",
         "java/android/net/VpnManagerTest.java",
         "java/android/net/ipmemorystore/*.java",
+        "java/android/net/netstats/NetworkStatsDataMigrationUtilsTest.kt",
         "java/android/net/nsd/*.java",
         "java/com/android/internal/net/NetworkUtilsInternalTest.java",
         "java/com/android/internal/net/VpnProfileTest.java",
@@ -88,7 +90,9 @@ filegroup {
         "java/com/android/server/connectivity/NetdEventListenerServiceTest.java",
         "java/com/android/server/connectivity/VpnTest.java",
         "java/com/android/server/net/ipmemorystore/*.java",
+        "java/com/android/server/net/BpfInterfaceMapUpdaterTest.java",
         "java/com/android/server/net/NetworkStats*.java",
+        "java/com/android/server/net/TestableUsageCallback.kt",
     ]
 }
 
@@ -141,6 +145,7 @@ android_library {
         "ServiceConnectivityResources",
     ],
     visibility: ["//packages/modules/Connectivity/tests:__subpackages__"],
+    exclude_kotlinc_generated_files: false,
 }
 
 android_test {

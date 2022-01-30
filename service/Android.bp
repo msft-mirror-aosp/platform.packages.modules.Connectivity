@@ -36,6 +36,7 @@ cc_library_shared {
     stl: "libc++_static",
     static_libs: [
         "libnet_utils_device_common_bpfjni",
+        "libtcutils",
     ],
     shared_libs: [
         "liblog",
@@ -65,6 +66,7 @@ cc_library_shared {
         "libbase_headers",
     ],
     static_libs: [
+        "libbase",
         "libclat",
         "libip_checksum",
         "libnetjniutils",
@@ -109,6 +111,7 @@ java_library {
         "networkstack-client",
         "PlatformProperties",
         "service-connectivity-protos",
+        "NetworkStackApiCurrentShims",
     ],
     apex_available: [
         "com.android.tethering",

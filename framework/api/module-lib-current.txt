@@ -127,17 +127,13 @@ package android.net {
 
   public static final class NetworkAgentConfig.Builder {
     method @NonNull public android.net.NetworkAgentConfig.Builder setBypassableVpn(boolean);
+    method @NonNull public android.net.NetworkAgentConfig.Builder setExcludeLocalRoutesVpn(boolean);
     method @NonNull public android.net.NetworkAgentConfig.Builder setSubscriberId(@Nullable String);
   }
 
   public final class NetworkCapabilities implements android.os.Parcelable {
     method @Nullable public java.util.Set<android.util.Range<java.lang.Integer>> getUids();
     method public boolean hasForbiddenCapability(int);
-    field public static final int NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_1 = 1; // 0x1
-    field public static final int NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_2 = 2; // 0x2
-    field public static final int NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_3 = 3; // 0x3
-    field public static final int NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_4 = 4; // 0x4
-    field public static final int NET_CAPABILITY_ENTERPRISE_SUB_LEVEL_5 = 5; // 0x5
     field public static final long REDACT_ALL = -1L; // 0xffffffffffffffffL
     field public static final long REDACT_FOR_ACCESS_FINE_LOCATION = 1L; // 0x1L
     field public static final long REDACT_FOR_LOCAL_MAC_ADDRESS = 2L; // 0x2L
@@ -151,7 +147,9 @@ package android.net {
   }
 
   public class NetworkRequest implements android.os.Parcelable {
+    method @NonNull public int[] getEnterpriseIds();
     method @NonNull public int[] getForbiddenCapabilities();
+    method public boolean hasEnterpriseId(int);
     method public boolean hasForbiddenCapability(int);
   }
 
@@ -166,6 +164,7 @@ package android.net {
     method @NonNull public java.util.List<java.lang.Integer> getExcludedUids();
     method @NonNull public java.util.List<java.lang.Integer> getIncludedUids();
     method public int getPreference();
+    method public int getPreferenceEnterpriseId();
     method public void writeToParcel(@NonNull android.os.Parcel, int);
     field @NonNull public static final android.os.Parcelable.Creator<android.net.ProfileNetworkPreference> CREATOR;
   }
@@ -176,6 +175,7 @@ package android.net {
     method @NonNull public android.net.ProfileNetworkPreference.Builder setExcludedUids(@Nullable java.util.List<java.lang.Integer>);
     method @NonNull public android.net.ProfileNetworkPreference.Builder setIncludedUids(@Nullable java.util.List<java.lang.Integer>);
     method @NonNull public android.net.ProfileNetworkPreference.Builder setPreference(int);
+    method @NonNull public android.net.ProfileNetworkPreference.Builder setPreferenceEnterpriseId(int);
   }
 
   public final class TestNetworkInterface implements android.os.Parcelable {

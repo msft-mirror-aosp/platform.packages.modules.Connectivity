@@ -73,14 +73,15 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
 import android.app.AlarmManager;
-import android.app.usage.NetworkStatsManager;
 import android.content.Context;
 import android.content.Intent;
 import android.database.ContentObserver;
@@ -101,13 +102,9 @@ import android.net.UnderlyingNetworkInfo;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
 import android.net.wifi.WifiInfo;
 import android.os.Build;
-import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
-import android.os.Looper;
-import android.os.Message;
-import android.os.Messenger;
 import android.os.PowerManager;
 import android.os.SimpleClock;
 import android.provider.Settings;
@@ -118,7 +115,10 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.util.test.BroadcastInterceptingContext;
+import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
+import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.Struct.U8;
 import com.android.server.net.NetworkStatsService.AlertObserver;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings.Config;
@@ -188,13 +188,17 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private @Mock TetheringManager mTetheringManager;
     private @Mock NetworkStatsFactory mStatsFactory;
     private @Mock NetworkStatsSettings mSettings;
-    private @Mock IBinder mBinder;
+    private @Mock IBinder mUsageCallbackBinder;
+    private TestableUsageCallback mUsageCallback;
     private @Mock AlarmManager mAlarmManager;
     @Mock
     private NetworkStatsSubscriptionsMonitor mNetworkStatsSubscriptionsMonitor;
+    private @Mock BpfInterfaceMapUpdater mBpfInterfaceMapUpdater;
     private HandlerThread mHandlerThread;
     @Mock
     private LocationPermissionChecker mLocationPermissionChecker;
+    private @Mock IBpfMap<U32, U8> mUidCounterSetMap;
+    private @Mock NetworkStatsService.TagStatsDeleter mTagStatsDeleter;
 
     private NetworkStatsService mService;
     private INetworkStatsSession mSession;
@@ -313,6 +317,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         verify(mTetheringManager).registerTetheringEventCallback(
                 any(), tetheringEventCbCaptor.capture());
         mTetheringEventCallback = tetheringEventCbCaptor.getValue();
+
+        mUsageCallback = new TestableUsageCallback(mUsageCallbackBinder);
     }
 
     @NonNull
@@ -341,6 +347,22 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
             @Override
             public LocationPermissionChecker makeLocationPermissionChecker(final Context context) {
                 return mLocationPermissionChecker;
+            }
+
+            @Override
+            public BpfInterfaceMapUpdater makeBpfInterfaceMapUpdater(
+                    @NonNull Context ctx, @NonNull Handler handler) {
+                return mBpfInterfaceMapUpdater;
+            }
+
+            @Override
+            public IBpfMap<U32, U8> getUidCounterSetMap() {
+                return mUidCounterSetMap;
+            }
+
+            @Override
+            public NetworkStatsService.TagStatsDeleter getTagStatsDeleter() {
+                return mTagStatsDeleter;
             }
         };
     }
@@ -467,8 +489,11 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, 0xFAAD, 256L, 2L, 128L, 1L, 0L)
                 .insertEntry(TEST_IFACE, UID_BLUE, SET_DEFAULT, TAG_NONE, 128L, 1L, 128L, 1L, 0L));
         mService.setUidForeground(UID_RED, false);
+        verify(mUidCounterSetMap, never()).deleteEntry(any());
         mService.incrementOperationCount(UID_RED, 0xFAAD, 4);
         mService.setUidForeground(UID_RED, true);
+        verify(mUidCounterSetMap).updateEntry(
+                eq(new U32(UID_RED)), eq(new U8((short) SET_FOREGROUND)));
         mService.incrementOperationCount(UID_RED, 0xFAAD, 6);
 
         forcePollAndWaitForIdle();
@@ -677,8 +702,10 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         final Intent intent = new Intent(ACTION_UID_REMOVED);
         intent.putExtra(EXTRA_UID, UID_BLUE);
         mServiceContext.sendBroadcast(intent);
+        verify(mTagStatsDeleter).deleteTagData(UID_BLUE);
         intent.putExtra(EXTRA_UID, UID_RED);
         mServiceContext.sendBroadcast(intent);
+        verify(mTagStatsDeleter).deleteTagData(UID_RED);
 
         // existing uid and total should remain unchanged; but removed UID
         // should be gone completely.
@@ -1065,6 +1092,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, TAG_NONE, 32L, 2L, 32L, 2L, 0L)
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, 0xFAAD, 1L, 1L, 1L, 1L, 0L));
         mService.setUidForeground(UID_RED, true);
+        verify(mUidCounterSetMap).updateEntry(
+                eq(new U32(UID_RED)), eq(new U8((short) SET_FOREGROUND)));
         mService.incrementOperationCount(UID_RED, 0xFAAD, 1);
 
         forcePollAndWaitForIdle();
@@ -1240,20 +1269,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, thresholdInBytes);
 
-        // Create a messenger that waits for callback activity
-        ConditionVariable cv = new ConditionVariable(false);
-        LatchedHandler latchedHandler = new LatchedHandler(Looper.getMainLooper(), cv);
-        Messenger messenger = new Messenger(latchedHandler);
-
         // Force poll
         expectDefaultSettings();
         expectNetworkStatsSummary(buildEmptyStats());
         expectNetworkStatsUidDetail(buildEmptyStats());
 
         // Register and verify request and that binder was called
-        DataUsageRequest request =
-                mService.registerUsageCallback(mServiceContext.getOpPackageName(), inputRequest,
-                        messenger, mBinder);
+        DataUsageRequest request = mService.registerUsageCallback(
+                mServiceContext.getOpPackageName(), inputRequest, mUsageCallback);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, request.template));
         long minThresholdInBytes = 2 * 1024 * 1024; // 2 MB
@@ -1262,7 +1285,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         HandlerUtils.waitForIdle(mHandlerThread, WAIT_TIMEOUT);
 
         // Make sure that the caller binder gets connected
-        verify(mBinder).linkToDeath(any(IBinder.DeathRecipient.class), anyInt());
+        verify(mUsageCallbackBinder).linkToDeath(any(IBinder.DeathRecipient.class), anyInt());
 
         // modify some number on wifi, and trigger poll event
         // not enough traffic to call data usage callback
@@ -1277,7 +1300,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertNetworkTotal(sTemplateWifi, 1024L, 1L, 2048L, 2L, 0);
 
         // make sure callback has not being called
-        assertEquals(INVALID_TYPE, latchedHandler.lastMessageType);
+        mUsageCallback.assertNoCallback();
 
         // and bump forward again, with counters going higher. this is
         // important, since it will trigger the data usage callback
@@ -1292,23 +1315,21 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertNetworkTotal(sTemplateWifi, 4096000L, 4L, 8192000L, 8L, 0);
 
 
-        // Wait for the caller to ack receipt of CALLBACK_LIMIT_REACHED
-        assertTrue(cv.block(WAIT_TIMEOUT));
-        assertEquals(NetworkStatsManager.CALLBACK_LIMIT_REACHED, latchedHandler.lastMessageType);
-        cv.close();
+        // Wait for the caller to invoke expectOnThresholdReached.
+        mUsageCallback.expectOnThresholdReached(request);
 
         // Allow binder to disconnect
-        when(mBinder.unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt())).thenReturn(true);
+        when(mUsageCallbackBinder.unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt()))
+                .thenReturn(true);
 
         // Unregister request
         mService.unregisterUsageRequest(request);
 
-        // Wait for the caller to ack receipt of CALLBACK_RELEASED
-        assertTrue(cv.block(WAIT_TIMEOUT));
-        assertEquals(NetworkStatsManager.CALLBACK_RELEASED, latchedHandler.lastMessageType);
+        // Wait for the caller to invoke expectOnCallbackReleased.
+        mUsageCallback.expectOnCallbackReleased(request);
 
         // Make sure that the caller binder gets disconnected
-        verify(mBinder).unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt());
+        verify(mUsageCallbackBinder).unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt());
     }
 
     @Test
@@ -1883,22 +1904,5 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     private void waitForIdle() {
         HandlerUtils.waitForIdle(mHandlerThread, WAIT_TIMEOUT);
-    }
-
-    static class LatchedHandler extends Handler {
-        private final ConditionVariable mCv;
-        int lastMessageType = INVALID_TYPE;
-
-        LatchedHandler(Looper looper, ConditionVariable cv) {
-            super(looper);
-            mCv = cv;
-        }
-
-        @Override
-        public void handleMessage(Message msg) {
-            lastMessageType = msg.what;
-            mCv.open();
-            super.handleMessage(msg);
-        }
     }
 }
