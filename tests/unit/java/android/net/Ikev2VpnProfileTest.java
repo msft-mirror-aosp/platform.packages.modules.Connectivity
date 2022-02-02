@@ -35,6 +35,7 @@ import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -63,6 +64,9 @@ public class Ikev2VpnProfileTest {
     private static final String EXCL_LIST = "exclList";
     private static final byte[] PSK_BYTES = "preSharedKey".getBytes();
     private static final int TEST_MTU = 1300;
+
+    @Rule
+    public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
 
     private final MockContext mMockContext =
             new MockContext() {
@@ -255,6 +259,28 @@ public class Ikev2VpnProfileTest {
         try {
             builder.build();
             fail("Expected exception due to lack of auth method");
+        } catch (IllegalArgumentException expected) {
+        }
+    }
+
+
+    // TODO: Refer to Build.VERSION_CODES.SC_V2 when it's available in AOSP
+    @DevSdkIgnoreRule.IgnoreUpTo(32)
+    @Test
+    public void testBuildExcludeLocalRoutesSet() throws Exception {
+        final Ikev2VpnProfile.Builder builder = getBuilderWithDefaultOptions();
+        builder.setAuthPsk(PSK_BYTES);
+        builder.setExcludeLocalRoutes(true);
+
+        final Ikev2VpnProfile profile = builder.build();
+        assertNotNull(profile);
+        assertTrue(profile.getExcludeLocalRoutes());
+
+        builder.setBypassable(false);
+        try {
+            builder.build();
+            fail("Expected exception because excludeLocalRoutes should be set only"
+                    + " on the bypassable VPN");
         } catch (IllegalArgumentException expected) {
         }
     }
