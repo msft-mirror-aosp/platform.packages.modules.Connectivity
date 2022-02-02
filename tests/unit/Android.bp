@@ -23,6 +23,7 @@ java_defaults {
     name: "FrameworksNetTests-jni-defaults",
     jni_libs: [
         "ld-android",
+        "libandroid_net_frameworktests_util_jni",
         "libbase",
         "libbinder",
         "libbpf_bcc",
@@ -74,6 +75,7 @@ filegroup {
         "java/android/net/TelephonyNetworkSpecifierTest.java",
         "java/android/net/VpnManagerTest.java",
         "java/android/net/ipmemorystore/*.java",
+        "java/android/net/netstats/NetworkStatsDataMigrationUtilsTest.kt",
         "java/android/net/nsd/*.java",
         "java/com/android/internal/net/NetworkUtilsInternalTest.java",
         "java/com/android/internal/net/VpnProfileTest.java",

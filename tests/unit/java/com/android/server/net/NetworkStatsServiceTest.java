@@ -73,7 +73,9 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -113,7 +115,10 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
 import com.android.internal.util.test.BroadcastInterceptingContext;
+import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
+import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.Struct.U8;
 import com.android.server.net.NetworkStatsService.AlertObserver;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings.Config;
@@ -192,6 +197,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private HandlerThread mHandlerThread;
     @Mock
     private LocationPermissionChecker mLocationPermissionChecker;
+    private @Mock IBpfMap<U32, U8> mUidCounterSetMap;
+    private @Mock NetworkStatsService.TagStatsDeleter mTagStatsDeleter;
 
     private NetworkStatsService mService;
     private INetworkStatsSession mSession;
@@ -347,6 +354,16 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                     @NonNull Context ctx, @NonNull Handler handler) {
                 return mBpfInterfaceMapUpdater;
             }
+
+            @Override
+            public IBpfMap<U32, U8> getUidCounterSetMap() {
+                return mUidCounterSetMap;
+            }
+
+            @Override
+            public NetworkStatsService.TagStatsDeleter getTagStatsDeleter() {
+                return mTagStatsDeleter;
+            }
         };
     }
 
@@ -472,8 +489,11 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, 0xFAAD, 256L, 2L, 128L, 1L, 0L)
                 .insertEntry(TEST_IFACE, UID_BLUE, SET_DEFAULT, TAG_NONE, 128L, 1L, 128L, 1L, 0L));
         mService.setUidForeground(UID_RED, false);
+        verify(mUidCounterSetMap, never()).deleteEntry(any());
         mService.incrementOperationCount(UID_RED, 0xFAAD, 4);
         mService.setUidForeground(UID_RED, true);
+        verify(mUidCounterSetMap).updateEntry(
+                eq(new U32(UID_RED)), eq(new U8((short) SET_FOREGROUND)));
         mService.incrementOperationCount(UID_RED, 0xFAAD, 6);
 
         forcePollAndWaitForIdle();
@@ -682,8 +702,10 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         final Intent intent = new Intent(ACTION_UID_REMOVED);
         intent.putExtra(EXTRA_UID, UID_BLUE);
         mServiceContext.sendBroadcast(intent);
+        verify(mTagStatsDeleter).deleteTagData(UID_BLUE);
         intent.putExtra(EXTRA_UID, UID_RED);
         mServiceContext.sendBroadcast(intent);
+        verify(mTagStatsDeleter).deleteTagData(UID_RED);
 
         // existing uid and total should remain unchanged; but removed UID
         // should be gone completely.
@@ -1070,6 +1092,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, TAG_NONE, 32L, 2L, 32L, 2L, 0L)
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, 0xFAAD, 1L, 1L, 1L, 1L, 0L));
         mService.setUidForeground(UID_RED, true);
+        verify(mUidCounterSetMap).updateEntry(
+                eq(new U32(UID_RED)), eq(new U8((short) SET_FOREGROUND)));
         mService.incrementOperationCount(UID_RED, 0xFAAD, 1);
 
         forcePollAndWaitForIdle();
