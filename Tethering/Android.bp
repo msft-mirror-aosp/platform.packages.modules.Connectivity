@@ -21,6 +21,7 @@ package {
 java_defaults {
     name: "TetheringApiLevel",
     sdk_version: "module_current",
+    target_sdk_version: "31",
     min_sdk_version: "30",
 }
 
@@ -52,6 +53,7 @@ java_defaults {
         "framework-statsd.stubs.module_lib",
         "framework-tethering.impl",
         "framework-wifi",
+        "framework-bluetooth",
         "unsupportedappusage",
     ],
     plugins: ["java_api_finder"],
@@ -63,6 +65,7 @@ java_defaults {
 android_library {
     name: "TetheringApiCurrentLib",
     defaults: [
+        "ConnectivityNextEnableDefaults",
         "TetheringAndroidLibraryDefaults",
         "TetheringApiLevel"
     ],
@@ -156,7 +159,7 @@ java_defaults {
 // Non-updatable tethering running in the system server process for devices not using the module
 android_app {
     name: "InProcessTethering",
-    defaults: ["TetheringAppDefaults", "TetheringApiLevel"],
+    defaults: ["TetheringAppDefaults", "TetheringApiLevel", "ConnectivityNextEnableDefaults"],
     static_libs: ["TetheringApiCurrentLib"],
     certificate: "platform",
     manifest: "AndroidManifest_InProcess.xml",
