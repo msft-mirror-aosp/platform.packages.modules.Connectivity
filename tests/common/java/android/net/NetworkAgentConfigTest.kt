@@ -20,9 +20,10 @@ import android.os.Build
 import androidx.test.filters.SmallTest
 import androidx.test.runner.AndroidJUnit4
 import com.android.modules.utils.build.SdkLevel.isAtLeastS
+import com.android.testutils.ConnectivityModuleTest
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
-import com.android.testutils.assertParcelSane
+import com.android.testutils.assertParcelingIsLossless
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -32,6 +33,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 @SmallTest
+@ConnectivityModuleTest
 class NetworkAgentConfigTest {
     @Rule @JvmField
     val ignoreRule = DevSdkIgnoreRule()
@@ -48,13 +50,7 @@ class NetworkAgentConfigTest {
                 setBypassableVpn(true)
             }
         }.build()
-        if (isAtLeastS()) {
-            // From S, the config will have 12 items
-            assertParcelSane(config, 12)
-        } else {
-            // For R or below, the config will have 10 items
-            assertParcelSane(config, 10)
-        }
+        assertParcelingIsLossless(config)
     }
 
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
