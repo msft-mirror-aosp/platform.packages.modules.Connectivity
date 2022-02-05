@@ -26,11 +26,8 @@ cc_library {
     ],
     header_libs: [
         "bpf_connectivity_headers",
-        "bpf_headers",
-        "bpf_syscall_wrappers",
     ],
     static_libs: [
-        "libnetdutils",
         // TrafficController would use the constants of INetd so that add
         // netd_aidl_interface-lateststable-ndk.
         "netd_aidl_interface-lateststable-ndk",
@@ -39,6 +36,7 @@ cc_library {
         // TODO: Find a good way to remove libbase.
         "libbase",
         "libcutils",
+        "libnetdutils",
         "libutils",
         "liblog",
     ],
@@ -46,37 +44,6 @@ cc_library {
     sanitize: {
         cfi: true,
     },
-    apex_available: [
-        "com.android.tethering",
-    ],
-    min_sdk_version: "30",
-}
-
-cc_library_shared {
-    name: "libtraffic_controller_jni",
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-Wno-unused-parameter",
-        "-Wthread-safety",
-    ],
-    srcs: [
-        "jni/*.cpp",
-    ],
-    header_libs: [
-        "bpf_connectivity_headers",
-    ],
-    static_libs: [
-        "libnetdutils",
-        "libtraffic_controller",
-        "netd_aidl_interface-lateststable-ndk",
-    ],
-    shared_libs: [
-        "libbase",
-        "liblog",
-        "libutils",
-        "libnativehelper",
-    ],
     apex_available: [
         "com.android.tethering",
     ],
@@ -101,6 +68,7 @@ cc_test {
         "libnetdutils",
         "libtraffic_controller",
         "libutils",
+        "libnetd_updatable",
         "netd_aidl_interface-lateststable-ndk",
     ],
 }

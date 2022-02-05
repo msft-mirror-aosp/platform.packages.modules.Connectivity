@@ -43,9 +43,11 @@ package android.net {
     field public static final int BLOCKED_REASON_BATTERY_SAVER = 1; // 0x1
     field public static final int BLOCKED_REASON_DOZE = 2; // 0x2
     field public static final int BLOCKED_REASON_LOCKDOWN_VPN = 16; // 0x10
+    field public static final int BLOCKED_REASON_LOW_POWER_STANDBY = 32; // 0x20
     field public static final int BLOCKED_REASON_NONE = 0; // 0x0
     field public static final int BLOCKED_REASON_RESTRICTED_MODE = 8; // 0x8
     field public static final int FIREWALL_CHAIN_DOZABLE = 1; // 0x1
+    field public static final int FIREWALL_CHAIN_LOW_POWER_STANDBY = 5; // 0x5
     field public static final int FIREWALL_CHAIN_POWERSAVE = 3; // 0x3
     field public static final int FIREWALL_CHAIN_RESTRICTED = 4; // 0x4
     field public static final int FIREWALL_CHAIN_STANDBY = 2; // 0x2
@@ -132,6 +134,7 @@ package android.net {
   }
 
   public final class NetworkCapabilities implements android.os.Parcelable {
+    method @NonNull @RequiresPermission(android.Manifest.permission.NETWORK_FACTORY) public java.util.Set<java.lang.Integer> getAccessUids();
     method @Nullable public java.util.Set<android.util.Range<java.lang.Integer>> getUids();
     method public boolean hasForbiddenCapability(int);
     field public static final long REDACT_ALL = -1L; // 0xffffffffffffffffL
@@ -143,6 +146,7 @@ package android.net {
   }
 
   public static final class NetworkCapabilities.Builder {
+    method @NonNull @RequiresPermission(android.Manifest.permission.NETWORK_FACTORY) public android.net.NetworkCapabilities.Builder setAccessUids(@NonNull java.util.Set<java.lang.Integer>);
     method @NonNull public android.net.NetworkCapabilities.Builder setUids(@Nullable java.util.Set<android.util.Range<java.lang.Integer>>);
   }
 
