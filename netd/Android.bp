@@ -1,3 +1,4 @@
+//
 // Copyright (C) 2022 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,55 +13,67 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
-cc_library_static {
-    name: "libclat",
+cc_library {
+    name: "libnetd_updatable",
+    version_script: "libnetd_updatable.map.txt",
+    stubs: {
+        versions: [
+            "1",
+        ],
+        symbol_file: "libnetd_updatable.map.txt",
+    },
     defaults: ["netd_defaults"],
     header_libs: [
         "bpf_connectivity_headers",
-        "libbase_headers",
+        "libcutils_headers",
     ],
     srcs: [
-        "TcUtils.cpp",  // TODO: move to frameworks/libs/net
-        "bpfhelper.cpp",
-        "clatutils.cpp",
+        "BpfHandler.cpp",
+        "NetdUpdatable.cpp",
     ],
-    stl: "libc++_static",
-    static_libs: [
-        "libip_checksum",
-        "libnetdutils",  // for netdutils/UidConstants.h in bpf_shared.h
+    shared_libs: [
+        "libbase",
+        "liblog",
+        "libnetdutils",
     ],
-    shared_libs: ["liblog"],
     export_include_dirs: ["include"],
-    min_sdk_version: "30",
+    header_abi_checker: {
+        enabled: true,
+        symbol_file: "libnetd_updatable.map.txt",
+    },
+    sanitize: {
+        cfi: true,
+    },
     apex_available: ["com.android.tethering"],
+    min_sdk_version: "30",
 }
 
 cc_test {
-    name: "libclat_test",
+    name: "netd_updatable_unit_test",
     defaults: ["netd_defaults"],
-    test_suites: ["device-tests"],
+    test_suites: ["general-tests"],
+    require_root: true,  // required by setrlimitForTest()
     header_libs: [
         "bpf_connectivity_headers",
     ],
     srcs: [
-        "TcUtilsTest.cpp",
-        "clatutils_test.cpp",
+        "BpfHandlerTest.cpp",
     ],
     static_libs: [
-        "libbase",
-        "libclat",
-        "libip_checksum",
-        "libnetd_test_tun_interface",
-        "libnetdutils",  // for netdutils/UidConstants.h in bpf_shared.h
-        "libtcutils",
+        "libnetd_updatable",
     ],
     shared_libs: [
+        "libbase",
+        "libcutils",
         "liblog",
-        "libnetutils",
+        "libnetdutils",
     ],
-    require_root: true,
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+        lib64: {
+            suffix: "64",
+        },
+    },
 }

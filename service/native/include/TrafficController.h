@@ -25,7 +25,6 @@
 #include "netdutils/DumpWriter.h"
 #include "netdutils/NetlinkListener.h"
 #include "netdutils/StatusOr.h"
-#include "utils/String16.h"
 
 namespace android {
 namespace net {
@@ -34,6 +33,8 @@ using netdutils::StatusOr;
 
 class TrafficController {
   public:
+    static constexpr char DUMP_KEYWORD[] = "trafficcontroller";
+
     /*
      * Initialize the whole controller
      */
@@ -84,7 +85,6 @@ class TrafficController {
 
     netdutils::Status updateUidOwnerMap(const uint32_t uid,
                                         UidOwnerMatchType matchType, IptOp op) EXCLUDES(mMutex);
-    static const String16 DUMP_KEYWORD;
 
     int toggleUidOwnerMap(ChildChain chain, bool enable) EXCLUDES(mMutex);
 
@@ -99,6 +99,7 @@ class TrafficController {
     static const char* LOCAL_STANDBY;
     static const char* LOCAL_POWERSAVE;
     static const char* LOCAL_RESTRICTED;
+    static const char* LOCAL_LOW_POWER_STANDBY;
 
   private:
     /*
@@ -160,7 +161,7 @@ class TrafficController {
      * the map right now:
      * - Entry with UID_RULES_CONFIGURATION_KEY:
      *    Store the configuration for the current uid rules. It indicates the device
-     *    is in doze/powersave/standby/restricted mode.
+     *    is in doze/powersave/standby/restricted/low power standby mode.
      * - Entry with CURRENT_STATS_MAP_CONFIGURATION_KEY:
      *    Stores the current live stats map that kernel program is writing to.
      *    Userspace can do scraping and cleaning job on the other one depending on the
