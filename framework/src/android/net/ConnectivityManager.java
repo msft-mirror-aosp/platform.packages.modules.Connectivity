@@ -877,6 +877,15 @@ public class ConnectivityManager {
     public static final int BLOCKED_REASON_LOCKDOWN_VPN = 1 << 4;
 
     /**
+     * Flag to indicate that an app is subject to Low Power Standby restrictions that would
+     * result in its network access being blocked.
+     *
+     * @hide
+     */
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int BLOCKED_REASON_LOW_POWER_STANDBY = 1 << 5;
+
+    /**
      * Flag to indicate that an app is subject to Data saver restrictions that would
      * result in its metered network access being blocked.
      *
@@ -914,6 +923,7 @@ public class ConnectivityManager {
             BLOCKED_REASON_APP_STANDBY,
             BLOCKED_REASON_RESTRICTED_MODE,
             BLOCKED_REASON_LOCKDOWN_VPN,
+            BLOCKED_REASON_LOW_POWER_STANDBY,
             BLOCKED_METERED_REASON_DATA_SAVER,
             BLOCKED_METERED_REASON_USER_RESTRICTED,
             BLOCKED_METERED_REASON_ADMIN_DISABLED,
@@ -931,6 +941,7 @@ public class ConnectivityManager {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 130143562)
     private final IConnectivityManager mService;
 
+    // LINT.IfChange(firewall_chain)
     /**
      * Firewall chain for device idle (doze mode).
      * Allowlist of apps that have network access in device idle.
@@ -963,15 +974,25 @@ public class ConnectivityManager {
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_RESTRICTED = 4;
 
+    /**
+     * Firewall chain used for low power standby.
+     * Allowlist of apps that have access in low power standby.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_LOW_POWER_STANDBY = 5;
+
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(flag = false, prefix = "FIREWALL_CHAIN_", value = {
         FIREWALL_CHAIN_DOZABLE,
         FIREWALL_CHAIN_STANDBY,
         FIREWALL_CHAIN_POWERSAVE,
-        FIREWALL_CHAIN_RESTRICTED
+        FIREWALL_CHAIN_RESTRICTED,
+        FIREWALL_CHAIN_LOW_POWER_STANDBY
     })
     public @interface FirewallChain {}
+    // LINT.ThenChange(packages/modules/Connectivity/service/native/include/Common.h)
 
     /**
      * A kludge to facilitate static access where a Context pointer isn't available, like in the
