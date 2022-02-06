@@ -16,9 +16,13 @@
 
 package com.android.server;
 
+import android.net.INetd;
+import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.system.Os;
 import android.util.Log;
+
+import com.android.modules.utils.build.SdkLevel;
 
 /**
  * BpfNetMaps is responsible for providing traffic controller relevant functionality.
@@ -27,86 +31,119 @@ import android.util.Log;
  */
 public class BpfNetMaps {
     private static final String TAG = "BpfNetMaps";
+    private final INetd mNetd;
+    // Use legacy netd for releases before T.
+    private static final boolean USE_NETD = !SdkLevel.isAtLeastT();
+    private static boolean sInitialized = false;
 
-    static {
-        System.loadLibrary("traffic_controller_jni");
-        native_init();
+    /**
+     * Initializes the class if it is not already initialized. This method will open maps but not
+     * cause any other effects. This method may be called multiple times on any thread.
+     */
+    private static synchronized void ensureInitialized() {
+        if (sInitialized) return;
+        if (!USE_NETD) {
+            System.loadLibrary("service-connectivity");
+            native_init();
+        }
+        sInitialized = true;
     }
 
-   /**
-    * Add naughty app bandwidth rule for specific app
-    *
-    * @param uid uid of target app
-    * @throws ServiceSpecificException in case of failure, with an error code indicating the
-    *         cause of the failure.
-    */
-    public void addNaughtyApp(final int uid) {
+    public BpfNetMaps(INetd netd) {
+        ensureInitialized();
+        mNetd = netd;
+    }
+
+    private void maybeThrow(final int err, final String msg) {
+        if (err != 0) {
+            throw new ServiceSpecificException(err, msg + ": " + Os.strerror(err));
+        }
+    }
+
+    /**
+     * Add naughty app bandwidth rule for specific app
+     *
+     * @param uid uid of target app
+     * @throws RemoteException when netd has crashed.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public void addNaughtyApp(final int uid) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.bandwidthAddNaughtyApp(uid);
+            return;
+        }
         final int err = native_addNaughtyApp(uid);
-        if (err != 0) {
-            throw new ServiceSpecificException(err, "Unable to add naughty app: "
-                            + Os.strerror(err));
-        }
+        maybeThrow(err, "Unable to add naughty app");
     }
 
-   /**
-    * Remove naughty app bandwidth rule for specific app
-    *
-    * @param uid uid of target app
-    * @throws ServiceSpecificException in case of failure, with an error code indicating the
-    *         cause of the failure.
-    */
-    public void removeNaughtyApp(final int uid) {
+    /**
+     * Remove naughty app bandwidth rule for specific app
+     *
+     * @param uid uid of target app
+     * @throws RemoteException when netd has crashed.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public void removeNaughtyApp(final int uid) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.bandwidthRemoveNaughtyApp(uid);
+            return;
+        }
         final int err = native_removeNaughtyApp(uid);
-        if (err != 0) {
-            throw new ServiceSpecificException(err, "Unable to remove naughty app: "
-                            + Os.strerror(err));
-        }
+        maybeThrow(err, "Unable to remove naughty app");
     }
 
-   /**
-    * Add nice app bandwidth rule for specific app
-    *
-    * @param uid uid of target app
-    * @throws ServiceSpecificException in case of failure, with an error code indicating the
-    *         cause of the failure.
-    */
-    public void addNiceApp(final int uid) {
+    /**
+     * Add nice app bandwidth rule for specific app
+     *
+     * @param uid uid of target app
+     * @throws RemoteException when netd has crashed.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public void addNiceApp(final int uid) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.bandwidthAddNiceApp(uid);
+            return;
+        }
         final int err = native_addNiceApp(uid);
-        if (err != 0) {
-            throw new ServiceSpecificException(err, "Unable to add nice app: "
-                            + Os.strerror(err));
-        }
+        maybeThrow(err, "Unable to add nice app");
     }
 
-   /**
-    * Remove nice app bandwidth rule for specific app
-    *
-    * @param uid uid of target app
-    * @throws ServiceSpecificException in case of failure, with an error code indicating the
-    *         cause of the failure.
-    */
-    public void removeNiceApp(final int uid) {
+    /**
+     * Remove nice app bandwidth rule for specific app
+     *
+     * @param uid uid of target app
+     * @throws RemoteException when netd has crashed.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public void removeNiceApp(final int uid) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.bandwidthRemoveNiceApp(uid);
+            return;
+        }
         final int err = native_removeNiceApp(uid);
-        if (err != 0) {
-            throw new ServiceSpecificException(err, "Unable to remove nice app: "
-                            + Os.strerror(err));
-        }
+        maybeThrow(err, "Unable to remove nice app");
     }
 
-   /**
-    * Set target firewall child chain
-    *
-    * @param childChain target chain to enable
-    * @param enable whether to enable or disable child chain.
-    * @throws ServiceSpecificException in case of failure, with an error code indicating the
-    *         cause of the failure.
-    */
-    public void setChildChain(final int childChain, final boolean enable) {
-        final int err = native_setChildChain(childChain, enable);
-        if (err != 0) {
-            throw new ServiceSpecificException(-err, "Unable to set child chain: "
-                            + Os.strerror(-err));
+    /**
+     * Set target firewall child chain
+     *
+     * @param childChain target chain to enable
+     * @param enable     whether to enable or disable child chain.
+     * @throws RemoteException when netd has crashed.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public void setChildChain(final int childChain, final boolean enable) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.firewallEnableChildChain(childChain, enable);
+            return;
         }
+        final int err = native_setChildChain(childChain, enable);
+        maybeThrow(err, "Unable to set child chain");
     }
 
     /**
@@ -114,16 +151,21 @@ public class BpfNetMaps {
      *
      * The chain may be an allowlist chain or a denylist chain. A denylist chain contains DROP
      * rules for the specified UIDs and a RETURN rule at the end. An allowlist chain contains RETURN
-     * rules for the system UID range (0 to {@code UID_APP} - 1), RETURN rules for for the specified
+     * rules for the system UID range (0 to {@code UID_APP} - 1), RETURN rules for the specified
      * UIDs, and a DROP rule at the end. The chain will be created if it does not exist.
      *
-     * @param chainName The name of the chain to replace.
+     * @param chainName   The name of the chain to replace.
      * @param isAllowlist Whether this is an allowlist or denylist chain.
-     * @param uids The list of UIDs to allow/deny.
-     * @return true if the chain was successfully replaced, false otherwise.
+     * @param uids        The list of UIDs to allow/deny.
+     * @return 0 if the chain was successfully replaced, errno otherwise.
+     * @throws RemoteException when netd has crashed.
      */
     public int replaceUidChain(final String chainName, final boolean isAllowlist,
-            final int[] uids) {
+            final int[] uids) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.firewallReplaceUidChain(chainName, isAllowlist, uids);
+            return 0;
+        }
         final int err = native_replaceUidChain(chainName, isAllowlist, uids);
         if (err != 0) {
             Log.e(TAG, "replaceUidChain failed: " + Os.strerror(-err));
@@ -131,22 +173,24 @@ public class BpfNetMaps {
         return -err;
     }
 
-   /**
-    * Set firewall rule for uid
-    *
-    * @param childChain target chain
-    * @param uid uid to allow/deny
-    * @param firewallRule either FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
-    * @throws ServiceSpecificException in case of failure, with an error code indicating the
-    *         cause of the failure.
-    */
-    public void setUidRule(final int childChain, final int uid,
-            final int firewallRule) {
-        final int err = native_setUidRule(childChain, uid, firewallRule);
-        if (err != 0) {
-            throw new ServiceSpecificException(-err, "Unable to set uid rule: "
-                            + Os.strerror(-err));
+    /**
+     * Set firewall rule for uid
+     *
+     * @param childChain   target chain
+     * @param uid          uid to allow/deny
+     * @param firewallRule either FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
+     * @throws RemoteException when netd has crashed.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public void setUidRule(final int childChain, final int uid, final int firewallRule)
+            throws RemoteException {
+        if (USE_NETD) {
+            mNetd.firewallSetUidRule(childChain, uid, firewallRule);
+            return;
         }
+        final int err = native_setUidRule(childChain, uid, firewallRule);
+        maybeThrow(err, "Unable to set uid rule");
     }
 
     /**
@@ -160,17 +204,19 @@ public class BpfNetMaps {
      * instead. Otherwise calling this method will not affect existing rules set on other UIDs.
      *
      * @param ifName the name of the interface on which the filtering rules will allow packets to
-              be received.
-     * @param uids an array of UIDs which the filtering rules will be set
+     *               be received.
+     * @param uids   an array of UIDs which the filtering rules will be set
+     * @throws RemoteException when netd has crashed.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *         cause of the failure.
+     *                                  cause of the failure.
      */
-    public void addUidInterfaceRules(final String ifName, final int[] uids) {
-        final int err = native_addUidInterfaceRules(ifName, uids);
-        if (err != 0) {
-            throw new ServiceSpecificException(err, "Unable to add uid interface rules: "
-                            + Os.strerror(err));
+    public void addUidInterfaceRules(final String ifName, final int[] uids) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.firewallAddUidInterfaceRules(ifName, uids);
+            return;
         }
+        final int err = native_addUidInterfaceRules(ifName, uids);
+        maybeThrow(err, "Unable to add uid interface rules");
     }
 
     /**
@@ -180,68 +226,77 @@ public class BpfNetMaps {
      * by addUidInterfaceRules(). Ignore any uid which does not have filtering rule.
      *
      * @param uids an array of UIDs from which the filtering rules will be removed
+     * @throws RemoteException when netd has crashed.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *         cause of the failure.
+     *                                  cause of the failure.
      */
-    public void removeUidInterfaceRules(final int[] uids) {
+    public void removeUidInterfaceRules(final int[] uids) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.firewallRemoveUidInterfaceRules(uids);
+            return;
+        }
         final int err = native_removeUidInterfaceRules(uids);
-        if (err != 0) {
-            throw new ServiceSpecificException(err, "Unable to remove uid interface rules: "
-                            + Os.strerror(err));
-        }
+        maybeThrow(err, "Unable to remove uid interface rules");
     }
 
-   /**
-    * Request netd to change the current active network stats map.
-    * @throws ServiceSpecificException in case of failure, with an error code indicating the
-    *         cause of the failure.
-    */
-    public void swapActiveStatsMap() {
+    /**
+     * Request netd to change the current active network stats map.
+     *
+     * @throws RemoteException when netd has crashed.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public void swapActiveStatsMap() throws RemoteException {
+        if (USE_NETD) {
+            mNetd.trafficSwapActiveStatsMap();
+            return;
+        }
         final int err = native_swapActiveStatsMap();
-        if (err != 0) {
-            throw new ServiceSpecificException(err, "Unable to swap active stats map: "
-                            + Os.strerror(err));
-        }
+        maybeThrow(err, "Unable to swap active stats map");
     }
 
-   /**
-    * Assigns android.permission.INTERNET and/or android.permission.UPDATE_DEVICE_STATS to the uids
-    * specified. Or remove all permissions from the uids.
-    *
-    * @param permission The permission to grant, it could be either PERMISSION_INTERNET and/or
-    *                   PERMISSION_UPDATE_DEVICE_STATS. If the permission is NO_PERMISSIONS, then
-    *                   revoke all permissions for the uids.
-    * @param uids uid of users to grant permission
-    */
-    public void setNetPermForUids(final int permission, final int[] uids) {
-        native_setPermissionForUids(permission, uids);
+    /**
+     * Assigns android.permission.INTERNET and/or android.permission.UPDATE_DEVICE_STATS to the uids
+     * specified. Or remove all permissions from the uids.
+     *
+     * @param permissions The permission to grant, it could be either PERMISSION_INTERNET and/or
+     *                    PERMISSION_UPDATE_DEVICE_STATS. If the permission is NO_PERMISSIONS, then
+     *                    revoke all permissions for the uids.
+     * @param uids        uid of users to grant permission
+     * @throws RemoteException when netd has crashed.
+     */
+    public void setNetPermForUids(final int permissions, final int[] uids) throws RemoteException {
+        if (USE_NETD) {
+            mNetd.trafficSetNetPermForUids(permissions, uids);
+            return;
+        }
+        native_setPermissionForUids(permissions, uids);
     }
 
     /**
      * Set counter set for uid
      *
      * @param counterSet either SET_DEFAULT or SET_FOREGROUND
-     * @param uid uid to foreground/background
+     * @param uid        uid to foreground/background
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
      */
-    public int setCounterSet(final int counterSet, final int uid) {
+    public void setCounterSet(final int counterSet, final int uid) {
         final int err = native_setCounterSet(counterSet, uid);
-        if (err != 0) {
-            Log.e(TAG, "setCounterSet failed: " + Os.strerror(-err));
-        }
-        return -err;
+        maybeThrow(err, "setCounterSet failed");
     }
 
     /**
      * Reset Uid stats
+     *
      * @param tag default 0
      * @param uid given uid to be clear
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
      */
-    public int deleteTagData(final int tag, final int uid) {
+    public void deleteTagData(final int tag, final int uid) {
         final int err = native_deleteTagData(tag, uid);
-        if (err != 0) {
-            Log.e(TAG, "deleteTagData failed: " + Os.strerror(-err));
-        }
-        return -err;
+        maybeThrow(err, "deleteTagData failed");
     }
 
     private static native void native_init();
@@ -255,7 +310,7 @@ public class BpfNetMaps {
     private native int native_addUidInterfaceRules(String ifName, int[] uids);
     private native int native_removeUidInterfaceRules(int[] uids);
     private native int native_swapActiveStatsMap();
-    private native void native_setPermissionForUids(int permission, int[] uids);
+    private native void native_setPermissionForUids(int permissions, int[] uids);
     private native int native_setCounterSet(int counterSet, int uid);
     private native int native_deleteTagData(int tag, int uid);
 }

@@ -14,26 +14,29 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "TrafficControllerJni"
-
-#include <jni.h>
 #include <nativehelper/JNIHelp.h>
+#include "jni.h"
 
-#include "utils/Log.h"
+#define LOG_TAG "NetFrameworkTestsJni"
+#include <android/log.h>
 
 namespace android {
 
-int register_com_android_server_BpfNetMaps(JNIEnv* env);
+int register_com_android_net_module_util_BpfMap(JNIEnv* env, char const* class_name);
+int register_com_android_net_module_util_TcUtils(JNIEnv* env, char const* class_name);
 
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
     JNIEnv *env;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
-        ALOGE("%s: ERROR: GetEnv failed", __func__);
+        __android_log_print(ANDROID_LOG_FATAL, LOG_TAG, "ERROR: GetEnv failed");
         return JNI_ERR;
     }
 
-    if (register_com_android_server_BpfNetMaps(env) < 0)
-      return JNI_ERR;
+    if (register_com_android_net_module_util_BpfMap(env,
+            "android/net/frameworktests/util/BpfMap") < 0) return JNI_ERR;
+
+    if (register_com_android_net_module_util_TcUtils(env,
+            "android/net/frameworktests/util/TcUtils") < 0) return JNI_ERR;
 
     return JNI_VERSION_1_6;
 }
