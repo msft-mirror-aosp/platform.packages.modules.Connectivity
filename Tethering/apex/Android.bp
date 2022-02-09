@@ -31,6 +31,7 @@ apex_defaults {
     // package names and keys, so that apex will be unused anyway.
     apps: ["Tethering"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
 }
+enable_tethering_next_apex = false
 // This is a placeholder comment to avoid merge conflicts
 // as the above target may have different "enabled" values
 // depending on the branch
@@ -44,15 +45,16 @@ apex {
     bootclasspath_fragments: [
         "com.android.tethering-bootclasspath-fragment",
     ],
-    java_libs: [
-        "service-connectivity",
+    systemserverclasspath_fragments: [
+        "com.android.tethering-systemserverclasspath-fragment",
     ],
     multilib: {
         first: {
             jni_libs: [
                 "libservice-connectivity",
-                "libcom_android_connectivity_com_android_net_module_util_jni"
+                "libandroid_net_connectivity_com_android_net_module_util_jni",
             ],
+            native_shared_libs: ["libnetd_updatable"],
         },
         both: {
             jni_libs: ["libframework-connectivity-jni"],
@@ -61,7 +63,11 @@ apex {
     binaries: [
         "clatd",
     ],
+    canned_fs_config: "canned_fs_config",
     bpfs: [
+        "clatd.o_mainline",
+        "netd.o_mainline",
+        "dscp_policy.o",
         "offload.o",
         "test.o",
     ],
@@ -129,10 +135,17 @@ bootclasspath_fragment {
     },
 }
 
+systemserverclasspath_fragment {
+    name: "com.android.tethering-systemserverclasspath-fragment",
+    standalone_contents: ["service-connectivity"],
+    apex_available: ["com.android.tethering"],
+}
+
 override_apex {
     name: "com.android.tethering.inprocess",
     base: "com.android.tethering",
     package_name: "com.android.tethering.inprocess",
+    enabled: enable_tethering_next_apex,
     apps: [
         "ServiceConnectivityResources",
         "InProcessTethering",
