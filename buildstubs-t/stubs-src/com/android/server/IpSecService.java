@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2014 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,6 +14,18 @@
  * limitations under the License.
  */
 
-package android.net;
+package com.android.server;
 
-@JavaOnlyStableParcelable parcelable NetworkAgentConfig;
+import android.content.Context;
+import android.os.Binder;
+
+/**
+ * Fake IpSecManager class for sc-mainline-prod,
+ * to allow building the T service-connectivity before sources
+ * are moved to the branch
+ */
+public final class IpSecService extends Binder {
+    public IpSecService(Context ctx) {
+        throw new RuntimeException("This is a stub class");
+    }
+}
