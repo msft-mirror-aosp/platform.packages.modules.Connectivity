@@ -23,10 +23,10 @@ java_defaults {
     name: "FrameworksNetTests-jni-defaults",
     jni_libs: [
         "ld-android",
+        "libandroid_net_frameworktests_util_jni",
         "libbase",
         "libbinder",
-        "libbpf",
-        "libbpf_android",
+        "libbpf_bcc",
         "libc++",
         "libcgrouprc",
         "libcrypto",
@@ -38,8 +38,8 @@ java_defaults {
         "liblog",
         "liblzma",
         "libnativehelper",
-        "libnetdbpf",
         "libnetdutils",
+        "libnetworkstats",
         "libnetworkstatsfactorytestjni",
         "libpackagelistparser",
         "libpcre2",
@@ -69,12 +69,12 @@ filegroup {
         "java/android/net/IpSecTransformTest.java",
         "java/android/net/KeepalivePacketDataUtilTest.java",
         "java/android/net/NetworkIdentityTest.kt",
-        "java/android/net/NetworkStatsTest.java",
-        "java/android/net/NetworkStatsHistoryTest.java",
+        "java/android/net/NetworkStats*.java",
         "java/android/net/NetworkTemplateTest.kt",
         "java/android/net/TelephonyNetworkSpecifierTest.java",
         "java/android/net/VpnManagerTest.java",
         "java/android/net/ipmemorystore/*.java",
+        "java/android/net/netstats/NetworkStatsDataMigrationUtilsTest.kt",
         "java/android/net/nsd/*.java",
         "java/com/android/internal/net/NetworkUtilsInternalTest.java",
         "java/com/android/internal/net/VpnProfileTest.java",
@@ -89,12 +89,25 @@ filegroup {
         "java/com/android/server/connectivity/NetdEventListenerServiceTest.java",
         "java/com/android/server/connectivity/VpnTest.java",
         "java/com/android/server/net/ipmemorystore/*.java",
+        "java/com/android/server/net/BpfInterfaceMapUpdaterTest.java",
         "java/com/android/server/net/NetworkStats*.java",
+        "java/com/android/server/net/TestableUsageCallback.kt",
     ]
 }
 
-android_library {
-    name: "FrameworksNetTestsLib",
+// Subset of services-core used to by ConnectivityService tests to test VPN realistically.
+// This is stripped by jarjar (see rules below) from other unrelated classes, so tests do not
+// include most classes from services-core, which are unrelated and cause wrong code coverage
+// calculations.
+java_library {
+    name: "services.core-vpn",
+    static_libs: ["services.core"],
+    jarjar_rules: "vpn-jarjar-rules.txt",
+    visibility: ["//visibility:private"],
+}
+
+java_defaults {
+    name: "FrameworksNetTestsDefaults",
     min_sdk_version: "30",
     defaults: [
         "framework-connectivity-test-defaults",
@@ -103,8 +116,6 @@ android_library {
         "java/**/*.java",
         "java/**/*.kt",
     ],
-    exclude_srcs: [":non-connectivity-module-test"],
-    jarjar_rules: "jarjar-rules.txt",
     static_libs: [
         "androidx.test.rules",
         "androidx.test.uiautomator",
@@ -116,11 +127,12 @@ android_library {
         "framework-protos",
         "mockito-target-minus-junit4",
         "net-tests-utils",
+        "net-utils-services-common",
         "platform-compat-test-rules",
         "platform-test-annotations",
         "service-connectivity-pre-jarjar",
-        "services.core",
-        "services.net",
+        "service-connectivity-tiramisu-pre-jarjar",
+        "services.core-vpn",
     ],
     libs: [
         "android.net.ipsec.ike.stubs.module_lib",
@@ -129,28 +141,33 @@ android_library {
         "android.test.mock",
         "ServiceConnectivityResources",
     ],
+    exclude_kotlinc_generated_files: false,
+}
+
+android_library {
+    name: "FrameworksNetTestsLib",
+    defaults: [
+        "FrameworksNetTestsDefaults",
+    ],
+    exclude_srcs: [":non-connectivity-module-test"],
     visibility: ["//packages/modules/Connectivity/tests:__subpackages__"],
 }
 
 android_test {
     name: "FrameworksNetTests",
     enabled: enable_frameworks_net_tests,
-    min_sdk_version: "30",
     defaults: [
-        "framework-connectivity-test-defaults",
+        "FrameworksNetTestsDefaults",
         "FrameworksNetTests-jni-defaults",
     ],
-    // this is in addition to FrameworksNetTestsLib.
-    srcs: [":non-connectivity-module-test"],
+    jarjar_rules: ":connectivity-jarjar-rules",
     test_suites: ["device-tests"],
     static_libs: [
-        "FrameworksNetTestsLib",
-    ],
-    libs: [
-        "android.test.mock",
-        "android.test.base",
+        "services.core",
+        "services.net",
     ],
     jni_libs: [
         "libservice-connectivity",
-    ]
+        "libandroid_net_connectivity_com_android_net_module_util_jni",
+    ],
 }
