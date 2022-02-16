@@ -20,18 +20,16 @@ import android.content.Context;
 import android.util.Log;
 
 import com.android.modules.utils.build.SdkLevel;
-import com.android.server.nearby.NearbyService;
 
 /**
  * Connectivity service initializer for core networking. This is called by system server to create
- * a new instance of connectivity services.
+ * a new instance of ConnectivityService.
  */
 public final class ConnectivityServiceInitializer extends SystemService {
     private static final String TAG = ConnectivityServiceInitializer.class.getSimpleName();
     private final ConnectivityService mConnectivity;
     private final IpSecService mIpSecService;
     private final NsdService mNsdService;
-    private final NearbyService mNearbyService;
 
     public ConnectivityServiceInitializer(Context context) {
         super(context);
@@ -40,7 +38,6 @@ public final class ConnectivityServiceInitializer extends SystemService {
         mConnectivity = new ConnectivityService(context);
         mIpSecService = createIpSecService(context);
         mNsdService = createNsdService(context);
-        mNearbyService = createNearbyService(context);
     }
 
     @Override
@@ -57,19 +54,6 @@ public final class ConnectivityServiceInitializer extends SystemService {
         if (mNsdService != null) {
             Log.i(TAG, "Registering " + Context.NSD_SERVICE);
             publishBinderService(Context.NSD_SERVICE, mNsdService, /* allowIsolated= */ false);
-        }
-
-        if (mNearbyService != null) {
-            Log.i(TAG, "Registering " + Context.NEARBY_SERVICE);
-            publishBinderService(Context.NEARBY_SERVICE, mNearbyService,
-                    /* allowIsolated= */ false);
-        }
-    }
-
-    @Override
-    public void onBootPhase(int phase) {
-        if (mNearbyService != null) {
-            mNearbyService.onBootPhase(phase);
         }
     }
 
@@ -91,11 +75,5 @@ public final class ConnectivityServiceInitializer extends SystemService {
             Log.d(TAG, "Unable to get NSD service", e);
             return null;
         }
-    }
-
-    /** Return Nearby service instance or null if current SDK is lower than T */
-    private NearbyService createNearbyService(final Context context) {
-        if (!SdkLevel.isAtLeastT()) return null;
-        return new NearbyService(context);
     }
 }
