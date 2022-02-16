@@ -46,7 +46,7 @@ class NetworkStatsDataMigrationUtilsTest {
 
     @Test
     fun testReadPlatformCollection() {
-        // Verify the method throws for wrong file format.
+        // Verify the method throws for wrong file version.
         assertFailsWith<ProtocolException> {
             NetworkStatsDataMigrationUtils.readPlatformCollection(
                     NetworkStatsCollection.Builder(BUCKET_DURATION_MS),
