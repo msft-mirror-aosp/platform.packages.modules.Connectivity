@@ -36,7 +36,6 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
 
-import android.content.Context;
 import android.net.DataUsageRequest;
 import android.net.NetworkIdentity;
 import android.net.NetworkIdentitySet;
@@ -79,7 +78,6 @@ public class NetworkStatsObserversTest {
 
     private static final String IMSI_1 = "310004";
     private static final String IMSI_2 = "310260";
-    private static final int SUBID_1 = 1;
     private static final String TEST_SSID = "AndroidAP";
 
     private static NetworkTemplate sTemplateWifi = buildTemplateWifiWildcard();
@@ -103,7 +101,6 @@ public class NetworkStatsObserversTest {
 
     @Mock private IBinder mUsageCallbackBinder;
     private TestableUsageCallback mUsageCallback;
-    @Mock private Context mContext;
 
     @Before
     public void setUp() throws Exception {
@@ -130,14 +127,14 @@ public class NetworkStatsObserversTest {
         final DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, thresholdTooLowBytes);
 
-        final DataUsageRequest requestByApp = mStatsObservers.register(mContext, inputRequest,
-                mUsageCallback, UID_RED, NetworkStatsAccess.Level.DEVICE);
+        final DataUsageRequest requestByApp = mStatsObservers.register(inputRequest, mUsageCallback,
+                UID_RED, NetworkStatsAccess.Level.DEVICE);
         assertTrue(requestByApp.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, requestByApp.template));
-        assertEquals(thresholdTooLowBytes, requestByApp.thresholdInBytes);
+        assertEquals(THRESHOLD_BYTES, requestByApp.thresholdInBytes);
 
         // Verify the threshold requested by system uid won't be overridden.
-        final DataUsageRequest requestBySystem = mStatsObservers.register(mContext, inputRequest,
+        final DataUsageRequest requestBySystem = mStatsObservers.register(inputRequest,
                 mUsageCallback, Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(requestBySystem.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, requestBySystem.template));
@@ -150,7 +147,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, highThresholdBytes);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, request.template));
@@ -162,13 +159,13 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, THRESHOLD_BYTES);
 
-        DataUsageRequest request1 = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request1 = mStatsObservers.register(inputRequest, mUsageCallback,
                 Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request1.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, request1.template));
         assertEquals(THRESHOLD_BYTES, request1.thresholdInBytes);
 
-        DataUsageRequest request2 = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request2 = mStatsObservers.register(inputRequest, mUsageCallback,
                 Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request2.requestId > request1.requestId);
         assertTrue(Objects.equals(sTemplateWifi, request2.template));
@@ -188,7 +185,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -208,7 +205,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 UID_RED, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -227,7 +224,7 @@ public class NetworkStatsObserversTest {
         identSet.add(new NetworkIdentity(
                 TYPE_MOBILE, TelephonyManager.NETWORK_TYPE_UNKNOWN,
                 IMSI_1, null /* networkId */, false /* roaming */, true /* metered */,
-                true /* defaultNetwork */, OEM_NONE, SUBID_1));
+                true /* defaultNetwork */, OEM_NONE));
         return identSet;
     }
 
@@ -236,7 +233,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -260,7 +257,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -290,7 +287,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -321,7 +318,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 UID_RED, NetworkStatsAccess.Level.DEFAULT);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -354,7 +351,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 UID_BLUE, NetworkStatsAccess.Level.DEFAULT);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -386,7 +383,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 UID_BLUE, NetworkStatsAccess.Level.USER);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
@@ -419,7 +416,7 @@ public class NetworkStatsObserversTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
-        DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
+        DataUsageRequest request = mStatsObservers.register(inputRequest, mUsageCallback,
                 UID_RED, NetworkStatsAccess.Level.USER);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
