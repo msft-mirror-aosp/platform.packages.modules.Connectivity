@@ -16,6 +16,8 @@
 
 package android.net;
 
+import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
+
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -264,17 +266,17 @@ public class Ikev2VpnProfileTest {
     }
 
 
-    // TODO: Refer to Build.VERSION_CODES.SC_V2 when it's available in AOSP
-    @DevSdkIgnoreRule.IgnoreUpTo(32)
+    // TODO: Refer to Build.VERSION_CODES.SC_V2 when it's available in AOSP and mainline branch
+    @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
     @Test
     public void testBuildExcludeLocalRoutesSet() throws Exception {
         final Ikev2VpnProfile.Builder builder = getBuilderWithDefaultOptions();
         builder.setAuthPsk(PSK_BYTES);
-        builder.setExcludeLocalRoutes(true);
+        builder.setLocalRoutesExcluded(true);
 
         final Ikev2VpnProfile profile = builder.build();
         assertNotNull(profile);
-        assertTrue(profile.getExcludeLocalRoutes());
+        assertTrue(profile.areLocalRoutesExcluded());
 
         builder.setBypassable(false);
         try {

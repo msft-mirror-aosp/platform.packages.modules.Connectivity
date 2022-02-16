@@ -116,27 +116,11 @@ static jint native_replaceUidChain(JNIEnv* env, jobject clazz, jstring name, jbo
     return (jint)res;
 }
 
-static FirewallType getFirewallType(ChildChain chain) {
-    switch (chain) {
-        case DOZABLE:
-            return ALLOWLIST;
-        case STANDBY:
-            return DENYLIST;
-        case POWERSAVE:
-            return ALLOWLIST;
-        case RESTRICTED:
-            return ALLOWLIST;
-        case NONE:
-        default:
-            return DENYLIST;
-    }
-}
-
 static jint native_setUidRule(JNIEnv* env, jobject clazz, jint childChain, jint uid,
                           jint firewallRule) {
     auto chain = static_cast<ChildChain>(childChain);
     auto rule = static_cast<FirewallRule>(firewallRule);
-    FirewallType fType = getFirewallType(chain);
+    FirewallType fType = mTc.getFirewallType(chain);
 
     int res = mTc.changeUidOwnerRule(chain, uid, rule, fType);
     if (res) {
@@ -202,24 +186,6 @@ static void native_setPermissionForUids(JNIEnv* env, jobject clazz, jint permiss
     mTc.setPermissionForUids(permission, data);
 }
 
-static jint native_setCounterSet(JNIEnv* env, jobject clazz, jint setNum, jint uid) {
-    uid_t callingUid = getuid();
-    int res = mTc.setCounterSet(setNum, (uid_t)uid, callingUid);
-    if (res) {
-      ALOGE("%s failed, error code = %d", __func__, res);
-    }
-    return (jint)res;
-}
-
-static jint native_deleteTagData(JNIEnv* env, jobject clazz, jint tagNum, jint uid) {
-    uid_t callingUid = getuid();
-    int res = mTc.deleteTagData(tagNum, (uid_t)uid, callingUid);
-    if (res) {
-      ALOGE("%s failed, error code = %d", __func__, res);
-    }
-    return (jint)res;
-}
-
 /*
  * JNI registration.
  */
@@ -250,10 +216,6 @@ static const JNINativeMethod gMethods[] = {
     (void*)native_swapActiveStatsMap},
     {"native_setPermissionForUids", "(I[I)V",
     (void*)native_setPermissionForUids},
-    {"native_setCounterSet", "(II)I",
-    (void*)native_setCounterSet},
-    {"native_deleteTagData", "(II)I",
-    (void*)native_deleteTagData},
 };
 // clang-format on
 
