@@ -1,3 +1,4 @@
+//
 // Copyright (C) 2022 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,28 +16,13 @@
 
 package {
     default_applicable_licenses: ["Android-Apache-2.0"],
+    default_visibility: ["//packages/modules/Connectivity/Tethering:__subpackages__"],
 }
 
-cc_test {
-    name: "bpf_existence_test",
-    test_suites: [
-        "general-tests",
-        "mts-tethering",
-    ],
-    defaults: [
-        "connectivity-mainline-presubmit-cc-defaults",
-    ],
-    require_root: true,
-    header_libs: [
-        "bpf_headers",
-    ],
-    static_libs: [
-        "libbase",
-        "libmodules-utils-build",
-    ],
-    srcs: [
-        "bpf_existence_test.cpp",
-    ],
-    compile_multilib: "first",
-    min_sdk_version: "29",  // Ensure test runs on Q and above.
+prebuilt_etc {
+    name: "privapp_allowlist_com.android.tethering",
+    sub_dir: "permissions",
+    filename: "permissions.xml",
+    src: "permissions.xml",
+    installable: false,
 }
