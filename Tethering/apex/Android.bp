@@ -22,16 +22,16 @@ package {
 // different value depending on the branch.
 java_defaults {
     name: "ConnectivityNextEnableDefaults",
-    enabled: false,
+    enabled: true,
 }
 apex_defaults {
     name: "ConnectivityApexDefaults",
     // Tethering app to include in the AOSP apex. Branches that disable the "next" targets may use
     // a stable tethering app instead, but will generally override the AOSP apex to use updatable
     // package names and keys, so that apex will be unused anyway.
-    apps: ["Tethering"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
+    apps: ["TetheringNext"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
 }
-enable_tethering_next_apex = false
+enable_tethering_next_apex = true
 // This is a placeholder comment to avoid merge conflicts
 // as the above target may have different "enabled" values
 // depending on the branch
@@ -57,7 +57,10 @@ apex {
             native_shared_libs: ["libnetd_updatable"],
         },
         both: {
-            jni_libs: ["libframework-connectivity-jni"],
+            jni_libs: [
+                "libframework-connectivity-jni",
+                "libframework-connectivity-tiramisu-jni"
+            ],
         },
     },
     binaries: [
@@ -73,6 +76,7 @@ apex {
     ],
     apps: [
         "ServiceConnectivityResources",
+        "HalfSheetUX",
     ],
     prebuilts: [
         "current_sdkinfo",
@@ -103,7 +107,7 @@ bootclasspath_fragment {
     name: "com.android.tethering-bootclasspath-fragment",
     contents: [
         "framework-connectivity",
-        // Changed in sc-mainline-prod only: no framework-connectivity-tiramisu
+        "framework-connectivity-tiramisu",
         "framework-tethering",
     ],
     apex_available: ["com.android.tethering"],
@@ -126,15 +130,16 @@ bootclasspath_fragment {
     // modified by the Soong or platform compat team.
     hidden_api: {
         max_target_r_low_priority: [
-            // Changed in sc-mainline-prod only: no list for
-            // framework-connectivity-tiramisu APIs as it is not in the APEX
+            "hiddenapi/hiddenapi-max-target-r-loprio.txt",
 	],
         max_target_o_low_priority: [
             "hiddenapi/hiddenapi-max-target-o-low-priority.txt",
-            // Changed in sc-mainline-prod only: no list for
-            // framework-connectivity-tiramisu APIs as it is not in the APEX
+            "hiddenapi/hiddenapi-max-target-o-low-priority-tiramisu.txt",
 	],
-        unsupported: ["hiddenapi/hiddenapi-unsupported.txt"],
+        unsupported: [
+            "hiddenapi/hiddenapi-unsupported.txt",
+            "hiddenapi/hiddenapi-unsupported-tiramisu.txt",
+        ],
     },
 }
 
