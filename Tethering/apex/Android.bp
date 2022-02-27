@@ -57,7 +57,11 @@ apex {
             native_shared_libs: ["libnetd_updatable"],
         },
         both: {
-            jni_libs: ["libframework-connectivity-jni"],
+            jni_libs: [
+                "libframework-connectivity-jni",
+                // Changed in sc-mainline-prod only: no framework-connectivity-tiramisu
+                // "libframework-connectivity-tiramisu-jni"
+            ],
         },
     },
     binaries: [
@@ -134,7 +138,11 @@ bootclasspath_fragment {
             // Changed in sc-mainline-prod only: no list for
             // framework-connectivity-tiramisu APIs as it is not in the APEX
 	],
-        unsupported: ["hiddenapi/hiddenapi-unsupported.txt"],
+        unsupported: [
+            "hiddenapi/hiddenapi-unsupported.txt",
+            // Changed in sc-mainline-prod only: no framework-connectivity-tiramisu
+            // "hiddenapi/hiddenapi-unsupported-tiramisu.txt",
+        ],
     },
 }
 
