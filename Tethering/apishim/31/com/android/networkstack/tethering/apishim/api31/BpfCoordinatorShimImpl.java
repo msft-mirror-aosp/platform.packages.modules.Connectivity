@@ -30,11 +30,12 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.net.module.util.BpfMap;
+import com.android.net.module.util.IBpfMap.ThrowingBiConsumer;
+import com.android.net.module.util.bpf.Tether4Key;
+import com.android.net.module.util.bpf.Tether4Value;
 import com.android.networkstack.tethering.BpfCoordinator.Dependencies;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
 import com.android.networkstack.tethering.BpfUtils;
-import com.android.networkstack.tethering.Tether4Key;
-import com.android.networkstack.tethering.Tether4Value;
 import com.android.networkstack.tethering.Tether6Value;
 import com.android.networkstack.tethering.TetherDevKey;
 import com.android.networkstack.tethering.TetherDevValue;
@@ -47,7 +48,6 @@ import com.android.networkstack.tethering.TetherUpstream6Key;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
-import java.util.function.BiConsumer;
 
 /**
  * Bpf coordinator class for API shims.
@@ -410,7 +410,7 @@ public class BpfCoordinatorShimImpl
 
     @Override
     public void tetherOffloadRuleForEach(boolean downstream,
-            @NonNull BiConsumer<Tether4Key, Tether4Value> action) {
+            @NonNull ThrowingBiConsumer<Tether4Key, Tether4Value> action) {
         if (!isInitialized()) return;
 
         try {

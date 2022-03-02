@@ -16,6 +16,8 @@
 
 package com.android.server;
 
+import static android.system.OsConstants.EOPNOTSUPP;
+
 import android.net.INetd;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
@@ -23,6 +25,9 @@ import android.system.Os;
 import android.util.Log;
 
 import com.android.modules.utils.build.SdkLevel;
+
+import java.io.FileDescriptor;
+import java.io.IOException;
 
 /**
  * BpfNetMaps is responsible for providing traffic controller relevant functionality.
@@ -274,29 +279,20 @@ public class BpfNetMaps {
     }
 
     /**
-     * Set counter set for uid
+     * Dump BPF maps
      *
-     * @param counterSet either SET_DEFAULT or SET_FOREGROUND
-     * @param uid        uid to foreground/background
-     * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *                                  cause of the failure.
+     * @param fd file descriptor to output
+     * @throws IOException when file descriptor is invalid.
+     * @throws ServiceSpecificException when the method is called on an unsupported device.
      */
-    public void setCounterSet(final int counterSet, final int uid) {
-        final int err = native_setCounterSet(counterSet, uid);
-        maybeThrow(err, "setCounterSet failed");
-    }
-
-    /**
-     * Reset Uid stats
-     *
-     * @param tag default 0
-     * @param uid given uid to be clear
-     * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *                                  cause of the failure.
-     */
-    public void deleteTagData(final int tag, final int uid) {
-        final int err = native_deleteTagData(tag, uid);
-        maybeThrow(err, "deleteTagData failed");
+    public void dump(final FileDescriptor fd, boolean verbose)
+            throws IOException, ServiceSpecificException {
+        if (USE_NETD) {
+            throw new ServiceSpecificException(
+                    EOPNOTSUPP, "dumpsys connectivity trafficcontroller dump not available on pre-T"
+                    + " devices, use dumpsys netd trafficcontroller instead.");
+        }
+        native_dump(fd, verbose);
     }
 
     private static native void native_init();
@@ -311,6 +307,5 @@ public class BpfNetMaps {
     private native int native_removeUidInterfaceRules(int[] uids);
     private native int native_swapActiveStatsMap();
     private native void native_setPermissionForUids(int permissions, int[] uids);
-    private native int native_setCounterSet(int counterSet, int uid);
-    private native int native_deleteTagData(int tag, int uid);
+    private native void native_dump(FileDescriptor fd, boolean verbose);
 }

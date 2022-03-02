@@ -1536,9 +1536,12 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public @NonNull NetworkCapabilities setNetworkSpecifier(
             @NonNull NetworkSpecifier networkSpecifier) {
-        if (networkSpecifier != null && Long.bitCount(mTransportTypes) != 1) {
-            throw new IllegalStateException("Must have a single transport specified to use " +
-                    "setNetworkSpecifier");
+        if (networkSpecifier != null
+                // Transport can be test, or test + a single other transport
+                && mTransportTypes != (1L << TRANSPORT_TEST)
+                && Long.bitCount(mTransportTypes & ~(1L << TRANSPORT_TEST)) != 1) {
+            throw new IllegalStateException("Must have a single non-test transport specified to "
+                    + "use setNetworkSpecifier");
         }
 
         mNetworkSpecifier = networkSpecifier;
@@ -1615,8 +1618,8 @@ public final class NetworkCapabilities implements Parcelable {
      * <p>
      * Note that when used to register a network callback, this specifies the minimum acceptable
      * signal strength. When received as the state of an existing network it specifies the current
-     * value. A value of code SIGNAL_STRENGTH_UNSPECIFIED} means no value when received and has no
-     * effect when requesting a callback.
+     * value. A value of {@link #SIGNAL_STRENGTH_UNSPECIFIED} means no value when received and has
+     * no effect when requesting a callback.
      *
      * @param signalStrength the bearer-specific signal strength.
      * @hide
