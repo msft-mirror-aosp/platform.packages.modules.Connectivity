@@ -573,6 +573,12 @@ public class ConnectivityServiceTest {
         // is "<permission name>,<pid>,<uid>". PID+UID permissons have priority over generic ones.
         private final HashMap<String, Integer> mMockedPermissions = new HashMap<>();
 
+        private void mockStringResource(int resId) {
+            doAnswer((inv) -> {
+                return "Mock string resource ID=" + inv.getArgument(0);
+            }).when(mInternalResources).getString(resId);
+        }
+
         MockContext(Context base, ContentProvider settingsProvider) {
             super(base);
 
@@ -584,6 +590,18 @@ public class ConnectivityServiceTest {
                     "mobile_supl,3,0,2,60000,true",
             }).when(mInternalResources)
                     .getStringArray(com.android.internal.R.array.networkAttributes);
+
+            final int[] stringResourcesToMock = new int[] {
+                com.android.internal.R.string.config_customVpnAlwaysOnDisconnectedDialogComponent,
+                com.android.internal.R.string.vpn_lockdown_config,
+                com.android.internal.R.string.vpn_lockdown_connected,
+                com.android.internal.R.string.vpn_lockdown_connecting,
+                com.android.internal.R.string.vpn_lockdown_disconnected,
+                com.android.internal.R.string.vpn_lockdown_error,
+            };
+            for (int resId : stringResourcesToMock) {
+                mockStringResource(resId);
+            }
 
             mContentResolver = new MockContentResolver();
             mContentResolver.addProvider(Settings.AUTHORITY, settingsProvider);
@@ -907,6 +925,7 @@ public class ConnectivityServiceTest {
                 return null;
             };
 
+            doAnswer(validateAnswer).when(mNetworkMonitor).notifyNetworkConnected(any(), any());
             doAnswer(validateAnswer).when(mNetworkMonitor).notifyNetworkConnectedParcel(any());
             doAnswer(validateAnswer).when(mNetworkMonitor).forceReevaluation(anyInt());
 
@@ -930,6 +949,11 @@ public class ConnectivityServiceTest {
         }
 
         private void onValidationRequested() throws Exception {
+            if (SdkLevel.isAtLeastT()) {
+                verify(mNetworkMonitor).notifyNetworkConnectedParcel(any());
+            } else {
+                verify(mNetworkMonitor).notifyNetworkConnected(any(), any());
+            }
             if (mNmProvNotificationRequested
                     && ((mNmValidationResult & NETWORK_VALIDATION_RESULT_VALID) != 0)) {
                 mNmCallbacks.hideProvisioningNotification();
@@ -1974,6 +1998,13 @@ public class ConnectivityServiceTest {
             // updated. Check that this happened.
             assertEquals(-1L, (long) mActiveRateLimit.getOrDefault(iface, -1L));
             mActiveRateLimit.put(iface, rateInBytesPerSecond);
+            // verify that clsact qdisc has already been created, otherwise attaching a tc police
+            // filter will fail.
+            try {
+                verify(mMockNetd).networkAddInterface(anyInt(), eq(iface));
+            } catch (RemoteException e) {
+                fail(e.getMessage());
+            }
         }
 
         @Override

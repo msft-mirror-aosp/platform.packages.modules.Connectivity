@@ -1745,7 +1745,7 @@ public class Tethering {
 
             // TODO: Randomize DHCPv4 ranges, especially in hotspot mode.
             // Legacy DHCP server is disabled if passed an empty ranges array
-            final String[] dhcpRanges = cfg.enableLegacyDhcpServer
+            final String[] dhcpRanges = cfg.useLegacyDhcpServer()
                     ? cfg.legacyDhcpRanges : new String[0];
             try {
                 NetdUtils.tetherStart(mNetd, true /** usingLegacyDnsProxy */, dhcpRanges);
@@ -2479,6 +2479,13 @@ public class Tethering {
         @SuppressWarnings("resource") final IndentingPrintWriter pw = new IndentingPrintWriter(
                 writer, "  ");
 
+        // Used for testing instead of human debug.
+        // TODO: add options to choose which map to dump.
+        if (argsContain(args, "bpfRawMap")) {
+            mBpfCoordinator.dumpRawMap(pw);
+            return;
+        }
+
         if (argsContain(args, "bpf")) {
             dumpBpf(pw);
             return;
@@ -2715,8 +2722,7 @@ public class Tethering {
         mLog.i("adding IpServer for: " + iface);
         final TetherState tetherState = new TetherState(
                 new IpServer(iface, mLooper, interfaceType, mLog, mNetd, mBpfCoordinator,
-                             makeControlCallback(), mConfig.enableLegacyDhcpServer,
-                             mConfig.isBpfOffloadEnabled(), mPrivateAddressCoordinator,
+                             makeControlCallback(), mConfig, mPrivateAddressCoordinator,
                              mDeps.getIpServerDependencies()), isNcm);
         mTetherStates.put(iface, tetherState);
         tetherState.ipServer.start();

@@ -57,7 +57,10 @@ apex {
             native_shared_libs: ["libnetd_updatable"],
         },
         both: {
-            jni_libs: ["libframework-connectivity-jni"],
+            jni_libs: [
+                "libframework-connectivity-jni",
+                "libframework-connectivity-tiramisu-jni"
+            ],
         },
     },
     binaries: [
@@ -74,7 +77,10 @@ apex {
     apps: [
         "ServiceConnectivityResources",
     ],
-    prebuilts: ["current_sdkinfo"],
+    prebuilts: [
+        "current_sdkinfo",
+        "privapp_allowlist_com.android.tethering",
+    ],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
     // Indicates that pre-installed version of this apex can be compressed.
@@ -100,7 +106,7 @@ bootclasspath_fragment {
     name: "com.android.tethering-bootclasspath-fragment",
     contents: [
         "framework-connectivity",
-        "framework-connectivity-tiramisu",
+        "framework-connectivity-t",
         "framework-tethering",
     ],
     apex_available: ["com.android.tethering"],
@@ -129,7 +135,10 @@ bootclasspath_fragment {
             "hiddenapi/hiddenapi-max-target-o-low-priority.txt",
             "hiddenapi/hiddenapi-max-target-o-low-priority-tiramisu.txt",
 	],
-        unsupported: ["hiddenapi/hiddenapi-unsupported.txt"],
+        unsupported: [
+            "hiddenapi/hiddenapi-unsupported.txt",
+            "hiddenapi/hiddenapi-unsupported-tiramisu.txt",
+        ],
     },
 }
 
