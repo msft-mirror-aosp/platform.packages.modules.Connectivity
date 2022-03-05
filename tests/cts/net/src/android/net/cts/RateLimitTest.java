@@ -64,7 +64,6 @@ import com.android.testutils.TestableNetworkCallback;
 
 import org.junit.After;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -84,6 +83,9 @@ import java.util.stream.Collectors;
 @RunWith(DevSdkIgnoreRunner.class)
 @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
 public class RateLimitTest {
+    // cannot be final as it gets initialized inside ensureKernelConfigLoaded().
+    private static HashSet<String> sKernelConfig;
+
     private static final String TAG = "RateLimitTest";
     private static final LinkAddress LOCAL_IP4_ADDR = new LinkAddress("10.0.0.1/8");
     private static final InetAddress REMOTE_IP4_ADDR = InetAddresses.parseNumericAddress("8.8.8.8");
@@ -107,23 +109,30 @@ public class RateLimitTest {
     private Network mNetwork;
     private DatagramSocket mSocket;
 
-    @BeforeClass
-    public static void assumeKernelSupport() {
+    // Note: exceptions thrown in @BeforeClass or @ClassRule methods are not reported correctly.
+    // This function is called from setUp and loads the kernel config options the first time it is
+    // invoked. This ensures proper error reporting.
+    private static synchronized void ensureKernelConfigLoaded() {
+        if (sKernelConfig != null) return;
         final String result = SystemUtil.runShellCommandOrThrow("gzip -cd /proc/config.gz");
-        HashSet<String> kernelConfig = Arrays.stream(result.split("\\R")).collect(
+        sKernelConfig = Arrays.stream(result.split("\\R")).collect(
                 Collectors.toCollection(HashSet::new));
 
         // make sure that if for some reason /proc/config.gz returns an empty string, this test
         // does not silently fail.
-        assertNotEquals(0, result.length());
+        assertNotEquals("gzip -cd /proc/config.gz returned an empty string", 0, result.length());
+    }
 
-        assumeTrue(kernelConfig.contains("CONFIG_NET_CLS_MATCHALL=y"));
-        assumeTrue(kernelConfig.contains("CONFIG_NET_ACT_POLICE=y"));
-        assumeTrue(kernelConfig.contains("CONFIG_NET_ACT_BPF=y"));
+    private static void assumeKernelSupport() {
+        assumeTrue(sKernelConfig.contains("CONFIG_NET_CLS_MATCHALL=y"));
+        assumeTrue(sKernelConfig.contains("CONFIG_NET_ACT_POLICE=y"));
+        assumeTrue(sKernelConfig.contains("CONFIG_NET_ACT_BPF=y"));
     }
 
     @Before
     public void setUp() throws IOException {
+        ensureKernelConfigLoaded();
+
         mHandler = new Handler(Looper.getMainLooper());
 
         runAsShell(MANAGE_TEST_NETWORKS, () -> {
@@ -176,12 +185,14 @@ public class RateLimitTest {
 
     @After
     public void tearDown() throws IOException {
-        // whatever happens, don't leave the device in rate limited state.
-        ConnectivitySettingsManager.setIngressRateLimitInBytesPerSecond(mContext, -1);
-        mSocket.close();
-        mNetworkAgent.unregister();
-        mTunInterface.getFileDescriptor().close();
-        mCm.unregisterNetworkCallback(mNetworkCallback);
+        if (mContext != null) {
+            // whatever happens, don't leave the device in rate limited state.
+            ConnectivitySettingsManager.setIngressRateLimitInBytesPerSecond(mContext, -1);
+        }
+        if (mSocket != null) mSocket.close();
+        if (mNetworkAgent != null) mNetworkAgent.unregister();
+        if (mTunInterface != null) mTunInterface.getFileDescriptor().close();
+        if (mCm != null) mCm.unregisterNetworkCallback(mNetworkCallback);
     }
 
     private void assertGreaterThan(final String msg, long lhs, long rhs) {
@@ -288,6 +299,8 @@ public class RateLimitTest {
 
     @Test
     public void testIngressRateLimit_testLimit() throws Exception {
+        assumeKernelSupport();
+
         // If this value is too low, this test might become flaky because of the burst value that
         // allows to send at a higher data rate for a short period of time. The faster the data rate
         // and the longer the test, the less this test will be affected.
