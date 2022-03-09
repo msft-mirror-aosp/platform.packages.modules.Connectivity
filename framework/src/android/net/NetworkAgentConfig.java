@@ -244,13 +244,13 @@ public final class NetworkAgentConfig implements Parcelable {
      * @return whether local traffic is excluded from the VPN network.
      * @hide
      */
-    public boolean getExcludeLocalRouteVpn() {
+    public boolean areLocalRoutesExcludedForVpn() {
         return excludeLocalRouteVpn;
     }
 
     /**
      * Whether network validation should be performed for this VPN network.
-     * {@see #getVpnRequiresValidation}
+     * {@see #isVpnValidationRequired}
      * @hide
      */
     private boolean mVpnRequiresValidation = false;
@@ -265,7 +265,7 @@ public final class NetworkAgentConfig implements Parcelable {
      * @hide
      */
     @SystemApi(client = MODULE_LIBRARIES)
-    public boolean getVpnRequiresValidation() {
+    public boolean isVpnValidationRequired() {
         return mVpnRequiresValidation;
     }
 
@@ -472,7 +472,7 @@ public final class NetworkAgentConfig implements Parcelable {
          */
         @NonNull
         @SystemApi(client = MODULE_LIBRARIES)
-        public Builder setExcludeLocalRoutesVpn(boolean excludeLocalRoutes) {
+        public Builder setLocalRoutesExcludedForVpn(boolean excludeLocalRoutes) {
             mConfig.excludeLocalRouteVpn = excludeLocalRoutes;
             return this;
         }
