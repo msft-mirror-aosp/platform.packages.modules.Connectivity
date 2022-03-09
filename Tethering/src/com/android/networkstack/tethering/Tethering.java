@@ -1533,16 +1533,28 @@ public class Tethering {
         return mConfig;
     }
 
-    boolean hasTetherableConfiguration() {
-        final TetheringConfiguration cfg = mConfig;
-        final boolean hasDownstreamConfiguration =
-                (cfg.tetherableUsbRegexs.length != 0)
-                || (cfg.tetherableWifiRegexs.length != 0)
-                || (cfg.tetherableBluetoothRegexs.length != 0);
-        final boolean hasUpstreamConfiguration = !cfg.preferredUpstreamIfaceTypes.isEmpty()
-                || cfg.chooseUpstreamAutomatically;
+    boolean hasAnySupportedDownstream() {
+        if ((mConfig.tetherableUsbRegexs.length != 0)
+                || (mConfig.tetherableWifiRegexs.length != 0)
+                || (mConfig.tetherableBluetoothRegexs.length != 0)) {
+            return true;
+        }
 
-        return hasDownstreamConfiguration && hasUpstreamConfiguration;
+        // Before T, isTetheringSupported would return true if wifi, usb and bluetooth tethering are
+        // disabled (whole tethering settings would be hidden). This means tethering would also not
+        // support wifi p2p, ethernet tethering and mirrorlink. This is wrong but probably there are
+        // some devices in the field rely on this to disable tethering entirely.
+        if (!SdkLevel.isAtLeastT()) return false;
+
+        return (mConfig.tetherableWifiP2pRegexs.length != 0)
+                || (mConfig.tetherableNcmRegexs.length != 0)
+                || isEthernetSupported();
+    }
+
+    // TODO: using EtherentManager new API to check whether ethernet is supported when the API is
+    // ready to use.
+    private boolean isEthernetSupported() {
+        return mContext.getSystemService(Context.ETHERNET_SERVICE) != null;
     }
 
     void setUsbTethering(boolean enable, IIntResultListener listener) {
@@ -1745,7 +1757,7 @@ public class Tethering {
 
             // TODO: Randomize DHCPv4 ranges, especially in hotspot mode.
             // Legacy DHCP server is disabled if passed an empty ranges array
-            final String[] dhcpRanges = cfg.enableLegacyDhcpServer
+            final String[] dhcpRanges = cfg.useLegacyDhcpServer()
                     ? cfg.legacyDhcpRanges : new String[0];
             try {
                 NetdUtils.tetherStart(mNetd, true /** usingLegacyDnsProxy */, dhcpRanges);
@@ -2463,7 +2475,7 @@ public class Tethering {
         final boolean tetherEnabledInSettings = tetherSupported
                 && !mUserManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING);
 
-        return tetherEnabledInSettings && hasTetherableConfiguration()
+        return tetherEnabledInSettings && hasAnySupportedDownstream()
                 && !isProvisioningNeededButUnavailable();
     }
 
@@ -2722,8 +2734,7 @@ public class Tethering {
         mLog.i("adding IpServer for: " + iface);
         final TetherState tetherState = new TetherState(
                 new IpServer(iface, mLooper, interfaceType, mLog, mNetd, mBpfCoordinator,
-                             makeControlCallback(), mConfig.enableLegacyDhcpServer,
-                             mConfig.isBpfOffloadEnabled(), mPrivateAddressCoordinator,
+                             makeControlCallback(), mConfig, mPrivateAddressCoordinator,
                              mDeps.getIpServerDependencies()), isNcm);
         mTetherStates.put(iface, tetherState);
         tetherState.ipServer.start();

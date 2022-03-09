@@ -198,7 +198,6 @@ import android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener;
 import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
 import android.net.shared.PrivateDnsConfig;
-import android.net.util.InterfaceParams;
 import android.net.util.MultinetworkPolicyTracker;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
@@ -245,6 +244,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.LinkPropertiesUtils.CompareOrUpdateResult;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
 import com.android.net.module.util.LocationPermissionChecker;
@@ -313,6 +313,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public static final String SHORT_ARG = "--short";
     private static final String NETWORK_ARG = "networks";
     private static final String REQUEST_ARG = "requests";
+    private static final String TRAFFICCONTROLLER_ARG = "trafficcontroller";
 
     private static final boolean DBG = true;
     private static final boolean DDBG = Log.isLoggable(TAG, Log.DEBUG);
@@ -645,8 +646,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * Event for NetworkMonitor to inform ConnectivityService that the probe status has changed.
      * Both of the arguments are bitmasks, and the value of bits come from
      * INetworkMonitor.NETWORK_VALIDATION_PROBE_*.
-     * arg1 = A bitmask to describe which probes are completed.
-     * arg2 = A bitmask to describe which probes are successful.
+     * arg1 = unused
+     * arg2 = netId
+     * obj = A Pair of integers: the bitmasks of, respectively, completed and successful probes.
      */
     public static final int EVENT_PROBE_STATUS_CHANGED = 45;
 
@@ -1409,6 +1411,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 // converting rateInBytesPerSecond from long to int is safe here because the
                 // setting's range is limited to INT_MAX.
                 // TODO: add long/uint64 support to tcFilterAddDevIngressPolice.
+                Log.i(TAG,
+                        "enableIngressRateLimit on " + iface + ": " + rateInBytesPerSecond + "B/s");
                 TcUtils.tcFilterAddDevIngressPolice(params.index, TC_PRIO_POLICE, (short) ETH_P_ALL,
                         (int) rateInBytesPerSecond, TC_POLICE_BPF_PROG_PATH);
             } catch (IOException e) {
@@ -1430,6 +1434,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 return;
             }
             try {
+                Log.i(TAG,
+                        "disableIngressRateLimit on " + iface);
                 TcUtils.tcFilterDelDev(params.index, true, TC_PRIO_POLICE, (short) ETH_P_ALL);
             } catch (IOException e) {
                 loge("TcUtils.tcFilterDelDev(ifaceIndex=" + params.index
@@ -1752,7 +1758,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         // Watch for ingress rate limit changes.
         mSettingsObserver.observe(
-                Settings.Secure.getUriFor(
+                Settings.Global.getUriFor(
                         ConnectivitySettingsManager.INGRESS_RATE_LIMIT_BYTES_PER_SECOND),
                 EVENT_INGRESS_RATE_LIMIT_CHANGED);
     }
@@ -3212,6 +3218,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } else if (CollectionUtils.contains(args, REQUEST_ARG)) {
             dumpNetworkRequests(pw);
             return;
+        } else if (CollectionUtils.contains(args, TRAFFICCONTROLLER_ARG)) {
+            boolean verbose = !CollectionUtils.contains(args, SHORT_ARG);
+            dumpTrafficController(pw, fd, verbose);
+            return;
         }
 
         pw.print("NetworkProviders for:");
@@ -3429,6 +3439,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    private void dumpTrafficController(IndentingPrintWriter pw, final FileDescriptor fd,
+            boolean verbose) {
+        try {
+            mBpfNetMaps.dump(fd, verbose);
+        } catch (ServiceSpecificException e) {
+            pw.println(e.getMessage());
+        } catch (IOException e) {
+            loge("Dump BPF maps failed, " + e);
+        }
+    }
+
     private void dumpAllRequestInfoLogsToLogcat() {
         try (PrintWriter logPw = new PrintWriter(new Writer() {
             @Override
@@ -3602,19 +3623,21 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         private boolean maybeHandleNetworkMonitorMessage(Message msg) {
+            final int netId = msg.arg2;
+            final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(netId);
             switch (msg.what) {
                 default:
                     return false;
                 case EVENT_PROBE_STATUS_CHANGED: {
-                    final Integer netId = (Integer) msg.obj;
-                    final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(netId);
                     if (nai == null) {
                         break;
                     }
+                    final int probesCompleted = ((Pair<Integer, Integer>) msg.obj).first;
+                    final int probesSucceeded = ((Pair<Integer, Integer>) msg.obj).second;
                     final boolean probePrivateDnsCompleted =
-                            ((msg.arg1 & NETWORK_VALIDATION_PROBE_PRIVDNS) != 0);
+                            ((probesCompleted & NETWORK_VALIDATION_PROBE_PRIVDNS) != 0);
                     final boolean privateDnsBroken =
-                            ((msg.arg2 & NETWORK_VALIDATION_PROBE_PRIVDNS) == 0);
+                            ((probesSucceeded & NETWORK_VALIDATION_PROBE_PRIVDNS) == 0);
                     if (probePrivateDnsCompleted) {
                         if (nai.networkCapabilities.isPrivateDnsBroken() != privateDnsBroken) {
                             nai.networkCapabilities.setPrivateDnsBroken(privateDnsBroken);
@@ -3641,7 +3664,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case EVENT_NETWORK_TESTED: {
                     final NetworkTestedResults results = (NetworkTestedResults) msg.obj;
 
-                    final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(results.mNetId);
                     if (nai == null) break;
 
                     handleNetworkTested(nai, results.mTestResult,
@@ -3649,9 +3671,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     break;
                 }
                 case EVENT_PROVISIONING_NOTIFICATION: {
-                    final int netId = msg.arg2;
                     final boolean visible = toBool(msg.arg1);
-                    final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(netId);
                     // If captive portal status has changed, update capabilities or disconnect.
                     if (nai != null && (visible != nai.lastCaptivePortalDetected)) {
                         nai.lastCaptivePortalDetected = visible;
@@ -3685,14 +3705,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     break;
                 }
                 case EVENT_PRIVATE_DNS_CONFIG_RESOLVED: {
-                    final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(msg.arg2);
                     if (nai == null) break;
 
                     updatePrivateDns(nai, (PrivateDnsConfig) msg.obj);
                     break;
                 }
                 case EVENT_CAPPORT_DATA_CHANGED: {
-                    final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(msg.arg2);
                     if (nai == null) break;
                     handleCapportApiDataUpdate(nai, (CaptivePortalData) msg.obj);
                     break;
@@ -3832,6 +3850,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // the same looper so messages will be processed in sequence.
             final Message msg = mTrackerHandler.obtainMessage(
                     EVENT_NETWORK_TESTED,
+                    0, mNetId,
                     new NetworkTestedResults(
                             mNetId, p.result, p.timestampMillis, p.redirectUrl));
             mTrackerHandler.sendMessage(msg);
@@ -3854,7 +3873,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             ConnectivityReportEvent reportEvent =
                     new ConnectivityReportEvent(p.timestampMillis, nai, extras);
             final Message m = mConnectivityDiagnosticsHandler.obtainMessage(
-                    ConnectivityDiagnosticsHandler.EVENT_NETWORK_TESTED, reportEvent);
+                    ConnectivityDiagnosticsHandler.CMD_SEND_CONNECTIVITY_REPORT, reportEvent);
             mConnectivityDiagnosticsHandler.sendMessage(m);
         }
 
@@ -3869,7 +3888,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         public void notifyProbeStatusChanged(int probesCompleted, int probesSucceeded) {
             mTrackerHandler.sendMessage(mTrackerHandler.obtainMessage(
                     EVENT_PROBE_STATUS_CHANGED,
-                    probesCompleted, probesSucceeded, new Integer(mNetId)));
+                    0, mNetId, new Pair<>(probesCompleted, probesSucceeded)));
         }
 
         @Override
@@ -4223,7 +4242,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mDnsManager.removeNetwork(nai.network);
 
             // clean up tc police filters on interface.
-            if (canNetworkBeRateLimited(nai) && mIngressRateLimit >= 0) {
+            if (nai.everConnected && canNetworkBeRateLimited(nai) && mIngressRateLimit >= 0) {
                 mDeps.disableIngressRateLimit(nai.linkProperties.getInterfaceName());
             }
         }
@@ -8992,19 +9011,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // A network that has just connected has zero requests and is thus a foreground network.
             networkAgent.networkCapabilities.addCapability(NET_CAPABILITY_FOREGROUND);
 
-            // If a rate limit has been configured and is applicable to this network (network
-            // provides internet connectivity), apply it.
-            // Note: in case of a system server crash, there is a very small chance that this
-            // leaves some interfaces rate limited (i.e. if the rate limit had been changed just
-            // before the crash and was never applied). One solution would be to delete all
-            // potential tc police filters every time this is called. Since this is an unlikely
-            // scenario in the first place (and worst case, the interface stays rate limited until
-            // the device is rebooted), this seems a little overkill.
-            if (canNetworkBeRateLimited(networkAgent) && mIngressRateLimit >= 0) {
-                mDeps.enableIngressRateLimit(networkAgent.linkProperties.getInterfaceName(),
-                        mIngressRateLimit);
-            }
-
             if (!createNativeNetwork(networkAgent)) return;
             if (networkAgent.propagateUnderlyingCapabilities()) {
                 // Initialize the network's capabilities to their starting values according to the
@@ -9027,6 +9033,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
             handlePerNetworkPrivateDnsConfig(networkAgent, mDnsManager.getPrivateDnsConfig());
             updateLinkProperties(networkAgent, new LinkProperties(networkAgent.linkProperties),
                     null);
+
+            // If a rate limit has been configured and is applicable to this network (network
+            // provides internet connectivity), apply it. The tc police filter cannot be attached
+            // before the clsact qdisc is added which happens as part of updateLinkProperties ->
+            // updateInterfaces -> INetd#networkAddInterface.
+            // Note: in case of a system server crash, the NetworkController constructor in netd
+            // (called when netd starts up) deletes the clsact qdisc of all interfaces.
+            if (canNetworkBeRateLimited(networkAgent) && mIngressRateLimit >= 0) {
+                mDeps.enableIngressRateLimit(networkAgent.linkProperties.getInterfaceName(),
+                        mIngressRateLimit);
+            }
 
             // Until parceled LinkProperties are sent directly to NetworkMonitor, the connect
             // command must be sent after updating LinkProperties to maximize chances of
@@ -9579,14 +9596,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         /**
          * Event for {@link NetworkStateTrackerHandler} to trigger ConnectivityReport callbacks
-         * after processing {@link #EVENT_NETWORK_TESTED} events.
+         * after processing {@link #CMD_SEND_CONNECTIVITY_REPORT} events.
          * obj = {@link ConnectivityReportEvent} representing ConnectivityReport info reported from
          * NetworkMonitor.
          * data = PersistableBundle of extras passed from NetworkMonitor.
-         *
-         * <p>See {@link ConnectivityService#EVENT_NETWORK_TESTED}.
          */
-        private static final int EVENT_NETWORK_TESTED = ConnectivityService.EVENT_NETWORK_TESTED;
+        private static final int CMD_SEND_CONNECTIVITY_REPORT = 3;
 
         /**
          * Event for NetworkMonitor to inform ConnectivityService that a potential data stall has
@@ -9624,7 +9639,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             (IConnectivityDiagnosticsCallback) msg.obj, msg.arg1);
                     break;
                 }
-                case EVENT_NETWORK_TESTED: {
+                case CMD_SEND_CONNECTIVITY_REPORT: {
                     final ConnectivityReportEvent reportEvent =
                             (ConnectivityReportEvent) msg.obj;
 
@@ -10684,15 +10699,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean canNetworkBeRateLimited(@NonNull final NetworkAgentInfo networkAgent) {
-        if (!networkAgent.networkCapabilities.hasCapability(NET_CAPABILITY_INTERNET)) {
-            // rate limits only apply to networks that provide internet connectivity.
+        // Rate-limiting cannot run correctly before T because the BPF program is not loaded.
+        if (!SdkLevel.isAtLeastT()) return false;
+
+        final NetworkCapabilities agentCaps = networkAgent.networkCapabilities;
+        // Only test networks (they cannot hold NET_CAPABILITY_INTERNET) and networks that provide
+        // internet connectivity can be rate limited.
+        if (!agentCaps.hasCapability(NET_CAPABILITY_INTERNET) && !agentCaps.hasTransport(
+                TRANSPORT_TEST)) {
             return false;
         }
 
         final String iface = networkAgent.linkProperties.getInterfaceName();
         if (iface == null) {
-            // This can never happen.
-            logwtf("canNetworkBeRateLimited: LinkProperties#getInterfaceName returns null");
+            // This may happen in tests, but if there is no interface then there is nothing that
+            // can be rate limited.
+            loge("canNetworkBeRateLimited: LinkProperties#getInterfaceName returns null");
             return false;
         }
         return true;
@@ -11037,7 +11059,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 mBpfNetMaps.removeNiceApp(uid);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11052,7 +11074,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 mBpfNetMaps.removeNaughtyApp(uid);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11064,7 +11086,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         try {
             mBpfNetMaps.setUidRule(chain, uid,
                     allow ? INetd.FIREWALL_RULE_ALLOW : INetd.FIREWALL_RULE_DENY);
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11075,7 +11097,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         try {
             mBpfNetMaps.setChildChain(chain, enable);
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11106,17 +11128,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     throw new IllegalArgumentException("replaceFirewallChain with invalid chain: "
                             + chain);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    @Override
-    public void swapActiveStatsMap() {
-        enforceNetworkStackOrSettingsPermission();
-        try {
-            mBpfNetMaps.swapActiveStatsMap();
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
