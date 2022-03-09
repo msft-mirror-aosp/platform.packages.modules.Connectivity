@@ -86,7 +86,6 @@ import android.net.dhcp.IDhcpServerCallbacks;
 import android.net.ip.IpNeighborMonitor.NeighborEvent;
 import android.net.ip.IpNeighborMonitor.NeighborEventConsumer;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
-import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
 import android.os.Build;
 import android.os.Handler;
@@ -100,12 +99,13 @@ import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.net.module.util.BpfMap;
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
+import com.android.net.module.util.bpf.Tether4Key;
+import com.android.net.module.util.bpf.Tether4Value;
 import com.android.networkstack.tethering.BpfCoordinator;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
 import com.android.networkstack.tethering.PrivateAddressCoordinator;
-import com.android.networkstack.tethering.Tether4Key;
-import com.android.networkstack.tethering.Tether4Value;
 import com.android.networkstack.tethering.Tether6Value;
 import com.android.networkstack.tethering.TetherDevKey;
 import com.android.networkstack.tethering.TetherDevValue;
@@ -228,9 +228,11 @@ public class IpServerTest {
         doReturn(mIpNeighborMonitor).when(mDependencies).getIpNeighborMonitor(any(), any(),
                 neighborCaptor.capture());
 
+        when(mTetherConfig.isBpfOffloadEnabled()).thenReturn(usingBpfOffload);
+        when(mTetherConfig.useLegacyDhcpServer()).thenReturn(usingLegacyDhcp);
         mIpServer = new IpServer(
                 IFACE_NAME, mLooper.getLooper(), interfaceType, mSharedLog, mNetd, mBpfCoordinator,
-                mCallback, usingLegacyDhcp, usingBpfOffload, mAddressCoordinator, mDependencies);
+                mCallback, mTetherConfig, mAddressCoordinator, mDependencies);
         mIpServer.start();
         mNeighborEventConsumer = neighborCaptor.getValue();
 
@@ -281,7 +283,8 @@ public class IpServerTest {
         when(mSharedLog.forSubComponent(anyString())).thenReturn(mSharedLog);
         when(mAddressCoordinator.requestDownstreamAddress(any(), anyBoolean())).thenReturn(
                 mTestAddress);
-        when(mTetherConfig.isBpfOffloadEnabled()).thenReturn(true /* default value */);
+        when(mTetherConfig.isBpfOffloadEnabled()).thenReturn(DEFAULT_USING_BPF_OFFLOAD);
+        when(mTetherConfig.useLegacyDhcpServer()).thenReturn(false /* default value */);
 
         mBpfDeps = new BpfCoordinator.Dependencies() {
                     @NonNull
@@ -360,8 +363,8 @@ public class IpServerTest {
         when(mDependencies.getIpNeighborMonitor(any(), any(), any()))
                 .thenReturn(mIpNeighborMonitor);
         mIpServer = new IpServer(IFACE_NAME, mLooper.getLooper(), TETHERING_BLUETOOTH, mSharedLog,
-                mNetd, mBpfCoordinator, mCallback, false /* usingLegacyDhcp */,
-                DEFAULT_USING_BPF_OFFLOAD, mAddressCoordinator, mDependencies);
+                mNetd, mBpfCoordinator, mCallback, mTetherConfig, mAddressCoordinator,
+                mDependencies);
         mIpServer.start();
         mLooper.dispatchAll();
         verify(mCallback).updateInterfaceState(

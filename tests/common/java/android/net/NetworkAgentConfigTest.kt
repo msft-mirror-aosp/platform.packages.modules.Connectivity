@@ -51,7 +51,7 @@ class NetworkAgentConfigTest {
                 setBypassableVpn(true)
             }
             if (isAtLeastT()) {
-                setExcludeLocalRoutesVpn(true)
+                setLocalRoutesExcludedForVpn(true)
                 setVpnRequiresValidation(true)
             }
         }.build()
@@ -75,7 +75,7 @@ class NetworkAgentConfigTest {
                 setBypassableVpn(true)
             }
             if (isAtLeastT()) {
-                setExcludeLocalRoutesVpn(true)
+                setLocalRoutesExcludedForVpn(true)
                 setVpnRequiresValidation(true)
             }
         }.build()
@@ -87,8 +87,8 @@ class NetworkAgentConfigTest {
         assertTrue(config.isUnvalidatedConnectivityAcceptable())
         assertEquals("TEST_NETWORK", config.getLegacyTypeName())
         if (isAtLeastT()) {
-            assertTrue(config.getExcludeLocalRouteVpn())
-            assertTrue(config.getVpnRequiresValidation())
+            assertTrue(config.areLocalRoutesExcludedForVpn())
+            assertTrue(config.isVpnValidationRequired())
         }
         if (isAtLeastS()) {
             assertEquals(testExtraInfo, config.getLegacyExtraInfo())
