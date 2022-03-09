@@ -19,6 +19,9 @@
       ]
     },
     {
+      "name": "bpf_existence_test"
+    },
+    {
       "name": "netd_updatable_unit_test"
     },
     {
@@ -40,10 +43,6 @@
   "postsubmit": [
     {
       "name": "TetheringPrivilegedTests"
-    },
-    // TODO: move to presubmit when known green.
-    {
-      "name": "bpf_existence_test"
     },
     {
       "name": "netd_updatable_unit_test",
@@ -74,6 +73,9 @@
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
         }
       ]
+    },
+    {
+      "name": "bpf_existence_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
     },
     {
       "name": "netd_updatable_unit_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
@@ -111,7 +113,10 @@
       ]
     },
     // TODO: move to mainline-presubmit when known green.
-    // Test with connectivity/tethering module only, to catch integration issues with older versions of other modules
+    // Test with connectivity/tethering module only, to catch integration issues with older versions of other modules.
+    // "new tethering + old NetworkStack" is not a configuration that should really exist in the field, but
+    // there is no strong guarantee, and it is required by MTS testing for module qualification, where modules
+    // are tested independently.
     {
       "name": "CtsNetTestCasesLatestSdk[com.google.android.tethering.apex]",
       "options": [
@@ -125,10 +130,6 @@
     },
     {
       "name": "TetheringCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
-    },
-    // TODO: move to mainline-presubmit when known green.
-    {
-      "name": "bpf_existence_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
     }
   ],
   "auto-postsubmit": [
@@ -160,9 +161,6 @@
     },
     {
       "path": "packages/modules/CaptivePortalLogin"
-    },
-    {
-      "path": "packages/modules/Connectivity/Tethering"
     }
   ]
 }

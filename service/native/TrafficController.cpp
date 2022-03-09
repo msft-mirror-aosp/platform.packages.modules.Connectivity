@@ -65,7 +65,6 @@ using netdutils::sSyscalls;
 using netdutils::Status;
 using netdutils::statusFromErrno;
 using netdutils::StatusOr;
-using netdutils::status::ok;
 
 constexpr int kSockDiagMsgType = SOCK_DIAG_BY_FAMILY;
 constexpr int kSockDiagDoneMsgType = NLMSG_DONE;
@@ -601,8 +600,10 @@ void dumpBpfMap(const std::string& mapName, DumpWriter& dw, const std::string& h
     }
 }
 
-void TrafficController::dump(DumpWriter& dw, bool verbose) {
+void TrafficController::dump(int fd, bool verbose) {
     std::lock_guard guard(mMutex);
+    DumpWriter dw(fd);
+
     ScopedIndent indentTop(dw);
     dw.println("TrafficController");
 
