@@ -28,13 +28,13 @@ import static android.net.NetworkStats.SET_FOREGROUND;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 
-import static com.android.server.NetworkManagementSocketTagger.kernelToTag;
+import static com.android.server.net.NetworkStatsFactory.kernelToTag;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 
+import android.content.Context;
 import android.content.res.Resources;
-import android.net.INetd;
 import android.net.NetworkStats;
 import android.net.TrafficStats;
 import android.net.UnderlyingNetworkInfo;
@@ -73,8 +73,7 @@ public class NetworkStatsFactoryTest extends NetworkStatsBaseTest {
 
     private File mTestProc;
     private NetworkStatsFactory mFactory;
-    @Mock
-    private INetd mNetd;
+    @Mock private Context mContext;
 
     @Before
     public void setUp() throws Exception {
@@ -85,7 +84,7 @@ public class NetworkStatsFactoryTest extends NetworkStatsBaseTest {
         // applications. So in order to have a test support native library, the native code
         // related to networkStatsFactory is compiled to a minimal native library and loaded here.
         System.loadLibrary("networkstatsfactorytestjni");
-        mFactory = new NetworkStatsFactory(mTestProc, false, mNetd);
+        mFactory = new NetworkStatsFactory(mContext, mTestProc, false);
         mFactory.updateUnderlyingNetworkInfos(new UnderlyingNetworkInfo[0]);
     }
 

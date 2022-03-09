@@ -20,10 +20,9 @@ import static android.system.OsConstants.ETH_P_IPV6;
 
 import static com.android.networkstack.tethering.util.TetheringUtils.getTetheringJniLibraryName;
 
-import android.net.util.InterfaceParams;
-
 import androidx.annotation.NonNull;
 
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.TcUtils;
 
 import java.io.IOException;
@@ -55,11 +54,11 @@ public class BpfUtils {
     static final boolean DOWNSTREAM = true;
     static final boolean UPSTREAM = false;
 
-    // The priority of clat/tether hooks - smaller is higher priority.
+    // The priority of tether hooks - smaller is higher priority.
     // TC tether is higher priority then TC clat to match XDP winning over TC.
-    // Sync from system/netd/server/OffloadUtils.h.
-    static final short PRIO_TETHER6 = 1;
-    static final short PRIO_TETHER4 = 2;
+    // Sync from system/netd/server/TcUtils.h.
+    static final short PRIO_TETHER6 = 2;
+    static final short PRIO_TETHER4 = 3;
     // note that the above must be lower than PRIO_CLAT from netd's OffloadUtils.cpp
 
     private static String makeProgPath(boolean downstream, int ipVersion, boolean ether) {

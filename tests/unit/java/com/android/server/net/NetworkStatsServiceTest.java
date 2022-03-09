@@ -63,24 +63,28 @@ import static android.text.format.DateUtils.WEEK_IN_MILLIS;
 
 import static com.android.net.module.util.NetworkStatsUtils.SUBSCRIBER_ID_MATCH_RULE_EXACT;
 import static com.android.server.net.NetworkStatsService.ACTION_NETWORK_STATS_POLL;
+import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
 import android.app.AlarmManager;
-import android.app.usage.NetworkStatsManager;
 import android.content.Context;
 import android.content.Intent;
 import android.database.ContentObserver;
@@ -100,31 +104,31 @@ import android.net.TetheringManager;
 import android.net.UnderlyingNetworkInfo;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
 import android.net.wifi.WifiInfo;
-import android.os.Build;
-import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
-import android.os.Looper;
-import android.os.Message;
-import android.os.Messenger;
 import android.os.PowerManager;
 import android.os.SimpleClock;
 import android.provider.Settings;
+import android.system.ErrnoException;
 import android.telephony.TelephonyManager;
 
 import androidx.annotation.Nullable;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
-import com.android.internal.util.ArrayUtils;
 import com.android.internal.util.test.BroadcastInterceptingContext;
+import com.android.net.module.util.IBpfMap;
+import com.android.net.module.util.LocationPermissionChecker;
+import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.Struct.U8;
 import com.android.server.net.NetworkStatsService.AlertObserver;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings.Config;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
+import com.android.testutils.TestBpfMap;
 import com.android.testutils.TestableNetworkStatsProviderBinder;
 
 import libcore.testing.io.TestIoUtils;
@@ -143,6 +147,7 @@ import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Tests for {@link NetworkStatsService}.
@@ -152,7 +157,8 @@ import java.util.concurrent.Executor;
  */
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
+// NetworkStatsService is not updatable before T, so tests do not need to be backwards compatible
+@DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
 public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private static final String TAG = "NetworkStatsServiceTest";
 
@@ -188,11 +194,25 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private @Mock TetheringManager mTetheringManager;
     private @Mock NetworkStatsFactory mStatsFactory;
     private @Mock NetworkStatsSettings mSettings;
-    private @Mock IBinder mBinder;
+    private @Mock IBinder mUsageCallbackBinder;
+    private TestableUsageCallback mUsageCallback;
     private @Mock AlarmManager mAlarmManager;
     @Mock
     private NetworkStatsSubscriptionsMonitor mNetworkStatsSubscriptionsMonitor;
+    private @Mock BpfInterfaceMapUpdater mBpfInterfaceMapUpdater;
     private HandlerThread mHandlerThread;
+    @Mock
+    private LocationPermissionChecker mLocationPermissionChecker;
+    private TestBpfMap<U32, U8> mUidCounterSetMap = spy(new TestBpfMap<>(U32.class, U8.class));
+
+    private TestBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap = new TestBpfMap<>(
+            CookieTagMapKey.class, CookieTagMapValue.class);
+    private TestBpfMap<StatsMapKey, StatsMapValue> mStatsMapA = new TestBpfMap<>(StatsMapKey.class,
+            StatsMapValue.class);
+    private TestBpfMap<StatsMapKey, StatsMapValue> mStatsMapB = new TestBpfMap<>(StatsMapKey.class,
+            StatsMapValue.class);
+    private TestBpfMap<UidStatsMapKey, StatsMapValue> mAppUidStatsMap = new TestBpfMap<>(
+            UidStatsMapKey.class, StatsMapValue.class);
 
     private NetworkStatsService mService;
     private INetworkStatsSession mSession;
@@ -262,7 +282,9 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         MockitoAnnotations.initMocks(this);
         final Context context = InstrumentationRegistry.getContext();
         mServiceContext = new MockContext(context);
-        when(sWifiInfo.getCurrentNetworkKey()).thenReturn(TEST_WIFI_NETWORK_KEY);
+        when(mLocationPermissionChecker.checkCallersLocationPermission(
+                any(), any(), anyInt(), anyBoolean(), any())).thenReturn(true);
+        when(sWifiInfo.getNetworkKey()).thenReturn(TEST_WIFI_NETWORK_KEY);
         mStatsDir = TestIoUtils.createTemporaryDirectory(getClass().getSimpleName());
 
         PowerManager powerManager = (PowerManager) mServiceContext.getSystemService(
@@ -309,6 +331,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         verify(mTetheringManager).registerTetheringEventCallback(
                 any(), tetheringEventCbCaptor.capture());
         mTetheringEventCallback = tetheringEventCbCaptor.getValue();
+
+        mUsageCallback = new TestableUsageCallback(mUsageCallbackBinder);
     }
 
     @NonNull
@@ -334,6 +358,41 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 return mContentObserver = super.makeContentObserver(handler, settings, monitor);
             }
 
+            @Override
+            public LocationPermissionChecker makeLocationPermissionChecker(final Context context) {
+                return mLocationPermissionChecker;
+            }
+
+            @Override
+            public BpfInterfaceMapUpdater makeBpfInterfaceMapUpdater(
+                    @NonNull Context ctx, @NonNull Handler handler) {
+                return mBpfInterfaceMapUpdater;
+            }
+
+            @Override
+            public IBpfMap<U32, U8> getUidCounterSetMap() {
+                return mUidCounterSetMap;
+            }
+
+            @Override
+            public IBpfMap<CookieTagMapKey, CookieTagMapValue> getCookieTagMap() {
+                return mCookieTagMap;
+            }
+
+            @Override
+            public IBpfMap<StatsMapKey, StatsMapValue> getStatsMapA() {
+                return mStatsMapA;
+            }
+
+            @Override
+            public IBpfMap<StatsMapKey, StatsMapValue> getStatsMapB() {
+                return mStatsMapB;
+            }
+
+            @Override
+            public IBpfMap<UidStatsMapKey, StatsMapValue> getAppUidStatsMap() {
+                return mAppUidStatsMap;
+            }
         };
     }
 
@@ -459,8 +518,11 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, 0xFAAD, 256L, 2L, 128L, 1L, 0L)
                 .insertEntry(TEST_IFACE, UID_BLUE, SET_DEFAULT, TAG_NONE, 128L, 1L, 128L, 1L, 0L));
         mService.setUidForeground(UID_RED, false);
+        verify(mUidCounterSetMap, never()).deleteEntry(any());
         mService.incrementOperationCount(UID_RED, 0xFAAD, 4);
         mService.setUidForeground(UID_RED, true);
+        verify(mUidCounterSetMap).updateEntry(
+                eq(new U32(UID_RED)), eq(new U8((short) SET_FOREGROUND)));
         mService.incrementOperationCount(UID_RED, 0xFAAD, 6);
 
         forcePollAndWaitForIdle();
@@ -985,7 +1047,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     }
 
     @Test
-    public void testDetailedUidStats() throws Exception {
+    public void testUidStatsForTransport() throws Exception {
         // pretend that network comes online
         expectDefaultSettings();
         NetworkStateSnapshot[] states = new NetworkStateSnapshot[] {buildWifiState()};
@@ -1011,7 +1073,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 .insertEntry(entry3));
         mService.incrementOperationCount(UID_RED, 0xF00D, 1);
 
-        NetworkStats stats = mService.getDetailedUidStats(INTERFACES_ALL);
+        NetworkStats stats = mService.getUidStatsForTransport(NetworkCapabilities.TRANSPORT_WIFI);
 
         assertEquals(3, stats.size());
         entry1.operations = 1;
@@ -1019,68 +1081,6 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         entry2.operations = 1;
         assertEquals(entry2, stats.getValues(1, null));
         assertEquals(entry3, stats.getValues(2, null));
-    }
-
-    @Test
-    public void testDetailedUidStats_Filtered() throws Exception {
-        // pretend that network comes online
-        expectDefaultSettings();
-
-        final String stackedIface = "stacked-test0";
-        final LinkProperties stackedProp = new LinkProperties();
-        stackedProp.setInterfaceName(stackedIface);
-        final NetworkStateSnapshot wifiState = buildWifiState();
-        wifiState.getLinkProperties().addStackedLink(stackedProp);
-        NetworkStateSnapshot[] states = new NetworkStateSnapshot[] {wifiState};
-
-        expectNetworkStatsSummary(buildEmptyStats());
-        expectNetworkStatsUidDetail(buildEmptyStats());
-
-        mService.notifyNetworkStatus(NETWORKS_WIFI, states, getActiveIface(states),
-                new UnderlyingNetworkInfo[0]);
-
-        NetworkStats.Entry uidStats = new NetworkStats.Entry(
-                TEST_IFACE, UID_BLUE, SET_DEFAULT, TAG_NONE, 1024L, 8L, 512L, 4L, 0L);
-        // Stacked on matching interface
-        NetworkStats.Entry tetheredStats1 = new NetworkStats.Entry(
-                stackedIface, UID_TETHERING, SET_DEFAULT, TAG_NONE, 1024L, 8L, 512L, 4L, 0L);
-        TetherStatsParcel tetherStatsParcel1 =
-                buildTetherStatsParcel(stackedIface, 1024L, 8L, 512L, 4L, 0);
-        // Different interface
-        TetherStatsParcel tetherStatsParcel2 =
-                buildTetherStatsParcel("otherif", 1024L, 8L, 512L, 4L, 0);
-
-        final String[] ifaceFilter = new String[] { TEST_IFACE };
-        final String[] augmentedIfaceFilter = new String[] { stackedIface, TEST_IFACE };
-        incrementCurrentTime(HOUR_IN_MILLIS);
-        expectDefaultSettings();
-        expectNetworkStatsSummary(buildEmptyStats());
-        when(mStatsFactory.augmentWithStackedInterfaces(eq(ifaceFilter)))
-                .thenReturn(augmentedIfaceFilter);
-        when(mStatsFactory.readNetworkStatsDetail(eq(UID_ALL), any(), eq(TAG_ALL)))
-                .thenReturn(new NetworkStats(getElapsedRealtime(), 1)
-                        .insertEntry(uidStats));
-        final TetherStatsParcel[] tetherStatsParcels =  {tetherStatsParcel1, tetherStatsParcel2};
-        when(mNetd.tetherGetStats()).thenReturn(tetherStatsParcels);
-
-        NetworkStats stats = mService.getDetailedUidStats(ifaceFilter);
-
-        // mStatsFactory#readNetworkStatsDetail() has the following invocations:
-        // 1) NetworkStatsService#systemReady from #setUp.
-        // 2) mService#notifyNetworkStatus in the test above.
-        //
-        // Additionally, we should have one call from the above call to mService#getDetailedUidStats
-        // with the augmented ifaceFilter.
-        verify(mStatsFactory, times(2)).readNetworkStatsDetail(UID_ALL, INTERFACES_ALL, TAG_ALL);
-        verify(mStatsFactory, times(1)).readNetworkStatsDetail(
-                eq(UID_ALL),
-                eq(augmentedIfaceFilter),
-                eq(TAG_ALL));
-        assertTrue(ArrayUtils.contains(stats.getUniqueIfaces(), TEST_IFACE));
-        assertTrue(ArrayUtils.contains(stats.getUniqueIfaces(), stackedIface));
-        assertEquals(2, stats.size());
-        assertEquals(uidStats, stats.getValues(0, null));
-        assertEquals(tetheredStats1, stats.getValues(1, null));
     }
 
     @Test
@@ -1119,6 +1119,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, TAG_NONE, 32L, 2L, 32L, 2L, 0L)
                 .insertEntry(TEST_IFACE, UID_RED, SET_FOREGROUND, 0xFAAD, 1L, 1L, 1L, 1L, 0L));
         mService.setUidForeground(UID_RED, true);
+        verify(mUidCounterSetMap).updateEntry(
+                eq(new U32(UID_RED)), eq(new U8((short) SET_FOREGROUND)));
         mService.incrementOperationCount(UID_RED, 0xFAAD, 1);
 
         forcePollAndWaitForIdle();
@@ -1294,20 +1296,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         DataUsageRequest inputRequest = new DataUsageRequest(
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, thresholdInBytes);
 
-        // Create a messenger that waits for callback activity
-        ConditionVariable cv = new ConditionVariable(false);
-        LatchedHandler latchedHandler = new LatchedHandler(Looper.getMainLooper(), cv);
-        Messenger messenger = new Messenger(latchedHandler);
-
         // Force poll
         expectDefaultSettings();
         expectNetworkStatsSummary(buildEmptyStats());
         expectNetworkStatsUidDetail(buildEmptyStats());
 
         // Register and verify request and that binder was called
-        DataUsageRequest request =
-                mService.registerUsageCallback(mServiceContext.getOpPackageName(), inputRequest,
-                        messenger, mBinder);
+        DataUsageRequest request = mService.registerUsageCallback(
+                mServiceContext.getOpPackageName(), inputRequest, mUsageCallback);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, request.template));
         long minThresholdInBytes = 2 * 1024 * 1024; // 2 MB
@@ -1316,7 +1312,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         HandlerUtils.waitForIdle(mHandlerThread, WAIT_TIMEOUT);
 
         // Make sure that the caller binder gets connected
-        verify(mBinder).linkToDeath(any(IBinder.DeathRecipient.class), anyInt());
+        verify(mUsageCallbackBinder).linkToDeath(any(IBinder.DeathRecipient.class), anyInt());
 
         // modify some number on wifi, and trigger poll event
         // not enough traffic to call data usage callback
@@ -1331,7 +1327,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertNetworkTotal(sTemplateWifi, 1024L, 1L, 2048L, 2L, 0);
 
         // make sure callback has not being called
-        assertEquals(INVALID_TYPE, latchedHandler.lastMessageType);
+        mUsageCallback.assertNoCallback();
 
         // and bump forward again, with counters going higher. this is
         // important, since it will trigger the data usage callback
@@ -1346,23 +1342,21 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertNetworkTotal(sTemplateWifi, 4096000L, 4L, 8192000L, 8L, 0);
 
 
-        // Wait for the caller to ack receipt of CALLBACK_LIMIT_REACHED
-        assertTrue(cv.block(WAIT_TIMEOUT));
-        assertEquals(NetworkStatsManager.CALLBACK_LIMIT_REACHED, latchedHandler.lastMessageType);
-        cv.close();
+        // Wait for the caller to invoke expectOnThresholdReached.
+        mUsageCallback.expectOnThresholdReached(request);
 
         // Allow binder to disconnect
-        when(mBinder.unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt())).thenReturn(true);
+        when(mUsageCallbackBinder.unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt()))
+                .thenReturn(true);
 
         // Unregister request
         mService.unregisterUsageRequest(request);
 
-        // Wait for the caller to ack receipt of CALLBACK_RELEASED
-        assertTrue(cv.block(WAIT_TIMEOUT));
-        assertEquals(NetworkStatsManager.CALLBACK_RELEASED, latchedHandler.lastMessageType);
+        // Wait for the caller to invoke expectOnCallbackReleased.
+        mUsageCallback.expectOnCallbackReleased(request);
 
         // Make sure that the caller binder gets disconnected
-        verify(mBinder).unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt());
+        verify(mUsageCallbackBinder).unlinkToDeath(any(IBinder.DeathRecipient.class), anyInt());
     }
 
     @Test
@@ -1688,6 +1682,28 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         provider.expectOnRequestStatsUpdate(0 /* unused */);
     }
 
+    /**
+     * Verify the service will throw exceptions if the template is location sensitive but
+     * the permission is not granted.
+     */
+    @Test
+    public void testEnforceTemplateLocationPermission() throws Exception {
+        when(mLocationPermissionChecker.checkCallersLocationPermission(
+                any(), any(), anyInt(), anyBoolean(), any())).thenReturn(false);
+        initWifiStats(buildWifiState(true, TEST_IFACE, IMSI_1));
+        assertThrows(SecurityException.class, () ->
+                assertNetworkTotal(sTemplateWifi, 0L, 0L, 0L, 0L, 0));
+        // Templates w/o wifi network keys can query stats as usual.
+        assertNetworkTotal(sTemplateCarrierWifi1, 0L, 0L, 0L, 0L, 0);
+        assertNetworkTotal(sTemplateImsi1, 0L, 0L, 0L, 0L, 0);
+
+        when(mLocationPermissionChecker.checkCallersLocationPermission(
+                any(), any(), anyInt(), anyBoolean(), any())).thenReturn(true);
+        assertNetworkTotal(sTemplateCarrierWifi1, 0L, 0L, 0L, 0L, 0);
+        assertNetworkTotal(sTemplateWifi, 0L, 0L, 0L, 0L, 0);
+        assertNetworkTotal(sTemplateImsi1, 0L, 0L, 0L, 0L, 0);
+    }
+
     private static File getBaseDir(File statsDir) {
         File baseDir = new File(statsDir, "netstats");
         baseDir.mkdirs();
@@ -1703,7 +1719,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private void assertNetworkTotal(NetworkTemplate template, long start, long end, long rxBytes,
             long rxPackets, long txBytes, long txPackets, int operations) throws Exception {
         // verify history API
-        final NetworkStatsHistory history = mSession.getHistoryForNetwork(template, FIELD_ALL);
+        final NetworkStatsHistory history =
+                mSession.getHistoryIntervalForNetwork(template, FIELD_ALL, start, end);
         assertValues(history, start, end, rxBytes, rxPackets, txBytes, txPackets, operations);
 
         // verify summary API
@@ -1916,20 +1933,69 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         HandlerUtils.waitForIdle(mHandlerThread, WAIT_TIMEOUT);
     }
 
-    static class LatchedHandler extends Handler {
-        private final ConditionVariable mCv;
-        int lastMessageType = INVALID_TYPE;
+    private boolean cookieTagMapContainsUid(int uid) throws ErrnoException {
+        final AtomicBoolean found = new AtomicBoolean();
+        mCookieTagMap.forEach((k, v) -> {
+            if (v.uid == uid) {
+                found.set(true);
+            }
+        });
+        return found.get();
+    }
 
-        LatchedHandler(Looper looper, ConditionVariable cv) {
-            super(looper);
-            mCv = cv;
-        }
+    private static <K extends StatsMapKey, V extends StatsMapValue> boolean statsMapContainsUid(
+            TestBpfMap<K, V> map, int uid) throws ErrnoException {
+        final AtomicBoolean found = new AtomicBoolean();
+        map.forEach((k, v) -> {
+            if (k.uid == uid) {
+                found.set(true);
+            }
+        });
+        return found.get();
+    }
 
-        @Override
-        public void handleMessage(Message msg) {
-            lastMessageType = msg.what;
-            mCv.open();
-            super.handleMessage(msg);
-        }
+    private void initBpfMapsWithTagData(int uid) throws ErrnoException {
+        // key needs to be unique, use some offset from uid.
+        mCookieTagMap.insertEntry(new CookieTagMapKey(1000 + uid), new CookieTagMapValue(uid, 1));
+        mCookieTagMap.insertEntry(new CookieTagMapKey(2000 + uid), new CookieTagMapValue(uid, 2));
+
+        mStatsMapA.insertEntry(new StatsMapKey(uid, 1, 0, 10), new StatsMapValue(5, 5000, 3, 3000));
+        mStatsMapA.insertEntry(new StatsMapKey(uid, 2, 0, 10), new StatsMapValue(5, 5000, 3, 3000));
+
+        mStatsMapB.insertEntry(new StatsMapKey(uid, 1, 0, 10), new StatsMapValue(0, 0, 0, 0));
+
+        mAppUidStatsMap.insertEntry(new UidStatsMapKey(uid), new StatsMapValue(10, 10000, 6, 6000));
+
+        mUidCounterSetMap.insertEntry(new U32(uid), new U8((short) 1));
+
+        assertTrue(cookieTagMapContainsUid(uid));
+        assertTrue(statsMapContainsUid(mStatsMapA, uid));
+        assertTrue(statsMapContainsUid(mStatsMapB, uid));
+        assertTrue(mAppUidStatsMap.containsKey(new UidStatsMapKey(uid)));
+        assertTrue(mUidCounterSetMap.containsKey(new U32(uid)));
+    }
+
+    @Test
+    public void testRemovingUidRemovesTagDataForUid() throws ErrnoException {
+        initBpfMapsWithTagData(UID_BLUE);
+        initBpfMapsWithTagData(UID_RED);
+
+        final Intent intent = new Intent(ACTION_UID_REMOVED);
+        intent.putExtra(EXTRA_UID, UID_BLUE);
+        mServiceContext.sendBroadcast(intent);
+
+        // assert that all UID_BLUE related tag data has been removed from the maps.
+        assertFalse(cookieTagMapContainsUid(UID_BLUE));
+        assertFalse(statsMapContainsUid(mStatsMapA, UID_BLUE));
+        assertFalse(statsMapContainsUid(mStatsMapB, UID_BLUE));
+        assertFalse(mAppUidStatsMap.containsKey(new UidStatsMapKey(UID_BLUE)));
+        assertFalse(mUidCounterSetMap.containsKey(new U32(UID_BLUE)));
+
+        // assert that UID_RED related tag data is still in the maps.
+        assertTrue(cookieTagMapContainsUid(UID_RED));
+        assertTrue(statsMapContainsUid(mStatsMapA, UID_RED));
+        assertTrue(statsMapContainsUid(mStatsMapB, UID_RED));
+        assertTrue(mAppUidStatsMap.containsKey(new UidStatsMapKey(UID_RED)));
+        assertTrue(mUidCounterSetMap.containsKey(new U32(UID_RED)));
     }
 }
