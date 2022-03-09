@@ -198,7 +198,6 @@ import android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener;
 import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
 import android.net.shared.PrivateDnsConfig;
-import android.net.util.InterfaceParams;
 import android.net.util.MultinetworkPolicyTracker;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
@@ -245,6 +244,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.LinkPropertiesUtils.CompareOrUpdateResult;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
 import com.android.net.module.util.LocationPermissionChecker;
@@ -3873,7 +3873,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             ConnectivityReportEvent reportEvent =
                     new ConnectivityReportEvent(p.timestampMillis, nai, extras);
             final Message m = mConnectivityDiagnosticsHandler.obtainMessage(
-                    ConnectivityDiagnosticsHandler.EVENT_NETWORK_TESTED, reportEvent);
+                    ConnectivityDiagnosticsHandler.CMD_SEND_CONNECTIVITY_REPORT, reportEvent);
             mConnectivityDiagnosticsHandler.sendMessage(m);
         }
 
@@ -4242,7 +4242,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mDnsManager.removeNetwork(nai.network);
 
             // clean up tc police filters on interface.
-            if (canNetworkBeRateLimited(nai) && mIngressRateLimit >= 0) {
+            if (nai.everConnected && canNetworkBeRateLimited(nai) && mIngressRateLimit >= 0) {
                 mDeps.disableIngressRateLimit(nai.linkProperties.getInterfaceName());
             }
         }
@@ -9011,19 +9011,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // A network that has just connected has zero requests and is thus a foreground network.
             networkAgent.networkCapabilities.addCapability(NET_CAPABILITY_FOREGROUND);
 
-            // If a rate limit has been configured and is applicable to this network (network
-            // provides internet connectivity), apply it.
-            // Note: in case of a system server crash, there is a very small chance that this
-            // leaves some interfaces rate limited (i.e. if the rate limit had been changed just
-            // before the crash and was never applied). One solution would be to delete all
-            // potential tc police filters every time this is called. Since this is an unlikely
-            // scenario in the first place (and worst case, the interface stays rate limited until
-            // the device is rebooted), this seems a little overkill.
-            if (canNetworkBeRateLimited(networkAgent) && mIngressRateLimit >= 0) {
-                mDeps.enableIngressRateLimit(networkAgent.linkProperties.getInterfaceName(),
-                        mIngressRateLimit);
-            }
-
             if (!createNativeNetwork(networkAgent)) return;
             if (networkAgent.propagateUnderlyingCapabilities()) {
                 // Initialize the network's capabilities to their starting values according to the
@@ -9046,6 +9033,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
             handlePerNetworkPrivateDnsConfig(networkAgent, mDnsManager.getPrivateDnsConfig());
             updateLinkProperties(networkAgent, new LinkProperties(networkAgent.linkProperties),
                     null);
+
+            // If a rate limit has been configured and is applicable to this network (network
+            // provides internet connectivity), apply it. The tc police filter cannot be attached
+            // before the clsact qdisc is added which happens as part of updateLinkProperties ->
+            // updateInterfaces -> INetd#networkAddInterface.
+            // Note: in case of a system server crash, the NetworkController constructor in netd
+            // (called when netd starts up) deletes the clsact qdisc of all interfaces.
+            if (canNetworkBeRateLimited(networkAgent) && mIngressRateLimit >= 0) {
+                mDeps.enableIngressRateLimit(networkAgent.linkProperties.getInterfaceName(),
+                        mIngressRateLimit);
+            }
 
             // Until parceled LinkProperties are sent directly to NetworkMonitor, the connect
             // command must be sent after updating LinkProperties to maximize chances of
@@ -9598,14 +9596,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         /**
          * Event for {@link NetworkStateTrackerHandler} to trigger ConnectivityReport callbacks
-         * after processing {@link #EVENT_NETWORK_TESTED} events.
+         * after processing {@link #CMD_SEND_CONNECTIVITY_REPORT} events.
          * obj = {@link ConnectivityReportEvent} representing ConnectivityReport info reported from
          * NetworkMonitor.
          * data = PersistableBundle of extras passed from NetworkMonitor.
-         *
-         * <p>See {@link ConnectivityService#EVENT_NETWORK_TESTED}.
          */
-        private static final int EVENT_NETWORK_TESTED = ConnectivityService.EVENT_NETWORK_TESTED;
+        private static final int CMD_SEND_CONNECTIVITY_REPORT = 3;
 
         /**
          * Event for NetworkMonitor to inform ConnectivityService that a potential data stall has
@@ -9643,7 +9639,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             (IConnectivityDiagnosticsCallback) msg.obj, msg.arg1);
                     break;
                 }
-                case EVENT_NETWORK_TESTED: {
+                case CMD_SEND_CONNECTIVITY_REPORT: {
                     final ConnectivityReportEvent reportEvent =
                             (ConnectivityReportEvent) msg.obj;
 
@@ -10703,6 +10699,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean canNetworkBeRateLimited(@NonNull final NetworkAgentInfo networkAgent) {
+        // Rate-limiting cannot run correctly before T because the BPF program is not loaded.
+        if (!SdkLevel.isAtLeastT()) return false;
+
         final NetworkCapabilities agentCaps = networkAgent.networkCapabilities;
         // Only test networks (they cannot hold NET_CAPABILITY_INTERNET) and networks that provide
         // internet connectivity can be rate limited.
@@ -10713,8 +10712,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         final String iface = networkAgent.linkProperties.getInterfaceName();
         if (iface == null) {
-            // This can never happen.
-            logwtf("canNetworkBeRateLimited: LinkProperties#getInterfaceName returns null");
+            // This may happen in tests, but if there is no interface then there is nothing that
+            // can be rate limited.
+            loge("canNetworkBeRateLimited: LinkProperties#getInterfaceName returns null");
             return false;
         }
         return true;
@@ -11059,7 +11059,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 mBpfNetMaps.removeNiceApp(uid);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11074,7 +11074,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 mBpfNetMaps.removeNaughtyApp(uid);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11086,7 +11086,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         try {
             mBpfNetMaps.setUidRule(chain, uid,
                     allow ? INetd.FIREWALL_RULE_ALLOW : INetd.FIREWALL_RULE_DENY);
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11097,7 +11097,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         try {
             mBpfNetMaps.setChildChain(chain, enable);
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11128,17 +11128,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     throw new IllegalArgumentException("replaceFirewallChain with invalid chain: "
                             + chain);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    @Override
-    public void swapActiveStatsMap() {
-        enforceNetworkStackOrSettingsPermission();
-        try {
-            mBpfNetMaps.swapActiveStatsMap();
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
