@@ -2174,7 +2174,7 @@ public class ConnectivityManagerTest {
     private void waitForAvailable(
             @NonNull final TestableNetworkCallback cb, @NonNull final Network expectedNetwork) {
         cb.expectAvailableCallbacks(expectedNetwork, false /* suspended */,
-                true /* validated */,
+                null /* validated */,
                 false /* blocked */, NETWORK_CALLBACK_TIMEOUT_MS);
     }
 
@@ -2908,15 +2908,20 @@ public class ConnectivityManagerTest {
             // Default network should be updated to validated cellular network.
             defaultCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
                     entry -> cellNetwork.equals(entry.getNetwork()));
-            // No callback except LinkPropertiesChanged which may be triggered randomly from network
-            wifiCb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS,
-                    c -> !(c instanceof CallbackEntry.LinkPropertiesChanged));
+            // The network should not validate again.
+            wifiCb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS, c -> isValidatedCaps(c));
         } finally {
             resetAvoidBadWifi(previousAvoidBadWifi);
             resetValidationConfig();
             // Reconnect wifi to reset the wifi status
             reconnectWifi();
         }
+    }
+
+    private boolean isValidatedCaps(CallbackEntry c) {
+        if (!(c instanceof CallbackEntry.CapabilitiesChanged)) return false;
+        final CallbackEntry.CapabilitiesChanged capsChanged = (CallbackEntry.CapabilitiesChanged) c;
+        return capsChanged.getCaps().hasCapability(NET_CAPABILITY_VALIDATED);
     }
 
     private void resetAvoidBadWifi(int settingValue) {
@@ -3257,6 +3262,19 @@ public class ConnectivityManagerTest {
         final String dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
                 Context.CONNECTIVITY_SERVICE, "--short");
         assertTrue(dumpOutput, dumpOutput.contains("Active default network"));
+    }
+
+    @Test @IgnoreUpTo(SC_V2)
+    public void testDumpBpfNetMaps() throws Exception {
+        final String[] args = new String[] {"--short", "trafficcontroller"};
+        String dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
+                Context.CONNECTIVITY_SERVICE, args);
+        assertTrue(dumpOutput, dumpOutput.contains("TrafficController"));
+        assertFalse(dumpOutput, dumpOutput.contains("BPF map content"));
+
+        dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
+                Context.CONNECTIVITY_SERVICE, args[1]);
+        assertTrue(dumpOutput, dumpOutput.contains("BPF map content"));
     }
 
     private void unregisterRegisteredCallbacks() {
