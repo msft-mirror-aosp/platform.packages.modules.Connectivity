@@ -198,7 +198,6 @@ import android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener;
 import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
 import android.net.shared.PrivateDnsConfig;
-import android.net.util.InterfaceParams;
 import android.net.util.MultinetworkPolicyTracker;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
@@ -245,6 +244,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.LinkPropertiesUtils.CompareOrUpdateResult;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
 import com.android.net.module.util.LocationPermissionChecker;
@@ -10699,6 +10699,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean canNetworkBeRateLimited(@NonNull final NetworkAgentInfo networkAgent) {
+        // Rate-limiting cannot run correctly before T because the BPF program is not loaded.
+        if (!SdkLevel.isAtLeastT()) return false;
+
         final NetworkCapabilities agentCaps = networkAgent.networkCapabilities;
         // Only test networks (they cannot hold NET_CAPABILITY_INTERNET) and networks that provide
         // internet connectivity can be rate limited.
@@ -11056,7 +11059,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 mBpfNetMaps.removeNiceApp(uid);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11071,7 +11074,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else {
                 mBpfNetMaps.removeNaughtyApp(uid);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11083,7 +11086,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         try {
             mBpfNetMaps.setUidRule(chain, uid,
                     allow ? INetd.FIREWALL_RULE_ALLOW : INetd.FIREWALL_RULE_DENY);
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11094,7 +11097,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         try {
             mBpfNetMaps.setChildChain(chain, enable);
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
@@ -11125,17 +11128,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     throw new IllegalArgumentException("replaceFirewallChain with invalid chain: "
                             + chain);
             }
-        } catch (RemoteException | ServiceSpecificException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    @Override
-    public void swapActiveStatsMap() {
-        enforceNetworkStackOrSettingsPermission();
-        try {
-            mBpfNetMaps.swapActiveStatsMap();
-        } catch (RemoteException | ServiceSpecificException e) {
+        } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
     }
