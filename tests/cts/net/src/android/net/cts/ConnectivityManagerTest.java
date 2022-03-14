@@ -591,7 +591,7 @@ public class ConnectivityManagerTest {
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
     @Test
-    public void testRedactLinkPropertiesForPackage() throws Exception {
+    public void testGetRedactedLinkPropertiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
                 List.of(), /* requiredPermissions */
                 List.of(ACCESS_NETWORK_STATE) /* forbiddenPermissions */);
@@ -628,54 +628,55 @@ public class ConnectivityManagerTest {
         // No matter what the given uid is, a SecurityException will be thrown if the caller
         // doesn't hold the NETWORK_SETTINGS permission.
         assertThrows(SecurityException.class,
-                () -> mCm.redactLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
+                () -> mCm.getRedactedLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
         assertThrows(SecurityException.class,
-                () -> mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg));
+                () -> mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg));
         assertThrows(SecurityException.class,
-                () -> mCm.redactLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg));
+                () -> mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg));
 
         runAsShell(NETWORK_SETTINGS, () -> {
             // No matter what the given uid is, if the given LinkProperties is null, then
             // NullPointerException will be thrown.
             assertThrows(NullPointerException.class,
-                    () -> mCm.redactLinkPropertiesForPackage(null, groundedUid, groundedPkg));
+                    () -> mCm.getRedactedLinkPropertiesForPackage(null, groundedUid, groundedPkg));
             assertThrows(NullPointerException.class,
-                    () -> mCm.redactLinkPropertiesForPackage(null, normalUid, normalPkg));
+                    () -> mCm.getRedactedLinkPropertiesForPackage(null, normalUid, normalPkg));
             assertThrows(NullPointerException.class,
-                    () -> mCm.redactLinkPropertiesForPackage(null, privilegedUid, privilegedPkg));
+                    () -> mCm.getRedactedLinkPropertiesForPackage(
+                            null, privilegedUid, privilegedPkg));
 
             // Make sure null is returned for a UID without ACCESS_NETWORK_STATE.
-            assertNull(mCm.redactLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
+            assertNull(mCm.getRedactedLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
 
             // CaptivePortalApiUrl & CaptivePortalData will be set to null if given uid doesn't hold
             // the NETWORK_SETTINGS permission.
-            assertNull(mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg)
+            assertNull(mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg)
                     .getCaptivePortalApiUrl());
-            assertNull(mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg)
+            assertNull(mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg)
                     .getCaptivePortalData());
             // MTU is not sensitive and is not redacted.
-            assertEquals(mtu, mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg)
+            assertEquals(mtu, mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg)
                     .getMtu());
 
             // CaptivePortalApiUrl & CaptivePortalData will be preserved if the given uid holds the
             // NETWORK_SETTINGS permission.
             assertEquals(capportUrl,
-                    mCm.redactLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
+                    mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalApiUrl());
             assertEquals(capportData,
-                    mCm.redactLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
+                    mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalData());
         });
     }
 
     private NetworkCapabilities redactNc(@NonNull final NetworkCapabilities nc, int uid,
             @NonNull String packageName) {
-        return mCm.redactNetworkCapabilitiesForPackage(nc, uid, packageName);
+        return mCm.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName);
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
     @Test
-    public void testRedactNetworkCapabilitiesForPackage() throws Exception {
+    public void testGetRedactedNetworkCapabilitiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
                 List.of(), /* requiredPermissions */
                 List.of(ACCESS_NETWORK_STATE) /* forbiddenPermissions */);
@@ -2174,7 +2175,7 @@ public class ConnectivityManagerTest {
     private void waitForAvailable(
             @NonNull final TestableNetworkCallback cb, @NonNull final Network expectedNetwork) {
         cb.expectAvailableCallbacks(expectedNetwork, false /* suspended */,
-                true /* validated */,
+                null /* validated */,
                 false /* blocked */, NETWORK_CALLBACK_TIMEOUT_MS);
     }
 
@@ -2908,15 +2909,20 @@ public class ConnectivityManagerTest {
             // Default network should be updated to validated cellular network.
             defaultCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
                     entry -> cellNetwork.equals(entry.getNetwork()));
-            // No callback except LinkPropertiesChanged which may be triggered randomly from network
-            wifiCb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS,
-                    c -> !(c instanceof CallbackEntry.LinkPropertiesChanged));
+            // The network should not validate again.
+            wifiCb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS, c -> isValidatedCaps(c));
         } finally {
             resetAvoidBadWifi(previousAvoidBadWifi);
             resetValidationConfig();
             // Reconnect wifi to reset the wifi status
             reconnectWifi();
         }
+    }
+
+    private boolean isValidatedCaps(CallbackEntry c) {
+        if (!(c instanceof CallbackEntry.CapabilitiesChanged)) return false;
+        final CallbackEntry.CapabilitiesChanged capsChanged = (CallbackEntry.CapabilitiesChanged) c;
+        return capsChanged.getCaps().hasCapability(NET_CAPABILITY_VALIDATED);
     }
 
     private void resetAvoidBadWifi(int settingValue) {
@@ -3257,6 +3263,19 @@ public class ConnectivityManagerTest {
         final String dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
                 Context.CONNECTIVITY_SERVICE, "--short");
         assertTrue(dumpOutput, dumpOutput.contains("Active default network"));
+    }
+
+    @Test @IgnoreUpTo(SC_V2)
+    public void testDumpBpfNetMaps() throws Exception {
+        final String[] args = new String[] {"--short", "trafficcontroller"};
+        String dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
+                Context.CONNECTIVITY_SERVICE, args);
+        assertTrue(dumpOutput, dumpOutput.contains("TrafficController"));
+        assertFalse(dumpOutput, dumpOutput.contains("BPF map content"));
+
+        dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
+                Context.CONNECTIVITY_SERVICE, args[1]);
+        assertTrue(dumpOutput, dumpOutput.contains("BPF map content"));
     }
 
     private void unregisterRegisteredCallbacks() {

@@ -77,6 +77,7 @@ import com.android.compatibility.common.util.ThrowingSupplier
 import com.android.modules.utils.build.SdkLevel
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.testutils.CompatUtil
+import com.android.testutils.ConnectivityModuleTest
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.DevSdkIgnoreRunner
 import com.android.testutils.RecorderCallback.CallbackEntry.Available
@@ -153,6 +154,10 @@ private fun Message(what: Int, arg1: Int, arg2: Int, obj: Any?) = Message.obtain
 // NetworkAgent is not updatable in R-, so this test does not need to be compatible with older
 // versions. NetworkAgent was also based on AsyncChannel before S so cannot be tested the same way.
 @IgnoreUpTo(Build.VERSION_CODES.R)
+// NetworkAgent is updated as part of the connectivity module, and running NetworkAgent tests in MTS
+// for modules other than Connectivity does not provide much value. Only run them in connectivity
+// module MTS, so the tests only need to cover the case of an updated NetworkAgent.
+@ConnectivityModuleTest
 class NetworkAgentTest {
     private val LOCAL_IPV4_ADDRESS = InetAddresses.parseNumericAddress("192.0.2.1")
     private val REMOTE_IPV4_ADDRESS = InetAddresses.parseNumericAddress("192.0.2.2")
@@ -467,7 +472,7 @@ class NetworkAgentTest {
 
     @Test
     fun testRejectedUpdates() {
-        val callback = TestableNetworkCallback()
+        val callback = TestableNetworkCallback(DEFAULT_TIMEOUT_MS)
         // will be cleaned up in tearDown
         registerNetworkCallback(makeTestNetworkRequest(), callback)
         val agent = createNetworkAgent(initialNc = ncWithAccessUids(200))

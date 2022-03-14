@@ -3,10 +3,6 @@
 //########################################################################
 package {
     // See: http://go/android-license-faq
-    // A large-scale-change added 'default_applicable_licenses' to import
-    // all of the 'license_kinds' from "Android-Apache-2.0"
-    // to get the below license kinds:
-    //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -28,7 +24,6 @@ java_defaults {
         "libbinder",
         "libbpf_bcc",
         "libc++",
-        "libcgrouprc",
         "libcrypto",
         "libcutils",
         "libdl_android",
@@ -43,7 +38,6 @@ java_defaults {
         "libnetworkstatsfactorytestjni",
         "libpackagelistparser",
         "libpcre2",
-        "libprocessgroup",
         "libselinux",
         "libtinyxml2",
         "libui",
@@ -61,6 +55,7 @@ filegroup {
     name: "non-connectivity-module-test",
     srcs: [
         "java/android/app/usage/*.java",
+        "java/android/net/EthernetNetworkUpdateRequestTest.java",
         "java/android/net/Ikev2VpnProfileTest.java",
         "java/android/net/IpMemoryStoreTest.java",
         "java/android/net/IpSecAlgorithmTest.java",
@@ -167,6 +162,7 @@ android_test {
         "services.net",
     ],
     jni_libs: [
+        "libandroid_net_connectivity_com_android_net_module_util_jni",
         "libservice-connectivity",
         "libandroid_net_connectivity_com_android_net_module_util_jni",
     ],

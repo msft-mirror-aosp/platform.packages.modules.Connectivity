@@ -1643,10 +1643,10 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_SETTINGS})
     @SystemApi(client = MODULE_LIBRARIES)
     @Nullable
-    public LinkProperties redactLinkPropertiesForPackage(@NonNull LinkProperties lp, int uid,
+    public LinkProperties getRedactedLinkPropertiesForPackage(@NonNull LinkProperties lp, int uid,
             @NonNull String packageName) {
         try {
-            return mService.redactLinkPropertiesForPackage(
+            return mService.getRedactedLinkPropertiesForPackage(
                     lp, uid, packageName, getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
@@ -1683,9 +1683,11 @@ public class ConnectivityManager {
      * Redact {@link NetworkCapabilities} for a given package.
      *
      * Returns an instance of {@link NetworkCapabilities} that is appropriately redacted to send
-     * to the given package, considering its permissions. Calling this method will blame the UID for
-     * retrieving the device location if the passed capabilities contain location-sensitive
-     * information.
+     * to the given package, considering its permissions. If the passed capabilities contain
+     * location-sensitive information, they will be redacted to the correct degree for the location
+     * permissions of the app (COARSE or FINE), and will blame the UID accordingly for retrieving
+     * that level of location. If the UID holds no location permission, the returned object will
+     * contain no location-sensitive information and the UID is not blamed.
      *
      * @param nc A {@link NetworkCapabilities} instance which will be redacted.
      * @param uid The target uid.
@@ -1700,11 +1702,11 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_SETTINGS})
     @SystemApi(client = MODULE_LIBRARIES)
     @Nullable
-    public NetworkCapabilities redactNetworkCapabilitiesForPackage(
+    public NetworkCapabilities getRedactedNetworkCapabilitiesForPackage(
             @NonNull NetworkCapabilities nc,
             int uid, @NonNull String packageName) {
         try {
-            return mService.redactNetworkCapabilitiesForPackage(nc, uid, packageName,
+            return mService.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName,
                     getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
@@ -5706,8 +5708,8 @@ public class ConnectivityManager {
     }
 
     /**
-     * Sets whether the specified UID is allowed to use data on metered networks even when
-     * background data is restricted.
+     * Adds the specified UID to the list of UIds that are allowed to use data on metered networks
+     * even when background data is restricted. The deny list takes precedence over the allow list.
      *
      * @param uid uid of target app
      * @throws IllegalStateException if updating allow list failed.
@@ -5719,17 +5721,40 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_STACK,
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
     })
-    public void updateMeteredNetworkAllowList(final int uid, final boolean add) {
+    public void addUidToMeteredNetworkAllowList(final int uid) {
         try {
-            mService.updateMeteredNetworkAllowList(uid, add);
+            mService.updateMeteredNetworkAllowList(uid, true /* add */);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
     /**
-     * Sets whether the specified UID is prevented from using background data on metered networks.
-     * Takes precedence over {@link #updateMeteredNetworkAllowList}.
+     * Removes the specified UID from the list of UIDs that are allowed to use background data on
+     * metered networks when background data is restricted. The deny list takes precedence over
+     * the allow list.
+     *
+     * @param uid uid of target app
+     * @throws IllegalStateException if updating allow list failed.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.NETWORK_SETTINGS,
+            android.Manifest.permission.NETWORK_STACK,
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
+    })
+    public void removeUidFromMeteredNetworkAllowList(final int uid) {
+        try {
+            mService.updateMeteredNetworkAllowList(uid, false /* remove */);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Adds the specified UID to the list of UIDs that are not allowed to use background data on
+     * metered networks. Takes precedence over {@link #addUidToMeteredNetworkAllowList}.
      *
      * @param uid uid of target app
      * @throws IllegalStateException if updating deny list failed.
@@ -5741,9 +5766,32 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_STACK,
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
     })
-    public void updateMeteredNetworkDenyList(final int uid, final boolean add) {
+    public void addUidToMeteredNetworkDenyList(final int uid) {
         try {
-            mService.updateMeteredNetworkDenyList(uid, add);
+            mService.updateMeteredNetworkDenyList(uid, true /* add */);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Removes the specified UID from the list of UIds that can use use background data on metered
+     * networks if background data is not restricted. The deny list takes precedence over the
+     * allow list.
+     *
+     * @param uid uid of target app
+     * @throws IllegalStateException if updating deny list failed.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.NETWORK_SETTINGS,
+            android.Manifest.permission.NETWORK_STACK,
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
+    })
+    public void removeUidFromMeteredNetworkDenyList(final int uid) {
+        try {
+            mService.updateMeteredNetworkDenyList(uid, false /* remove */);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -5814,29 +5862,6 @@ public class ConnectivityManager {
         Objects.requireNonNull(uids);
         try {
             mService.replaceFirewallChain(chain, uids);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-    }
-
-    /**
-     * Request to change the current active network stats map.
-     * STOPSHIP: Remove this API before T sdk finalized, this API is temporary added for the
-     * NetworkStatsFactory which is platform code but will be moved into connectivity (tethering)
-     * mainline module.
-     *
-     * @throws IllegalStateException if swapping active stats map failed.
-     * @hide
-     */
-    @SystemApi(client = MODULE_LIBRARIES)
-    @RequiresPermission(anyOf = {
-            android.Manifest.permission.NETWORK_SETTINGS,
-            android.Manifest.permission.NETWORK_STACK,
-            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
-    })
-    public void swapActiveStatsMap() {
-        try {
-            mService.swapActiveStatsMap();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
