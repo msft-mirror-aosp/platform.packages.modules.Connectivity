@@ -46,7 +46,6 @@ import android.net.dhcp.IDhcpEventCallbacks;
 import android.net.dhcp.IDhcpServer;
 import android.net.ip.IpNeighborMonitor.NeighborEvent;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
-import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
 import android.os.Handler;
 import android.os.Looper;
@@ -63,11 +62,13 @@ import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetdUtils;
 import com.android.networkstack.tethering.BpfCoordinator;
 import com.android.networkstack.tethering.BpfCoordinator.ClientInfo;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
 import com.android.networkstack.tethering.PrivateAddressCoordinator;
+import com.android.networkstack.tethering.TetheringConfiguration;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
 
@@ -285,8 +286,8 @@ public class IpServer extends StateMachine {
     public IpServer(
             String ifaceName, Looper looper, int interfaceType, SharedLog log,
             INetd netd, @NonNull BpfCoordinator coordinator, Callback callback,
-            boolean usingLegacyDhcp, boolean usingBpfOffload,
-            PrivateAddressCoordinator addressCoordinator, Dependencies deps) {
+            TetheringConfiguration config, PrivateAddressCoordinator addressCoordinator,
+            Dependencies deps) {
         super(ifaceName, looper);
         mLog = log.forSubComponent(ifaceName);
         mNetd = netd;
@@ -296,8 +297,8 @@ public class IpServer extends StateMachine {
         mIfaceName = ifaceName;
         mInterfaceType = interfaceType;
         mLinkProperties = new LinkProperties();
-        mUsingLegacyDhcp = usingLegacyDhcp;
-        mUsingBpfOffload = usingBpfOffload;
+        mUsingLegacyDhcp = config.useLegacyDhcpServer();
+        mUsingBpfOffload = config.isBpfOffloadEnabled();
         mPrivateAddressCoordinator = addressCoordinator;
         mDeps = deps;
         resetLinkProperties();
@@ -614,10 +615,8 @@ public class IpServer extends StateMachine {
             return false;
         }
 
-        if (mInterfaceType == TetheringManager.TETHERING_BLUETOOTH) {
-            // BT configures the interface elsewhere: only start DHCP.
-            // TODO: make all tethering types behave the same way, and delete the bluetooth
-            // code that calls into NetworkManagementService directly.
+        if (shouldNotConfigureBluetoothInterface()) {
+            // Interface was already configured elsewhere, only start DHCP.
             return configureDhcp(enabled, mIpv4Address, null /* clientAddress */);
         }
 
@@ -651,12 +650,15 @@ public class IpServer extends StateMachine {
         return configureDhcp(enabled, mIpv4Address, mStaticIpv4ClientAddr);
     }
 
+    private boolean shouldNotConfigureBluetoothInterface() {
+        // Before T, bluetooth tethering configures the interface elsewhere.
+        return (mInterfaceType == TetheringManager.TETHERING_BLUETOOTH) && !SdkLevel.isAtLeastT();
+    }
+
     private LinkAddress requestIpv4Address(final boolean useLastAddress) {
         if (mStaticIpv4ServerAddr != null) return mStaticIpv4ServerAddr;
 
-        if (mInterfaceType == TetheringManager.TETHERING_BLUETOOTH) {
-            return new LinkAddress(BLUETOOTH_IFACE_ADDR);
-        }
+        if (shouldNotConfigureBluetoothInterface()) return new LinkAddress(BLUETOOTH_IFACE_ADDR);
 
         return mPrivateAddressCoordinator.requestDownstreamAddress(this, useLastAddress);
     }
