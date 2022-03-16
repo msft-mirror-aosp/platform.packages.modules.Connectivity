@@ -13,7 +13,7 @@ package android.app.usage {
 package android.nearby {
 
   public interface BroadcastCallback {
-    method public void onStatus(int);
+    method public void onStatusChanged(int);
     field public static final int STATUS_FAILURE = 1; // 0x1
     field public static final int STATUS_FAILURE_ALREADY_REGISTERED = 2; // 0x2
     field public static final int STATUS_FAILURE_MISSING_PERMISSIONS = 4; // 0x4
@@ -29,10 +29,12 @@ package android.nearby {
     method public int getVersion();
     method public void writeToParcel(@NonNull android.os.Parcel, int);
     field public static final int BROADCAST_TYPE_NEARBY_PRESENCE = 3; // 0x3
+    field public static final int BROADCAST_TYPE_UNKNOWN = -1; // 0xffffffff
     field @NonNull public static final android.os.Parcelable.Creator<android.nearby.BroadcastRequest> CREATOR;
+    field public static final int PRESENCE_VERSION_UNKNOWN = -1; // 0xffffffff
     field public static final int PRESENCE_VERSION_V0 = 0; // 0x0
     field public static final int PRESENCE_VERSION_V1 = 1; // 0x1
-    field public static final int UNKNOWN_TX_POWER = -100; // 0xffffff9c
+    field public static final int UNKNOWN_TX_POWER = -127; // 0xffffff81
   }
 
   public final class CredentialElement implements android.os.Parcelable {
@@ -69,21 +71,21 @@ package android.nearby {
     method @NonNull public android.nearby.FastPairAccountKeyDeviceMetadata.Builder setSha256AccountKeyPublicAddress(@Nullable byte[]);
   }
 
-  public class FastPairAntispoofkeyDeviceMetadata {
+  public class FastPairAntispoofKeyDeviceMetadata {
   }
 
-  public static final class FastPairAntispoofkeyDeviceMetadata.Builder {
-    ctor public FastPairAntispoofkeyDeviceMetadata.Builder();
-    method @NonNull public android.nearby.FastPairAntispoofkeyDeviceMetadata build();
-    method @NonNull public android.nearby.FastPairAntispoofkeyDeviceMetadata.Builder setAntiSpoofPublicKey(@Nullable byte[]);
-    method @NonNull public android.nearby.FastPairAntispoofkeyDeviceMetadata.Builder setFastPairDeviceMetadata(@Nullable android.nearby.FastPairDeviceMetadata);
+  public static final class FastPairAntispoofKeyDeviceMetadata.Builder {
+    ctor public FastPairAntispoofKeyDeviceMetadata.Builder();
+    method @NonNull public android.nearby.FastPairAntispoofKeyDeviceMetadata build();
+    method @NonNull public android.nearby.FastPairAntispoofKeyDeviceMetadata.Builder setAntiSpoofPublicKey(@Nullable byte[]);
+    method @NonNull public android.nearby.FastPairAntispoofKeyDeviceMetadata.Builder setFastPairDeviceMetadata(@Nullable android.nearby.FastPairDeviceMetadata);
   }
 
   public abstract class FastPairDataProviderBase {
     ctor public FastPairDataProviderBase(@NonNull String);
     method @Nullable public final android.os.IBinder getBinder();
     method public abstract void onLoadFastPairAccountDevicesMetadata(@NonNull android.nearby.FastPairDataProviderBase.FastPairAccountDevicesMetadataRequest, @NonNull android.nearby.FastPairDataProviderBase.FastPairAccountDevicesMetadataCallback);
-    method public abstract void onLoadFastPairAntispoofkeyDeviceMetadata(@NonNull android.nearby.FastPairDataProviderBase.FastPairAntispoofkeyDeviceMetadataRequest, @NonNull android.nearby.FastPairDataProviderBase.FastPairAntispoofkeyDeviceMetadataCallback);
+    method public abstract void onLoadFastPairAntispoofKeyDeviceMetadata(@NonNull android.nearby.FastPairDataProviderBase.FastPairAntispoofKeyDeviceMetadataRequest, @NonNull android.nearby.FastPairDataProviderBase.FastPairAntispoofKeyDeviceMetadataCallback);
     method public abstract void onLoadFastPairEligibleAccounts(@NonNull android.nearby.FastPairDataProviderBase.FastPairEligibleAccountsRequest, @NonNull android.nearby.FastPairDataProviderBase.FastPairEligibleAccountsCallback);
     method public abstract void onManageFastPairAccount(@NonNull android.nearby.FastPairDataProviderBase.FastPairManageAccountRequest, @NonNull android.nearby.FastPairDataProviderBase.FastPairManageActionCallback);
     method public abstract void onManageFastPairAccountDevice(@NonNull android.nearby.FastPairDataProviderBase.FastPairManageAccountDeviceRequest, @NonNull android.nearby.FastPairDataProviderBase.FastPairManageActionCallback);
@@ -101,14 +103,15 @@ package android.nearby {
 
   public static class FastPairDataProviderBase.FastPairAccountDevicesMetadataRequest {
     method @NonNull public android.accounts.Account getAccount();
+    method @NonNull public java.util.Collection<byte[]> getAccountKeys();
   }
 
-  public static interface FastPairDataProviderBase.FastPairAntispoofkeyDeviceMetadataCallback {
+  public static interface FastPairDataProviderBase.FastPairAntispoofKeyDeviceMetadataCallback {
     method public void onError(int, @Nullable String);
-    method public void onFastPairAntispoofkeyDeviceMetadataReceived(@NonNull android.nearby.FastPairAntispoofkeyDeviceMetadata);
+    method public void onFastPairAntispoofKeyDeviceMetadataReceived(@NonNull android.nearby.FastPairAntispoofKeyDeviceMetadata);
   }
 
-  public static class FastPairDataProviderBase.FastPairAntispoofkeyDeviceMetadataRequest {
+  public static class FastPairDataProviderBase.FastPairAntispoofKeyDeviceMetadataRequest {
     method @NonNull public byte[] getModelId();
   }
 
@@ -298,34 +301,9 @@ package android.nearby {
     method public static boolean isValidMedium(int);
   }
 
-  public final class NearbyDeviceParcelable implements android.os.Parcelable {
-    method public int describeContents();
-    method @Nullable public String getBluetoothAddress();
-    method @Nullable public byte[] getData();
-    method @Nullable public String getFastPairModelId();
-    method public int getMedium();
-    method @Nullable public String getName();
-    method @IntRange(from=0xffffff81, to=126) public int getRssi();
-    method public void writeToParcel(@NonNull android.os.Parcel, int);
-    field @NonNull public static final android.os.Parcelable.Creator<android.nearby.NearbyDeviceParcelable> CREATOR;
-  }
-
-  public static final class NearbyDeviceParcelable.Builder {
-    ctor public NearbyDeviceParcelable.Builder();
-    method @NonNull public android.nearby.NearbyDeviceParcelable build();
-    method @NonNull public android.nearby.NearbyDeviceParcelable.Builder setBluetoothAddress(@Nullable String);
-    method @NonNull public android.nearby.NearbyDeviceParcelable.Builder setData(@Nullable byte[]);
-    method @NonNull public android.nearby.NearbyDeviceParcelable.Builder setFastPairModelId(@Nullable String);
-    method @NonNull public android.nearby.NearbyDeviceParcelable.Builder setMedium(int);
-    method @NonNull public android.nearby.NearbyDeviceParcelable.Builder setName(@Nullable String);
-    method @NonNull public android.nearby.NearbyDeviceParcelable.Builder setRssi(int);
-  }
-
-  public final class NearbyFrameworkInitializer {
-    method public static void registerServiceWrappers();
-  }
-
   public class NearbyManager {
+    method public static boolean getFastPairScanEnabled(@NonNull android.content.Context, boolean);
+    method public static void setFastPairScanEnabled(@NonNull android.content.Context, boolean);
     method public void startBroadcast(@NonNull android.nearby.BroadcastRequest, @NonNull java.util.concurrent.Executor, @NonNull android.nearby.BroadcastCallback);
     method public void startScan(@NonNull android.nearby.ScanRequest, @NonNull java.util.concurrent.Executor, @NonNull android.nearby.ScanCallback);
     method public void stopBroadcast(@NonNull android.nearby.BroadcastCallback);
@@ -341,11 +319,10 @@ package android.nearby {
   }
 
   public static final class PresenceBroadcastRequest.Builder {
-    ctor public PresenceBroadcastRequest.Builder(@NonNull java.util.List<java.lang.Integer>, @NonNull byte[]);
+    ctor public PresenceBroadcastRequest.Builder(@NonNull java.util.List<java.lang.Integer>, @NonNull byte[], @NonNull android.nearby.PrivateCredential);
     method @NonNull public android.nearby.PresenceBroadcastRequest.Builder addAction(@IntRange(from=1, to=255) int);
     method @NonNull public android.nearby.PresenceBroadcastRequest.Builder addExtendedProperty(@NonNull android.nearby.DataElement);
     method @NonNull public android.nearby.PresenceBroadcastRequest build();
-    method @NonNull public android.nearby.PresenceBroadcastRequest.Builder setCredential(@NonNull android.nearby.PrivateCredential);
     method @NonNull public android.nearby.PresenceBroadcastRequest.Builder setTxPower(@IntRange(from=0xffffff81, to=126) int);
     method @NonNull public android.nearby.PresenceBroadcastRequest.Builder setVersion(int);
   }
@@ -383,19 +360,15 @@ package android.nearby {
   }
 
   public static final class PresenceDevice.Builder {
-    ctor public PresenceDevice.Builder();
+    ctor public PresenceDevice.Builder(@NonNull String, @NonNull byte[], @NonNull byte[], @NonNull byte[]);
     method @NonNull public android.nearby.PresenceDevice.Builder addExtendedProperty(@NonNull android.nearby.DataElement);
     method @NonNull public android.nearby.PresenceDevice.Builder addMedium(int);
     method @NonNull public android.nearby.PresenceDevice build();
-    method @NonNull public android.nearby.PresenceDevice.Builder setDeviceId(@NonNull String);
     method @NonNull public android.nearby.PresenceDevice.Builder setDeviceImageUrl(@Nullable String);
     method @NonNull public android.nearby.PresenceDevice.Builder setDeviceType(int);
     method @NonNull public android.nearby.PresenceDevice.Builder setDiscoveryTimestampMillis(long);
-    method @NonNull public android.nearby.PresenceDevice.Builder setEncryptedIdentity(@NonNull byte[]);
     method @NonNull public android.nearby.PresenceDevice.Builder setName(@Nullable String);
     method @NonNull public android.nearby.PresenceDevice.Builder setRssi(int);
-    method @NonNull public android.nearby.PresenceDevice.Builder setSalt(@NonNull byte[]);
-    method @NonNull public android.nearby.PresenceDevice.Builder setSecretId(@NonNull byte[]);
   }
 
   public final class PresenceScanFilter extends android.nearby.ScanFilter implements android.os.Parcelable {
@@ -466,7 +439,7 @@ package android.nearby {
     method public int getScanMode();
     method public int getScanType();
     method @NonNull public android.os.WorkSource getWorkSource();
-    method public boolean isEnableBle();
+    method public boolean isBleEnabled();
     method public static boolean isValidScanMode(int);
     method public static boolean isValidScanType(int);
     method @NonNull public static String scanModeToString(int);
@@ -486,7 +459,7 @@ package android.nearby {
     ctor public ScanRequest.Builder();
     method @NonNull public android.nearby.ScanRequest.Builder addScanFilter(@NonNull android.nearby.ScanFilter);
     method @NonNull public android.nearby.ScanRequest build();
-    method @NonNull public android.nearby.ScanRequest.Builder setEnableBle(boolean);
+    method @NonNull public android.nearby.ScanRequest.Builder setBleEnabled(boolean);
     method @NonNull public android.nearby.ScanRequest.Builder setScanMode(int);
     method @NonNull public android.nearby.ScanRequest.Builder setScanType(int);
     method @NonNull @RequiresPermission(android.Manifest.permission.UPDATE_DEVICE_STATS) public android.nearby.ScanRequest.Builder setWorkSource(@Nullable android.os.WorkSource);
@@ -495,6 +468,45 @@ package android.nearby {
 }
 
 package android.net {
+
+  public class EthernetManager {
+    method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.MANAGE_ETHERNET_NETWORKS}) public void connectNetwork(@NonNull String, @Nullable java.util.concurrent.Executor, @Nullable java.util.function.BiConsumer<android.net.Network,android.net.EthernetNetworkManagementException>);
+    method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.MANAGE_ETHERNET_NETWORKS}) public void disconnectNetwork(@NonNull String, @Nullable java.util.concurrent.Executor, @Nullable java.util.function.BiConsumer<android.net.Network,android.net.EthernetNetworkManagementException>);
+    method @NonNull @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public android.net.EthernetManager.TetheredInterfaceRequest requestTetheredInterface(@NonNull java.util.concurrent.Executor, @NonNull android.net.EthernetManager.TetheredInterfaceCallback);
+    method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.MANAGE_ETHERNET_NETWORKS}) public void updateConfiguration(@NonNull String, @NonNull android.net.EthernetNetworkUpdateRequest, @Nullable java.util.concurrent.Executor, @Nullable java.util.function.BiConsumer<android.net.Network,android.net.EthernetNetworkManagementException>);
+  }
+
+  public static interface EthernetManager.TetheredInterfaceCallback {
+    method public void onAvailable(@NonNull String);
+    method public void onUnavailable();
+  }
+
+  public static class EthernetManager.TetheredInterfaceRequest {
+    method public void release();
+  }
+
+  public final class EthernetNetworkManagementException extends java.lang.RuntimeException implements android.os.Parcelable {
+    ctor public EthernetNetworkManagementException(@NonNull String);
+    method public int describeContents();
+    method public void writeToParcel(@NonNull android.os.Parcel, int);
+    field @NonNull public static final android.os.Parcelable.Creator<android.net.EthernetNetworkManagementException> CREATOR;
+  }
+
+  public final class EthernetNetworkUpdateRequest implements android.os.Parcelable {
+    method public int describeContents();
+    method @NonNull public android.net.IpConfiguration getIpConfiguration();
+    method @Nullable public android.net.NetworkCapabilities getNetworkCapabilities();
+    method public void writeToParcel(@NonNull android.os.Parcel, int);
+    field @NonNull public static final android.os.Parcelable.Creator<android.net.EthernetNetworkUpdateRequest> CREATOR;
+  }
+
+  public static final class EthernetNetworkUpdateRequest.Builder {
+    ctor public EthernetNetworkUpdateRequest.Builder();
+    ctor public EthernetNetworkUpdateRequest.Builder(@NonNull android.net.EthernetNetworkUpdateRequest);
+    method @NonNull public android.net.EthernetNetworkUpdateRequest build();
+    method @NonNull public android.net.EthernetNetworkUpdateRequest.Builder setIpConfiguration(@NonNull android.net.IpConfiguration);
+    method @NonNull public android.net.EthernetNetworkUpdateRequest.Builder setNetworkCapabilities(@Nullable android.net.NetworkCapabilities);
+  }
 
   public class IpSecManager {
     method @RequiresPermission(android.Manifest.permission.MANAGE_IPSEC_TUNNELS) public void applyTunnelModeTransform(@NonNull android.net.IpSecManager.IpSecTunnelInterface, int, @NonNull android.net.IpSecTransform) throws java.io.IOException;

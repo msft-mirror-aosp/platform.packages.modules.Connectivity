@@ -28,7 +28,6 @@ java_defaults {
         "libbinder",
         "libbpf_bcc",
         "libc++",
-        "libcgrouprc",
         "libcrypto",
         "libcutils",
         "libdl_android",
@@ -43,7 +42,6 @@ java_defaults {
         "libnetworkstatsfactorytestjni",
         "libpackagelistparser",
         "libpcre2",
-        "libprocessgroup",
         "libselinux",
         "libtinyxml2",
         "libui",
@@ -61,6 +59,7 @@ filegroup {
     name: "non-connectivity-module-test",
     srcs: [
         "java/android/app/usage/*.java",
+        "java/android/net/EthernetNetworkUpdateRequestTest.java",
         "java/android/net/Ikev2VpnProfileTest.java",
         "java/android/net/IpMemoryStoreTest.java",
         "java/android/net/IpSecAlgorithmTest.java",

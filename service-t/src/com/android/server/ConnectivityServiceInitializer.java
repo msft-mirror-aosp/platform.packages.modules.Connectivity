@@ -20,6 +20,9 @@ import android.content.Context;
 import android.util.Log;
 
 import com.android.modules.utils.build.SdkLevel;
+import com.android.networkstack.apishim.ConstantsShim;
+import com.android.server.ethernet.EthernetService;
+import com.android.server.ethernet.EthernetServiceImpl;
 import com.android.server.nearby.NearbyService;
 
 /**
@@ -32,11 +35,13 @@ public final class ConnectivityServiceInitializer extends SystemService {
     private final IpSecService mIpSecService;
     private final NsdService mNsdService;
     private final NearbyService mNearbyService;
+    private final EthernetServiceImpl mEthernetServiceImpl;
 
     public ConnectivityServiceInitializer(Context context) {
         super(context);
         // Load JNI libraries used by ConnectivityService and its dependencies
         System.loadLibrary("service-connectivity");
+        mEthernetServiceImpl = createEthernetService(context);
         mConnectivity = new ConnectivityService(context);
         mIpSecService = createIpSecService(context);
         mNsdService = createNsdService(context);
@@ -45,6 +50,12 @@ public final class ConnectivityServiceInitializer extends SystemService {
 
     @Override
     public void onStart() {
+        if (mEthernetServiceImpl != null) {
+            Log.i(TAG, "Registering " + Context.ETHERNET_SERVICE);
+            publishBinderService(Context.ETHERNET_SERVICE, mEthernetServiceImpl,
+                    /* allowIsolated= */ false);
+        }
+
         Log.i(TAG, "Registering " + Context.CONNECTIVITY_SERVICE);
         publishBinderService(Context.CONNECTIVITY_SERVICE, mConnectivity,
                 /* allowIsolated= */ false);
@@ -60,16 +71,21 @@ public final class ConnectivityServiceInitializer extends SystemService {
         }
 
         if (mNearbyService != null) {
-            Log.i(TAG, "Registering " + Context.NEARBY_SERVICE);
-            publishBinderService(Context.NEARBY_SERVICE, mNearbyService,
+            Log.i(TAG, "Registering " + ConstantsShim.NEARBY_SERVICE);
+            publishBinderService(ConstantsShim.NEARBY_SERVICE, mNearbyService,
                     /* allowIsolated= */ false);
         }
+
     }
 
     @Override
     public void onBootPhase(int phase) {
         if (mNearbyService != null) {
             mNearbyService.onBootPhase(phase);
+        }
+
+        if (phase == SystemService.PHASE_SYSTEM_SERVICES_READY && mEthernetServiceImpl != null) {
+            mEthernetServiceImpl.start();
         }
     }
 
@@ -96,6 +112,24 @@ public final class ConnectivityServiceInitializer extends SystemService {
     /** Return Nearby service instance or null if current SDK is lower than T */
     private NearbyService createNearbyService(final Context context) {
         if (!SdkLevel.isAtLeastT()) return null;
-        return new NearbyService(context);
+        try {
+            return new NearbyService(context);
+        } catch (UnsupportedOperationException e) {
+            // Nearby is not yet supported in all branches
+            // TODO: remove catch clause when it is available.
+            Log.i(TAG, "Skipping unsupported service " + ConstantsShim.NEARBY_SERVICE);
+            return null;
+        }
+    }
+
+    /**
+     * Return EthernetServiceImpl instance or null if current SDK is lower than T or Ethernet
+     * service isn't necessary.
+     */
+    private EthernetServiceImpl createEthernetService(final Context context) {
+        if (!SdkLevel.isAtLeastT() || !mConnectivity.deviceSupportsEthernet(context)) {
+            return null;
+        }
+        return EthernetService.create(context);
     }
 }
