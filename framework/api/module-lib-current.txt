@@ -12,8 +12,8 @@ package android.net {
     method @NonNull @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public java.util.List<android.net.NetworkStateSnapshot> getAllNetworkStateSnapshots();
     method @Nullable public android.net.ProxyInfo getGlobalProxy();
     method @NonNull public static android.util.Range<java.lang.Integer> getIpSecNetIdRange();
-    method @Nullable @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public android.net.LinkProperties redactLinkPropertiesForPackage(@NonNull android.net.LinkProperties, int, @NonNull String);
-    method @Nullable @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public android.net.NetworkCapabilities redactNetworkCapabilitiesForPackage(@NonNull android.net.NetworkCapabilities, int, @NonNull String);
+    method @Nullable @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public android.net.LinkProperties getRedactedLinkPropertiesForPackage(@NonNull android.net.LinkProperties, int, @NonNull String);
+    method @Nullable @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public android.net.NetworkCapabilities getRedactedNetworkCapabilitiesForPackage(@NonNull android.net.NetworkCapabilities, int, @NonNull String);
     method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public void registerDefaultNetworkCallbackForUid(int, @NonNull android.net.ConnectivityManager.NetworkCallback, @NonNull android.os.Handler);
     method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public void registerSystemDefaultNetworkCallback(@NonNull android.net.ConnectivityManager.NetworkCallback, @NonNull android.os.Handler);
     method @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public void removeUidFromMeteredNetworkAllowList(int);
@@ -172,8 +172,8 @@ package android.net {
 
   public final class ProfileNetworkPreference implements android.os.Parcelable {
     method public int describeContents();
-    method @NonNull public java.util.List<java.lang.Integer> getExcludedUids();
-    method @NonNull public java.util.List<java.lang.Integer> getIncludedUids();
+    method @NonNull public int[] getExcludedUids();
+    method @NonNull public int[] getIncludedUids();
     method public int getPreference();
     method public int getPreferenceEnterpriseId();
     method public void writeToParcel(@NonNull android.os.Parcel, int);
@@ -183,8 +183,8 @@ package android.net {
   public static final class ProfileNetworkPreference.Builder {
     ctor public ProfileNetworkPreference.Builder();
     method @NonNull public android.net.ProfileNetworkPreference build();
-    method @NonNull public android.net.ProfileNetworkPreference.Builder setExcludedUids(@Nullable java.util.List<java.lang.Integer>);
-    method @NonNull public android.net.ProfileNetworkPreference.Builder setIncludedUids(@Nullable java.util.List<java.lang.Integer>);
+    method @NonNull public android.net.ProfileNetworkPreference.Builder setExcludedUids(@NonNull int[]);
+    method @NonNull public android.net.ProfileNetworkPreference.Builder setIncludedUids(@NonNull int[]);
     method @NonNull public android.net.ProfileNetworkPreference.Builder setPreference(int);
     method @NonNull public android.net.ProfileNetworkPreference.Builder setPreferenceEnterpriseId(int);
   }
