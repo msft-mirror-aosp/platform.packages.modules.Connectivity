@@ -936,7 +936,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             // Ethernet is often not specified in the configs, although many devices can use it via
             // USB host adapters. Add it as long as the ethernet service is here.
-            if (ctx.getSystemService(Context.ETHERNET_SERVICE) != null) {
+            if (deviceSupportsEthernet(ctx)) {
                 addSupportedType(TYPE_ETHERNET);
             }
 
@@ -1619,6 +1619,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         mIngressRateLimit = ConnectivitySettingsManager.getIngressRateLimitInBytesPerSecond(
                 mContext);
+    }
+
+    /**
+     * Check whether or not the device supports Ethernet transport.
+     */
+    public static boolean deviceSupportsEthernet(final Context context) {
+        final PackageManager pm = context.getPackageManager();
+        return pm.hasSystemFeature(PackageManager.FEATURE_ETHERNET)
+                || pm.hasSystemFeature(PackageManager.FEATURE_USB_HOST);
     }
 
     private static NetworkCapabilities createDefaultNetworkCapabilitiesForUid(int uid) {
@@ -10616,15 +10625,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
             @NonNull final UserHandle profile,
             @NonNull final ProfileNetworkPreference profileNetworkPreference) {
         final UidRange profileUids = UidRange.createForUser(profile);
-        Set<UidRange> uidRangeSet = UidRangeUtils.convertListToUidRange(
-                profileNetworkPreference.getIncludedUids());
+        Set<UidRange> uidRangeSet = UidRangeUtils.convertArrayToUidRange(
+                        profileNetworkPreference.getIncludedUids());
+
         if (uidRangeSet.size() > 0) {
             if (!UidRangeUtils.isRangeSetInUidRange(profileUids, uidRangeSet)) {
                 throw new IllegalArgumentException(
                         "Allow uid range is outside the uid range of profile.");
             }
         } else {
-            ArraySet<UidRange> disallowUidRangeSet = UidRangeUtils.convertListToUidRange(
+            ArraySet<UidRange> disallowUidRangeSet = UidRangeUtils.convertArrayToUidRange(
                     profileNetworkPreference.getExcludedUids());
             if (disallowUidRangeSet.size() > 0) {
                 if (!UidRangeUtils.isRangeSetInUidRange(profileUids, disallowUidRangeSet)) {
