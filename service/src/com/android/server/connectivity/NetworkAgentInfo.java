@@ -179,6 +179,9 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
     // shows up in API calls, is able to satisfy NetworkRequests and can become the default network.
     // This is a sticky bit; once set it is never cleared.
     public boolean everConnected;
+    // To check how long it has been since last roam.
+    public long lastRoamTimestamp;
+
     // Set to true if this Network successfully passed validation or if it did not satisfy the
     // default NetworkRequest in which case validation will not be attempted.
     // This is a sticky bit; once set it is never cleared even if future validation attempts fail.
