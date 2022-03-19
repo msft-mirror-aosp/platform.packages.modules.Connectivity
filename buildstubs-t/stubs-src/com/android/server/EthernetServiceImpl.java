@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,15 @@
  * limitations under the License.
  */
 
-package android.net;
+package com.android.server.ethernet;
 
-import android.annotation.SystemApi;
+import android.os.Binder;
 
-import com.android.internal.annotations.VisibleForTesting;
-
-/**
- * Thrown when a previously bound socket becomes unbound.
- *
- * @hide
- */
-@SystemApi
-public class SocketNotBoundException extends Exception {
-    @VisibleForTesting
-    public SocketNotBoundException() {
-        super("The socket is unbound");
+/** Stub class for EthernetServiceImpl */
+public class EthernetServiceImpl extends Binder {
+    /** Start service */
+    public void start() {
+        throw new RuntimeException("This is a stub class");
     }
 }
+

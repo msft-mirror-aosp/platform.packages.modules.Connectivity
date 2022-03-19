@@ -199,6 +199,7 @@ import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.MultinetworkPolicyTracker;
+import android.net.wifi.WifiInfo;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
 import android.os.Build;
@@ -347,6 +348,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final String LINGER_DELAY_PROPERTY = "persist.netmon.linger";
     private static final int DEFAULT_LINGER_DELAY_MS = 30_000;
     private static final int DEFAULT_NASCENT_DELAY_MS = 5_000;
+
+    // The maximum value for the blocking validation result, in milliseconds.
+    public static final int MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS = 10000;
 
     // The maximum number of network request allowed per uid before an exception is thrown.
     @VisibleForTesting
@@ -936,7 +940,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             // Ethernet is often not specified in the configs, although many devices can use it via
             // USB host adapters. Add it as long as the ethernet service is here.
-            if (ctx.getSystemService(Context.ETHERNET_SERVICE) != null) {
+            if (deviceSupportsEthernet(ctx)) {
                 addSupportedType(TYPE_ETHERNET);
             }
 
@@ -1621,6 +1625,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 mContext);
     }
 
+    /**
+     * Check whether or not the device supports Ethernet transport.
+     */
+    public static boolean deviceSupportsEthernet(final Context context) {
+        final PackageManager pm = context.getPackageManager();
+        return pm.hasSystemFeature(PackageManager.FEATURE_ETHERNET)
+                || pm.hasSystemFeature(PackageManager.FEATURE_USB_HOST);
+    }
+
     private static NetworkCapabilities createDefaultNetworkCapabilitiesForUid(int uid) {
         return createDefaultNetworkCapabilitiesForUidRangeSet(Collections.singleton(
                 new UidRange(uid, uid)));
@@ -2172,7 +2185,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     @Override
     @Nullable
-    public LinkProperties redactLinkPropertiesForPackage(@NonNull LinkProperties lp, int uid,
+    public LinkProperties getRedactedLinkPropertiesForPackage(@NonNull LinkProperties lp, int uid,
             @NonNull String packageName, @Nullable String callingAttributionTag) {
         Objects.requireNonNull(packageName);
         Objects.requireNonNull(lp);
@@ -2207,8 +2220,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     @Override
-    public NetworkCapabilities redactNetworkCapabilitiesForPackage(@NonNull NetworkCapabilities nc,
-            int uid, @NonNull String packageName, @Nullable String callingAttributionTag) {
+    public NetworkCapabilities getRedactedNetworkCapabilitiesForPackage(
+            @NonNull NetworkCapabilities nc, int uid, @NonNull String packageName,
+            @Nullable String callingAttributionTag) {
         Objects.requireNonNull(nc);
         Objects.requireNonNull(packageName);
         enforceNetworkStackOrSettingsPermission();
@@ -2239,10 +2253,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (newNc.getNetworkSpecifier() != null) {
             newNc.setNetworkSpecifier(newNc.getNetworkSpecifier().redact());
         }
-        newNc.setAdministratorUids(new int[0]);
+        if (!checkAnyPermissionOf(callerPid, callerUid, android.Manifest.permission.NETWORK_STACK,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)) {
+            newNc.setAdministratorUids(new int[0]);
+        }
         if (!checkAnyPermissionOf(
                 callerPid, callerUid, android.Manifest.permission.NETWORK_FACTORY)) {
-            newNc.setAccessUids(new ArraySet<>());
+            newNc.setAllowedUids(new ArraySet<>());
             newNc.setSubscriptionIds(Collections.emptySet());
         }
 
@@ -3502,6 +3519,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return false;
     }
 
+    private boolean isDisconnectRequest(Message msg) {
+        if (msg.what != NetworkAgent.EVENT_NETWORK_INFO_CHANGED) return false;
+        final NetworkInfo info = (NetworkInfo) ((Pair) msg.obj).second;
+        return info.getState() == NetworkInfo.State.DISCONNECTED;
+    }
+
     // must be stateless - things change under us.
     private class NetworkStateTrackerHandler extends Handler {
         public NetworkStateTrackerHandler(Looper looper) {
@@ -3518,10 +3541,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 return;
             }
 
+            // If the network has been destroyed, the only thing that it can do is disconnect.
+            if (nai.destroyed && !isDisconnectRequest(msg)) {
+                return;
+            }
+
             switch (msg.what) {
                 case NetworkAgent.EVENT_NETWORK_CAPABILITIES_CHANGED: {
                     final NetworkCapabilities networkCapabilities = new NetworkCapabilities(
                             (NetworkCapabilities) arg.second);
+                    maybeUpdateWifiRoamTimestamp(nai, networkCapabilities);
                     processCapabilitiesFromAgent(nai, networkCapabilities);
                     updateCapabilities(nai.getCurrentScore(), nai, networkCapabilities);
                     break;
@@ -3619,12 +3648,60 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     }
                     break;
                 }
+                case NetworkAgent.EVENT_DESTROY_AND_AWAIT_REPLACEMENT: {
+                    // If nai is not yet created, or is already destroyed, ignore.
+                    if (!shouldDestroyNativeNetwork(nai)) break;
+
+                    final int timeoutMs = (int) arg.second;
+                    if (timeoutMs < 0 || timeoutMs > NetworkAgent.MAX_TEARDOWN_DELAY_MS) {
+                        Log.e(TAG, "Invalid network replacement timer " + timeoutMs
+                                + ", must be between 0 and " + NetworkAgent.MAX_TEARDOWN_DELAY_MS);
+                    }
+
+                    // Marking a network awaiting replacement is used to ensure that any requests
+                    // satisfied by the network do not switch to another network until a
+                    // replacement is available or the wait for a replacement times out.
+                    // If the network is inactive (i.e., nascent or lingering), then there are no
+                    // such requests, and there is no point keeping it. Just tear it down.
+                    // Note that setLingerDuration(0) cannot be used to do this because the network
+                    // could be nascent.
+                    nai.clearInactivityState();
+                    if (unneeded(nai, UnneededFor.TEARDOWN)) {
+                        Log.d(TAG, nai.toShortString()
+                                + " marked awaiting replacement is unneeded, tearing down instead");
+                        teardownUnneededNetwork(nai);
+                        break;
+                    }
+
+                    Log.d(TAG, "Marking " + nai.toShortString()
+                            + " destroyed, awaiting replacement within " + timeoutMs + "ms");
+                    destroyNativeNetwork(nai);
+
+                    // TODO: deduplicate this call with the one in disconnectAndDestroyNetwork.
+                    // This is not trivial because KeepaliveTracker#handleStartKeepalive does not
+                    // consider the fact that the network could already have disconnected or been
+                    // destroyed. Fix the code to send ERROR_INVALID_NETWORK when this happens
+                    // (taking care to ensure no dup'd FD leaks), then remove the code duplication
+                    // and move this code to a sensible location (destroyNativeNetwork perhaps?).
+                    mKeepaliveTracker.handleStopAllKeepalives(nai,
+                            SocketKeepalive.ERROR_INVALID_NETWORK);
+
+                    nai.updateScoreForNetworkAgentUpdate();
+                    // This rematch is almost certainly not going to result in any changes, because
+                    // the destroyed flag is only just above the "current satisfier wins"
+                    // tie-breaker. But technically anything that affects scoring should rematch.
+                    rematchAllNetworksAndRequests();
+                    mHandler.postDelayed(() -> nai.disconnect(), timeoutMs);
+                    break;
+                }
             }
         }
 
         private boolean maybeHandleNetworkMonitorMessage(Message msg) {
             final int netId = msg.arg2;
             final NetworkAgentInfo nai = getNetworkAgentInfoForNetId(netId);
+            // If a network has already been destroyed, all NetworkMonitor updates are ignored.
+            if (nai != null && nai.destroyed) return true;
             switch (msg.what) {
                 default:
                     return false;
@@ -3721,14 +3798,21 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         private void handleNetworkTested(
                 @NonNull NetworkAgentInfo nai, int testResult, @NonNull String redirectUrl) {
+            final boolean valid = ((testResult & NETWORK_VALIDATION_RESULT_VALID) != 0);
+            if (!valid && shouldIgnoreValidationFailureAfterRoam(nai)) {
+                // Assume the validation failure is due to a temporary failure after roaming
+                // and ignore it. NetworkMonitor will continue to retry validation. If it
+                // continues to fail after the block timeout expires, the network will be
+                // marked unvalidated. If it succeeds, then validation state will not change.
+                return;
+            }
+
+            final boolean wasValidated = nai.lastValidated;
+            final boolean wasDefault = isDefaultNetwork(nai);
             final boolean wasPartial = nai.partialConnectivity;
             nai.partialConnectivity = ((testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
             final boolean partialConnectivityChanged =
                     (wasPartial != nai.partialConnectivity);
-
-            final boolean valid = ((testResult & NETWORK_VALIDATION_RESULT_VALID) != 0);
-            final boolean wasValidated = nai.lastValidated;
-            final boolean wasDefault = isDefaultNetwork(nai);
 
             if (DBG) {
                 final String logMsg = !TextUtils.isEmpty(redirectUrl)
@@ -4124,6 +4208,27 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    private static boolean shouldDestroyNativeNetwork(@NonNull NetworkAgentInfo nai) {
+        return nai.created && !nai.destroyed;
+    }
+
+    private boolean shouldIgnoreValidationFailureAfterRoam(NetworkAgentInfo nai) {
+        // T+ devices should use destroyAndAwaitReplacement.
+        if (SdkLevel.isAtLeastT()) return false;
+        final long blockTimeOut = Long.valueOf(mResources.get().getInteger(
+                R.integer.config_validationFailureAfterRoamIgnoreTimeMillis));
+        if (blockTimeOut <= MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS
+                && blockTimeOut >= 0) {
+            final long currentTimeMs  = SystemClock.elapsedRealtime();
+            long timeSinceLastRoam = currentTimeMs - nai.lastRoamTimestamp;
+            if (timeSinceLastRoam <= blockTimeOut) {
+                log ("blocked because only " + timeSinceLastRoam + "ms after roam");
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void handleNetworkAgentDisconnected(Message msg) {
         NetworkAgentInfo nai = (NetworkAgentInfo) msg.obj;
         disconnectAndDestroyNetwork(nai);
@@ -4230,7 +4335,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void destroyNetwork(NetworkAgentInfo nai) {
-        if (nai.created) {
+        if (shouldDestroyNativeNetwork(nai)) {
             // Tell netd to clean up the configuration for this network
             // (routing rules, DNS, etc).
             // This may be slow as it requires a lot of netd shelling out to ip and
@@ -4239,15 +4344,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // network or service a new request from an app), so network traffic isn't interrupted
             // for an unnecessarily long time.
             destroyNativeNetwork(nai);
-            mDnsManager.removeNetwork(nai.network);
-
-            // clean up tc police filters on interface.
-            if (nai.everConnected && canNetworkBeRateLimited(nai) && mIngressRateLimit >= 0) {
-                mDeps.disableIngressRateLimit(nai.linkProperties.getInterfaceName());
-            }
+        }
+        if (!nai.created && !SdkLevel.isAtLeastT()) {
+            // Backwards compatibility: send onNetworkDestroyed even if network was never created.
+            // This can never run if the code above runs because shouldDestroyNativeNetwork is
+            // false if the network was never created.
+            // TODO: delete when S is no longer supported.
+            nai.onNetworkDestroyed();
         }
         mNetIdManager.releaseNetId(nai.network.getNetId());
-        nai.onNetworkDestroyed();
     }
 
     private boolean createNativeNetwork(@NonNull NetworkAgentInfo nai) {
@@ -4290,6 +4395,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } catch (RemoteException | ServiceSpecificException e) {
             loge("Exception destroying network: " + e);
         }
+        // TODO: defer calling this until the network is removed from mNetworkAgentInfos.
+        // Otherwise, a private DNS configuration update for a destroyed network, or one that never
+        // gets created, could add data to DnsManager data structures that will never get deleted.
+        mDnsManager.removeNetwork(nai.network);
+
+        // clean up tc police filters on interface.
+        if (nai.everConnected && canNetworkBeRateLimited(nai) && mIngressRateLimit >= 0) {
+            mDeps.disableIngressRateLimit(nai.linkProperties.getInterfaceName());
+        }
+
+        nai.destroyed = true;
+        nai.onNetworkDestroyed();
     }
 
     // If this method proves to be too slow then we can maintain a separate
@@ -6381,7 +6498,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (nc.isPrivateDnsBroken()) {
             throw new IllegalArgumentException("Can't request broken private DNS");
         }
-        if (nc.hasAccessUids()) {
+        if (nc.hasAllowedUids()) {
             throw new IllegalArgumentException("Can't request access UIDs");
         }
     }
@@ -7838,7 +7955,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final NetworkCapabilities prevNc = nai.getAndSetNetworkCapabilities(newNc);
 
         updateVpnUids(nai, prevNc, newNc);
-        updateAccessUids(nai, prevNc, newNc);
+        updateAllowedUids(nai, prevNc, newNc);
         nai.updateScoreForNetworkAgentUpdate();
 
         if (nai.getCurrentScore() == oldScore && newNc.equalRequestableCapabilities(prevNc)) {
@@ -8068,17 +8185,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private void updateAccessUids(@NonNull NetworkAgentInfo nai,
+    private void updateAllowedUids(@NonNull NetworkAgentInfo nai,
             @Nullable NetworkCapabilities prevNc, @Nullable NetworkCapabilities newNc) {
         // In almost all cases both NC code for empty access UIDs. return as fast as possible.
-        final boolean prevEmpty = null == prevNc || prevNc.getAccessUidsNoCopy().isEmpty();
-        final boolean newEmpty = null == newNc || newNc.getAccessUidsNoCopy().isEmpty();
+        final boolean prevEmpty = null == prevNc || prevNc.getAllowedUidsNoCopy().isEmpty();
+        final boolean newEmpty = null == newNc || newNc.getAllowedUidsNoCopy().isEmpty();
         if (prevEmpty && newEmpty) return;
 
         final ArraySet<Integer> prevUids =
-                null == prevNc ? new ArraySet<>() : prevNc.getAccessUidsNoCopy();
+                null == prevNc ? new ArraySet<>() : prevNc.getAllowedUidsNoCopy();
         final ArraySet<Integer> newUids =
-                null == newNc ? new ArraySet<>() : newNc.getAccessUidsNoCopy();
+                null == newNc ? new ArraySet<>() : newNc.getAllowedUidsNoCopy();
 
         if (prevUids.equals(newUids)) return;
 
@@ -8542,11 +8659,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     log("   accepting network in place of " + previousSatisfier.toShortString());
                 }
                 previousSatisfier.removeRequest(previousRequest.requestId);
-                if (canSupportGracefulNetworkSwitch(previousSatisfier, newSatisfier)) {
+                if (canSupportGracefulNetworkSwitch(previousSatisfier, newSatisfier)
+                        && !previousSatisfier.destroyed) {
                     // If this network switch can't be supported gracefully, the request is not
                     // lingered. This allows letting go of the network sooner to reclaim some
                     // performance on the new network, since the radio can't do both at the same
                     // time while preserving good performance.
+                    //
+                    // Also don't linger the request if the old network has been destroyed.
+                    // A destroyed network does not provide actual network connectivity, so
+                    // lingering it is not useful. In particular this ensures that a destroyed
+                    // network is outscored by its replacement,
+                    // then it is torn down immediately instead of being lingered, and any apps that
+                    // were using it immediately get onLost and can connect using the new network.
                     previousSatisfier.lingerRequest(previousRequest.requestId, now);
                 }
             } else {
@@ -9020,7 +9145,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             networkAgent.created = true;
             networkAgent.onNetworkCreated();
-            updateAccessUids(networkAgent, null, networkAgent.networkCapabilities);
+            updateAllowedUids(networkAgent, null, networkAgent.networkCapabilities);
         }
 
         if (!networkAgent.everConnected && state == NetworkInfo.State.CONNECTED) {
@@ -9518,6 +9643,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final TransportInfo ti = vpn.networkCapabilities.getTransportInfo();
         if (!(ti instanceof VpnTransportInfo)) return VpnManager.TYPE_VPN_NONE;
         return ((VpnTransportInfo) ti).getType();
+    }
+
+    private void maybeUpdateWifiRoamTimestamp(NetworkAgentInfo nai, NetworkCapabilities nc) {
+        if (nai == null) return;
+        final TransportInfo prevInfo = nai.networkCapabilities.getTransportInfo();
+        final TransportInfo newInfo = nc.getTransportInfo();
+        if (!(prevInfo instanceof WifiInfo) || !(newInfo instanceof WifiInfo)) {
+            return;
+        }
+        if (!TextUtils.equals(((WifiInfo)prevInfo).getBSSID(), ((WifiInfo)newInfo).getBSSID())) {
+            nai.lastRoamTimestamp = SystemClock.elapsedRealtime();
+        }
     }
 
     /**
@@ -10532,15 +10669,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
             @NonNull final UserHandle profile,
             @NonNull final ProfileNetworkPreference profileNetworkPreference) {
         final UidRange profileUids = UidRange.createForUser(profile);
-        Set<UidRange> uidRangeSet = UidRangeUtils.convertListToUidRange(
-                profileNetworkPreference.getIncludedUids());
+        Set<UidRange> uidRangeSet = UidRangeUtils.convertArrayToUidRange(
+                        profileNetworkPreference.getIncludedUids());
+
         if (uidRangeSet.size() > 0) {
             if (!UidRangeUtils.isRangeSetInUidRange(profileUids, uidRangeSet)) {
                 throw new IllegalArgumentException(
                         "Allow uid range is outside the uid range of profile.");
             }
         } else {
-            ArraySet<UidRange> disallowUidRangeSet = UidRangeUtils.convertListToUidRange(
+            ArraySet<UidRange> disallowUidRangeSet = UidRangeUtils.convertArrayToUidRange(
                     profileNetworkPreference.getExcludedUids());
             if (disallowUidRangeSet.size() > 0) {
                 if (!UidRangeUtils.isRangeSetInUidRange(profileUids, disallowUidRangeSet)) {
