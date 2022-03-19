@@ -236,6 +236,7 @@ package android.net {
   public abstract class NetworkAgent {
     ctor public NetworkAgent(@NonNull android.content.Context, @NonNull android.os.Looper, @NonNull String, @NonNull android.net.NetworkCapabilities, @NonNull android.net.LinkProperties, int, @NonNull android.net.NetworkAgentConfig, @Nullable android.net.NetworkProvider);
     ctor public NetworkAgent(@NonNull android.content.Context, @NonNull android.os.Looper, @NonNull String, @NonNull android.net.NetworkCapabilities, @NonNull android.net.LinkProperties, @NonNull android.net.NetworkScore, @NonNull android.net.NetworkAgentConfig, @Nullable android.net.NetworkProvider);
+    method public void destroyAndAwaitReplacement(@IntRange(from=0, to=0x1388) int);
     method @Nullable public android.net.Network getNetwork();
     method public void markConnected();
     method public void onAddKeepalivePacketFilter(int, @NonNull android.net.KeepalivePacketData);
@@ -360,6 +361,7 @@ package android.net {
   }
 
   public class NetworkReleasedException extends java.lang.Exception {
+    ctor public NetworkReleasedException();
   }
 
   public class NetworkRequest implements android.os.Parcelable {
@@ -424,6 +426,8 @@ package android.net {
   }
 
   public final class QosCallbackException extends java.lang.Exception {
+    ctor public QosCallbackException(@NonNull String);
+    ctor public QosCallbackException(@NonNull Throwable);
   }
 
   public abstract class QosFilter {
@@ -469,9 +473,11 @@ package android.net {
   }
 
   public class SocketLocalAddressChangedException extends java.lang.Exception {
+    ctor public SocketLocalAddressChangedException();
   }
 
   public class SocketNotBoundException extends java.lang.Exception {
+    ctor public SocketNotBoundException();
   }
 
   public final class StaticIpConfiguration implements android.os.Parcelable {
