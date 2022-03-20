@@ -199,6 +199,7 @@ import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.MultinetworkPolicyTracker;
+import android.net.wifi.WifiInfo;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
 import android.os.Build;
@@ -347,6 +348,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final String LINGER_DELAY_PROPERTY = "persist.netmon.linger";
     private static final int DEFAULT_LINGER_DELAY_MS = 30_000;
     private static final int DEFAULT_NASCENT_DELAY_MS = 5_000;
+
+    // The maximum value for the blocking validation result, in milliseconds.
+    public static final int MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS = 10000;
 
     // The maximum number of network request allowed per uid before an exception is thrown.
     @VisibleForTesting
@@ -936,7 +940,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             // Ethernet is often not specified in the configs, although many devices can use it via
             // USB host adapters. Add it as long as the ethernet service is here.
-            if (ctx.getSystemService(Context.ETHERNET_SERVICE) != null) {
+            if (deviceSupportsEthernet(ctx)) {
                 addSupportedType(TYPE_ETHERNET);
             }
 
@@ -1621,6 +1625,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 mContext);
     }
 
+    /**
+     * Check whether or not the device supports Ethernet transport.
+     */
+    public static boolean deviceSupportsEthernet(final Context context) {
+        final PackageManager pm = context.getPackageManager();
+        return pm.hasSystemFeature(PackageManager.FEATURE_ETHERNET)
+                || pm.hasSystemFeature(PackageManager.FEATURE_USB_HOST);
+    }
+
     private static NetworkCapabilities createDefaultNetworkCapabilitiesForUid(int uid) {
         return createDefaultNetworkCapabilitiesForUidRangeSet(Collections.singleton(
                 new UidRange(uid, uid)));
@@ -2240,10 +2253,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (newNc.getNetworkSpecifier() != null) {
             newNc.setNetworkSpecifier(newNc.getNetworkSpecifier().redact());
         }
-        newNc.setAdministratorUids(new int[0]);
+        if (!checkAnyPermissionOf(callerPid, callerUid, android.Manifest.permission.NETWORK_STACK,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)) {
+            newNc.setAdministratorUids(new int[0]);
+        }
         if (!checkAnyPermissionOf(
                 callerPid, callerUid, android.Manifest.permission.NETWORK_FACTORY)) {
-            newNc.setAccessUids(new ArraySet<>());
+            newNc.setAllowedUids(new ArraySet<>());
             newNc.setSubscriptionIds(Collections.emptySet());
         }
 
@@ -3534,6 +3550,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case NetworkAgent.EVENT_NETWORK_CAPABILITIES_CHANGED: {
                     final NetworkCapabilities networkCapabilities = new NetworkCapabilities(
                             (NetworkCapabilities) arg.second);
+                    maybeUpdateWifiRoamTimestamp(nai, networkCapabilities);
                     processCapabilitiesFromAgent(nai, networkCapabilities);
                     updateCapabilities(nai.getCurrentScore(), nai, networkCapabilities);
                     break;
@@ -3781,14 +3798,21 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         private void handleNetworkTested(
                 @NonNull NetworkAgentInfo nai, int testResult, @NonNull String redirectUrl) {
+            final boolean valid = ((testResult & NETWORK_VALIDATION_RESULT_VALID) != 0);
+            if (!valid && shouldIgnoreValidationFailureAfterRoam(nai)) {
+                // Assume the validation failure is due to a temporary failure after roaming
+                // and ignore it. NetworkMonitor will continue to retry validation. If it
+                // continues to fail after the block timeout expires, the network will be
+                // marked unvalidated. If it succeeds, then validation state will not change.
+                return;
+            }
+
+            final boolean wasValidated = nai.lastValidated;
+            final boolean wasDefault = isDefaultNetwork(nai);
             final boolean wasPartial = nai.partialConnectivity;
             nai.partialConnectivity = ((testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
             final boolean partialConnectivityChanged =
                     (wasPartial != nai.partialConnectivity);
-
-            final boolean valid = ((testResult & NETWORK_VALIDATION_RESULT_VALID) != 0);
-            final boolean wasValidated = nai.lastValidated;
-            final boolean wasDefault = isDefaultNetwork(nai);
 
             if (DBG) {
                 final String logMsg = !TextUtils.isEmpty(redirectUrl)
@@ -4186,6 +4210,23 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private static boolean shouldDestroyNativeNetwork(@NonNull NetworkAgentInfo nai) {
         return nai.created && !nai.destroyed;
+    }
+
+    private boolean shouldIgnoreValidationFailureAfterRoam(NetworkAgentInfo nai) {
+        // T+ devices should use destroyAndAwaitReplacement.
+        if (SdkLevel.isAtLeastT()) return false;
+        final long blockTimeOut = Long.valueOf(mResources.get().getInteger(
+                R.integer.config_validationFailureAfterRoamIgnoreTimeMillis));
+        if (blockTimeOut <= MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS
+                && blockTimeOut >= 0) {
+            final long currentTimeMs  = SystemClock.elapsedRealtime();
+            long timeSinceLastRoam = currentTimeMs - nai.lastRoamTimestamp;
+            if (timeSinceLastRoam <= blockTimeOut) {
+                log ("blocked because only " + timeSinceLastRoam + "ms after roam");
+                return true;
+            }
+        }
+        return false;
     }
 
     private void handleNetworkAgentDisconnected(Message msg) {
@@ -6457,7 +6498,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (nc.isPrivateDnsBroken()) {
             throw new IllegalArgumentException("Can't request broken private DNS");
         }
-        if (nc.hasAccessUids()) {
+        if (nc.hasAllowedUids()) {
             throw new IllegalArgumentException("Can't request access UIDs");
         }
     }
@@ -7914,7 +7955,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final NetworkCapabilities prevNc = nai.getAndSetNetworkCapabilities(newNc);
 
         updateVpnUids(nai, prevNc, newNc);
-        updateAccessUids(nai, prevNc, newNc);
+        updateAllowedUids(nai, prevNc, newNc);
         nai.updateScoreForNetworkAgentUpdate();
 
         if (nai.getCurrentScore() == oldScore && newNc.equalRequestableCapabilities(prevNc)) {
@@ -8144,17 +8185,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private void updateAccessUids(@NonNull NetworkAgentInfo nai,
+    private void updateAllowedUids(@NonNull NetworkAgentInfo nai,
             @Nullable NetworkCapabilities prevNc, @Nullable NetworkCapabilities newNc) {
         // In almost all cases both NC code for empty access UIDs. return as fast as possible.
-        final boolean prevEmpty = null == prevNc || prevNc.getAccessUidsNoCopy().isEmpty();
-        final boolean newEmpty = null == newNc || newNc.getAccessUidsNoCopy().isEmpty();
+        final boolean prevEmpty = null == prevNc || prevNc.getAllowedUidsNoCopy().isEmpty();
+        final boolean newEmpty = null == newNc || newNc.getAllowedUidsNoCopy().isEmpty();
         if (prevEmpty && newEmpty) return;
 
         final ArraySet<Integer> prevUids =
-                null == prevNc ? new ArraySet<>() : prevNc.getAccessUidsNoCopy();
+                null == prevNc ? new ArraySet<>() : prevNc.getAllowedUidsNoCopy();
         final ArraySet<Integer> newUids =
-                null == newNc ? new ArraySet<>() : newNc.getAccessUidsNoCopy();
+                null == newNc ? new ArraySet<>() : newNc.getAllowedUidsNoCopy();
 
         if (prevUids.equals(newUids)) return;
 
@@ -9104,7 +9145,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             networkAgent.created = true;
             networkAgent.onNetworkCreated();
-            updateAccessUids(networkAgent, null, networkAgent.networkCapabilities);
+            updateAllowedUids(networkAgent, null, networkAgent.networkCapabilities);
         }
 
         if (!networkAgent.everConnected && state == NetworkInfo.State.CONNECTED) {
@@ -9602,6 +9643,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final TransportInfo ti = vpn.networkCapabilities.getTransportInfo();
         if (!(ti instanceof VpnTransportInfo)) return VpnManager.TYPE_VPN_NONE;
         return ((VpnTransportInfo) ti).getType();
+    }
+
+    private void maybeUpdateWifiRoamTimestamp(NetworkAgentInfo nai, NetworkCapabilities nc) {
+        if (nai == null) return;
+        final TransportInfo prevInfo = nai.networkCapabilities.getTransportInfo();
+        final TransportInfo newInfo = nc.getTransportInfo();
+        if (!(prevInfo instanceof WifiInfo) || !(newInfo instanceof WifiInfo)) {
+            return;
+        }
+        if (!TextUtils.equals(((WifiInfo)prevInfo).getBSSID(), ((WifiInfo)newInfo).getBSSID())) {
+            nai.lastRoamTimestamp = SystemClock.elapsedRealtime();
+        }
     }
 
     /**
@@ -10616,15 +10669,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
             @NonNull final UserHandle profile,
             @NonNull final ProfileNetworkPreference profileNetworkPreference) {
         final UidRange profileUids = UidRange.createForUser(profile);
-        Set<UidRange> uidRangeSet = UidRangeUtils.convertListToUidRange(
-                profileNetworkPreference.getIncludedUids());
+        Set<UidRange> uidRangeSet = UidRangeUtils.convertArrayToUidRange(
+                        profileNetworkPreference.getIncludedUids());
+
         if (uidRangeSet.size() > 0) {
             if (!UidRangeUtils.isRangeSetInUidRange(profileUids, uidRangeSet)) {
                 throw new IllegalArgumentException(
                         "Allow uid range is outside the uid range of profile.");
             }
         } else {
-            ArraySet<UidRange> disallowUidRangeSet = UidRangeUtils.convertListToUidRange(
+            ArraySet<UidRange> disallowUidRangeSet = UidRangeUtils.convertArrayToUidRange(
                     profileNetworkPreference.getExcludedUids());
             if (disallowUidRangeSet.size() > 0) {
                 if (!UidRangeUtils.isRangeSetInUidRange(profileUids, disallowUidRangeSet)) {
