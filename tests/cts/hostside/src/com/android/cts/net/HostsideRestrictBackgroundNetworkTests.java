@@ -330,11 +330,6 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
                 "testNetworkAccess");
     }
 
-    public void testNetworkAccess_restrictedMode_withBatterySaver() throws Exception {
-        runDeviceTests(TEST_PKG, TEST_PKG + ".RestrictedModeTest",
-                "testNetworkAccess_withBatterySaver");
-    }
-
     /************************
      * Expedited job tests. *
      ************************/
