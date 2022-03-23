@@ -56,8 +56,7 @@ public class MyJobService extends JobService {
                 }
             }
         };
-        registerReceiver(mFinishCommandReceiver, new IntentFilter(ACTION_FINISH_JOB),
-                Context.RECEIVER_EXPORTED);
+        registerReceiver(mFinishCommandReceiver, new IntentFilter(ACTION_FINISH_JOB));
         return true;
     }
 
