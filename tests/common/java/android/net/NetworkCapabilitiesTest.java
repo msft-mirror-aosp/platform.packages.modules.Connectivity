@@ -49,6 +49,7 @@ import static android.net.NetworkCapabilities.REDACT_FOR_LOCAL_MAC_ADDRESS;
 import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
 import static android.net.NetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.NetworkCapabilities.TRANSPORT_USB;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
@@ -308,6 +309,48 @@ public class NetworkCapabilitiesTest {
         }
     }
 
+    @Test @IgnoreUpTo(SC_V2)
+    public void testSetAllowedUids() {
+        final NetworkCapabilities nc = new NetworkCapabilities();
+        assertThrows(NullPointerException.class, () -> nc.setAllowedUids(null));
+        assertFalse(nc.hasAllowedUids());
+        assertFalse(nc.isUidWithAccess(0));
+        assertFalse(nc.isUidWithAccess(1000));
+        assertEquals(0, nc.getAllowedUids().size());
+        nc.setAllowedUids(new ArraySet<>());
+        assertFalse(nc.hasAllowedUids());
+        assertFalse(nc.isUidWithAccess(0));
+        assertFalse(nc.isUidWithAccess(1000));
+        assertEquals(0, nc.getAllowedUids().size());
+
+        final ArraySet<Integer> uids = new ArraySet<>();
+        uids.add(200);
+        uids.add(250);
+        uids.add(-1);
+        uids.add(Integer.MAX_VALUE);
+        nc.setAllowedUids(uids);
+        assertNotEquals(nc, new NetworkCapabilities());
+        assertTrue(nc.hasAllowedUids());
+
+        final List<Integer> includedList = List.of(-2, 0, 199, 700, 901, 1000, Integer.MIN_VALUE);
+        final List<Integer> excludedList = List.of(-1, 200, 250, Integer.MAX_VALUE);
+        for (final int uid : includedList) {
+            assertFalse(nc.isUidWithAccess(uid));
+        }
+        for (final int uid : excludedList) {
+            assertTrue(nc.isUidWithAccess(uid));
+        }
+
+        final Set<Integer> outUids = nc.getAllowedUids();
+        assertEquals(4, outUids.size());
+        for (final int uid : includedList) {
+            assertFalse(outUids.contains(uid));
+        }
+        for (final int uid : excludedList) {
+            assertTrue(outUids.contains(uid));
+        }
+    }
+
     @Test
     public void testParcelNetworkCapabilities() {
         final Set<Range<Integer>> uids = new ArraySet<>();
@@ -318,6 +361,10 @@ public class NetworkCapabilitiesTest {
             .addCapability(NET_CAPABILITY_EIMS)
             .addCapability(NET_CAPABILITY_NOT_METERED);
         if (isAtLeastS()) {
+            final ArraySet<Integer> allowedUids = new ArraySet<>();
+            allowedUids.add(4);
+            allowedUids.add(9);
+            netCap.setAllowedUids(allowedUids);
             netCap.setSubscriptionIds(Set.of(TEST_SUBID1, TEST_SUBID2));
             netCap.setUids(uids);
         }
@@ -681,25 +728,38 @@ public class NetworkCapabilitiesTest {
     @Test
     public void testSetNetworkSpecifierOnMultiTransportNc() {
         // Sequence 1: Transport + Transport + NetworkSpecifier
-        NetworkCapabilities nc1 = new NetworkCapabilities();
+        NetworkCapabilities.Builder nc1 = new NetworkCapabilities.Builder();
         nc1.addTransportType(TRANSPORT_CELLULAR).addTransportType(TRANSPORT_WIFI);
-        try {
-            nc1.setNetworkSpecifier(CompatUtil.makeEthernetNetworkSpecifier("eth0"));
-            fail("Cannot set NetworkSpecifier on a NetworkCapability with multiple transports!");
-        } catch (IllegalStateException expected) {
-            // empty
-        }
+        final NetworkSpecifier specifier = CompatUtil.makeEthernetNetworkSpecifier("eth0");
+        assertThrows("Cannot set NetworkSpecifier on a NetworkCapability with multiple transports!",
+                IllegalStateException.class,
+                () -> nc1.build().setNetworkSpecifier(specifier));
+        assertThrows("Cannot set NetworkSpecifier on a NetworkCapability with multiple transports!",
+                IllegalStateException.class,
+                () -> nc1.setNetworkSpecifier(specifier));
 
         // Sequence 2: Transport + NetworkSpecifier + Transport
-        NetworkCapabilities nc2 = new NetworkCapabilities();
-        nc2.addTransportType(TRANSPORT_CELLULAR).setNetworkSpecifier(
-                CompatUtil.makeEthernetNetworkSpecifier("testtap3"));
-        try {
-            nc2.addTransportType(TRANSPORT_WIFI);
-            fail("Cannot set a second TransportType of a network which has a NetworkSpecifier!");
-        } catch (IllegalStateException expected) {
-            // empty
-        }
+        NetworkCapabilities.Builder nc2 = new NetworkCapabilities.Builder();
+        nc2.addTransportType(TRANSPORT_CELLULAR).setNetworkSpecifier(specifier);
+
+        assertThrows("Cannot set a second TransportType of a network which has a NetworkSpecifier!",
+                IllegalStateException.class,
+                () -> nc2.build().addTransportType(TRANSPORT_WIFI));
+        assertThrows("Cannot set a second TransportType of a network which has a NetworkSpecifier!",
+                IllegalStateException.class,
+                () -> nc2.addTransportType(TRANSPORT_WIFI));
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R) // New behavior in updatable NetworkCapabilities (S+)
+    public void testSetNetworkSpecifierOnTestMultiTransportNc() {
+        final NetworkSpecifier specifier = CompatUtil.makeEthernetNetworkSpecifier("eth0");
+        NetworkCapabilities nc = new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_TEST)
+                .addTransportType(TRANSPORT_ETHERNET)
+                .setNetworkSpecifier(specifier)
+                .build();
+        // Adding a specifier did not crash with 2 transports if one is TEST
+        assertEquals(specifier, nc.getNetworkSpecifier());
     }
 
     @Test

@@ -31,16 +31,18 @@ apex_defaults {
     // package names and keys, so that apex will be unused anyway.
     apps: ["TetheringNext"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
 }
+enable_tethering_next_apex = true
 // This is a placeholder comment to avoid merge conflicts
 // as the above target may have different "enabled" values
 // depending on the branch
 
 apex {
     name: "com.android.tethering",
-    defaults: ["ConnectivityApexDefaults"],
+    defaults: [
+        "ConnectivityApexDefaults",
+        "r-launched-apex-module",
+    ],
     compile_multilib: "both",
-    updatable: true,
-    min_sdk_version: "30",
     bootclasspath_fragments: [
         "com.android.tethering-bootclasspath-fragment",
     ],
@@ -51,12 +53,15 @@ apex {
         first: {
             jni_libs: [
                 "libservice-connectivity",
-                "libcom_android_connectivity_com_android_net_module_util_jni",
-                "libtraffic_controller_jni",
+                "libandroid_net_connectivity_com_android_net_module_util_jni",
             ],
+            native_shared_libs: ["libnetd_updatable"],
         },
         both: {
-            jni_libs: ["libframework-connectivity-jni"],
+            jni_libs: [
+                "libframework-connectivity-jni",
+                "libframework-connectivity-tiramisu-jni"
+            ],
         },
     },
     binaries: [
@@ -66,13 +71,17 @@ apex {
     bpfs: [
         "clatd.o_mainline",
         "netd.o_mainline",
+        "dscp_policy.o",
         "offload.o",
         "test.o",
     ],
     apps: [
         "ServiceConnectivityResources",
     ],
-    prebuilts: ["current_sdkinfo"],
+    prebuilts: [
+        "current_sdkinfo",
+        "privapp_allowlist_com.android.tethering",
+    ],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
     // Indicates that pre-installed version of this apex can be compressed.
@@ -98,7 +107,7 @@ bootclasspath_fragment {
     name: "com.android.tethering-bootclasspath-fragment",
     contents: [
         "framework-connectivity",
-        "framework-connectivity-tiramisu",
+        "framework-connectivity-t",
         "framework-tethering",
     ],
     apex_available: ["com.android.tethering"],
@@ -127,7 +136,10 @@ bootclasspath_fragment {
             "hiddenapi/hiddenapi-max-target-o-low-priority.txt",
             "hiddenapi/hiddenapi-max-target-o-low-priority-tiramisu.txt",
 	],
-        unsupported: ["hiddenapi/hiddenapi-unsupported.txt"],
+        unsupported: [
+            "hiddenapi/hiddenapi-unsupported.txt",
+            "hiddenapi/hiddenapi-unsupported-tiramisu.txt",
+        ],
     },
 }
 
@@ -141,6 +153,7 @@ override_apex {
     name: "com.android.tethering.inprocess",
     base: "com.android.tethering",
     package_name: "com.android.tethering.inprocess",
+    enabled: enable_tethering_next_apex,
     apps: [
         "ServiceConnectivityResources",
         "InProcessTethering",

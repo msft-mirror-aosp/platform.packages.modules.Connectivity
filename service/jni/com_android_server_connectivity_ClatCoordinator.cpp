@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <linux/if_tun.h>
 #include <linux/ioctl.h>
 #include <log/log.h>
@@ -27,7 +28,11 @@
 #include <sys/wait.h>
 #include <string>
 
+#include <bpf/BpfMap.h>
+#include <bpf/BpfUtils.h>
+#include <bpf_shared.h>
 #include <netjniutils/netjniutils.h>
+#include <private/android_filesystem_config.h>
 
 #include "libclat/bpfhelper.h"
 #include "libclat/clatutils.h"
@@ -318,30 +323,13 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
         return -1;
     }
 
-    // 1. create a throwaway socket to reserve a file descriptor number
-    int passedTunFd = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (passedTunFd == -1) {
-        throwIOException(env, "socket(ipv6/udp) for tun fd failed", errno);
-        return -1;
-    }
-    int passedSockRead = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (passedSockRead == -1) {
-        throwIOException(env, "socket(ipv6/udp) for read socket failed", errno);
-        return -1;
-    }
-    int passedSockWrite = socket(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-    if (passedSockWrite == -1) {
-        throwIOException(env, "socket(ipv6/udp) for write socket failed", errno);
-        return -1;
-    }
-
-    // these are the FD we'll pass to clatd on the cli, so need it as a string
-    char passedTunFdStr[INT32_STRLEN];
-    char passedSockReadStr[INT32_STRLEN];
-    char passedSockWriteStr[INT32_STRLEN];
-    snprintf(passedTunFdStr, sizeof(passedTunFdStr), "%d", passedTunFd);
-    snprintf(passedSockReadStr, sizeof(passedSockReadStr), "%d", passedSockRead);
-    snprintf(passedSockWriteStr, sizeof(passedSockWriteStr), "%d", passedSockWrite);
+    // 1. these are the FD we'll pass to clatd on the cli, so need it as a string
+    char tunFdStr[INT32_STRLEN];
+    char sockReadStr[INT32_STRLEN];
+    char sockWriteStr[INT32_STRLEN];
+    snprintf(tunFdStr, sizeof(tunFdStr), "%d", tunFd);
+    snprintf(sockReadStr, sizeof(sockReadStr), "%d", readSock);
+    snprintf(sockWriteStr, sizeof(sockWriteStr), "%d", writeSock);
 
     // 2. we're going to use this as argv[0] to clatd to make ps output more useful
     std::string progname("clatd-");
@@ -353,9 +341,9 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
                           "-p", pfx96Str.c_str(),
                           "-4", v4Str.c_str(),
                           "-6", v6Str.c_str(),
-                          "-t", passedTunFdStr,
-                          "-r", passedSockReadStr,
-                          "-w", passedSockWriteStr,
+                          "-t", tunFdStr,
+                          "-r", sockReadStr,
+                          "-w", sockWriteStr,
                           nullptr};
     // clang-format on
 
@@ -375,7 +363,9 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
 
     // 4. register dup2() action: this is what 'clears' the CLOEXEC flag
     // on the tun fd that we want the child clatd process to inherit
-    // (this will happen after the vfork, and before the execve)
+    // (this will happen after the vfork, and before the execve).
+    // Note that even though dup2(2) is a no-op if fd == new_fd but O_CLOEXEC flag will be removed.
+    // See implementation of bionic's posix_spawn_file_actions_adddup2().
     posix_spawn_file_actions_t fa;
     if (int ret = posix_spawn_file_actions_init(&fa)) {
         posix_spawnattr_destroy(&attr);
@@ -383,19 +373,19 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
         return -1;
     }
 
-    if (int ret = posix_spawn_file_actions_adddup2(&fa, tunFd, passedTunFd)) {
+    if (int ret = posix_spawn_file_actions_adddup2(&fa, tunFd, tunFd)) {
         posix_spawnattr_destroy(&attr);
         posix_spawn_file_actions_destroy(&fa);
         throwIOException(env, "posix_spawn_file_actions_adddup2 for tun fd failed", ret);
         return -1;
     }
-    if (int ret = posix_spawn_file_actions_adddup2(&fa, readSock, passedSockRead)) {
+    if (int ret = posix_spawn_file_actions_adddup2(&fa, readSock, readSock)) {
         posix_spawnattr_destroy(&attr);
         posix_spawn_file_actions_destroy(&fa);
         throwIOException(env, "posix_spawn_file_actions_adddup2 for read socket failed", ret);
         return -1;
     }
-    if (int ret = posix_spawn_file_actions_adddup2(&fa, writeSock, passedSockWrite)) {
+    if (int ret = posix_spawn_file_actions_adddup2(&fa, writeSock, writeSock)) {
         posix_spawnattr_destroy(&attr);
         posix_spawn_file_actions_destroy(&fa);
         throwIOException(env, "posix_spawn_file_actions_adddup2 for write socket failed", ret);
@@ -414,7 +404,7 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
     posix_spawnattr_destroy(&attr);
     posix_spawn_file_actions_destroy(&fa);
 
-    // 5. Start BPF if any
+    // 6. Start BPF if any
     if (!net::clat::initMaps()) {
         net::clat::ClatdTracker tracker = {};
         if (!initTracker(ifaceStr.c_str(), pfx96Str.c_str(), v4Str.c_str(), v6Str.c_str(),
@@ -488,6 +478,72 @@ static void com_android_server_connectivity_ClatCoordinator_stopClatd(JNIEnv* en
     stopClatdProcess(pid);
 }
 
+static jlong com_android_server_connectivity_ClatCoordinator_tagSocketAsClat(
+        JNIEnv* env, jobject clazz, jobject sockJavaFd) {
+    int sockFd = netjniutils::GetNativeFileDescriptor(env, sockJavaFd);
+    if (sockFd < 0) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid socket file descriptor");
+        return -1;
+    }
+
+    uint64_t sock_cookie = bpf::getSocketCookie(sockFd);
+    if (sock_cookie == bpf::NONEXISTENT_COOKIE) {
+        throwIOException(env, "get socket cookie failed", errno);
+        return -1;
+    }
+
+    bpf::BpfMap<uint64_t, UidTagValue> cookieTagMap;
+    auto res = cookieTagMap.init(COOKIE_TAG_MAP_PATH);
+    if (!res.ok()) {
+        throwIOException(env, "failed to init the cookieTagMap", res.error().code());
+        return -1;
+    }
+
+    // Tag raw socket with uid AID_CLAT and set tag as zero because tag is unused in bpf
+    // program for counting data usage in netd.c. Tagging socket is used to avoid counting
+    // duplicated clat traffic in bpf stat.
+    UidTagValue newKey = {.uid = (uint32_t)AID_CLAT, .tag = 0 /* unused */};
+    res = cookieTagMap.writeValue(sock_cookie, newKey, BPF_ANY);
+    if (!res.ok()) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Failed to tag the socket: %s, fd: %d",
+                             strerror(res.error().code()), cookieTagMap.getMap().get());
+        return -1;
+    }
+
+    ALOGI("tag uid AID_CLAT to socket fd %d, cookie %" PRIu64 "", sockFd, sock_cookie);
+    return static_cast<jlong>(sock_cookie);
+}
+
+static void com_android_server_connectivity_ClatCoordinator_untagSocket(JNIEnv* env, jobject clazz,
+                                                                        jlong cookie) {
+    uint64_t sock_cookie = static_cast<uint64_t>(cookie);
+    if (sock_cookie == bpf::NONEXISTENT_COOKIE) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid socket cookie");
+        return;
+    }
+
+    // The reason that deleting entry from cookie tag map directly is that the tag socket destroy
+    // listener only monitors on group INET_TCP, INET_UDP, INET6_TCP, INET6_UDP. The other socket
+    // types, ex: raw, are not able to be removed automatically by the listener.
+    // See TrafficController::makeSkDestroyListener.
+    bpf::BpfMap<uint64_t, UidTagValue> cookieTagMap;
+    auto res = cookieTagMap.init(COOKIE_TAG_MAP_PATH);
+    if (!res.ok()) {
+        throwIOException(env, "failed to init the cookieTagMap", res.error().code());
+        return;
+    }
+
+    res = cookieTagMap.deleteValue(sock_cookie);
+    if (!res.ok()) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Failed to untag the socket: %s",
+                             strerror(res.error().code()));
+        return;
+    }
+
+    ALOGI("untag socket cookie %" PRIu64 "", sock_cookie);
+    return;
+}
+
 /*
  * JNI registration.
  */
@@ -517,9 +573,13 @@ static const JNINativeMethod gMethods[] = {
         {"native_stopClatd",
          "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
          (void*)com_android_server_connectivity_ClatCoordinator_stopClatd},
+        {"native_tagSocketAsClat", "(Ljava/io/FileDescriptor;)J",
+         (void*)com_android_server_connectivity_ClatCoordinator_tagSocketAsClat},
+        {"native_untagSocket", "(J)V",
+         (void*)com_android_server_connectivity_ClatCoordinator_untagSocket},
 };
 
-int register_android_server_connectivity_ClatCoordinator(JNIEnv* env) {
+int register_com_android_server_connectivity_ClatCoordinator(JNIEnv* env) {
     return jniRegisterNativeMethods(env, "com/android/server/connectivity/ClatCoordinator",
                                     gMethods, NELEM(gMethods));
 }

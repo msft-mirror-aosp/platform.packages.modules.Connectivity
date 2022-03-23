@@ -38,6 +38,7 @@
 
 #include "TrafficController.h"
 #include "bpf/BpfUtils.h"
+#include "NetdUpdatablePublic.h"
 
 using namespace android::bpf;  // NOLINT(google-build-using-namespace): grandfathered
 
@@ -54,7 +55,6 @@ constexpr uid_t TEST_UID2 = 54321;
 constexpr uid_t TEST_UID3 = 98765;
 constexpr uint32_t TEST_TAG = 42;
 constexpr uint32_t TEST_COUNTERSET = 1;
-constexpr uint32_t DEFAULT_COUNTERSET = 0;
 
 #define ASSERT_VALID(x) ASSERT_TRUE((x).isValid())
 
@@ -63,7 +63,6 @@ class TrafficControllerTest : public ::testing::Test {
     TrafficControllerTest() {}
     TrafficController mTc;
     BpfMap<uint64_t, UidTagValue> mFakeCookieTagMap;
-    BpfMap<uint32_t, uint8_t> mFakeUidCounterSetMap;
     BpfMap<uint32_t, StatsValue> mFakeAppUidStatsMap;
     BpfMap<StatsKey, StatsValue> mFakeStatsMapA;
     BpfMap<uint32_t, uint8_t> mFakeConfigurationMap;
@@ -77,10 +76,6 @@ class TrafficControllerTest : public ::testing::Test {
         mFakeCookieTagMap.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(uint64_t), sizeof(UidTagValue),
                                           TEST_MAP_SIZE, 0));
         ASSERT_VALID(mFakeCookieTagMap);
-
-        mFakeUidCounterSetMap.reset(
-            createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint8_t), TEST_MAP_SIZE, 0));
-        ASSERT_VALID(mFakeUidCounterSetMap);
 
         mFakeAppUidStatsMap.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(StatsValue),
                                             TEST_MAP_SIZE, 0));
@@ -103,8 +98,6 @@ class TrafficControllerTest : public ::testing::Test {
 
         mTc.mCookieTagMap.reset(dupFd(mFakeCookieTagMap.getMap()));
         ASSERT_VALID(mTc.mCookieTagMap);
-        mTc.mUidCounterSetMap.reset(dupFd(mFakeUidCounterSetMap.getMap()));
-        ASSERT_VALID(mTc.mUidCounterSetMap);
         mTc.mAppUidStatsMap.reset(dupFd(mFakeAppUidStatsMap.getMap()));
         ASSERT_VALID(mTc.mAppUidStatsMap);
         mTc.mStatsMapA.reset(dupFd(mFakeStatsMapA.getMap()));
@@ -131,8 +124,6 @@ class TrafficControllerTest : public ::testing::Test {
         EXPECT_RESULT_OK(mFakeCookieTagMap.writeValue(cookie, cookieMapkey, BPF_ANY));
         *key = {.uid = uid, .tag = tag, .counterSet = TEST_COUNTERSET, .ifaceIndex = 1};
         StatsValue statsMapValue = {.rxPackets = 1, .rxBytes = 100};
-        uint8_t counterSet = TEST_COUNTERSET;
-        EXPECT_RESULT_OK(mFakeUidCounterSetMap.writeValue(uid, counterSet, BPF_ANY));
         EXPECT_RESULT_OK(mFakeStatsMapA.writeValue(*key, statsMapValue, BPF_ANY));
         key->tag = 0;
         EXPECT_RESULT_OK(mFakeStatsMapA.writeValue(*key, statsMapValue, BPF_ANY));
@@ -258,9 +249,6 @@ class TrafficControllerTest : public ::testing::Test {
         EXPECT_RESULT_OK(cookieMapResult);
         EXPECT_EQ(uid, cookieMapResult.value().uid);
         EXPECT_EQ(tag, cookieMapResult.value().tag);
-        Result<uint8_t> counterSetResult = mFakeUidCounterSetMap.readValue(uid);
-        EXPECT_RESULT_OK(counterSetResult);
-        EXPECT_EQ(TEST_COUNTERSET, counterSetResult.value());
         Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
         EXPECT_RESULT_OK(statsMapResult);
         EXPECT_EQ((uint64_t)1, statsMapResult.value().rxPackets);
@@ -287,157 +275,6 @@ class TrafficControllerTest : public ::testing::Test {
     }
 
 };
-
-TEST_F(TrafficControllerTest, TestSetCounterSet) {
-    uid_t callingUid = TEST_UID2;
-    addPrivilegedUid(callingUid);
-    ASSERT_EQ(0, mTc.setCounterSet(TEST_COUNTERSET, TEST_UID, callingUid));
-    uid_t uid = TEST_UID;
-    Result<uint8_t> counterSetResult = mFakeUidCounterSetMap.readValue(uid);
-    ASSERT_RESULT_OK(counterSetResult);
-    ASSERT_EQ(TEST_COUNTERSET, counterSetResult.value());
-    ASSERT_EQ(0, mTc.setCounterSet(DEFAULT_COUNTERSET, TEST_UID, callingUid));
-    ASSERT_FALSE(mFakeUidCounterSetMap.readValue(uid).ok());
-    expectMapEmpty(mFakeUidCounterSetMap);
-}
-
-TEST_F(TrafficControllerTest, TestSetCounterSetWithoutPermission) {
-    ASSERT_EQ(-EPERM, mTc.setCounterSet(TEST_COUNTERSET, TEST_UID, TEST_UID2));
-    uid_t uid = TEST_UID;
-    ASSERT_FALSE(mFakeUidCounterSetMap.readValue(uid).ok());
-    expectMapEmpty(mFakeUidCounterSetMap);
-}
-
-TEST_F(TrafficControllerTest, TestSetInvalidCounterSet) {
-    uid_t callingUid = TEST_UID2;
-    addPrivilegedUid(callingUid);
-    ASSERT_GT(0, mTc.setCounterSet(OVERFLOW_COUNTERSET, TEST_UID, callingUid));
-    uid_t uid = TEST_UID;
-    ASSERT_FALSE(mFakeUidCounterSetMap.readValue(uid).ok());
-    expectMapEmpty(mFakeUidCounterSetMap);
-}
-
-TEST_F(TrafficControllerTest, TestDeleteTagDataWithoutPermission) {
-    uint64_t cookie = 1;
-    uid_t uid = TEST_UID;
-    uint32_t tag = TEST_TAG;
-    StatsKey tagStatsMapKey;
-    populateFakeStats(cookie, uid, tag, &tagStatsMapKey);
-    ASSERT_EQ(-EPERM, mTc.deleteTagData(0, TEST_UID, TEST_UID2));
-
-    expectFakeStatsUnchanged(cookie, tag, uid, tagStatsMapKey);
-}
-
-TEST_F(TrafficControllerTest, TestDeleteTagData) {
-    uid_t callingUid = TEST_UID2;
-    addPrivilegedUid(callingUid);
-    uint64_t cookie = 1;
-    uid_t uid = TEST_UID;
-    uint32_t tag = TEST_TAG;
-    StatsKey tagStatsMapKey;
-    populateFakeStats(cookie, uid, tag, &tagStatsMapKey);
-    ASSERT_EQ(0, mTc.deleteTagData(TEST_TAG, TEST_UID, callingUid));
-    ASSERT_FALSE(mFakeCookieTagMap.readValue(cookie).ok());
-    Result<uint8_t> counterSetResult = mFakeUidCounterSetMap.readValue(uid);
-    ASSERT_RESULT_OK(counterSetResult);
-    ASSERT_EQ(TEST_COUNTERSET, counterSetResult.value());
-    ASSERT_FALSE(mFakeStatsMapA.readValue(tagStatsMapKey).ok());
-    tagStatsMapKey.tag = 0;
-    Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-    ASSERT_RESULT_OK(statsMapResult);
-    ASSERT_EQ((uint64_t)1, statsMapResult.value().rxPackets);
-    ASSERT_EQ((uint64_t)100, statsMapResult.value().rxBytes);
-    auto appStatsResult = mFakeAppUidStatsMap.readValue(TEST_UID);
-    ASSERT_RESULT_OK(appStatsResult);
-    ASSERT_EQ((uint64_t)1, appStatsResult.value().rxPackets);
-    ASSERT_EQ((uint64_t)100, appStatsResult.value().rxBytes);
-}
-
-TEST_F(TrafficControllerTest, TestDeleteAllUidData) {
-    uid_t callingUid = TEST_UID2;
-    addPrivilegedUid(callingUid);
-    uint64_t cookie = 1;
-    uid_t uid = TEST_UID;
-    uint32_t tag = TEST_TAG;
-    StatsKey tagStatsMapKey;
-    populateFakeStats(cookie, uid, tag, &tagStatsMapKey);
-    ASSERT_EQ(0, mTc.deleteTagData(0, TEST_UID, callingUid));
-    ASSERT_FALSE(mFakeCookieTagMap.readValue(cookie).ok());
-    ASSERT_FALSE(mFakeUidCounterSetMap.readValue(uid).ok());
-    ASSERT_FALSE(mFakeStatsMapA.readValue(tagStatsMapKey).ok());
-    tagStatsMapKey.tag = 0;
-    ASSERT_FALSE(mFakeStatsMapA.readValue(tagStatsMapKey).ok());
-    ASSERT_FALSE(mFakeAppUidStatsMap.readValue(TEST_UID).ok());
-}
-
-TEST_F(TrafficControllerTest, TestDeleteDataWithTwoTags) {
-    uid_t callingUid = TEST_UID2;
-    addPrivilegedUid(callingUid);
-    uint64_t cookie1 = 1;
-    uint64_t cookie2 = 2;
-    uid_t uid = TEST_UID;
-    uint32_t tag1 = TEST_TAG;
-    uint32_t tag2 = TEST_TAG + 1;
-    StatsKey tagStatsMapKey1;
-    StatsKey tagStatsMapKey2;
-    populateFakeStats(cookie1, uid, tag1, &tagStatsMapKey1);
-    populateFakeStats(cookie2, uid, tag2, &tagStatsMapKey2);
-    ASSERT_EQ(0, mTc.deleteTagData(TEST_TAG, TEST_UID, callingUid));
-    ASSERT_FALSE(mFakeCookieTagMap.readValue(cookie1).ok());
-    Result<UidTagValue> cookieMapResult = mFakeCookieTagMap.readValue(cookie2);
-    ASSERT_RESULT_OK(cookieMapResult);
-    ASSERT_EQ(TEST_UID, cookieMapResult.value().uid);
-    ASSERT_EQ(TEST_TAG + 1, cookieMapResult.value().tag);
-    Result<uint8_t> counterSetResult = mFakeUidCounterSetMap.readValue(uid);
-    ASSERT_RESULT_OK(counterSetResult);
-    ASSERT_EQ(TEST_COUNTERSET, counterSetResult.value());
-    ASSERT_FALSE(mFakeStatsMapA.readValue(tagStatsMapKey1).ok());
-    Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey2);
-    ASSERT_RESULT_OK(statsMapResult);
-    ASSERT_EQ((uint64_t)1, statsMapResult.value().rxPackets);
-    ASSERT_EQ((uint64_t)100, statsMapResult.value().rxBytes);
-}
-
-TEST_F(TrafficControllerTest, TestDeleteDataWithTwoUids) {
-    uid_t callingUid = TEST_UID2;
-    addPrivilegedUid(callingUid);
-    uint64_t cookie1 = 1;
-    uint64_t cookie2 = 2;
-    uid_t uid1 = TEST_UID;
-    uid_t uid2 = TEST_UID + 1;
-    uint32_t tag = TEST_TAG;
-    StatsKey tagStatsMapKey1;
-    StatsKey tagStatsMapKey2;
-    populateFakeStats(cookie1, uid1, tag, &tagStatsMapKey1);
-    populateFakeStats(cookie2, uid2, tag, &tagStatsMapKey2);
-
-    // Delete the stats of one of the uid. Check if it is properly collected by
-    // removedStats.
-    ASSERT_EQ(0, mTc.deleteTagData(0, uid2, callingUid));
-    ASSERT_FALSE(mFakeCookieTagMap.readValue(cookie2).ok());
-    Result<uint8_t> counterSetResult = mFakeUidCounterSetMap.readValue(uid1);
-    ASSERT_RESULT_OK(counterSetResult);
-    ASSERT_EQ(TEST_COUNTERSET, counterSetResult.value());
-    ASSERT_FALSE(mFakeUidCounterSetMap.readValue(uid2).ok());
-    ASSERT_FALSE(mFakeStatsMapA.readValue(tagStatsMapKey2).ok());
-    tagStatsMapKey2.tag = 0;
-    ASSERT_FALSE(mFakeStatsMapA.readValue(tagStatsMapKey2).ok());
-    ASSERT_FALSE(mFakeAppUidStatsMap.readValue(uid2).ok());
-    tagStatsMapKey1.tag = 0;
-    Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey1);
-    ASSERT_RESULT_OK(statsMapResult);
-    ASSERT_EQ((uint64_t)1, statsMapResult.value().rxPackets);
-    ASSERT_EQ((uint64_t)100, statsMapResult.value().rxBytes);
-    auto appStatsResult = mFakeAppUidStatsMap.readValue(uid1);
-    ASSERT_RESULT_OK(appStatsResult);
-    ASSERT_EQ((uint64_t)1, appStatsResult.value().rxPackets);
-    ASSERT_EQ((uint64_t)100, appStatsResult.value().rxBytes);
-
-    // Delete the stats of the other uid.
-    ASSERT_EQ(0, mTc.deleteTagData(0, uid1, callingUid));
-    ASSERT_FALSE(mFakeStatsMapA.readValue(tagStatsMapKey1).ok());
-    ASSERT_FALSE(mFakeAppUidStatsMap.readValue(uid1).ok());
-}
 
 TEST_F(TrafficControllerTest, TestUpdateOwnerMapEntry) {
     uint32_t uid = TEST_UID;
@@ -469,6 +306,7 @@ TEST_F(TrafficControllerTest, TestChangeUidOwnerRule) {
     checkUidOwnerRuleForChain(STANDBY, STANDBY_MATCH);
     checkUidOwnerRuleForChain(POWERSAVE, POWERSAVE_MATCH);
     checkUidOwnerRuleForChain(RESTRICTED, RESTRICTED_MATCH);
+    checkUidOwnerRuleForChain(LOW_POWER_STANDBY, LOW_POWER_STANDBY_MATCH);
     ASSERT_EQ(-EINVAL, mTc.changeUidOwnerRule(NONE, TEST_UID, ALLOW, ALLOWLIST));
     ASSERT_EQ(-EINVAL, mTc.changeUidOwnerRule(INVALID_CHAIN, TEST_UID, ALLOW, ALLOWLIST));
 }
@@ -479,6 +317,7 @@ TEST_F(TrafficControllerTest, TestReplaceUidOwnerMap) {
     checkUidMapReplace("fw_standby", uids, STANDBY_MATCH);
     checkUidMapReplace("fw_powersave", uids, POWERSAVE_MATCH);
     checkUidMapReplace("fw_restricted", uids, RESTRICTED_MATCH);
+    checkUidMapReplace("fw_low_power_standby", uids, LOW_POWER_STANDBY_MATCH);
     ASSERT_EQ(-EINVAL, mTc.replaceUidOwnerMap("unknow", true, uids));
 }
 
@@ -745,6 +584,134 @@ TEST_F(TrafficControllerTest, TestGrantDuplicatePermissionSlientlyFail) {
     mTc.setPermissionForUids(INetd::PERMISSION_NONE, appUids);
     expectPrivilegedUserSetEmpty();
 }
+
+constexpr uint32_t SOCK_CLOSE_WAIT_US = 30 * 1000;
+constexpr uint32_t ENOBUFS_POLL_WAIT_US = 10 * 1000;
+
+using android::base::Error;
+using android::base::Result;
+using android::bpf::BpfMap;
+
+// This test set up a SkDestroyListener that is running parallel with the production
+// SkDestroyListener. The test will create thousands of sockets and tag them on the
+// production cookieUidTagMap and close them in a short time. When the number of
+// sockets get closed exceeds the buffer size, it will start to return ENOBUFF
+// error. The error will be ignored by the production SkDestroyListener and the
+// test will clean up the tags in tearDown if there is any remains.
+
+// TODO: Instead of test the ENOBUFF error, we can test the production
+// SkDestroyListener to see if it failed to delete a tagged socket when ENOBUFF
+// triggered.
+class NetlinkListenerTest : public testing::Test {
+  protected:
+    NetlinkListenerTest() {}
+    BpfMap<uint64_t, UidTagValue> mCookieTagMap;
+
+    void SetUp() {
+        mCookieTagMap.reset(android::bpf::mapRetrieveRW(COOKIE_TAG_MAP_PATH));
+        ASSERT_TRUE(mCookieTagMap.isValid());
+    }
+
+    void TearDown() {
+        const auto deleteTestCookieEntries = [](const uint64_t& key, const UidTagValue& value,
+                                                BpfMap<uint64_t, UidTagValue>& map) {
+            if ((value.uid == TEST_UID) && (value.tag == TEST_TAG)) {
+                Result<void> res = map.deleteValue(key);
+                if (res.ok() || (res.error().code() == ENOENT)) {
+                    return Result<void>();
+                }
+                ALOGE("Failed to delete data(cookie = %" PRIu64 "): %s\n", key,
+                      strerror(res.error().code()));
+            }
+            // Move forward to next cookie in the map.
+            return Result<void>();
+        };
+        EXPECT_RESULT_OK(mCookieTagMap.iterateWithValue(deleteTestCookieEntries));
+    }
+
+    Result<void> checkNoGarbageTagsExist() {
+        const auto checkGarbageTags = [](const uint64_t&, const UidTagValue& value,
+                                         const BpfMap<uint64_t, UidTagValue>&) -> Result<void> {
+            if ((TEST_UID == value.uid) && (TEST_TAG == value.tag)) {
+                return Error(EUCLEAN) << "Closed socket is not untagged";
+            }
+            return {};
+        };
+        return mCookieTagMap.iterateWithValue(checkGarbageTags);
+    }
+
+    bool checkMassiveSocketDestroy(int totalNumber, bool expectError) {
+        std::unique_ptr<android::netdutils::NetlinkListenerInterface> skDestroyListener;
+        auto result = android::net::TrafficController::makeSkDestroyListener();
+        if (!isOk(result)) {
+            ALOGE("Unable to create SkDestroyListener: %s", toString(result).c_str());
+        } else {
+            skDestroyListener = std::move(result.value());
+        }
+        int rxErrorCount = 0;
+        // Rx handler extracts nfgenmsg looks up and invokes registered dispatch function.
+        const auto rxErrorHandler = [&rxErrorCount](const int, const int) { rxErrorCount++; };
+        skDestroyListener->registerSkErrorHandler(rxErrorHandler);
+        int fds[totalNumber];
+        for (int i = 0; i < totalNumber; i++) {
+            fds[i] = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+            // The likely reason for a failure is running out of available file descriptors.
+            EXPECT_LE(0, fds[i]) << i << " of " << totalNumber;
+            if (fds[i] < 0) {
+                // EXPECT_LE already failed above, so test case is a failure, but we don't
+                // want potentially tens of thousands of extra failures creating and then
+                // closing all these fds cluttering up the logs.
+                totalNumber = i;
+                break;
+            };
+            libnetd_updatable_tagSocket(fds[i], TEST_TAG, TEST_UID, 1000);
+        }
+
+        // TODO: Use a separate thread that has its own fd table so we can
+        // close sockets even faster simply by terminating that thread.
+        for (int i = 0; i < totalNumber; i++) {
+            EXPECT_EQ(0, close(fds[i]));
+        }
+        // wait a bit for netlink listener to handle all the messages.
+        usleep(SOCK_CLOSE_WAIT_US);
+        if (expectError) {
+            // If ENOBUFS triggered, check it only called into the handler once, ie.
+            // that the netlink handler is not spinning.
+            int currentErrorCount = rxErrorCount;
+            // 0 error count is acceptable because the system has chances to close all sockets
+            // normally.
+            EXPECT_LE(0, rxErrorCount);
+            if (!rxErrorCount) return true;
+
+            usleep(ENOBUFS_POLL_WAIT_US);
+            EXPECT_EQ(currentErrorCount, rxErrorCount);
+        } else {
+            EXPECT_RESULT_OK(checkNoGarbageTagsExist());
+            EXPECT_EQ(0, rxErrorCount);
+        }
+        return false;
+    }
+};
+
+TEST_F(NetlinkListenerTest, TestAllSocketUntagged) {
+    checkMassiveSocketDestroy(10, false);
+    checkMassiveSocketDestroy(100, false);
+}
+
+// Disabled because flaky on blueline-userdebug; this test relies on the main thread
+// winning a race against the NetlinkListener::run() thread. There's no way to ensure
+// things will be scheduled the same way across all architectures and test environments.
+TEST_F(NetlinkListenerTest, DISABLED_TestSkDestroyError) {
+    bool needRetry = false;
+    int retryCount = 0;
+    do {
+        needRetry = checkMassiveSocketDestroy(32500, true);
+        if (needRetry) retryCount++;
+    } while (needRetry && retryCount < 3);
+    // Should review test if it can always close all sockets correctly.
+    EXPECT_GT(3, retryCount);
+}
+
 
 }  // namespace net
 }  // namespace android

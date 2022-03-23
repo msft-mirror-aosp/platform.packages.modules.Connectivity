@@ -54,7 +54,6 @@ namespace net {
 using base::StringPrintf;
 using base::unique_fd;
 using bpf::BpfMap;
-using bpf::OVERFLOW_COUNTERSET;
 using bpf::synchronizeKernelRCU;
 using netdutils::DumpWriter;
 using netdutils::getIfaceList;
@@ -66,7 +65,6 @@ using netdutils::sSyscalls;
 using netdutils::Status;
 using netdutils::statusFromErrno;
 using netdutils::StatusOr;
-using netdutils::status::ok;
 
 constexpr int kSockDiagMsgType = SOCK_DIAG_BY_FAMILY;
 constexpr int kSockDiagDoneMsgType = NLMSG_DONE;
@@ -75,6 +73,7 @@ const char* TrafficController::LOCAL_DOZABLE = "fw_dozable";
 const char* TrafficController::LOCAL_STANDBY = "fw_standby";
 const char* TrafficController::LOCAL_POWERSAVE = "fw_powersave";
 const char* TrafficController::LOCAL_RESTRICTED = "fw_restricted";
+const char* TrafficController::LOCAL_LOW_POWER_STANDBY = "fw_low_power_standby";
 
 static_assert(BPF_PERMISSION_INTERNET == INetd::PERMISSION_INTERNET,
               "Mismatch between BPF and AIDL permissions: PERMISSION_INTERNET");
@@ -97,6 +96,7 @@ const std::string uidMatchTypeToString(uint8_t match) {
     FLAG_MSG_TRANS(matchType, STANDBY_MATCH, match);
     FLAG_MSG_TRANS(matchType, POWERSAVE_MATCH, match);
     FLAG_MSG_TRANS(matchType, RESTRICTED_MATCH, match);
+    FLAG_MSG_TRANS(matchType, LOW_POWER_STANDBY_MATCH, match);
     FLAG_MSG_TRANS(matchType, IIF_MATCH, match);
     if (match) {
         return StringPrintf("Unknown match: %u", match);
@@ -237,99 +237,6 @@ Status TrafficController::start() {
     return netdutils::status::ok;
 }
 
-int TrafficController::setCounterSet(int counterSetNum, uid_t uid, uid_t callingUid) {
-    if (counterSetNum < 0 || counterSetNum >= OVERFLOW_COUNTERSET) return -EINVAL;
-
-    std::lock_guard guard(mMutex);
-    if (!hasUpdateDeviceStatsPermission(callingUid)) return -EPERM;
-
-    // The default counter set for all uid is 0, so deleting the current counterset for that uid
-    // will automatically set it to 0.
-    if (counterSetNum == 0) {
-        Status res = mUidCounterSetMap.deleteValue(uid);
-        if (isOk(res) || (!isOk(res) && res.code() == ENOENT)) {
-            return 0;
-        } else {
-            ALOGE("Failed to delete the counterSet: %s\n", strerror(res.code()));
-            return -res.code();
-        }
-    }
-    uint8_t tmpCounterSetNum = (uint8_t)counterSetNum;
-    Status res = mUidCounterSetMap.writeValue(uid, tmpCounterSetNum, BPF_ANY);
-    if (!isOk(res)) {
-        ALOGE("Failed to set the counterSet: %s, fd: %d", strerror(res.code()),
-              mUidCounterSetMap.getMap().get());
-        return -res.code();
-    }
-    return 0;
-}
-
-// This method only get called by system_server when an app get uinstalled, it
-// is called inside removeUidsLocked() while holding mStatsLock. So it is safe
-// to iterate and modify the stats maps.
-int TrafficController::deleteTagData(uint32_t tag, uid_t uid, uid_t callingUid) {
-    std::lock_guard guard(mMutex);
-    if (!hasUpdateDeviceStatsPermission(callingUid)) return -EPERM;
-
-    // First we go through the cookieTagMap to delete the target uid tag combination. Or delete all
-    // the tags related to the uid if the tag is 0.
-    const auto deleteMatchedCookieEntries = [uid, tag](const uint64_t& key,
-                                                       const UidTagValue& value,
-                                                       BpfMap<uint64_t, UidTagValue>& map) {
-        if (value.uid == uid && (value.tag == tag || tag == 0)) {
-            auto res = map.deleteValue(key);
-            if (res.ok() || (res.error().code() == ENOENT)) {
-                return base::Result<void>();
-            }
-            ALOGE("Failed to delete data(cookie = %" PRIu64 "): %s\n", key,
-                  strerror(res.error().code()));
-        }
-        // Move forward to next cookie in the map.
-        return base::Result<void>();
-    };
-    mCookieTagMap.iterateWithValue(deleteMatchedCookieEntries);
-    // Now we go through the Tag stats map and delete the data entry with correct uid and tag
-    // combination. Or all tag stats under that uid if the target tag is 0.
-    const auto deleteMatchedUidTagEntries = [uid, tag](const StatsKey& key,
-                                                       BpfMap<StatsKey, StatsValue>& map) {
-        if (key.uid == uid && (key.tag == tag || tag == 0)) {
-            auto res = map.deleteValue(key);
-            if (res.ok() || (res.error().code() == ENOENT)) {
-                //Entry is deleted, use the current key to get a new nextKey;
-                return base::Result<void>();
-            }
-            ALOGE("Failed to delete data(uid=%u, tag=%u): %s\n", key.uid, key.tag,
-                  strerror(res.error().code()));
-        }
-        return base::Result<void>();
-    };
-    mStatsMapB.iterate(deleteMatchedUidTagEntries);
-    mStatsMapA.iterate(deleteMatchedUidTagEntries);
-    // If the tag is not zero, we already deleted all the data entry required. If tag is 0, we also
-    // need to delete the stats stored in uidStatsMap and counterSet map.
-    if (tag != 0) return 0;
-
-    auto res = mUidCounterSetMap.deleteValue(uid);
-    if (!res.ok() && res.error().code() != ENOENT) {
-        ALOGE("Failed to delete counterSet data(uid=%u, tag=%u): %s\n", uid, tag,
-              strerror(res.error().code()));
-    }
-
-    auto deleteAppUidStatsEntry = [uid](const uint32_t& key,
-                                        BpfMap<uint32_t, StatsValue>& map) -> base::Result<void> {
-        if (key == uid) {
-            auto res = map.deleteValue(key);
-            if (res.ok() || (res.error().code() == ENOENT)) {
-                return {};
-            }
-            ALOGE("Failed to delete data(uid=%u): %s", key, strerror(res.error().code()));
-        }
-        return {};
-    };
-    mAppUidStatsMap.iterate(deleteAppUidStatsEntry);
-    return 0;
-}
-
 int TrafficController::addInterface(const char* name, uint32_t ifaceIndex) {
     IfaceValue iface;
     if (ifaceIndex == 0) {
@@ -426,6 +333,8 @@ FirewallType TrafficController::getFirewallType(ChildChain chain) {
             return ALLOWLIST;
         case RESTRICTED:
             return ALLOWLIST;
+        case LOW_POWER_STANDBY:
+            return ALLOWLIST;
         case NONE:
         default:
             return DENYLIST;
@@ -447,6 +356,9 @@ int TrafficController::changeUidOwnerRule(ChildChain chain, uid_t uid, FirewallR
             break;
         case RESTRICTED:
             res = updateOwnerMapEntry(RESTRICTED_MATCH, uid, rule, type);
+            break;
+        case LOW_POWER_STANDBY:
+            res = updateOwnerMapEntry(LOW_POWER_STANDBY_MATCH, uid, rule, type);
             break;
         case NONE:
         default:
@@ -526,6 +438,8 @@ int TrafficController::replaceUidOwnerMap(const std::string& name, bool isAllowl
         res = replaceRulesInMap(POWERSAVE_MATCH, uids);
     } else if (!name.compare(LOCAL_RESTRICTED)) {
         res = replaceRulesInMap(RESTRICTED_MATCH, uids);
+    } else if (!name.compare(LOCAL_LOW_POWER_STANDBY)) {
+        res = replaceRulesInMap(LOW_POWER_STANDBY_MATCH, uids);
     } else {
         ALOGE("unknown chain name: %s", name.c_str());
         return -EINVAL;
@@ -561,6 +475,9 @@ int TrafficController::toggleUidOwnerMap(ChildChain chain, bool enable) {
             break;
         case RESTRICTED:
             match = RESTRICTED_MATCH;
+            break;
+        case LOW_POWER_STANDBY:
+            match = LOW_POWER_STANDBY_MATCH;
             break;
         default:
             return -EINVAL;
@@ -683,10 +600,10 @@ void dumpBpfMap(const std::string& mapName, DumpWriter& dw, const std::string& h
     }
 }
 
-const String16 TrafficController::DUMP_KEYWORD = String16("trafficcontroller");
-
-void TrafficController::dump(DumpWriter& dw, bool verbose) {
+void TrafficController::dump(int fd, bool verbose) {
     std::lock_guard guard(mMutex);
+    DumpWriter dw(fd);
+
     ScopedIndent indentTop(dw);
     dw.println("TrafficController");
 
