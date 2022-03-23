@@ -1,1 +1,0 @@
-rule com.android.internal.** com.android.nearby.jarjar.@0
