@@ -67,7 +67,6 @@ java_defaults {
         "ext",
         "framework-minus-apex",
         "framework-res",
-        "framework-bluetooth.stubs.module_lib",
         "framework-connectivity.impl",
         "framework-connectivity-t.impl",
         "framework-tethering.impl",
