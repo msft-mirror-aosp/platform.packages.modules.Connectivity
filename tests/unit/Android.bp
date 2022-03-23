@@ -3,17 +3,13 @@
 //########################################################################
 package {
     // See: http://go/android-license-faq
-    // A large-scale-change added 'default_applicable_licenses' to import
-    // all of the 'license_kinds' from "Android-Apache-2.0"
-    // to get the below license kinds:
-    //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
 // Whether to enable the FrameworksNetTests. Set to false in the branches that might have older
 // frameworks/base since FrameworksNetTests includes the test for classes that are not in
 // connectivity module.
-enable_frameworks_net_tests = true
+enable_frameworks_net_tests = false
 // Placeholder
 // This is a placeholder comment to minimize merge conflicts, as enable_frameworks_net_tests
 // may have different values depending on the branch
