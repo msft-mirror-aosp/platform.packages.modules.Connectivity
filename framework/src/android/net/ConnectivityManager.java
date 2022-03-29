@@ -995,6 +995,40 @@ public class ConnectivityManager {
     // LINT.ThenChange(packages/modules/Connectivity/service/native/include/Common.h)
 
     /**
+     * A firewall rule which allows or drops packets depending on existing policy.
+     * Used by {@link #setUidFirewallRule(int, int, int)} to follow existing policy to handle
+     * specific uid's packets in specific firewall chain.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_RULE_DEFAULT = 0;
+
+    /**
+     * A firewall rule which allows packets. Used by {@link #setUidFirewallRule(int, int, int)} to
+     * allow specific uid's packets in specific firewall chain.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_RULE_ALLOW = 1;
+
+    /**
+     * A firewall rule which drops packets. Used by {@link #setUidFirewallRule(int, int, int)} to
+     * drop specific uid's packets in specific firewall chain.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_RULE_DENY = 2;
+
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(flag = false, prefix = "FIREWALL_RULE_", value = {
+        FIREWALL_RULE_DEFAULT,
+        FIREWALL_RULE_ALLOW,
+        FIREWALL_RULE_DENY
+    })
+    public @interface FirewallRule {}
+
+    /**
      * A kludge to facilitate static access where a Context pointer isn't available, like in the
      * case of the static set/getProcessDefaultNetwork methods and from the Network class.
      * TODO: Remove this after deprecating the static methods in favor of non-static methods or
@@ -5802,8 +5836,9 @@ public class ConnectivityManager {
      *
      * @param chain target chain.
      * @param uid uid to allow/deny.
-     * @param allow whether networking is allowed or denied.
+     * @param rule firewall rule to allow/drop packets.
      * @throws IllegalStateException if updating firewall rule failed.
+     * @throws IllegalArgumentException if {@code rule} is not a valid rule.
      * @hide
      */
     @SystemApi(client = MODULE_LIBRARIES)
@@ -5812,10 +5847,10 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_STACK,
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
     })
-    public void updateFirewallRule(@FirewallChain final int chain, final int uid,
-            final boolean allow) {
+    public void setUidFirewallRule(@FirewallChain final int chain, final int uid,
+            @FirewallRule final int rule) {
         try {
-            mService.updateFirewallRule(chain, uid, allow);
+            mService.setUidFirewallRule(chain, uid, rule);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

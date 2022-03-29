@@ -23,8 +23,11 @@ import android.nearby.ScanCallback
 import android.nearby.ScanRequest
 import android.nearby.fastpair.seeker.FAKE_TEST_ACCOUNT_NAME
 import android.nearby.multidevices.fastpair.seeker.data.FastPairTestDataManager
+import android.nearby.multidevices.fastpair.seeker.events.PairingCallbackEvents
+import android.nearby.multidevices.fastpair.seeker.events.ScanCallbackEvents
 import android.nearby.multidevices.fastpair.seeker.ui.CheckNearbyHalfSheetUiTest
 import android.nearby.multidevices.fastpair.seeker.ui.DismissNearbyHalfSheetUiTest
+import android.nearby.multidevices.fastpair.seeker.ui.PairByNearbyHalfSheetUiTest
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.mobly.snippet.Snippet
 import com.google.android.mobly.snippet.rpc.AsyncRpc
@@ -39,12 +42,12 @@ class FastPairSeekerSnippet : Snippet {
     private lateinit var scanCallback: ScanCallback
 
     /**
-     * Starts scanning as a Fast Pair seeker to find Fast Pair provider devices.
+     * Starts scanning as a Fast Pair seeker to find provider devices.
      *
      * @param callbackId the callback ID corresponding to the {@link FastPairSeekerSnippet#startScan}
      * call that started the scanning.
      */
-    @AsyncRpc(description = "Starts scanning as Fast Pair seeker to find Fast Pair provider devices.")
+    @AsyncRpc(description = "Starts scanning as Fast Pair seeker to find provider devices.")
     fun startScan(callbackId: String) {
         val scanRequest = ScanRequest.Builder()
             .setScanMode(ScanRequest.SCAN_MODE_LOW_LATENCY)
@@ -97,7 +100,10 @@ class FastPairSeekerSnippet : Snippet {
      * @param modelId a string of model id to be associated with.
      * @param json a string of FastPairAntispoofKeyDeviceMetadata JSON object.
      */
-    @Rpc(description = "Puts a model id to FastPairAntispoofKeyDeviceMetadata pair into test data cache.")
+    @Rpc(
+        description =
+        "Puts a model id to FastPairAntispoofKeyDeviceMetadata pair into test data cache."
+    )
     fun putAntispoofKeyDeviceMetadata(modelId: String, json: String) {
         Log.i("Puts a model id to FastPairAntispoofKeyDeviceMetadata pair into test data cache.")
         fastPairTestDataManager.sendAntispoofKeyDeviceMetadata(modelId, json)
@@ -110,7 +116,7 @@ class FastPairSeekerSnippet : Snippet {
     @Rpc(description = "Puts an array of FastPairAccountKeyDeviceMetadata into test data cache.")
     fun putAccountKeyDeviceMetadata(json: String) {
         Log.i("Puts an array of FastPairAccountKeyDeviceMetadata into test data cache.")
-        fastPairTestDataManager.sendAccountKeyDeviceMetadata(json)
+        fastPairTestDataManager.sendAccountKeyDeviceMetadataJsonArray(json)
     }
 
     /** Dumps all FastPairAccountKeyDeviceMetadata from the test data cache. */
@@ -138,11 +144,25 @@ class FastPairSeekerSnippet : Snippet {
         DismissNearbyHalfSheetUiTest().dismissHalfSheet()
     }
 
+    /** Starts pairing by interacting with half sheet UI.
+     *
+     * @param callbackId the callback ID corresponding to the
+     * {@link FastPairSeekerSnippet#startPairing} call that started the pairing.
+     */
+    @AsyncRpc(description = "Starts pairing by interacting with half sheet UI.")
+    fun startPairing(callbackId: String) {
+        Log.i("Starts pairing by interacting with half sheet UI.")
+
+        PairByNearbyHalfSheetUiTest().clickConnectButton()
+        fastPairTestDataManager.registerDataReceiveListener(PairingCallbackEvents(callbackId))
+    }
+
     /** Invokes when the snippet runner shutting down. */
     override fun shutdown() {
         super.shutdown()
 
         Log.i("Resets the Fast Pair test data cache.")
+        fastPairTestDataManager.unregisterDataReceiveListener()
         fastPairTestDataManager.sendResetCache()
     }
 }

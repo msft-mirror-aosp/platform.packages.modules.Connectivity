@@ -18,6 +18,8 @@ package android.nearby.multidevices.fastpair.provider
 
 import android.annotation.TargetApi
 import android.content.Context
+import android.nearby.multidevices.fastpair.provider.controller.FastPairProviderSimulatorController
+import android.nearby.multidevices.fastpair.provider.events.ProviderStatusEvents
 import android.os.Build
 import androidx.test.platform.app.InstrumentationRegistry
 import com.google.android.mobly.snippet.Snippet
@@ -67,5 +69,11 @@ class FastPairProviderSimulatorSnippet : Snippet {
     @Rpc(description = "Gets BLE mac address of the Fast Pair provider simulator.")
     fun getBluetoothLeAddress(): String {
         return fastPairProviderSimulatorController.getProviderSimulatorBleAddress()
+    }
+
+    /** Gets the latest account key received on the Fast Pair provider simulator */
+    @Rpc(description = "Gets the latest account key received on the Fast Pair provider simulator.")
+    fun getLatestReceivedAccountKey(): String? {
+        return fastPairProviderSimulatorController.getLatestReceivedAccountKey()
     }
 }
