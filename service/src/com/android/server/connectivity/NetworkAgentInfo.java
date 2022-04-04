@@ -192,6 +192,8 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
     public boolean everConnected;
     // Whether this network has been destroyed and is being kept temporarily until it is replaced.
     public boolean destroyed;
+    // To check how long it has been since last roam.
+    public long lastRoamTimestamp;
 
     // Set to true if this Network successfully passed validation or if it did not satisfy the
     // default NetworkRequest in which case validation will not be attempted.
@@ -734,8 +736,8 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
         }
 
         @Override
-        public void sendDestroyAndAwaitReplacement(final int timeoutMillis) {
-            mHandler.obtainMessage(NetworkAgent.EVENT_DESTROY_AND_AWAIT_REPLACEMENT,
+        public void sendUnregisterAfterReplacement(final int timeoutMillis) {
+            mHandler.obtainMessage(NetworkAgent.EVENT_UNREGISTER_AFTER_REPLACEMENT,
                     new Pair<>(NetworkAgentInfo.this, timeoutMillis)).sendToTarget();
         }
     }

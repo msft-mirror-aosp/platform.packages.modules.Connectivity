@@ -34,6 +34,9 @@ import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_MASK;
 import static android.net.ConnectivityManager.BLOCKED_REASON_LOCKDOWN_VPN;
 import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
+import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DEFAULT;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
 import static android.net.ConnectivityManager.TYPE_ETHERNET;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
@@ -199,6 +202,7 @@ import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.MultinetworkPolicyTracker;
+import android.net.wifi.WifiInfo;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
 import android.os.Build;
@@ -347,6 +351,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final String LINGER_DELAY_PROPERTY = "persist.netmon.linger";
     private static final int DEFAULT_LINGER_DELAY_MS = 30_000;
     private static final int DEFAULT_NASCENT_DELAY_MS = 5_000;
+
+    // The maximum value for the blocking validation result, in milliseconds.
+    public static final int MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS = 10000;
 
     // The maximum number of network request allowed per uid before an exception is thrown.
     @VisibleForTesting
@@ -2231,6 +2238,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 callingAttributionTag);
     }
 
+    private void redactUnderlyingNetworksForCapabilities(NetworkCapabilities nc, int pid, int uid) {
+        if (nc.getUnderlyingNetworks() != null
+                && !checkNetworkFactoryOrSettingsPermission(pid, uid)) {
+            nc.setUnderlyingNetworks(null);
+        }
+    }
+
     @VisibleForTesting
     NetworkCapabilities networkCapabilitiesRestrictedForCallerPermissions(
             NetworkCapabilities nc, int callerPid, int callerUid) {
@@ -2243,18 +2257,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (!checkSettingsPermission(callerPid, callerUid)) {
             newNc.setUids(null);
             newNc.setSSID(null);
-            // TODO: Processes holding NETWORK_FACTORY should be able to see the underlying networks
-            newNc.setUnderlyingNetworks(null);
         }
         if (newNc.getNetworkSpecifier() != null) {
             newNc.setNetworkSpecifier(newNc.getNetworkSpecifier().redact());
         }
-        newNc.setAdministratorUids(new int[0]);
+        if (!checkAnyPermissionOf(callerPid, callerUid, android.Manifest.permission.NETWORK_STACK,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)) {
+            newNc.setAdministratorUids(new int[0]);
+        }
         if (!checkAnyPermissionOf(
                 callerPid, callerUid, android.Manifest.permission.NETWORK_FACTORY)) {
             newNc.setAllowedUids(new ArraySet<>());
             newNc.setSubscriptionIds(Collections.emptySet());
         }
+        redactUnderlyingNetworksForCapabilities(newNc, callerPid, callerUid);
 
         return newNc;
     }
@@ -2865,6 +2881,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
+    }
+
+    private boolean checkNetworkFactoryOrSettingsPermission(int pid, int uid) {
+        return PERMISSION_GRANTED == mContext.checkPermission(
+                android.Manifest.permission.NETWORK_FACTORY, pid, uid)
+                || PERMISSION_GRANTED == mContext.checkPermission(
+                android.Manifest.permission.NETWORK_SETTINGS, pid, uid)
+                || PERMISSION_GRANTED == mContext.checkPermission(
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, pid, uid);
     }
 
     private boolean checkSettingsPermission() {
@@ -3543,6 +3568,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case NetworkAgent.EVENT_NETWORK_CAPABILITIES_CHANGED: {
                     final NetworkCapabilities networkCapabilities = new NetworkCapabilities(
                             (NetworkCapabilities) arg.second);
+                    maybeUpdateWifiRoamTimestamp(nai, networkCapabilities);
                     processCapabilitiesFromAgent(nai, networkCapabilities);
                     updateCapabilities(nai.getCurrentScore(), nai, networkCapabilities);
                     break;
@@ -3640,7 +3666,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     }
                     break;
                 }
-                case NetworkAgent.EVENT_DESTROY_AND_AWAIT_REPLACEMENT: {
+                case NetworkAgent.EVENT_UNREGISTER_AFTER_REPLACEMENT: {
                     // If nai is not yet created, or is already destroyed, ignore.
                     if (!shouldDestroyNativeNetwork(nai)) break;
 
@@ -3790,14 +3816,21 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         private void handleNetworkTested(
                 @NonNull NetworkAgentInfo nai, int testResult, @NonNull String redirectUrl) {
+            final boolean valid = ((testResult & NETWORK_VALIDATION_RESULT_VALID) != 0);
+            if (!valid && shouldIgnoreValidationFailureAfterRoam(nai)) {
+                // Assume the validation failure is due to a temporary failure after roaming
+                // and ignore it. NetworkMonitor will continue to retry validation. If it
+                // continues to fail after the block timeout expires, the network will be
+                // marked unvalidated. If it succeeds, then validation state will not change.
+                return;
+            }
+
+            final boolean wasValidated = nai.lastValidated;
+            final boolean wasDefault = isDefaultNetwork(nai);
             final boolean wasPartial = nai.partialConnectivity;
             nai.partialConnectivity = ((testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
             final boolean partialConnectivityChanged =
                     (wasPartial != nai.partialConnectivity);
-
-            final boolean valid = ((testResult & NETWORK_VALIDATION_RESULT_VALID) != 0);
-            final boolean wasValidated = nai.lastValidated;
-            final boolean wasDefault = isDefaultNetwork(nai);
 
             if (DBG) {
                 final String logMsg = !TextUtils.isEmpty(redirectUrl)
@@ -4195,6 +4228,23 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private static boolean shouldDestroyNativeNetwork(@NonNull NetworkAgentInfo nai) {
         return nai.created && !nai.destroyed;
+    }
+
+    private boolean shouldIgnoreValidationFailureAfterRoam(NetworkAgentInfo nai) {
+        // T+ devices should use unregisterAfterReplacement.
+        if (SdkLevel.isAtLeastT()) return false;
+        final long blockTimeOut = Long.valueOf(mResources.get().getInteger(
+                R.integer.config_validationFailureAfterRoamIgnoreTimeMillis));
+        if (blockTimeOut <= MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS
+                && blockTimeOut >= 0) {
+            final long currentTimeMs  = SystemClock.elapsedRealtime();
+            long timeSinceLastRoam = currentTimeMs - nai.lastRoamTimestamp;
+            if (timeSinceLastRoam <= blockTimeOut) {
+                log ("blocked because only " + timeSinceLastRoam + "ms after roam");
+                return true;
+            }
+        }
+        return false;
     }
 
     private void handleNetworkAgentDisconnected(Message msg) {
@@ -9613,6 +9663,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return ((VpnTransportInfo) ti).getType();
     }
 
+    private void maybeUpdateWifiRoamTimestamp(NetworkAgentInfo nai, NetworkCapabilities nc) {
+        if (nai == null) return;
+        final TransportInfo prevInfo = nai.networkCapabilities.getTransportInfo();
+        final TransportInfo newInfo = nc.getTransportInfo();
+        if (!(prevInfo instanceof WifiInfo) || !(newInfo instanceof WifiInfo)) {
+            return;
+        }
+        if (!TextUtils.equals(((WifiInfo)prevInfo).getBSSID(), ((WifiInfo)newInfo).getBSSID())) {
+            nai.lastRoamTimestamp = SystemClock.elapsedRealtime();
+        }
+    }
+
     /**
      * @param connectionInfo the connection to resolve.
      * @return {@code uid} if the connection is found and the app has permission to observe it
@@ -11174,15 +11236,41 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     @Override
-    public void updateFirewallRule(final int chain, final int uid, final boolean allow) {
+    public void setUidFirewallRule(final int chain, final int uid, final int rule) {
         enforceNetworkStackOrSettingsPermission();
 
+        // There are only two type of firewall rule: FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
+        int firewallRule = getFirewallRuleType(chain, rule);
+
+        if (firewallRule != FIREWALL_RULE_ALLOW && firewallRule != FIREWALL_RULE_DENY) {
+            throw new IllegalArgumentException("setUidFirewallRule with invalid rule: " + rule);
+        }
+
         try {
-            mBpfNetMaps.setUidRule(chain, uid,
-                    allow ? INetd.FIREWALL_RULE_ALLOW : INetd.FIREWALL_RULE_DENY);
+            mBpfNetMaps.setUidRule(chain, uid, firewallRule);
         } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private int getFirewallRuleType(int chain, int rule) {
+        final int defaultRule;
+        switch (chain) {
+            case ConnectivityManager.FIREWALL_CHAIN_STANDBY:
+                defaultRule = FIREWALL_RULE_ALLOW;
+                break;
+            case ConnectivityManager.FIREWALL_CHAIN_DOZABLE:
+            case ConnectivityManager.FIREWALL_CHAIN_POWERSAVE:
+            case ConnectivityManager.FIREWALL_CHAIN_RESTRICTED:
+            case ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY:
+                defaultRule = FIREWALL_RULE_DENY;
+                break;
+            default:
+                throw new IllegalArgumentException("Unsupported firewall chain: " + chain);
+        }
+        if (rule == FIREWALL_RULE_DEFAULT) rule = defaultRule;
+
+        return rule;
     }
 
     @Override
