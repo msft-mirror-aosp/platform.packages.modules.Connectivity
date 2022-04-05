@@ -1487,7 +1487,8 @@ public class BpfCoordinator {
     }
 
     @NonNull
-    private byte[] toIpv4MappedAddressBytes(Inet4Address ia4) {
+    @VisibleForTesting
+    static byte[] toIpv4MappedAddressBytes(Inet4Address ia4) {
         final byte[] addr4 = ia4.getAddress();
         final byte[] addr6 = new byte[16];
         addr6[10] = (byte) 0xff;
@@ -2030,6 +2031,14 @@ public class BpfCoordinator {
     @VisibleForTesting
     final BpfConntrackEventConsumer getBpfConntrackEventConsumerForTesting() {
         return mBpfConntrackEventConsumer;
+    }
+
+    // Return tethering client information. This is used for testing only.
+    @NonNull
+    @VisibleForTesting
+    final HashMap<IpServer, HashMap<Inet4Address, ClientInfo>>
+            getTetherClientsForTesting() {
+        return mTetherClients;
     }
 
     private static native String[] getBpfCounterNames();
