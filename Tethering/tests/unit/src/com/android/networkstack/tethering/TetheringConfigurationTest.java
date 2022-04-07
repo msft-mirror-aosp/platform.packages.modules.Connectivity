@@ -95,7 +95,6 @@ public class TetheringConfigurationTest {
     @Mock private ModuleInfo mMi;
     private Context mMockContext;
     private boolean mHasTelephonyManager;
-    private boolean mEnableLegacyDhcpServer;
     private MockitoSession mMockingSession;
     private MockContentResolver mContentResolver;
 
@@ -182,11 +181,9 @@ public class TetheringConfigurationTest {
         when(mResources.getBoolean(R.bool.config_tether_enable_legacy_wifi_p2p_dedicated_ip))
                 .thenReturn(false);
         initializeBpfOffloadConfiguration(true, null /* unset */);
-        initEnableSelectAllPrefixRangeFlag(null /* unset */);
 
         mHasTelephonyManager = true;
         mMockContext = new MockContext(mContext);
-        mEnableLegacyDhcpServer = false;
 
         mContentResolver = new MockContentResolver(mMockContext);
         mContentResolver.addProvider(Settings.AUTHORITY, new FakeSettingsProvider());
@@ -398,7 +395,7 @@ public class TetheringConfigurationTest {
 
         final TetheringConfiguration enableByRes =
                 new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
-        assertTrue(enableByRes.enableLegacyDhcpServer);
+        assertTrue(enableByRes.useLegacyDhcpServer());
 
         when(mResources.getBoolean(R.bool.config_tether_enable_legacy_dhcp_server)).thenReturn(
                 false);
@@ -408,7 +405,7 @@ public class TetheringConfigurationTest {
 
         final TetheringConfiguration enableByDevConfig =
                 new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
-        assertTrue(enableByDevConfig.enableLegacyDhcpServer);
+        assertTrue(enableByDevConfig.useLegacyDhcpServer());
     }
 
     @Test
@@ -422,7 +419,7 @@ public class TetheringConfigurationTest {
         final TetheringConfiguration cfg =
                 new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
 
-        assertFalse(cfg.enableLegacyDhcpServer);
+        assertFalse(cfg.useLegacyDhcpServer());
     }
 
     @Test
@@ -488,32 +485,6 @@ public class TetheringConfigurationTest {
         final TetheringConfiguration testCfg = new TetheringConfiguration(
                 mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
         assertTrue(testCfg.shouldEnableWifiP2pDedicatedIp());
-    }
-
-    private void initEnableSelectAllPrefixRangeFlag(final String value) {
-        doReturn(value).when(
-                () -> DeviceConfig.getProperty(eq(NAMESPACE_CONNECTIVITY),
-                eq(TetheringConfiguration.TETHER_ENABLE_SELECT_ALL_PREFIX_RANGES)));
-    }
-
-    @Test
-    public void testSelectAllPrefixRangeFlag() throws Exception {
-        // Test default value.
-        final TetheringConfiguration defaultCfg = new TetheringConfiguration(
-                mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
-        assertTrue(defaultCfg.isSelectAllPrefixRangeEnabled());
-
-        // Test disable flag.
-        initEnableSelectAllPrefixRangeFlag("false");
-        final TetheringConfiguration testDisable = new TetheringConfiguration(
-                mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
-        assertFalse(testDisable.isSelectAllPrefixRangeEnabled());
-
-        // Test enable flag.
-        initEnableSelectAllPrefixRangeFlag("true");
-        final TetheringConfiguration testEnable = new TetheringConfiguration(
-                mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
-        assertTrue(testEnable.isSelectAllPrefixRangeEnabled());
     }
 
     @Test
@@ -645,4 +616,35 @@ public class TetheringConfigurationTest {
         assertArrayEquals(ncmRegexs, cfg.tetherableNcmRegexs);
     }
 
+    @Test
+    public void testP2pLeasesSubnetPrefixLength() throws Exception {
+        when(mResources.getBoolean(R.bool.config_tether_enable_legacy_wifi_p2p_dedicated_ip))
+                .thenReturn(true);
+
+        final int defaultSubnetPrefixLength = 0;
+        final TetheringConfiguration defaultCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(defaultSubnetPrefixLength, defaultCfg.getP2pLeasesSubnetPrefixLength());
+
+        final int prefixLengthTooSmall = -1;
+        when(mResources.getInteger(R.integer.config_p2p_leases_subnet_prefix_length)).thenReturn(
+                prefixLengthTooSmall);
+        final TetheringConfiguration tooSmallCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(defaultSubnetPrefixLength, tooSmallCfg.getP2pLeasesSubnetPrefixLength());
+
+        final int prefixLengthTooLarge = 31;
+        when(mResources.getInteger(R.integer.config_p2p_leases_subnet_prefix_length)).thenReturn(
+                prefixLengthTooLarge);
+        final TetheringConfiguration tooLargeCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(defaultSubnetPrefixLength, tooLargeCfg.getP2pLeasesSubnetPrefixLength());
+
+        final int p2pLeasesSubnetPrefixLength = 27;
+        when(mResources.getInteger(R.integer.config_p2p_leases_subnet_prefix_length)).thenReturn(
+                p2pLeasesSubnetPrefixLength);
+        final TetheringConfiguration p2pCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(p2pLeasesSubnetPrefixLength, p2pCfg.getP2pLeasesSubnetPrefixLength());
+    }
 }

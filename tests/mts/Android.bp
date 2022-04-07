@@ -23,7 +23,13 @@ cc_test {
         "general-tests",
         "mts-tethering",
     ],
+    defaults: [
+        "connectivity-mainline-presubmit-cc-defaults",
+    ],
     require_root: true,
+    header_libs: [
+        "bpf_headers",
+    ],
     static_libs: [
         "libbase",
         "libmodules-utils-build",

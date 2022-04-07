@@ -29,6 +29,7 @@ import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
 
 import static com.android.net.module.util.NetworkStatsUtils.multiplySafeByRational;
+import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 import static com.android.testutils.MiscAsserts.assertThrows;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -37,12 +38,13 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
 
 import android.content.res.Resources;
-import android.os.Build;
+import android.net.NetworkStatsCollection.Key;
 import android.os.Process;
 import android.os.UserHandle;
 import android.telephony.SubscriptionPlan;
 import android.telephony.TelephonyManager;
 import android.text.format.DateUtils;
+import android.util.ArrayMap;
 import android.util.RecurrenceRule;
 
 import androidx.test.InstrumentationRegistry;
@@ -59,6 +61,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mockito;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -72,17 +75,19 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Tests for {@link NetworkStatsCollection}.
  */
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S)
+@DevSdkIgnoreRule.IgnoreUpTo(SC_V2) // TODO: Use to Build.VERSION_CODES.SC_V2 when available
 public class NetworkStatsCollectionTest {
 
     private static final String TEST_FILE = "test.bin";
     private static final String TEST_IMSI = "310260000000000";
+    private static final int TEST_SUBID = 1;
 
     private static final long TIME_A = 1326088800000L; // UTC: Monday 9th January 2012 06:00:00 AM
     private static final long TIME_B = 1326110400000L; // UTC: Monday 9th January 2012 12:00:00 PM
@@ -195,8 +200,8 @@ public class NetworkStatsCollectionTest {
         // record empty data straddling between buckets
         final NetworkStats.Entry entry = new NetworkStats.Entry();
         entry.rxBytes = 32;
-        collection.recordData(null, UID_ALL, SET_DEFAULT, TAG_NONE, 30 * MINUTE_IN_MILLIS,
-                90 * MINUTE_IN_MILLIS, entry);
+        collection.recordData(Mockito.mock(NetworkIdentitySet.class), UID_ALL, SET_DEFAULT,
+                TAG_NONE, 30 * MINUTE_IN_MILLIS, 90 * MINUTE_IN_MILLIS, entry);
 
         // assert that we report boundary in atomic buckets
         assertEquals(0, collection.getStartMillis());
@@ -209,7 +214,7 @@ public class NetworkStatsCollectionTest {
         final NetworkStats.Entry entry = new NetworkStats.Entry();
         final NetworkIdentitySet identSet = new NetworkIdentitySet();
         identSet.add(new NetworkIdentity(TYPE_MOBILE, TelephonyManager.NETWORK_TYPE_UNKNOWN,
-                TEST_IMSI, null, false, true, true, OEM_NONE));
+                TEST_IMSI, null, false, true, true, OEM_NONE, TEST_SUBID));
 
         int myUid = Process.myUid();
         int otherUidInSameUser = Process.myUid() + 1;
@@ -471,7 +476,7 @@ public class NetworkStatsCollectionTest {
         final NetworkStatsCollection large = new NetworkStatsCollection(HOUR_IN_MILLIS);
         final NetworkIdentitySet ident = new NetworkIdentitySet();
         ident.add(new NetworkIdentity(ConnectivityManager.TYPE_MOBILE, -1, TEST_IMSI, null,
-                false, true, true, OEM_NONE));
+                false, true, true, OEM_NONE, TEST_SUBID));
         large.recordData(ident, UID_ALL, SET_ALL, TAG_NONE, TIME_A, TIME_B,
                 new NetworkStats.Entry(12_730_893_164L, 1, 0, 0, 0));
 
@@ -529,6 +534,52 @@ public class NetworkStatsCollectionTest {
         assertThrows(ArithmeticException.class, () -> multiplySafeByRational(30, 3, 0));
     }
 
+    @Test
+    public void testBuilder() {
+        final Map<Key, NetworkStatsHistory> expectedEntries = new ArrayMap<>();
+        final NetworkStats.Entry entry = new NetworkStats.Entry();
+        final NetworkIdentitySet ident = new NetworkIdentitySet();
+        final Key key1 = new Key(ident, 0, 0, 0);
+        final Key key2 = new Key(ident, 1, 0, 0);
+        final long bucketDuration = 10;
+
+        final NetworkStatsHistory.Entry entry1 = new NetworkStatsHistory.Entry(10, 10, 40,
+                4, 50, 5, 60);
+        final NetworkStatsHistory.Entry entry2 = new NetworkStatsHistory.Entry(30, 10, 3,
+                41, 7, 1, 0);
+
+        NetworkStatsHistory history1 = new NetworkStatsHistory.Builder(10, 5)
+                .addEntry(entry1)
+                .addEntry(entry2)
+                .build();
+
+        NetworkStatsHistory history2 = new NetworkStatsHistory(10, 5);
+
+        NetworkStatsCollection actualCollection = new NetworkStatsCollection.Builder(bucketDuration)
+                .addEntry(key1, history1)
+                .addEntry(key2, history2)
+                .build();
+
+        // The builder will omit any entry with empty history. Thus, history2
+        // is not expected in the result collection.
+        expectedEntries.put(key1, history1);
+
+        final Map<Key, NetworkStatsHistory> actualEntries = actualCollection.getEntries();
+
+        assertEquals(expectedEntries.size(), actualEntries.size());
+        for (Key expectedKey : expectedEntries.keySet()) {
+            final NetworkStatsHistory expectedHistory = expectedEntries.get(expectedKey);
+
+            final NetworkStatsHistory actualHistory = actualEntries.get(expectedKey);
+            assertNotNull(actualHistory);
+
+            assertEquals(expectedHistory.getEntries(), actualHistory.getEntries());
+
+            actualEntries.remove(expectedKey);
+        }
+        assertEquals(0, actualEntries.size());
+    }
+
     /**
      * Copy a {@link Resources#openRawResource(int)} into {@link File} for
      * testing purposes.
@@ -583,6 +634,14 @@ public class NetworkStatsCollectionTest {
     private static void assertEntry(NetworkStats.Entry expected,
             NetworkStatsHistory.Entry actual) {
         assertEntry(expected, new NetworkStats.Entry(actual.rxBytes, actual.rxPackets,
+                actual.txBytes, actual.txPackets, 0L));
+    }
+
+    private static void assertEntry(NetworkStatsHistory.Entry expected,
+            NetworkStatsHistory.Entry actual) {
+        assertEntry(new NetworkStats.Entry(actual.rxBytes, actual.rxPackets,
+                actual.txBytes, actual.txPackets, 0L),
+                new NetworkStats.Entry(actual.rxBytes, actual.rxPackets,
                 actual.txBytes, actual.txPackets, 0L));
     }
 

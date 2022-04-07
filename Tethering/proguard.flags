@@ -8,10 +8,20 @@
     native <methods>;
 }
 
+-keep class com.android.networkstack.tethering.util.TcUtils {
+    native <methods>;
+}
+
 -keepclassmembers public class * extends com.android.networkstack.tethering.util.Struct {
     *;
 }
 
 -keepclassmembers class android.net.ip.IpServer {
     static final int CMD_*;
+}
+
+# The lite proto runtime uses reflection to access fields based on the names in
+# the schema, keep all the fields.
+-keepclassmembers class * extends com.android.networkstack.tethering.protobuf.MessageLite {
+    <fields>;
 }

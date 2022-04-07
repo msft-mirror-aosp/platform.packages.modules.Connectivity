@@ -76,9 +76,14 @@ interface IConnectivityManager
     LinkProperties getActiveLinkProperties();
     LinkProperties getLinkPropertiesForType(int networkType);
     LinkProperties getLinkProperties(in Network network);
+    LinkProperties getRedactedLinkPropertiesForPackage(in LinkProperties lp, int uid,
+            String packageName, String callingAttributionTag);
 
     NetworkCapabilities getNetworkCapabilities(in Network network, String callingPackageName,
             String callingAttributionTag);
+
+    NetworkCapabilities getRedactedNetworkCapabilitiesForPackage(in NetworkCapabilities nc, int uid,
+            String callingPackageName, String callingAttributionTag);
 
     @UnsupportedAppUsage(maxTargetSdk = 30, trackingBug = 170729553)
     NetworkState[] getAllNetworkState();
@@ -235,11 +240,9 @@ interface IConnectivityManager
 
     void updateMeteredNetworkDenyList(int uid, boolean add);
 
-    void updateFirewallRule(int chain, int uid, boolean allow);
+    void setUidFirewallRule(int chain, int uid, int rule);
 
     void setFirewallChainEnabled(int chain, boolean enable);
 
     void replaceFirewallChain(int chain, in int[] uids);
-
-    void swapActiveStatsMap();
 }
