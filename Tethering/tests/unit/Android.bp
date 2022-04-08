@@ -33,7 +33,6 @@ java_library {
     sdk_version: "core_platform",
     libs: [
         "framework-minus-apex",
-        "framework-connectivity.impl",
         "framework-tethering.impl",
     ],
     visibility: [
@@ -67,7 +66,6 @@ java_defaults {
         "ext",
         "framework-minus-apex",
         "framework-res",
-        "framework-connectivity.impl",
         "framework-tethering.impl",
         "framework-wifi.stubs.module_lib",
     ],
@@ -87,8 +85,7 @@ android_library {
     defaults: ["TetheringTestsDefaults"],
     target_sdk_version: "30",
     visibility: [
-        "//packages/modules/Connectivity/tests:__subpackages__",
-        "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
+        "//packages/modules/Connectivity/Tethering/tests/integration",
     ]
 }
 
@@ -99,7 +96,7 @@ android_test {
         "device-tests",
         "mts",
     ],
+    jarjar_rules: ":TetheringTestsJarJarRules",
     defaults: ["TetheringTestsDefaults"],
     compile_multilib: "both",
-    jarjar_rules: ":TetheringTestsJarJarRules",
 }

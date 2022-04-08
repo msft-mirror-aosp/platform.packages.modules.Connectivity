@@ -18,10 +18,7 @@ package {
 
 java_defaults {
     name: "CtsNetTestCasesDefaults",
-    defaults: [
-        "cts_defaults",
-        "framework-connectivity-test-defaults",
-    ],
+    defaults: ["cts_defaults"],
 
     // Include both the 32 and 64 bit versions
     compile_multilib: "both",
@@ -41,7 +38,10 @@ java_defaults {
     srcs: [
         "src/**/*.java",
         "src/**/*.kt",
-        ":ike-aes-xcbc",
+    ],
+    exclude_srcs: [
+        // TODO: delete this after mainline-prod snaps to sc-dev.
+        "src/android/net/cts/NetworkAgentTest.kt",
     ],
     jarjar_rules: "jarjar-rules-shared.txt",
     static_libs: [
@@ -68,6 +68,7 @@ java_defaults {
 // devices.
 android_test {
     name: "CtsNetTestCases",
+    enabled: false, // Disabled in mainline-prod
     defaults: ["CtsNetTestCasesDefaults"],
     // TODO: CTS should not depend on the entirety of the networkstack code.
     static_libs: [

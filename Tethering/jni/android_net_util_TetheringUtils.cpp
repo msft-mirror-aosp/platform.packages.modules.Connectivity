@@ -34,10 +34,6 @@ static const uint32_t kIPv6NextHeaderOffset = offsetof(ip6_hdr, ip6_nxt);
 static const uint32_t kIPv6PayloadStart = sizeof(ip6_hdr);
 static const uint32_t kICMPv6TypeOffset = kIPv6PayloadStart + offsetof(icmp6_hdr, icmp6_type);
 
-static void throwSocketException(JNIEnv *env, const char* msg, int error) {
-    jniThrowExceptionFmt(env, "java/net/SocketException", "%s: %s", msg, strerror(error));
-}
-
 static void android_net_util_setupIcmpFilter(JNIEnv *env, jobject javaFd, uint32_t type) {
     sock_filter filter_code[] = {
         // Check header is ICMPv6.
@@ -60,7 +56,8 @@ static void android_net_util_setupIcmpFilter(JNIEnv *env, jobject javaFd, uint32
 
     int fd = netjniutils::GetNativeFileDescriptor(env, javaFd);
     if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER, &filter, sizeof(filter)) != 0) {
-        throwSocketException(env, "setsockopt(SO_ATTACH_FILTER)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "setsockopt(SO_ATTACH_FILTER): %s", strerror(errno));
     }
 }
 
@@ -87,7 +84,8 @@ static void android_net_util_setupRaSocket(JNIEnv *env, jobject clazz, jobject j
     ICMP6_FILTER_SETPASS(ND_ROUTER_SOLICIT, &rs_only);
     socklen_t len = sizeof(rs_only);
     if (setsockopt(fd, IPPROTO_ICMPV6, ICMP6_FILTER, &rs_only, len) != 0) {
-        throwSocketException(env, "setsockopt(ICMP6_FILTER)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "setsockopt(ICMP6_FILTER): %s", strerror(errno));
         return;
     }
 
@@ -99,7 +97,8 @@ static void android_net_util_setupRaSocket(JNIEnv *env, jobject clazz, jobject j
     int hops = kLinkLocalHopLimit;
     len = sizeof(hops);
     if (setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_HOPS, &hops, len) != 0) {
-        throwSocketException(env, "setsockopt(IPV6_MULTICAST_HOPS)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "setsockopt(IPV6_MULTICAST_HOPS): %s", strerror(errno));
         return;
     }
 
@@ -107,7 +106,8 @@ static void android_net_util_setupRaSocket(JNIEnv *env, jobject clazz, jobject j
     hops = kLinkLocalHopLimit;
     len = sizeof(hops);
     if (setsockopt(fd, IPPROTO_IPV6, IPV6_UNICAST_HOPS, &hops, len) != 0) {
-        throwSocketException(env, "setsockopt(IPV6_UNICAST_HOPS)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "setsockopt(IPV6_UNICAST_HOPS): %s", strerror(errno));
         return;
     }
 
@@ -115,14 +115,16 @@ static void android_net_util_setupRaSocket(JNIEnv *env, jobject clazz, jobject j
     int off = 0;
     len = sizeof(off);
     if (setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &off, len) != 0) {
-        throwSocketException(env, "setsockopt(IPV6_MULTICAST_LOOP)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "setsockopt(IPV6_MULTICAST_LOOP): %s", strerror(errno));
         return;
     }
 
     // Specify the IPv6 interface to use for outbound multicast.
     len = sizeof(ifIndex);
     if (setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &ifIndex, len) != 0) {
-        throwSocketException(env, "setsockopt(IPV6_MULTICAST_IF)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "setsockopt(IPV6_MULTICAST_IF): %s", strerror(errno));
         return;
     }
 
@@ -142,7 +144,8 @@ static void android_net_util_setupRaSocket(JNIEnv *env, jobject clazz, jobject j
     auto sa = reinterpret_cast<const struct sockaddr *>(&sin6);
     len = sizeof(sin6);
     if (bind(fd, sa, len) != 0) {
-        throwSocketException(env, "bind(IN6ADDR_ANY)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "bind(IN6ADDR_ANY): %s", strerror(errno));
         return;
     }
 
@@ -153,7 +156,8 @@ static void android_net_util_setupRaSocket(JNIEnv *env, jobject clazz, jobject j
     };
     len = sizeof(all_rtrs);
     if (setsockopt(fd, IPPROTO_IPV6, IPV6_JOIN_GROUP, &all_rtrs, len) != 0) {
-        throwSocketException(env, "setsockopt(IPV6_JOIN_GROUP)", errno);
+        jniThrowExceptionFmt(env, "java/net/SocketException",
+                "setsockopt(IPV6_JOIN_GROUP): %s", strerror(errno));
         return;
     }
 }

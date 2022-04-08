@@ -17,7 +17,6 @@
 package com.android.networkstack.tethering;
 
 import static android.Manifest.permission.ACCESS_NETWORK_STATE;
-import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
@@ -47,14 +46,13 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
+import android.provider.Settings;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.networkstack.apishim.SettingsShimImpl;
-import com.android.networkstack.apishim.common.SettingsShim;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -68,7 +66,6 @@ public class TetheringService extends Service {
     private static final String TAG = TetheringService.class.getSimpleName();
 
     private TetheringConnector mConnector;
-    private SettingsShim mSettingsShim;
 
     @Override
     public void onCreate() {
@@ -76,8 +73,6 @@ public class TetheringService extends Service {
         // The Tethering object needs a fully functional context to start, so this can't be done
         // in the constructor.
         mConnector = new TetheringConnector(makeTethering(deps), TetheringService.this);
-
-        mSettingsShim = SettingsShimImpl.newInstance();
     }
 
     /**
@@ -205,18 +200,6 @@ public class TetheringService extends Service {
         }
 
         @Override
-        public void setPreferTestNetworks(boolean prefer, IIntResultListener listener) {
-            if (!checkCallingOrSelfPermission(NETWORK_SETTINGS)) {
-                try {
-                    listener.onResult(TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION);
-                } catch (RemoteException e) { }
-                return;
-            }
-
-            mTethering.setPreferTestNetworks(prefer, listener);
-        }
-
-        @Override
         protected void dump(@NonNull FileDescriptor fd, @NonNull PrintWriter writer,
                     @Nullable String[] args) {
             mTethering.dump(fd, writer, args);
@@ -311,8 +294,10 @@ public class TetheringService extends Service {
     boolean checkAndNoteWriteSettingsOperation(@NonNull Context context, int uid,
             @NonNull String callingPackage, @Nullable String callingAttributionTag,
             boolean throwException) {
-        return mSettingsShim.checkAndNoteWriteSettingsOperation(context, uid, callingPackage,
-                callingAttributionTag, throwException);
+        // TODO: on S and above, pass the attribution tag to Settings instead of throwing it away.
+        // This will likely require a SettingsShim class.
+        return Settings.checkAndNoteWriteSettingsOperation(context, uid, callingPackage,
+                throwException);
     }
 
     /**

@@ -20,8 +20,6 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_DUN;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 
-import static com.android.networkstack.apishim.common.ShimUtils.isAtLeastS;
-
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.fail;
 
@@ -38,7 +36,6 @@ import android.os.Handler;
 import android.os.UserHandle;
 import android.util.ArrayMap;
 
-import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import java.util.Map;
@@ -70,10 +67,10 @@ public class TestConnectivityManager extends ConnectivityManager {
     public static final boolean BROADCAST_FIRST = false;
     public static final boolean CALLBACKS_FIRST = true;
 
-    final Map<NetworkCallback, Handler> mAllCallbacks = new ArrayMap<>();
+    final Map<NetworkCallback, NetworkRequestInfo> mAllCallbacks = new ArrayMap<>();
     // This contains the callbacks tracking the system default network, whether it's registered
     // with registerSystemDefaultNetworkCallback (S+) or with a custom request (R-).
-    final Map<NetworkCallback, Handler> mTrackingDefault = new ArrayMap<>();
+    final Map<NetworkCallback, NetworkRequestInfo> mTrackingDefault = new ArrayMap<>();
     final Map<NetworkCallback, NetworkRequestInfo> mListening = new ArrayMap<>();
     final Map<NetworkCallback, NetworkRequestInfo> mRequested = new ArrayMap<>();
     final Map<NetworkCallback, Integer> mLegacyTypeMap = new ArrayMap<>();
@@ -94,7 +91,7 @@ public class TestConnectivityManager extends ConnectivityManager {
         mContext = ctx;
     }
 
-    static class NetworkRequestInfo {
+    class NetworkRequestInfo {
         public final NetworkRequest request;
         public final Handler handler;
         NetworkRequestInfo(NetworkRequest r, Handler h) {
@@ -148,15 +145,15 @@ public class TestConnectivityManager extends ConnectivityManager {
     private void sendDefaultNetworkCallbacks(TestNetworkAgent formerDefault,
             TestNetworkAgent defaultNetwork) {
         for (NetworkCallback cb : mTrackingDefault.keySet()) {
-            final Handler handler = mTrackingDefault.get(cb);
+            final NetworkRequestInfo nri = mTrackingDefault.get(cb);
             if (defaultNetwork != null) {
-                handler.post(() -> cb.onAvailable(defaultNetwork.networkId));
-                handler.post(() -> cb.onCapabilitiesChanged(
+                nri.handler.post(() -> cb.onAvailable(defaultNetwork.networkId));
+                nri.handler.post(() -> cb.onCapabilitiesChanged(
                         defaultNetwork.networkId, defaultNetwork.networkCapabilities));
-                handler.post(() -> cb.onLinkPropertiesChanged(
+                nri.handler.post(() -> cb.onLinkPropertiesChanged(
                         defaultNetwork.networkId, defaultNetwork.linkProperties));
             } else if (formerDefault != null) {
-                handler.post(() -> cb.onLost(formerDefault.networkId));
+                nri.handler.post(() -> cb.onLost(formerDefault.networkId));
             }
         }
     }
@@ -194,30 +191,17 @@ public class TestConnectivityManager extends ConnectivityManager {
 
     @Override
     public void requestNetwork(NetworkRequest req, NetworkCallback cb, Handler h) {
+        assertFalse(mAllCallbacks.containsKey(cb));
+        mAllCallbacks.put(cb, new NetworkRequestInfo(req, h));
         // For R- devices, Tethering will invoke this function in 2 cases, one is to request mobile
         // network, the other is to track system default network.
         if (looksLikeDefaultRequest(req)) {
-            assertFalse(isAtLeastS());
-            addTrackDefaultCallback(cb, h);
+            assertFalse(mTrackingDefault.containsKey(cb));
+            mTrackingDefault.put(cb, new NetworkRequestInfo(req, h));
         } else {
-            assertFalse(mAllCallbacks.containsKey(cb));
-            mAllCallbacks.put(cb, h);
             assertFalse(mRequested.containsKey(cb));
             mRequested.put(cb, new NetworkRequestInfo(req, h));
         }
-    }
-
-    @Override
-    public void registerSystemDefaultNetworkCallback(
-            @NonNull NetworkCallback cb, @NonNull Handler h) {
-        addTrackDefaultCallback(cb, h);
-    }
-
-    private void addTrackDefaultCallback(@NonNull NetworkCallback cb, @NonNull Handler h) {
-        assertFalse(mAllCallbacks.containsKey(cb));
-        mAllCallbacks.put(cb, h);
-        assertFalse(mTrackingDefault.containsKey(cb));
-        mTrackingDefault.put(cb, h);
     }
 
     @Override
@@ -231,7 +215,7 @@ public class TestConnectivityManager extends ConnectivityManager {
         assertFalse(mAllCallbacks.containsKey(cb));
         NetworkRequest newReq = new NetworkRequest(req.networkCapabilities, legacyType,
                 -1 /** testId */, req.type);
-        mAllCallbacks.put(cb, h);
+        mAllCallbacks.put(cb, new NetworkRequestInfo(newReq, h));
         assertFalse(mRequested.containsKey(cb));
         mRequested.put(cb, new NetworkRequestInfo(newReq, h));
         assertFalse(mLegacyTypeMap.containsKey(cb));
@@ -243,7 +227,7 @@ public class TestConnectivityManager extends ConnectivityManager {
     @Override
     public void registerNetworkCallback(NetworkRequest req, NetworkCallback cb, Handler h) {
         assertFalse(mAllCallbacks.containsKey(cb));
-        mAllCallbacks.put(cb, h);
+        mAllCallbacks.put(cb, new NetworkRequestInfo(req, h));
         assertFalse(mListening.containsKey(cb));
         mListening.put(cb, new NetworkRequestInfo(req, h));
     }

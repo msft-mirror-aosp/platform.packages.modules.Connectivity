@@ -1,4 +1,4 @@
-// Copyright (C) 2013 The Android Open Source Project
+// Copyright (C) 2017 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,44 +12,46 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// Build the unit tests.
+
 package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-cc_library_shared {
-    name: "libnativedns_jni",
+cc_test {
+    name: "CtsNativeNetTestCases",
 
-    srcs: ["NativeDnsJni.c"],
-    sdk_version: "current",
+    compile_multilib: "both",
+    multilib: {
+        lib32: {
+            suffix: "32",
+        },
+        lib64: {
+            suffix: "64",
+        },
+    },
+
+    srcs: ["src/NativeQtaguidTest.cpp"],
 
     shared_libs: [
-        "libnativehelper_compat_libc++",
+        "libutils",
         "liblog",
     ],
-    stl: "libc++_static",
+
+    static_libs: [
+        "libgtest",
+        "libqtaguid",
+    ],
+
+    // Tag this module as a cts test artifact
+    test_suites: [
+        "cts",
+        "general-tests",
+    ],
 
     cflags: [
-        "-Wall",
         "-Werror",
-        "-Wno-unused-parameter",
-    ],
-
-}
-
-cc_library_shared {
-    name: "libnativemultinetwork_jni",
-
-    srcs: ["NativeMultinetworkJni.cpp"],
-    sdk_version: "current",
-    cflags: [
         "-Wall",
-        "-Werror",
-        "-Wno-format",
     ],
-    shared_libs: [
-        "libandroid",
-        "libnativehelper_compat_libc++",
-        "liblog",
-    ],
-    stl: "libc++_static",
+
 }

@@ -26,11 +26,7 @@ import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mockitoSession;
-import static com.android.networkstack.tethering.TetheringConfiguration.TETHER_FORCE_USB_FUNCTIONS;
-import static com.android.networkstack.tethering.TetheringConfiguration.TETHER_USB_NCM_FUNCTION;
-import static com.android.networkstack.tethering.TetheringConfiguration.TETHER_USB_RNDIS_FUNCTION;
 
-import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -39,7 +35,6 @@ import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.when;
 
 import android.content.Context;
-import android.content.pm.ApplicationInfo;
 import android.content.pm.ModuleInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -47,15 +42,12 @@ import android.content.res.Resources;
 import android.net.util.SharedLog;
 import android.os.Build;
 import android.provider.DeviceConfig;
-import android.provider.Settings;
 import android.telephony.TelephonyManager;
-import android.test.mock.MockContentResolver;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.test.BroadcastInterceptingContext;
-import com.android.internal.util.test.FakeSettingsProvider;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
@@ -86,7 +78,6 @@ public class TetheringConfigurationTest {
     private static final String TEST_PACKAGE_NAME = "com.android.tethering.test";
     private static final String APEX_NAME = "com.android.tethering";
     private static final long TEST_PACKAGE_VERSION = 1234L;
-    @Mock private ApplicationInfo mApplicationInfo;
     @Mock private Context mContext;
     @Mock private TelephonyManager mTelephonyManager;
     @Mock private Resources mResources;
@@ -97,7 +88,6 @@ public class TetheringConfigurationTest {
     private boolean mHasTelephonyManager;
     private boolean mEnableLegacyDhcpServer;
     private MockitoSession mMockingSession;
-    private MockContentResolver mContentResolver;
 
     private class MockTetheringConfiguration extends TetheringConfiguration {
         MockTetheringConfiguration(Context ctx, SharedLog log, int id) {
@@ -113,11 +103,6 @@ public class TetheringConfigurationTest {
     private class MockContext extends BroadcastInterceptingContext {
         MockContext(Context base) {
             super(base);
-        }
-
-        @Override
-        public ApplicationInfo getApplicationInfo() {
-            return mApplicationInfo;
         }
 
         @Override
@@ -168,8 +153,7 @@ public class TetheringConfigurationTest {
                 new String[0]);
         when(mResources.getInteger(R.integer.config_tether_offload_poll_interval)).thenReturn(
                 TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS);
-        when(mResources.getStringArray(R.array.config_tether_usb_regexs))
-                .thenReturn(new String[]{ "test_usb\\d" });
+        when(mResources.getStringArray(R.array.config_tether_usb_regexs)).thenReturn(new String[0]);
         when(mResources.getStringArray(R.array.config_tether_wifi_regexs))
                 .thenReturn(new String[]{ "test_wlan\\d" });
         when(mResources.getStringArray(R.array.config_tether_bluetooth_regexs)).thenReturn(
@@ -187,20 +171,12 @@ public class TetheringConfigurationTest {
         mHasTelephonyManager = true;
         mMockContext = new MockContext(mContext);
         mEnableLegacyDhcpServer = false;
-
-        mContentResolver = new MockContentResolver(mMockContext);
-        mContentResolver.addProvider(Settings.AUTHORITY, new FakeSettingsProvider());
-        when(mContext.getContentResolver()).thenReturn(mContentResolver);
-        // Call {@link #clearSettingsProvider()} before and after using FakeSettingsProvider.
-        FakeSettingsProvider.clearSettingsProvider();
     }
 
     @After
     public void tearDown() throws Exception {
         mMockingSession.finishMocking();
         DeviceConfigUtils.resetPackageVersionCacheForTest();
-        // Call {@link #clearSettingsProvider()} before and after using FakeSettingsProvider.
-        FakeSettingsProvider.clearSettingsProvider();
     }
 
     private TetheringConfiguration getTetheringConfiguration(int... legacyTetherUpstreamTypes) {
@@ -563,86 +539,4 @@ public class TetheringConfigurationTest {
         assertEquals(value, new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID)
                 .chooseUpstreamAutomatically);
     }
-
-    @Test
-    public void testUsbTetheringFunctions() throws Exception {
-        // Test default value. If both resource and settings is not configured, usingNcm is false.
-        assertIsUsingNcm(false /* usingNcm */);
-
-        when(mResources.getInteger(R.integer.config_tether_usb_functions)).thenReturn(
-                TETHER_USB_NCM_FUNCTION);
-        assertIsUsingNcm(true /* usingNcm */);
-
-        when(mResources.getInteger(R.integer.config_tether_usb_functions)).thenReturn(
-                TETHER_USB_RNDIS_FUNCTION);
-        assertIsUsingNcm(false /* usingNcm */);
-
-        setTetherForceUsbFunctions(TETHER_USB_RNDIS_FUNCTION);
-        assertIsUsingNcm(false /* usingNcm */);
-
-        setTetherForceUsbFunctions(TETHER_USB_NCM_FUNCTION);
-        assertIsUsingNcm(true /* usingNcm */);
-
-        // Test throws NumberFormatException.
-        setTetherForceUsbFunctions("WrongNumberFormat");
-        assertIsUsingNcm(false /* usingNcm */);
-    }
-
-    private void assertIsUsingNcm(boolean expected) {
-        final TetheringConfiguration cfg =
-                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
-        assertEquals(expected, cfg.isUsingNcm());
-    }
-
-    private void setTetherForceUsbFunctions(final String value) {
-        Settings.Global.putString(mContentResolver, TETHER_FORCE_USB_FUNCTIONS, value);
-    }
-
-    private void setTetherForceUsbFunctions(final int value) {
-        setTetherForceUsbFunctions(Integer.toString(value));
-    }
-
-    @Test
-    public void testNcmRegexs() throws Exception {
-        final String[] rndisRegexs = {"test_rndis\\d"};
-        final String[] ncmRegexs   = {"test_ncm\\d"};
-        final String[] rndisNcmRegexs   = {"test_rndis\\d", "test_ncm\\d"};
-
-        // cfg.isUsingNcm = false.
-        when(mResources.getInteger(R.integer.config_tether_usb_functions)).thenReturn(
-                TETHER_USB_RNDIS_FUNCTION);
-        setUsbAndNcmRegexs(rndisRegexs, ncmRegexs);
-        assertUsbAndNcmRegexs(rndisRegexs, ncmRegexs);
-
-        setUsbAndNcmRegexs(rndisNcmRegexs, new String[0]);
-        assertUsbAndNcmRegexs(rndisNcmRegexs, new String[0]);
-
-        // cfg.isUsingNcm = true.
-        when(mResources.getInteger(R.integer.config_tether_usb_functions)).thenReturn(
-                TETHER_USB_NCM_FUNCTION);
-        setUsbAndNcmRegexs(rndisRegexs, ncmRegexs);
-        assertUsbAndNcmRegexs(ncmRegexs, new String[0]);
-
-        setUsbAndNcmRegexs(rndisNcmRegexs, new String[0]);
-        assertUsbAndNcmRegexs(rndisNcmRegexs, new String[0]);
-
-        // Check USB regex is not overwritten by the NCM regex after force to use rndis from
-        // Settings.
-        setUsbAndNcmRegexs(rndisRegexs, ncmRegexs);
-        setTetherForceUsbFunctions(TETHER_USB_RNDIS_FUNCTION);
-        assertUsbAndNcmRegexs(rndisRegexs, ncmRegexs);
-    }
-
-    private void setUsbAndNcmRegexs(final String[] usbRegexs, final String[] ncmRegexs) {
-        when(mResources.getStringArray(R.array.config_tether_usb_regexs)).thenReturn(usbRegexs);
-        when(mResources.getStringArray(R.array.config_tether_ncm_regexs)).thenReturn(ncmRegexs);
-    }
-
-    private void assertUsbAndNcmRegexs(final String[] usbRegexs, final String[] ncmRegexs) {
-        final TetheringConfiguration cfg =
-                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
-        assertArrayEquals(usbRegexs, cfg.tetherableUsbRegexs);
-        assertArrayEquals(ncmRegexs, cfg.tetherableNcmRegexs);
-    }
-
 }

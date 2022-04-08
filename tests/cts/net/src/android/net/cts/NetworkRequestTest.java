@@ -30,10 +30,8 @@ import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 
 import static junit.framework.Assert.fail;
 
-import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
@@ -311,43 +309,6 @@ public class NetworkRequestTest {
                 request.networkCapabilities.satisfiedByNetworkCapabilities(nc));
     }
 
-    private static Set<Range<Integer>> uidRangesForUid(int uid) {
-        final Range<Integer> range = new Range<>(uid, uid);
-        return Set.of(range);
-    }
-
-    @Test
-    public void testSetIncludeOtherUidNetworks() throws Exception {
-        assumeTrue(TestUtils.shouldTestSApis());
-        final NetworkRequestShim shim = NetworkRequestShimImpl.newInstance();
-
-        final NetworkRequest.Builder builder = new NetworkRequest.Builder();
-        // NetworkRequests have NET_CAPABILITY_NOT_VCN_MANAGED by default.
-        builder.removeCapability(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED);
-        shim.setIncludeOtherUidNetworks(builder, false);
-        final NetworkRequest request = builder.build();
-
-        final NetworkRequest.Builder otherUidsBuilder = new NetworkRequest.Builder();
-        otherUidsBuilder.removeCapability(ConstantsShim.NET_CAPABILITY_NOT_VCN_MANAGED);
-        shim.setIncludeOtherUidNetworks(otherUidsBuilder, true);
-        final NetworkRequest otherUidsRequest = otherUidsBuilder.build();
-
-        assertNotEquals(Process.SYSTEM_UID, Process.myUid());
-        final NetworkCapabilities ncWithMyUid = new NetworkCapabilities()
-                .setUids(uidRangesForUid(Process.myUid()));
-        final NetworkCapabilities ncWithOtherUid = new NetworkCapabilities()
-                .setUids(uidRangesForUid(Process.SYSTEM_UID));
-
-        assertTrue(request + " should be satisfied by " + ncWithMyUid,
-                request.canBeSatisfiedBy(ncWithMyUid));
-        assertTrue(otherUidsRequest + " should be satisfied by " + ncWithMyUid,
-                otherUidsRequest.canBeSatisfiedBy(ncWithMyUid));
-        assertFalse(request + " should not be satisfied by " +  ncWithOtherUid,
-                request.canBeSatisfiedBy(ncWithOtherUid));
-        assertTrue(otherUidsRequest + " should be satisfied by " + ncWithOtherUid,
-                otherUidsRequest.canBeSatisfiedBy(ncWithOtherUid));
-    }
-
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testRequestorUid() {
         final NetworkCapabilities nc = new NetworkCapabilities();
@@ -455,21 +416,6 @@ public class NetworkRequestTest {
         } catch (UnsupportedApiLevelException e) {
             fail("NetworkRequestShim.newBuilder should be supported in this SDK version");
         }
-    }
-
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
-    public void testGetCapabilities() {
-        final int[] netCapabilities = new int[] {
-                NET_CAPABILITY_INTERNET,
-                NET_CAPABILITY_NOT_ROAMING };
-        final NetworkCapabilities.Builder builder = NetworkCapabilities.Builder
-                .withoutDefaultCapabilities();
-        for (int capability : netCapabilities) builder.addCapability(capability);
-        final NetworkRequest nr = new NetworkRequest.Builder()
-                .clearCapabilities()
-                .setCapabilities(builder.build())
-                .build();
-        assertArrayEquals(netCapabilities, nr.getCapabilities());
     }
 
     @Test

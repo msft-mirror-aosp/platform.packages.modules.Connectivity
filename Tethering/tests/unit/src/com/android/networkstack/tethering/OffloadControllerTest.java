@@ -26,12 +26,9 @@ import static android.net.NetworkStats.UID_TETHERING;
 import static android.net.RouteInfo.RTN_UNICAST;
 import static android.provider.Settings.Global.TETHER_OFFLOAD_DISABLED;
 
-import static com.android.modules.utils.build.SdkLevel.isAtLeastS;
 import static com.android.networkstack.tethering.OffloadController.StatsType.STATS_PER_IFACE;
 import static com.android.networkstack.tethering.OffloadController.StatsType.STATS_PER_UID;
 import static com.android.networkstack.tethering.OffloadHardwareInterface.ForwardedStats;
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_0;
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_1;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
 import static com.android.testutils.MiscAsserts.assertContainsAll;
 import static com.android.testutils.MiscAsserts.assertThrows;
@@ -59,6 +56,7 @@ import android.annotation.NonNull;
 import android.app.usage.NetworkStatsManager;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
+import android.net.ITetheringStatsProvider;
 import android.net.IpPrefix;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
@@ -67,7 +65,6 @@ import android.net.NetworkStats.Entry;
 import android.net.RouteInfo;
 import android.net.netstats.provider.NetworkStatsProvider;
 import android.net.util.SharedLog;
-import android.os.Build;
 import android.os.Handler;
 import android.os.test.TestLooper;
 import android.provider.Settings;
@@ -78,13 +75,10 @@ import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.test.FakeSettingsProvider;
-import com.android.testutils.DevSdkIgnoreRule;
-import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.TestableNetworkStatsProviderCbBinder;
 
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -100,9 +94,6 @@ import java.util.Set;
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public class OffloadControllerTest {
-    @Rule
-    public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
-
     private static final String RNDIS0 = "test_rndis0";
     private static final String RMNET0 = "test_rmnet_data0";
     private static final String WLAN0 = "test_wlan0";
@@ -150,14 +141,13 @@ public class OffloadControllerTest {
         FakeSettingsProvider.clearSettingsProvider();
     }
 
-    private void setupFunctioningHardwareInterface(int controlVersion) {
+    private void setupFunctioningHardwareInterface() {
         when(mHardware.initOffloadConfig()).thenReturn(true);
         when(mHardware.initOffloadControl(mControlCallbackCaptor.capture()))
-                .thenReturn(controlVersion);
+                .thenReturn(true);
         when(mHardware.setUpstreamParameters(anyString(), any(), any(), any())).thenReturn(true);
         when(mHardware.getForwardedStats(any())).thenReturn(new ForwardedStats());
         when(mHardware.setDataLimit(anyString(), anyLong())).thenReturn(true);
-        when(mHardware.setDataWarningAndLimit(anyString(), anyLong(), anyLong())).thenReturn(true);
     }
 
     private void enableOffload() {
@@ -180,7 +170,6 @@ public class OffloadControllerTest {
                 ArgumentCaptor.forClass(OffloadController.OffloadTetheringStatsProvider.class);
         verify(mStatsManager).registerNetworkStatsProvider(anyString(),
                 tetherStatsProviderCaptor.capture());
-        reset(mStatsManager);
         mTetherStatsProvider = tetherStatsProviderCaptor.getValue();
         assertNotNull(mTetherStatsProvider);
         mTetherStatsProviderCb = new TestableNetworkStatsProviderCbBinder();
@@ -188,18 +177,10 @@ public class OffloadControllerTest {
         return offload;
     }
 
-    @Test
-    public void testStartStop() throws Exception {
-        stopOffloadController(
-                startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/));
-        stopOffloadController(
-                startOffloadController(OFFLOAD_HAL_VERSION_1_1, true /*expectStart*/));
-    }
-
     @NonNull
-    private OffloadController startOffloadController(int controlVersion, boolean expectStart)
+    private OffloadController startOffloadController(boolean expectStart)
             throws Exception {
-        setupFunctioningHardwareInterface(controlVersion);
+        setupFunctioningHardwareInterface();
         final OffloadController offload = makeOffloadController();
         offload.start();
 
@@ -227,7 +208,7 @@ public class OffloadControllerTest {
         when(mHardware.getDefaultTetherOffloadDisabled()).thenReturn(1);
         assertThrows(SettingNotFoundException.class, () ->
                 Settings.Global.getInt(mContentResolver, TETHER_OFFLOAD_DISABLED));
-        startOffloadController(OFFLOAD_HAL_VERSION_1_0, false /*expectStart*/);
+        startOffloadController(false /*expectStart*/);
     }
 
     @Test
@@ -235,26 +216,26 @@ public class OffloadControllerTest {
         when(mHardware.getDefaultTetherOffloadDisabled()).thenReturn(0);
         assertThrows(SettingNotFoundException.class, () ->
                 Settings.Global.getInt(mContentResolver, TETHER_OFFLOAD_DISABLED));
-        startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+        startOffloadController(true /*expectStart*/);
     }
 
     @Test
     public void testSettingsAllowsStart() throws Exception {
         Settings.Global.putInt(mContentResolver, TETHER_OFFLOAD_DISABLED, 0);
-        startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+        startOffloadController(true /*expectStart*/);
     }
 
     @Test
     public void testSettingsDisablesStart() throws Exception {
         Settings.Global.putInt(mContentResolver, TETHER_OFFLOAD_DISABLED, 1);
-        startOffloadController(OFFLOAD_HAL_VERSION_1_0, false /*expectStart*/);
+        startOffloadController(false /*expectStart*/);
     }
 
     @Test
     public void testSetUpstreamLinkPropertiesWorking() throws Exception {
         enableOffload();
         final OffloadController offload =
-                startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+                startOffloadController(true /*expectStart*/);
 
         // In reality, the UpstreamNetworkMonitor would have passed down to us
         // a covering set of local prefixes representing a minimum essential
@@ -425,7 +406,7 @@ public class OffloadControllerTest {
     public void testGetForwardedStats() throws Exception {
         enableOffload();
         final OffloadController offload =
-                startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+                startOffloadController(true /*expectStart*/);
 
         final String ethernetIface = "eth1";
         final String mobileIface = "rmnet_data0";
@@ -511,183 +492,84 @@ public class OffloadControllerTest {
                 expectedUidStatsDiff);
     }
 
-    /**
-     * Test OffloadController with different combinations of HAL and framework versions can set
-     * data warning and/or limit correctly.
-     */
     @Test
-    public void testSetDataWarningAndLimit() throws Exception {
-        // Verify the OffloadController is called by R framework, where the framework doesn't send
-        // warning.
-        // R only uses HAL 1.0.
-        checkSetDataWarningAndLimit(false, OFFLOAD_HAL_VERSION_1_0);
-        // Verify the OffloadController is called by S+ framework, where the framework sends
-        // warning along with limit.
-        checkSetDataWarningAndLimit(true, OFFLOAD_HAL_VERSION_1_0);
-        checkSetDataWarningAndLimit(true, OFFLOAD_HAL_VERSION_1_1);
-    }
-
-    private void checkSetDataWarningAndLimit(boolean isProviderSetWarning, int controlVersion)
-            throws Exception {
+    public void testSetInterfaceQuota() throws Exception {
         enableOffload();
         final OffloadController offload =
-                startOffloadController(controlVersion, true /*expectStart*/);
+                startOffloadController(true /*expectStart*/);
 
         final String ethernetIface = "eth1";
         final String mobileIface = "rmnet_data0";
         final long ethernetLimit = 12345;
-        final long mobileWarning = 123456;
         final long mobileLimit = 12345678;
 
         final LinkProperties lp = new LinkProperties();
         lp.setInterfaceName(ethernetIface);
+        offload.setUpstreamLinkProperties(lp);
 
         final InOrder inOrder = inOrder(mHardware);
-        when(mHardware.setUpstreamParameters(
-                any(), any(), any(), any())).thenReturn(true);
+        when(mHardware.setUpstreamParameters(any(), any(), any(), any())).thenReturn(true);
         when(mHardware.setDataLimit(anyString(), anyLong())).thenReturn(true);
-        when(mHardware.setDataWarningAndLimit(anyString(), anyLong(), anyLong())).thenReturn(true);
-        offload.setUpstreamLinkProperties(lp);
-        // Applying an interface sends the initial quota to the hardware.
-        if (controlVersion >= OFFLOAD_HAL_VERSION_1_1) {
-            inOrder.verify(mHardware).setDataWarningAndLimit(ethernetIface, Long.MAX_VALUE,
-                    Long.MAX_VALUE);
-        } else {
-            inOrder.verify(mHardware).setDataLimit(ethernetIface, Long.MAX_VALUE);
-        }
-        inOrder.verifyNoMoreInteractions();
-
-        // Verify that set to unlimited again won't cause duplicated calls to the hardware.
-        if (isProviderSetWarning) {
-            mTetherStatsProvider.onSetWarningAndLimit(ethernetIface,
-                    NetworkStatsProvider.QUOTA_UNLIMITED, NetworkStatsProvider.QUOTA_UNLIMITED);
-        } else {
-            mTetherStatsProvider.onSetLimit(ethernetIface, NetworkStatsProvider.QUOTA_UNLIMITED);
-        }
-        waitForIdle();
-        inOrder.verifyNoMoreInteractions();
 
         // Applying an interface quota to the current upstream immediately sends it to the hardware.
-        if (isProviderSetWarning) {
-            mTetherStatsProvider.onSetWarningAndLimit(ethernetIface,
-                    NetworkStatsProvider.QUOTA_UNLIMITED, ethernetLimit);
-        } else {
-            mTetherStatsProvider.onSetLimit(ethernetIface, ethernetLimit);
-        }
+        mTetherStatsProvider.onSetLimit(ethernetIface, ethernetLimit);
         waitForIdle();
-        if (controlVersion >= OFFLOAD_HAL_VERSION_1_1) {
-            inOrder.verify(mHardware).setDataWarningAndLimit(ethernetIface, Long.MAX_VALUE,
-                    ethernetLimit);
-        } else {
-            inOrder.verify(mHardware).setDataLimit(ethernetIface, ethernetLimit);
-        }
+        inOrder.verify(mHardware).setDataLimit(ethernetIface, ethernetLimit);
         inOrder.verifyNoMoreInteractions();
 
         // Applying an interface quota to another upstream does not take any immediate action.
-        if (isProviderSetWarning) {
-            mTetherStatsProvider.onSetWarningAndLimit(mobileIface, mobileWarning, mobileLimit);
-        } else {
-            mTetherStatsProvider.onSetLimit(mobileIface, mobileLimit);
-        }
+        mTetherStatsProvider.onSetLimit(mobileIface, mobileLimit);
         waitForIdle();
-        if (controlVersion >= OFFLOAD_HAL_VERSION_1_1) {
-            inOrder.verify(mHardware, never()).setDataWarningAndLimit(anyString(), anyLong(),
-                    anyLong());
-        } else {
-            inOrder.verify(mHardware, never()).setDataLimit(anyString(), anyLong());
-        }
+        inOrder.verify(mHardware, never()).setDataLimit(anyString(), anyLong());
 
         // Switching to that upstream causes the quota to be applied if the parameters were applied
         // correctly.
         lp.setInterfaceName(mobileIface);
         offload.setUpstreamLinkProperties(lp);
         waitForIdle();
-        if (controlVersion >= OFFLOAD_HAL_VERSION_1_1) {
-            inOrder.verify(mHardware).setDataWarningAndLimit(mobileIface,
-                    isProviderSetWarning ? mobileWarning : Long.MAX_VALUE,
-                    mobileLimit);
-        } else {
-            inOrder.verify(mHardware).setDataLimit(mobileIface, mobileLimit);
-        }
+        inOrder.verify(mHardware).setDataLimit(mobileIface, mobileLimit);
 
-        // Setting a limit of NetworkStatsProvider.QUOTA_UNLIMITED causes the limit to be set
+        // Setting a limit of ITetheringStatsProvider.QUOTA_UNLIMITED causes the limit to be set
         // to Long.MAX_VALUE.
-        if (isProviderSetWarning) {
-            mTetherStatsProvider.onSetWarningAndLimit(mobileIface,
-                    NetworkStatsProvider.QUOTA_UNLIMITED, NetworkStatsProvider.QUOTA_UNLIMITED);
-        } else {
-            mTetherStatsProvider.onSetLimit(mobileIface, NetworkStatsProvider.QUOTA_UNLIMITED);
-        }
+        mTetherStatsProvider.onSetLimit(mobileIface, ITetheringStatsProvider.QUOTA_UNLIMITED);
         waitForIdle();
-        if (controlVersion >= OFFLOAD_HAL_VERSION_1_1) {
-            inOrder.verify(mHardware).setDataWarningAndLimit(mobileIface, Long.MAX_VALUE,
-                    Long.MAX_VALUE);
-        } else {
-            inOrder.verify(mHardware).setDataLimit(mobileIface, Long.MAX_VALUE);
-        }
+        inOrder.verify(mHardware).setDataLimit(mobileIface, Long.MAX_VALUE);
 
-        // If setting upstream parameters fails, then the data warning and limit is not set.
+        // If setting upstream parameters fails, then the data limit is not set.
         when(mHardware.setUpstreamParameters(any(), any(), any(), any())).thenReturn(false);
         lp.setInterfaceName(ethernetIface);
         offload.setUpstreamLinkProperties(lp);
-        if (isProviderSetWarning) {
-            mTetherStatsProvider.onSetWarningAndLimit(mobileIface, mobileWarning, mobileLimit);
-        } else {
-            mTetherStatsProvider.onSetLimit(mobileIface, mobileLimit);
-        }
+        mTetherStatsProvider.onSetLimit(mobileIface, mobileLimit);
         waitForIdle();
         inOrder.verify(mHardware, never()).setDataLimit(anyString(), anyLong());
-        inOrder.verify(mHardware, never()).setDataWarningAndLimit(anyString(), anyLong(),
-                anyLong());
 
-        // If setting the data warning and/or limit fails while changing upstreams, offload is
-        // stopped.
+        // If setting the data limit fails while changing upstreams, offload is stopped.
         when(mHardware.setUpstreamParameters(any(), any(), any(), any())).thenReturn(true);
         when(mHardware.setDataLimit(anyString(), anyLong())).thenReturn(false);
-        when(mHardware.setDataWarningAndLimit(anyString(), anyLong(), anyLong())).thenReturn(false);
         lp.setInterfaceName(mobileIface);
         offload.setUpstreamLinkProperties(lp);
-        if (isProviderSetWarning) {
-            mTetherStatsProvider.onSetWarningAndLimit(mobileIface, mobileWarning, mobileLimit);
-        } else {
-            mTetherStatsProvider.onSetLimit(mobileIface, mobileLimit);
-        }
+        mTetherStatsProvider.onSetLimit(mobileIface, mobileLimit);
         waitForIdle();
         inOrder.verify(mHardware).getForwardedStats(ethernetIface);
         inOrder.verify(mHardware).stopOffloadControl();
     }
 
     @Test
-    public void testDataWarningAndLimitCallback_LimitReached() throws Exception {
+    public void testDataLimitCallback() throws Exception {
         enableOffload();
-        startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+        final OffloadController offload =
+                startOffloadController(true /*expectStart*/);
 
-        final OffloadHardwareInterface.ControlCallback callback = mControlCallbackCaptor.getValue();
+        OffloadHardwareInterface.ControlCallback callback = mControlCallbackCaptor.getValue();
         callback.onStoppedLimitReached();
         mTetherStatsProviderCb.expectNotifyStatsUpdated();
-
-        if (isAtLeastS()) {
-            mTetherStatsProviderCb.expectNotifyWarningOrLimitReached();
-        } else {
-            mTetherStatsProviderCb.expectLegacyNotifyLimitReached();
-        }
-    }
-
-    @Test
-    @IgnoreUpTo(Build.VERSION_CODES.R)  // HAL 1.1 is only supported from S
-    public void testDataWarningAndLimitCallback_WarningReached() throws Exception {
-        startOffloadController(OFFLOAD_HAL_VERSION_1_1, true /*expectStart*/);
-        final OffloadHardwareInterface.ControlCallback callback = mControlCallbackCaptor.getValue();
-        callback.onWarningReached();
-        mTetherStatsProviderCb.expectNotifyStatsUpdated();
-        mTetherStatsProviderCb.expectNotifyWarningOrLimitReached();
     }
 
     @Test
     public void testAddRemoveDownstreams() throws Exception {
         enableOffload();
         final OffloadController offload =
-                startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+                startOffloadController(true /*expectStart*/);
         final InOrder inOrder = inOrder(mHardware);
 
         // Tethering makes several calls to setLocalPrefixes() before add/remove
@@ -754,7 +636,7 @@ public class OffloadControllerTest {
     public void testControlCallbackOnStoppedUnsupportedFetchesAllStats() throws Exception {
         enableOffload();
         final OffloadController offload =
-                startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+                startOffloadController(true /*expectStart*/);
 
         // Pretend to set a few different upstreams (only the interface name
         // matters for this test; we're ignoring IP and route information).
@@ -785,7 +667,7 @@ public class OffloadControllerTest {
             throws Exception {
         enableOffload();
         final OffloadController offload =
-                startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+                startOffloadController(true /*expectStart*/);
 
         // Pretend to set a few different upstreams (only the interface name
         // matters for this test; we're ignoring IP and route information).
@@ -863,12 +745,14 @@ public class OffloadControllerTest {
         enableOffload();
         setOffloadPollInterval(DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS);
         final OffloadController offload =
-                startOffloadController(OFFLOAD_HAL_VERSION_1_0, true /*expectStart*/);
+                startOffloadController(true /*expectStart*/);
 
         // Initialize with fake eth upstream.
         final String ethernetIface = "eth1";
         InOrder inOrder = inOrder(mHardware);
-        offload.setUpstreamLinkProperties(makeEthernetLinkProperties());
+        final LinkProperties lp = new LinkProperties();
+        lp.setInterfaceName(ethernetIface);
+        offload.setUpstreamLinkProperties(lp);
         // Previous upstream was null, so no stats are fetched.
         inOrder.verify(mHardware, never()).getForwardedStats(any());
 
@@ -900,34 +784,5 @@ public class OffloadControllerTest {
         waitForIdle();
         mTetherStatsProviderCb.assertNoCallback();
         verify(mHardware, never()).getForwardedStats(any());
-    }
-
-    private static LinkProperties makeEthernetLinkProperties() {
-        final String ethernetIface = "eth1";
-        final LinkProperties lp = new LinkProperties();
-        lp.setInterfaceName(ethernetIface);
-        return lp;
-    }
-
-    private void checkSoftwarePollingUsed(int controlVersion) throws Exception {
-        enableOffload();
-        setOffloadPollInterval(DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS);
-        OffloadController offload =
-                startOffloadController(controlVersion, true /*expectStart*/);
-        offload.setUpstreamLinkProperties(makeEthernetLinkProperties());
-        mTetherStatsProvider.onSetAlert(0);
-        waitForIdle();
-        if (controlVersion >= OFFLOAD_HAL_VERSION_1_1) {
-            mTetherStatsProviderCb.assertNoCallback();
-        } else {
-            mTetherStatsProviderCb.expectNotifyAlertReached();
-        }
-        verify(mHardware, never()).getForwardedStats(any());
-    }
-
-    @Test
-    public void testSoftwarePollingUsed() throws Exception {
-        checkSoftwarePollingUsed(OFFLOAD_HAL_VERSION_1_0);
-        checkSoftwarePollingUsed(OFFLOAD_HAL_VERSION_1_1);
     }
 }

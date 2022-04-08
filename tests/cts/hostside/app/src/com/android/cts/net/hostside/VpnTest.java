@@ -17,7 +17,6 @@
 package com.android.cts.net.hostside;
 
 import static android.Manifest.permission.NETWORK_SETTINGS;
-import static android.net.ConnectivityManager.TYPE_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.os.Process.INVALID_UID;
 import static android.system.OsConstants.AF_INET;
@@ -760,7 +759,6 @@ public class VpnTest extends InstrumentationTestCase {
         assertEquals(vpnNetwork, mCM.getActiveNetwork());
         assertNotEqual(defaultNetwork, vpnNetwork);
         maybeExpectVpnTransportInfo(vpnNetwork);
-        assertEquals(TYPE_VPN, mCM.getNetworkInfo(vpnNetwork).getType());
 
         if (SdkLevel.isAtLeastS()) {
             // Check that system default network callback has not seen any network changes, even
@@ -1213,8 +1211,7 @@ public class VpnTest extends InstrumentationTestCase {
                     new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
 
             // Enqueue a request and check only one download.
-            final long id = dm.enqueue(new Request(
-                    Uri.parse("https://google-ipv6test.appspot.com/ip.js?fmt=text")));
+            final long id = dm.enqueue(new Request(Uri.parse("https://www.google.com")));
             assertEquals(1, getTotalNumberDownloads(dm, new Query()));
             assertEquals(1, getTotalNumberDownloads(dm, new Query().setFilterById(id)));
 

@@ -19,7 +19,6 @@ package com.android.networkstack.tethering;
 import static android.Manifest.permission.ACCESS_NETWORK_STATE;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
 import static android.Manifest.permission.WRITE_SETTINGS;
-import static android.content.pm.PackageManager.PERMISSION_DENIED;
 import static android.net.TetheringManager.TETHERING_WIFI;
 import static android.net.TetheringManager.TETHER_ERROR_NO_ACCESS_TETHERING_PERMISSION;
 import static android.net.TetheringManager.TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION;
@@ -51,7 +50,6 @@ import androidx.test.filters.SmallTest;
 import androidx.test.rule.ServiceTestRule;
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.net.module.util.CollectionUtils;
 import com.android.networkstack.tethering.MockTetheringService.MockTetheringConnector;
 
 import org.junit.After;
@@ -72,7 +70,6 @@ public final class TetheringServiceTest {
     @Rule public ServiceTestRule mServiceTestRule;
     private Tethering mTethering;
     private Intent mMockServiceIntent;
-    private MockTetheringConnector mMockConnector;
     private ITetheringConnector mTetheringConnector;
     private UiAutomation mUiAutomation;
 
@@ -112,9 +109,10 @@ public final class TetheringServiceTest {
         mMockServiceIntent = new Intent(
                 InstrumentationRegistry.getTargetContext(),
                 MockTetheringService.class);
-        mMockConnector = (MockTetheringConnector) mServiceTestRule.bindService(mMockServiceIntent);
-        mTetheringConnector = mMockConnector.getTetheringConnector();
-        final MockTetheringService service = mMockConnector.getService();
+        final MockTetheringConnector mockConnector =
+                (MockTetheringConnector) mServiceTestRule.bindService(mMockServiceIntent);
+        mTetheringConnector = mockConnector.getTetheringConnector();
+        final MockTetheringService service = mockConnector.getService();
         mTethering = service.getTethering();
     }
 
@@ -146,18 +144,12 @@ public final class TetheringServiceTest {
 
     private void runTetheringCall(final TestTetheringCall test, String... permissions)
             throws Exception {
-        // Allow the test to run even if ACCESS_NETWORK_STATE was granted at the APK level
-        if (!CollectionUtils.contains(permissions, ACCESS_NETWORK_STATE)) {
-            mMockConnector.setPermission(ACCESS_NETWORK_STATE, PERMISSION_DENIED);
-        }
-
         if (permissions.length > 0) mUiAutomation.adoptShellPermissionIdentity(permissions);
         try {
             when(mTethering.isTetheringSupported()).thenReturn(true);
             test.runTetheringCall(new TestTetheringResult());
         } finally {
             mUiAutomation.dropShellPermissionIdentity();
-            mMockConnector.setPermission(ACCESS_NETWORK_STATE, null);
         }
     }
 

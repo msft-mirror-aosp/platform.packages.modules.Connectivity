@@ -20,31 +20,31 @@ package {
 
 android_test_helper_app {
     name: "CtsHostsideNetworkTestsApp",
-    defaults: [
-        "cts_support_defaults",
-        "framework-connectivity-test-defaults",
-    ],
+    defaults: ["cts_support_defaults"],
+    //sdk_version: "current",
     platform_apis: true,
     static_libs: [
-        "CtsHostsideNetworkTestsAidl",
-        "androidx.test.ext.junit",
         "androidx.test.rules",
-        "androidx.test.uiautomator_uiautomator",
+        "androidx.test.ext.junit",
         "compatibility-device-util-axt",
         "cts-net-utils",
         "ctstestrunner-axt",
-        "modules-utils-build",
         "ub-uiautomator",
+        "CtsHostsideNetworkTestsAidl",
+        "modules-utils-build",
     ],
     libs: [
         "android.test.runner",
         "android.test.base",
     ],
     srcs: ["src/**/*.java"],
+    // STOPSHIP: remove this before releasing any networking modules.
+    exclude_srcs: [
+        "src/com/android/cts/net/hostside/VpnTest.java",
+    ],
     // Tag this module as a cts test artifact
     test_suites: [
         "cts",
         "general-tests",
-        "sts",
     ],
 }

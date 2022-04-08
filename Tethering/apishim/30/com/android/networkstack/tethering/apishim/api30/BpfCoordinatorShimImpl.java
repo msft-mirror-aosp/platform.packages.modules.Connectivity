@@ -33,8 +33,6 @@ import com.android.networkstack.tethering.Tether4Key;
 import com.android.networkstack.tethering.Tether4Value;
 import com.android.networkstack.tethering.TetherStatsValue;
 
-import java.util.function.BiConsumer;
-
 /**
  * Bpf coordinator class for API shims.
  */
@@ -160,12 +158,6 @@ public class BpfCoordinatorShimImpl
     public boolean tetherOffloadRuleRemove(boolean downstream, @NonNull Tether4Key key) {
         /* no op */
         return true;
-    }
-
-    @Override
-    public void tetherOffloadRuleForEach(boolean downstream,
-            @NonNull BiConsumer<Tether4Key, Tether4Value> action) {
-        /* no op */
     }
 
     @Override

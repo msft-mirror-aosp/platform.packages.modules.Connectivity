@@ -17,10 +17,6 @@
 package com.android.cts.net.hostside;
 
 interface INetworkStateObserver {
-    void onNetworkStateChecked(int resultCode, String resultData);
-
-    const int RESULT_SUCCESS_NETWORK_STATE_CHECKED = 0;
-    const int RESULT_ERROR_UNEXPECTED_PROC_STATE = 1;
-    const int RESULT_ERROR_UNEXPECTED_CAPABILITIES = 2;
-    const int RESULT_ERROR_OTHER = 3;
+    boolean isForeground();
+    void onNetworkStateChecked(String resultData);
 }

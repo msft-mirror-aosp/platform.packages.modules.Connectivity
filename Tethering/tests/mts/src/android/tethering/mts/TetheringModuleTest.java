@@ -15,17 +15,17 @@
  */
 package android.tethering.mts;
 
-import static android.Manifest.permission.ACCESS_WIFI_STATE;
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.READ_DEVICE_CONFIG;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
 import static android.Manifest.permission.WRITE_SETTINGS;
-import static android.net.TetheringManager.TETHERING_WIFI;
+import static android.net.cts.util.CtsTetheringUtils.isWifiTetheringSupported;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
 
 import static com.android.testutils.TestNetworkTrackerKt.initTestNetwork;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
@@ -35,7 +35,6 @@ import android.app.UiAutomation;
 import android.content.Context;
 import android.net.IpPrefix;
 import android.net.LinkAddress;
-import android.net.TetheringInterface;
 import android.net.TetheringManager;
 import android.net.cts.util.CtsTetheringUtils;
 import android.net.cts.util.CtsTetheringUtils.TestTetheringEventCallback;
@@ -70,7 +69,7 @@ public class TetheringModuleTest {
     @Before
     public void setUp() throws Exception {
         mUiAutomation.adoptShellPermissionIdentity(MANAGE_TEST_NETWORKS, NETWORK_SETTINGS,
-                WRITE_SETTINGS, READ_DEVICE_CONFIG, TETHER_PRIVILEGED, ACCESS_WIFI_STATE);
+                WRITE_SETTINGS, READ_DEVICE_CONFIG, TETHER_PRIVILEGED);
         mContext = InstrumentationRegistry.getContext();
         mTm = mContext.getSystemService(TetheringManager.class);
         mCtsTetheringUtils = new CtsTetheringUtils(mContext);
@@ -101,14 +100,14 @@ public class TetheringModuleTest {
 
         TestNetworkTracker tnt = null;
         try {
-            tetherEventCallback.assumeWifiTetheringSupported(mContext);
-            tetherEventCallback.expectNoTetheringActive();
+            tetherEventCallback.assumeTetheringSupported();
+            assumeTrue(isWifiTetheringSupported(tetherEventCallback));
 
-            final TetheringInterface tetheredIface =
-                    mCtsTetheringUtils.startWifiTethering(tetherEventCallback);
+            mCtsTetheringUtils.startWifiTethering(tetherEventCallback);
 
-            assertNotNull(tetheredIface);
-            final String wifiTetheringIface = tetheredIface.getInterface();
+            final List<String> tetheredIfaces = tetherEventCallback.getTetheredInterfaces();
+            assertEquals(1, tetheredIfaces.size());
+            final String wifiTetheringIface = tetheredIfaces.get(0);
 
             NetworkInterface nif = NetworkInterface.getByName(wifiTetheringIface);
             // Tethering downstream only have one ipv4 address.
@@ -121,11 +120,11 @@ public class TetheringModuleTest {
             tnt = setUpTestNetwork(
                     new LinkAddress(testPrefix.getAddress(), testPrefix.getPrefixLength()));
 
-            tetherEventCallback.expectNoTetheringActive();
+            tetherEventCallback.expectTetheredInterfacesChanged(null);
             final List<String> wifiRegexs =
                     tetherEventCallback.getTetheringInterfaceRegexps().getTetherableWifiRegexs();
 
-            tetherEventCallback.expectTetheredInterfacesChanged(wifiRegexs, TETHERING_WIFI);
+            tetherEventCallback.expectTetheredInterfacesChanged(wifiRegexs);
             nif = NetworkInterface.getByName(wifiTetheringIface);
             final LinkAddress newHotspotAddr = getFirstIpv4Address(nif);
             assertNotNull(newHotspotAddr);

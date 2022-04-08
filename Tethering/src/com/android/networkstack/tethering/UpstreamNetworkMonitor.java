@@ -49,6 +49,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.StateMachine;
 import com.android.networkstack.apishim.ConnectivityManagerShimImpl;
 import com.android.networkstack.apishim.common.ConnectivityManagerShim;
+import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -135,7 +136,6 @@ public class UpstreamNetworkMonitor {
     private Network mDefaultInternetNetwork;
     // The current upstream network used for tethering.
     private Network mTetheringUpstreamNetwork;
-    private boolean mPreferTestNetworks;
 
     public UpstreamNetworkMonitor(Context ctx, StateMachine tgt, SharedLog log, int what) {
         mContext = ctx;
@@ -162,7 +162,12 @@ public class UpstreamNetworkMonitor {
         }
         ConnectivityManagerShim mCmShim = ConnectivityManagerShimImpl.newInstance(mContext);
         mDefaultNetworkCallback = new UpstreamNetworkCallback(CALLBACK_DEFAULT_INTERNET);
-        mCmShim.registerSystemDefaultNetworkCallback(mDefaultNetworkCallback, mHandler);
+        try {
+            mCmShim.registerSystemDefaultNetworkCallback(mDefaultNetworkCallback, mHandler);
+        } catch (UnsupportedApiLevelException e) {
+            Log.wtf(TAG, "registerSystemDefaultNetworkCallback is not supported");
+            return;
+        }
         if (mEntitlementMgr == null) {
             mEntitlementMgr = entitle;
         }
@@ -186,7 +191,7 @@ public class UpstreamNetworkMonitor {
      * check even tethering is not active yet.
      */
     public void stop() {
-        setTryCell(false);
+        releaseMobileNetworkRequest();
 
         releaseCallback(mListenAllCallback);
         mListenAllCallback = null;
@@ -326,11 +331,6 @@ public class UpstreamNetworkMonitor {
         final UpstreamNetworkState dfltState = (mDefaultInternetNetwork != null)
                 ? mNetworkMap.get(mDefaultInternetNetwork)
                 : null;
-        if (mPreferTestNetworks) {
-            final UpstreamNetworkState testState = findFirstTestNetwork(mNetworkMap.values());
-            if (testState != null) return testState;
-        }
-
         if (isNetworkUsableAndNotCellular(dfltState)) return dfltState;
 
         if (!isCellularUpstreamPermitted()) return null;
@@ -398,10 +398,10 @@ public class UpstreamNetworkMonitor {
             // notifications (e.g. matching more than one of our callbacks).
             //
             // Also, it can happen that onLinkPropertiesChanged is called after
-            // onLost removed the state from mNetworkMap. This is due to a bug
-            // in disconnectAndDestroyNetwork, which calls nai.clatd.update()
-            // after the onLost callbacks. This was fixed in S.
-            // TODO: make this method void when R is no longer supported.
+            // onLost removed the state from mNetworkMap. This appears to be due
+            // to a bug in disconnectAndDestroyNetwork, which calls
+            // nai.clatd.update() after the onLost callbacks.
+            // TODO: fix the bug and make this method void.
             return null;
         }
 
@@ -662,20 +662,6 @@ public class UpstreamNetworkMonitor {
         return null;
     }
 
-    static boolean isTestNetwork(UpstreamNetworkState ns) {
-        return ((ns != null) && (ns.networkCapabilities != null)
-                && ns.networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_TEST));
-    }
-
-    private UpstreamNetworkState findFirstTestNetwork(
-            Iterable<UpstreamNetworkState> netStates) {
-        for (UpstreamNetworkState ns : netStates) {
-            if (isTestNetwork(ns)) return ns;
-        }
-
-        return null;
-    }
-
     /**
      * Given a legacy type (TYPE_WIFI, ...) returns the corresponding NetworkCapabilities instance.
      * This function is used for deprecated legacy type and be disabled by default.
@@ -700,10 +686,5 @@ public class UpstreamNetworkMonitor {
             builder.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
         }
         return builder.build();
-    }
-
-    /** Set test network as preferred upstream. */
-    public void setPreferTestNetworks(boolean prefer) {
-        mPreferTestNetworks = prefer;
     }
 }

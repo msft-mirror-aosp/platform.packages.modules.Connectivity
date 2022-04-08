@@ -26,7 +26,5 @@ java_library {
         "compatibility-device-util-axt",
         "junit",
         "net-tests-utils",
-        "modules-utils-build",
-        "net-utils-framework-common",
     ],
 }

@@ -25,7 +25,6 @@ import android.os.ParcelFileDescriptor;
 import android.util.Log;
 
 import androidx.test.platform.app.InstrumentationRegistry;
-import androidx.test.uiautomator.UiDevice;
 
 import com.android.compatibility.common.util.OnFailureRule;
 
@@ -53,8 +52,7 @@ public class DumpOnFailureRule extends OnFailureRule {
         }
 
         prepareDumpRootDir();
-        final String shortenedTestName = getShortenedTestName(description);
-        final File dumpFile = new File(mDumpDir, "dump-" + shortenedTestName);
+        final File dumpFile = new File(mDumpDir, "dump-" + getShortenedTestName(description));
         Log.i(TAG, "Dumping debug info for " + description + ": " + dumpFile.getPath());
         try (FileOutputStream out = new FileOutputStream(dumpFile)) {
             for (String cmd : new String[] {
@@ -69,16 +67,6 @@ public class DumpOnFailureRule extends OnFailureRule {
             Log.e(TAG, "Error opening file: " + dumpFile, e);
         } catch (IOException e) {
             Log.e(TAG, "Error closing file: " + dumpFile, e);
-        }
-        final UiDevice uiDevice = UiDevice.getInstance(
-                InstrumentationRegistry.getInstrumentation());
-        final File screenshotFile = new File(mDumpDir, "sc-" + shortenedTestName + ".png");
-        uiDevice.takeScreenshot(screenshotFile);
-        final File windowHierarchyFile = new File(mDumpDir, "wh-" + shortenedTestName + ".xml");
-        try {
-            uiDevice.dumpWindowHierarchy(windowHierarchyFile);
-        } catch (IOException e) {
-            Log.e(TAG, "Error dumping window hierarchy", e);
         }
     }
 

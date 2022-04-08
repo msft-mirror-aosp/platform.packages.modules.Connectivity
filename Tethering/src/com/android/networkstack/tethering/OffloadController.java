@@ -26,9 +26,6 @@ import static android.net.NetworkStats.UID_TETHERING;
 import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED;
 import static android.provider.Settings.Global.TETHER_OFFLOAD_DISABLED;
 
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_0;
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_1;
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_NONE;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
 
 import android.annotation.NonNull;
@@ -42,6 +39,9 @@ import android.net.LinkProperties;
 import android.net.NetworkStats;
 import android.net.NetworkStats.Entry;
 import android.net.RouteInfo;
+import android.net.netlink.ConntrackMessage;
+import android.net.netlink.NetlinkConstants;
+import android.net.netlink.NetlinkSocket;
 import android.net.netstats.provider.NetworkStatsProvider;
 import android.net.util.SharedLog;
 import android.os.Handler;
@@ -53,9 +53,6 @@ import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.net.module.util.netlink.ConntrackMessage;
-import com.android.net.module.util.netlink.NetlinkConstants;
-import com.android.net.module.util.netlink.NetlinkSocket;
 import com.android.networkstack.tethering.OffloadHardwareInterface.ForwardedStats;
 
 import java.net.Inet4Address;
@@ -99,8 +96,7 @@ public class OffloadController {
     private final SharedLog mLog;
     private final HashMap<String, LinkProperties> mDownstreams;
     private boolean mConfigInitialized;
-    @OffloadHardwareInterface.OffloadHalVersion
-    private int mControlHalVersion;
+    private boolean mControlInitialized;
     private LinkProperties mUpstreamLinkProperties;
     // The complete set of offload-exempt prefixes passed in via Tethering from
     // all upstream and downstream sources.
@@ -116,42 +112,11 @@ public class OffloadController {
     private ConcurrentHashMap<String, ForwardedStats> mForwardedStats =
             new ConcurrentHashMap<>(16, 0.75F, 1);
 
-    private static class InterfaceQuota {
-        public final long warningBytes;
-        public final long limitBytes;
-
-        public static InterfaceQuota MAX_VALUE = new InterfaceQuota(Long.MAX_VALUE, Long.MAX_VALUE);
-
-        InterfaceQuota(long warningBytes, long limitBytes) {
-            this.warningBytes = warningBytes;
-            this.limitBytes = limitBytes;
-        }
-
-        @Override
-        public boolean equals(Object o) {
-            if (this == o) return true;
-            if (!(o instanceof InterfaceQuota)) return false;
-            InterfaceQuota that = (InterfaceQuota) o;
-            return warningBytes == that.warningBytes
-                    && limitBytes == that.limitBytes;
-        }
-
-        @Override
-        public int hashCode() {
-            return (int) (warningBytes * 3 + limitBytes * 5);
-        }
-
-        @Override
-        public String toString() {
-            return "InterfaceQuota{" + "warning=" + warningBytes + ", limit=" + limitBytes + '}';
-        }
-    }
-
     // Maps upstream interface names to interface quotas.
     // Always contains the latest value received from the framework for each interface, regardless
     // of whether offload is currently running (or is even supported) on that interface. Only
     // includes upstream interfaces that have a quota set.
-    private HashMap<String, InterfaceQuota> mInterfaceQuotas = new HashMap<>();
+    private HashMap<String, Long> mInterfaceQuotas = new HashMap<>();
 
     // Tracking remaining alert quota. Unlike limit quota is subject to interface, the alert
     // quota is interface independent and global for tether offload. Note that this is only
@@ -214,7 +179,7 @@ public class OffloadController {
             }
         }
 
-        mControlHalVersion = mHwInterface.initOffloadControl(
+        mControlInitialized = mHwInterface.initOffloadControl(
                 // OffloadHardwareInterface guarantees that these callback
                 // methods are called on the handler passed to it, which is the
                 // same as mHandler, as coordinated by the setup in Tethering.
@@ -283,18 +248,6 @@ public class OffloadController {
                     }
 
                     @Override
-                    public void onWarningReached() {
-                        if (!started()) return;
-                        mLog.log("onWarningReached");
-
-                        updateStatsForCurrentUpstream();
-                        if (mStatsProvider != null) {
-                            mStatsProvider.pushTetherStats();
-                            mStatsProvider.notifyWarningReached();
-                        }
-                    }
-
-                    @Override
                     public void onNatTimeoutUpdate(int proto,
                                                    String srcAddr, int srcPort,
                                                    String dstAddr, int dstPort) {
@@ -308,8 +261,7 @@ public class OffloadController {
             mLog.i("tethering offload control not supported");
             stop();
         } else {
-            mLog.log("tethering offload started, version: "
-                    + OffloadHardwareInterface.halVerToString(mControlHalVersion));
+            mLog.log("tethering offload started");
             mNatUpdateCallbacksReceived = 0;
             mNatUpdateNetlinkErrors = 0;
             maybeSchedulePollingStats();
@@ -326,7 +278,7 @@ public class OffloadController {
         updateStatsForCurrentUpstream();
         mUpstreamLinkProperties = null;
         mHwInterface.stopOffloadControl();
-        mControlHalVersion = OFFLOAD_HAL_VERSION_NONE;
+        mControlInitialized = false;
         mConfigInitialized = false;
         if (mHandler.hasCallbacks(mScheduledPollingTask)) {
             mHandler.removeCallbacks(mScheduledPollingTask);
@@ -335,7 +287,7 @@ public class OffloadController {
     }
 
     private boolean started() {
-        return mConfigInitialized && mControlHalVersion != OFFLOAD_HAL_VERSION_NONE;
+        return mConfigInitialized && mControlInitialized;
     }
 
     @VisibleForTesting
@@ -368,35 +320,24 @@ public class OffloadController {
 
         @Override
         public void onSetLimit(String iface, long quotaBytes) {
-            onSetWarningAndLimit(iface, QUOTA_UNLIMITED, quotaBytes);
-        }
-
-        @Override
-        public void onSetWarningAndLimit(@NonNull String iface,
-                long warningBytes, long limitBytes) {
             // Listen for all iface is necessary since upstream might be changed after limit
             // is set.
             mHandler.post(() -> {
-                final InterfaceQuota curIfaceQuota = mInterfaceQuotas.get(iface);
-                final InterfaceQuota newIfaceQuota = new InterfaceQuota(
-                        warningBytes == QUOTA_UNLIMITED ? Long.MAX_VALUE : warningBytes,
-                        limitBytes == QUOTA_UNLIMITED ? Long.MAX_VALUE : limitBytes);
+                final Long curIfaceQuota = mInterfaceQuotas.get(iface);
 
                 // If the quota is set to unlimited, the value set to HAL is Long.MAX_VALUE,
                 // which is ~8.4 x 10^6 TiB, no one can actually reach it. Thus, it is not
                 // useful to set it multiple times.
                 // Otherwise, the quota needs to be updated to tell HAL to re-count from now even
                 // if the quota is the same as the existing one.
-                if (null == curIfaceQuota && InterfaceQuota.MAX_VALUE.equals(newIfaceQuota)) {
-                    return;
-                }
+                if (null == curIfaceQuota && QUOTA_UNLIMITED == quotaBytes) return;
 
-                if (InterfaceQuota.MAX_VALUE.equals(newIfaceQuota)) {
+                if (quotaBytes == QUOTA_UNLIMITED) {
                     mInterfaceQuotas.remove(iface);
                 } else {
-                    mInterfaceQuotas.put(iface, newIfaceQuota);
+                    mInterfaceQuotas.put(iface, quotaBytes);
                 }
-                maybeUpdateDataWarningAndLimit(iface);
+                maybeUpdateDataLimit(iface);
             });
         }
 
@@ -431,11 +372,7 @@ public class OffloadController {
 
         @Override
         public void onSetAlert(long quotaBytes) {
-            // Ignore set alert calls from HAL V1.1 since the hardware supports set warning now.
-            // Thus, the software polling mechanism is not needed.
-            if (!useStatsPolling()) {
-                return;
-            }
+            // TODO: Ask offload HAL to notify alert without stopping traffic.
             // Post it to handler thread since it access remaining quota bytes.
             mHandler.post(() -> {
                 updateAlertQuota(quotaBytes);
@@ -520,32 +457,24 @@ public class OffloadController {
 
     private boolean isPollingStatsNeeded() {
         return started() && mRemainingAlertQuota > 0
-                && useStatsPolling()
                 && !TextUtils.isEmpty(currentUpstreamInterface())
                 && mDeps.getTetherConfig() != null
                 && mDeps.getTetherConfig().getOffloadPollInterval()
                 >= DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
     }
 
-    private boolean useStatsPolling() {
-        return mControlHalVersion == OFFLOAD_HAL_VERSION_1_0;
-    }
-
-    private boolean maybeUpdateDataWarningAndLimit(String iface) {
-        // setDataLimit or setDataWarningAndLimit may only be called while offload is occurring
-        // on this upstream.
+    private boolean maybeUpdateDataLimit(String iface) {
+        // setDataLimit may only be called while offload is occurring on this upstream.
         if (!started() || !TextUtils.equals(iface, currentUpstreamInterface())) {
             return true;
         }
 
-        final InterfaceQuota quota = mInterfaceQuotas.getOrDefault(iface, InterfaceQuota.MAX_VALUE);
-        final boolean ret;
-        if (mControlHalVersion >= OFFLOAD_HAL_VERSION_1_1) {
-            ret = mHwInterface.setDataWarningAndLimit(iface, quota.warningBytes, quota.limitBytes);
-        } else {
-            ret = mHwInterface.setDataLimit(iface, quota.limitBytes);
+        Long limit = mInterfaceQuotas.get(iface);
+        if (limit == null) {
+            limit = Long.MAX_VALUE;
         }
-        return ret;
+
+        return mHwInterface.setDataLimit(iface, limit);
     }
 
     private void updateStatsForCurrentUpstream() {
@@ -699,7 +628,7 @@ public class OffloadController {
         maybeUpdateStats(prevUpstream);
 
         // Data limits can only be set once offload is running on the upstream.
-        success = maybeUpdateDataWarningAndLimit(iface);
+        success = maybeUpdateDataLimit(iface);
         if (!success) {
             // If we failed to set a data limit, don't use this upstream, because we don't want to
             // blow through the data limit that we were told to apply.
@@ -767,8 +696,6 @@ public class OffloadController {
         }
         final boolean isStarted = started();
         pw.println("Offload HALs " + (isStarted ? "started" : "not started"));
-        pw.println("Offload Control HAL version: "
-                + OffloadHardwareInterface.halVerToString(mControlHalVersion));
         LinkProperties lp = mUpstreamLinkProperties;
         String upstream = (lp != null) ? lp.getInterfaceName() : null;
         pw.println("Current upstream: " + upstream);

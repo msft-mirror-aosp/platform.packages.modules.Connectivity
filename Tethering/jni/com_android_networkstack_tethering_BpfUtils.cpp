@@ -44,36 +44,37 @@ namespace android {
 const uint16_t NETLINK_REQUEST_FLAGS = NLM_F_REQUEST | NLM_F_ACK;
 const sockaddr_nl KERNEL_NLADDR = {AF_NETLINK, 0, 0, 0};
 
-static void throwIOException(JNIEnv *env, const char* msg, int error) {
-    jniThrowExceptionFmt(env, "java/io/IOException", "%s: %s", msg, strerror(error));
-}
-
 // TODO: move to frameworks/libs/net/common/native for sharing with
 // system/netd/server/OffloadUtils.{c, h}.
 static void sendAndProcessNetlinkResponse(JNIEnv* env, const void* req, int len) {
     int fd = socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE);  // TODO: use unique_fd
     if (fd == -1) {
-        throwIOException(env, "socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE)", errno);
+        jniThrowExceptionFmt(env, "java/io/IOException",
+                             "socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_ROUTE): %s",
+                             strerror(errno));
         return;
     }
 
     static constexpr int on = 1;
     if (setsockopt(fd, SOL_NETLINK, NETLINK_CAP_ACK, &on, sizeof(on))) {
-        throwIOException(env, "setsockopt(fd, SOL_NETLINK, NETLINK_CAP_ACK, 1)", errno);
+        jniThrowExceptionFmt(env, "java/io/IOException",
+                             "setsockopt(fd, SOL_NETLINK, NETLINK_CAP_ACK, %d)", on);
         close(fd);
         return;
     }
 
     // this is needed to get valid strace netlink parsing, it allocates the pid
     if (bind(fd, (const struct sockaddr*)&KERNEL_NLADDR, sizeof(KERNEL_NLADDR))) {
-        throwIOException(env, "bind(fd, {AF_NETLINK, 0, 0})", errno);
+        jniThrowExceptionFmt(env, "java/io/IOException", "bind(fd, {AF_NETLINK, 0, 0}): %s",
+                             strerror(errno));
         close(fd);
         return;
     }
 
     // we do not want to receive messages from anyone besides the kernel
     if (connect(fd, (const struct sockaddr*)&KERNEL_NLADDR, sizeof(KERNEL_NLADDR))) {
-        throwIOException(env, "connect(fd, {AF_NETLINK, 0, 0})", errno);
+        jniThrowExceptionFmt(env, "java/io/IOException", "connect(fd, {AF_NETLINK, 0, 0}): %s",
+                             strerror(errno));
         close(fd);
         return;
     }
@@ -81,13 +82,15 @@ static void sendAndProcessNetlinkResponse(JNIEnv* env, const void* req, int len)
     int rv = send(fd, req, len, 0);
 
     if (rv == -1) {
-        throwIOException(env, "send(fd, req, len, 0)", errno);
+        jniThrowExceptionFmt(env, "java/io/IOException", "send(fd, req, len, 0): %s",
+                             strerror(errno));
         close(fd);
         return;
     }
 
     if (rv != len) {
-        throwIOException(env, "send(fd, req, len, 0)", EMSGSIZE);
+        jniThrowExceptionFmt(env, "java/io/IOException", "send(fd, req, len, 0): %s",
+                             strerror(EMSGSIZE));
         close(fd);
         return;
     }
@@ -101,7 +104,7 @@ static void sendAndProcessNetlinkResponse(JNIEnv* env, const void* req, int len)
     rv = recv(fd, &resp, sizeof(resp), MSG_TRUNC);
 
     if (rv == -1) {
-        throwIOException(env, "recv() failed", errno);
+        jniThrowExceptionFmt(env, "java/io/IOException", "recv() failed: %s", strerror(errno));
         close(fd);
         return;
     }
@@ -128,7 +131,8 @@ static void sendAndProcessNetlinkResponse(JNIEnv* env, const void* req, int len)
     }
 
     if (resp.e.error) {  // returns 0 on success
-        throwIOException(env, "NLMSG_ERROR message return error", -resp.e.error);
+        jniThrowExceptionFmt(env, "java/io/IOException", "NLMSG_ERROR message return error: %s",
+                             strerror(-resp.e.error));
     }
     close(fd);
     return;
@@ -179,7 +183,7 @@ static jboolean com_android_networkstack_tethering_BpfUtils_isEthernet(JNIEnv* e
             return false;
         default:
             jniThrowExceptionFmt(env, "java/io/IOException",
-                                 "Unknown hardware address type %d on interface %s", rv,
+                                 "Unknown hardware address type %s on interface %s", rv,
                                  interface.c_str());
             return false;
     }
@@ -194,7 +198,8 @@ static void com_android_networkstack_tethering_BpfUtils_tcFilterAddDevBpf(
 
     const int bpfFd = bpf::retrieveProgram(pathname.c_str());
     if (bpfFd == -1) {
-        throwIOException(env, "retrieveProgram failed", errno);
+        jniThrowExceptionFmt(env, "java/io/IOException", "retrieveProgram failed %s",
+                             strerror(errno));
         return;
     }
 

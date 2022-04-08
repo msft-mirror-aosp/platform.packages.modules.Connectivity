@@ -31,7 +31,6 @@ import android.net.InetAddresses;
 import android.net.MacAddress;
 import android.net.util.InterfaceParams;
 import android.net.util.TetheringUtils;
-import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -39,9 +38,8 @@ import android.os.Looper;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
+import androidx.test.runner.AndroidJUnit4;
 
-import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
-import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.TapPacketReader;
 import com.android.testutils.TapPacketReaderRule;
 
@@ -56,8 +54,7 @@ import org.mockito.MockitoAnnotations;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 
-@RunWith(DevSdkIgnoreRunner.class)
-@IgnoreUpTo(Build.VERSION_CODES.R)
+@RunWith(AndroidJUnit4.class)
 @SmallTest
 public class DadProxyTest {
     private static final int DATA_BUFFER_LEN = 4096;

@@ -17,7 +17,6 @@
 package com.android.cts.net;
 
 import android.platform.test.annotations.FlakyTest;
-import android.platform.test.annotations.SecurityTest;
 
 import com.android.ddmlib.Log;
 import com.android.tradefed.device.DeviceNotAvailableException;
@@ -37,12 +36,6 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
         super.tearDown();
 
         uninstallPackage(TEST_APP2_PKG, true);
-    }
-
-    @SecurityTest
-    public void testDataWarningReceiver() throws Exception {
-        runDeviceTests(TEST_PKG, TEST_PKG + ".DataWarningReceiverTest",
-                "testSnoozeWarningNotReceived");
     }
 
     /**************************
@@ -325,21 +318,9 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
     /**************************
      * Restricted mode tests. *
      **************************/
-    public void testNetworkAccess_restrictedMode() throws Exception {
+    public void testRestrictedMode_networkAccess() throws Exception {
         runDeviceTests(TEST_PKG, TEST_PKG + ".RestrictedModeTest",
                 "testNetworkAccess");
-    }
-
-    /************************
-     * Expedited job tests. *
-     ************************/
-
-    public void testMeteredNetworkAccess_expeditedJob() throws Exception {
-        runDeviceTests(TEST_PKG, TEST_PKG + ".ExpeditedJobMeteredTest");
-    }
-
-    public void testNonMeteredNetworkAccess_expeditedJob() throws Exception {
-        runDeviceTests(TEST_PKG, TEST_PKG + ".ExpeditedJobNonMeteredTest");
     }
 
     /*******************

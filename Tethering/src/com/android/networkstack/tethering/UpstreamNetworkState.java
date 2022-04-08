@@ -15,8 +15,6 @@
  */
 package com.android.networkstack.tethering;
 
-import static android.net.INetd.IPSEC_INTERFACE_PREFIX;
-
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -49,10 +47,5 @@ public class UpstreamNetworkState {
                 network == null ? "null" : network,
                 networkCapabilities == null ? "null" : networkCapabilities,
                 linkProperties == null ? "null" : linkProperties);
-    }
-
-    /** Check whether the interface is VCN. */
-    public static boolean isVcnInterface(@NonNull String iface) {
-        return iface.startsWith(IPSEC_INTERFACE_PREFIX);
     }
 }
