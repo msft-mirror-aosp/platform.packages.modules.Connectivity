@@ -34,6 +34,9 @@ import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_MASK;
 import static android.net.ConnectivityManager.BLOCKED_REASON_LOCKDOWN_VPN;
 import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
+import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DEFAULT;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
 import static android.net.ConnectivityManager.TYPE_ETHERNET;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
@@ -2235,6 +2238,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 callingAttributionTag);
     }
 
+    private void redactUnderlyingNetworksForCapabilities(NetworkCapabilities nc, int pid, int uid) {
+        if (nc.getUnderlyingNetworks() != null
+                && !checkNetworkFactoryOrSettingsPermission(pid, uid)) {
+            nc.setUnderlyingNetworks(null);
+        }
+    }
+
     @VisibleForTesting
     NetworkCapabilities networkCapabilitiesRestrictedForCallerPermissions(
             NetworkCapabilities nc, int callerPid, int callerUid) {
@@ -2247,8 +2257,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (!checkSettingsPermission(callerPid, callerUid)) {
             newNc.setUids(null);
             newNc.setSSID(null);
-            // TODO: Processes holding NETWORK_FACTORY should be able to see the underlying networks
-            newNc.setUnderlyingNetworks(null);
         }
         if (newNc.getNetworkSpecifier() != null) {
             newNc.setNetworkSpecifier(newNc.getNetworkSpecifier().redact());
@@ -2262,6 +2270,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             newNc.setAllowedUids(new ArraySet<>());
             newNc.setSubscriptionIds(Collections.emptySet());
         }
+        redactUnderlyingNetworksForCapabilities(newNc, callerPid, callerUid);
 
         return newNc;
     }
@@ -2855,12 +2864,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceNetworkFactoryPermission() {
+        // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
+        if (getCallingUid() == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
     private void enforceNetworkFactoryOrSettingsPermission() {
+        // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
+        if (getCallingUid() == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_SETTINGS,
                 android.Manifest.permission.NETWORK_FACTORY,
@@ -2868,10 +2881,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceNetworkFactoryOrTestNetworksPermission() {
+        // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
+        if (getCallingUid() == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
+    }
+
+    private boolean checkNetworkFactoryOrSettingsPermission(int pid, int uid) {
+        return PERMISSION_GRANTED == mContext.checkPermission(
+                android.Manifest.permission.NETWORK_FACTORY, pid, uid)
+                || PERMISSION_GRANTED == mContext.checkPermission(
+                android.Manifest.permission.NETWORK_SETTINGS, pid, uid)
+                || PERMISSION_GRANTED == mContext.checkPermission(
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, pid, uid)
+                || uid == Process.BLUETOOTH_UID;
     }
 
     private boolean checkSettingsPermission() {
@@ -3648,7 +3673,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     }
                     break;
                 }
-                case NetworkAgent.EVENT_DESTROY_AND_AWAIT_REPLACEMENT: {
+                case NetworkAgent.EVENT_UNREGISTER_AFTER_REPLACEMENT: {
                     // If nai is not yet created, or is already destroyed, ignore.
                     if (!shouldDestroyNativeNetwork(nai)) break;
 
@@ -4213,7 +4238,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean shouldIgnoreValidationFailureAfterRoam(NetworkAgentInfo nai) {
-        // T+ devices should use destroyAndAwaitReplacement.
+        // T+ devices should use unregisterAfterReplacement.
         if (SdkLevel.isAtLeastT()) return false;
         final long blockTimeOut = Long.valueOf(mResources.get().getInteger(
                 R.integer.config_validationFailureAfterRoamIgnoreTimeMillis));
@@ -11218,15 +11243,41 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     @Override
-    public void updateFirewallRule(final int chain, final int uid, final boolean allow) {
+    public void setUidFirewallRule(final int chain, final int uid, final int rule) {
         enforceNetworkStackOrSettingsPermission();
 
+        // There are only two type of firewall rule: FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
+        int firewallRule = getFirewallRuleType(chain, rule);
+
+        if (firewallRule != FIREWALL_RULE_ALLOW && firewallRule != FIREWALL_RULE_DENY) {
+            throw new IllegalArgumentException("setUidFirewallRule with invalid rule: " + rule);
+        }
+
         try {
-            mBpfNetMaps.setUidRule(chain, uid,
-                    allow ? INetd.FIREWALL_RULE_ALLOW : INetd.FIREWALL_RULE_DENY);
+            mBpfNetMaps.setUidRule(chain, uid, firewallRule);
         } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private int getFirewallRuleType(int chain, int rule) {
+        final int defaultRule;
+        switch (chain) {
+            case ConnectivityManager.FIREWALL_CHAIN_STANDBY:
+                defaultRule = FIREWALL_RULE_ALLOW;
+                break;
+            case ConnectivityManager.FIREWALL_CHAIN_DOZABLE:
+            case ConnectivityManager.FIREWALL_CHAIN_POWERSAVE:
+            case ConnectivityManager.FIREWALL_CHAIN_RESTRICTED:
+            case ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY:
+                defaultRule = FIREWALL_RULE_DENY;
+                break;
+            default:
+                throw new IllegalArgumentException("Unsupported firewall chain: " + chain);
+        }
+        if (rule == FIREWALL_RULE_DEFAULT) rule = defaultRule;
+
+        return rule;
     }
 
     @Override
