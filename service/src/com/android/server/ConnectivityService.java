@@ -3645,7 +3645,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     }
                     break;
                 }
-                case NetworkAgent.EVENT_DESTROY_AND_AWAIT_REPLACEMENT: {
+                case NetworkAgent.EVENT_UNREGISTER_AFTER_REPLACEMENT: {
                     // If nai is not yet created, or is already destroyed, ignore.
                     if (!shouldDestroyNativeNetwork(nai)) break;
 
@@ -4210,7 +4210,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean shouldIgnoreValidationFailureAfterRoam(NetworkAgentInfo nai) {
-        // T+ devices should use destroyAndAwaitReplacement.
+        // T+ devices should use unregisterAfterReplacement.
         if (SdkLevel.isAtLeastT()) return false;
         final long blockTimeOut = Long.valueOf(mResources.get().getInteger(
                 R.integer.config_validationFailureAfterRoamIgnoreTimeMillis));
