@@ -30,6 +30,7 @@ import static com.android.testutils.TestableNetworkCallbackKt.anyNetwork;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
@@ -54,15 +55,20 @@ import android.net.ipsec.ike.IkeTunnelConnectionParams;
 import android.os.Build;
 import android.os.Process;
 import android.platform.test.annotations.AppModeFull;
+import android.text.TextUtils;
 
 import androidx.test.InstrumentationRegistry;
 
 import com.android.internal.util.HexDump;
+import com.android.networkstack.apishim.ConstantsShim;
 import com.android.networkstack.apishim.Ikev2VpnProfileBuilderShimImpl;
 import com.android.networkstack.apishim.Ikev2VpnProfileShimImpl;
+import com.android.networkstack.apishim.VpnManagerShimImpl;
 import com.android.networkstack.apishim.common.Ikev2VpnProfileBuilderShim;
 import com.android.networkstack.apishim.common.Ikev2VpnProfileShim;
 import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
+import com.android.networkstack.apishim.common.VpnManagerShim;
+import com.android.networkstack.apishim.common.VpnProfileStateShim;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRunner;
@@ -93,8 +99,10 @@ import javax.security.auth.x500.X500Principal;
 @AppModeFull(reason = "Appops state changes disallowed for instant apps (OP_ACTIVATE_PLATFORM_VPN)")
 public class Ikev2VpnTest {
     private static final String TAG = Ikev2VpnTest.class.getSimpleName();
+
     @Rule
     public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
+
     // Test vectors for IKE negotiation in test mode.
     private static final String SUCCESSFUL_IKE_INIT_RESP_V4 =
             "46b8eca1e0d72a18b2b5d9006d47a0022120222000000000000002d0220000300000002c01010004030000"
@@ -183,6 +191,8 @@ public class Ikev2VpnTest {
             (VpnManager) sContext.getSystemService(Context.VPN_MANAGEMENT_SERVICE);
     private static final CtsNetUtils mCtsNetUtils = new CtsNetUtils(sContext);
     private static final long TIMEOUT_MS = 15_000;
+
+    private VpnManagerShim mVmShim = VpnManagerShimImpl.newInstance(sContext);
 
     private final X509Certificate mServerRootCa;
     private final CertificateAndKey mUserCertKey;
@@ -457,7 +467,7 @@ public class Ikev2VpnTest {
     }
 
     private void checkStartStopVpnProfileBuildsNetworks(@NonNull IkeTunUtils tunUtils,
-            boolean testIpv6, boolean requiresValidation)
+            boolean testIpv6, boolean requiresValidation, boolean testSessionKey)
             throws Exception {
         String serverAddr = testIpv6 ? TEST_SERVER_ADDR_V6 : TEST_SERVER_ADDR_V4;
         String initResp = testIpv6 ? SUCCESSFUL_IKE_INIT_RESP_V6 : SUCCESSFUL_IKE_INIT_RESP_V4;
@@ -476,7 +486,20 @@ public class Ikev2VpnTest {
                 .clearCapabilities().addTransportType(TRANSPORT_VPN).build();
         sCM.registerNetworkCallback(nr, cb);
 
-        sVpnMgr.startProvisionedVpnProfile();
+        if (testSessionKey) {
+            // testSessionKey will never be true if running on <T
+            // startProvisionedVpnProfileSession() should return a non-null & non-empty random UUID.
+            final String sessionId = mVmShim.startProvisionedVpnProfileSession();
+            assertFalse(TextUtils.isEmpty(sessionId));
+            final VpnProfileStateShim profileState = mVmShim.getProvisionedVpnProfileState();
+            assertNotNull(profileState);
+            assertEquals(ConstantsShim.VPN_PROFILE_STATE_CONNECTING, profileState.getState());
+            assertEquals(sessionId, profileState.getSessionId());
+            assertFalse(profileState.isAlwaysOn());
+            assertFalse(profileState.isLockdownEnabled());
+        } else {
+            sVpnMgr.startProvisionedVpnProfile();
+        }
 
         // Inject IKE negotiation
         int expectedMsgId = 0;
@@ -488,6 +511,14 @@ public class Ikev2VpnTest {
         // Verify the VPN network came up
         final Network vpnNetwork = cb.expectCallback(CallbackEntry.AVAILABLE, anyNetwork())
                 .getNetwork();
+
+        if (testSessionKey) {
+            final VpnProfileStateShim profileState = mVmShim.getProvisionedVpnProfileState();
+            assertNotNull(profileState);
+            assertEquals(ConstantsShim.VPN_PROFILE_STATE_CONNECTED, profileState.getState());
+            assertFalse(profileState.isAlwaysOn());
+            assertFalse(profileState.isLockdownEnabled());
+        }
 
         cb.expectCapabilitiesThat(vpnNetwork, TIMEOUT_MS, caps -> caps.hasTransport(TRANSPORT_VPN)
                 && caps.hasCapability(NET_CAPABILITY_INTERNET)
@@ -519,16 +550,20 @@ public class Ikev2VpnTest {
     private class VerifyStartStopVpnProfileTest implements TestNetworkRunnable.Test {
         private final boolean mTestIpv6Only;
         private final boolean mRequiresValidation;
+        private final boolean mTestSessionKey;
 
         /**
          * Constructs the test
          *
          * @param testIpv6Only if true, builds a IPv6-only test; otherwise builds a IPv4-only test
          * @param requiresValidation whether this VPN should request platform validation
+         * @param testSessionKey if true, start VPN by calling startProvisionedVpnProfileSession()
          */
-        VerifyStartStopVpnProfileTest(boolean testIpv6Only, boolean requiresValidation) {
+        VerifyStartStopVpnProfileTest(boolean testIpv6Only, boolean requiresValidation,
+                boolean testSessionKey) {
             mTestIpv6Only = testIpv6Only;
             mRequiresValidation = requiresValidation;
+            mTestSessionKey = testSessionKey;
         }
 
         @Override
@@ -537,7 +572,7 @@ public class Ikev2VpnTest {
             final IkeTunUtils tunUtils = new IkeTunUtils(testIface.getFileDescriptor());
 
             checkStartStopVpnProfileBuildsNetworks(
-                    tunUtils, mTestIpv6Only, mRequiresValidation);
+                    tunUtils, mTestIpv6Only, mRequiresValidation, mTestSessionKey);
         }
 
         @Override
@@ -561,10 +596,14 @@ public class Ikev2VpnTest {
 
         // Requires shell permission to update appops.
         runWithShellPermissionIdentity(
-                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(false, false)));
+                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(
+                        false /* testIpv6Only */, false /* requiresValidation */,
+                        false /* testSessionKey */)));
 
         runWithShellPermissionIdentity(
-                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(false, true)));
+                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(
+                        false /* testIpv6Only */, true /* requiresValidation */,
+                        false /* testSessionKey */)));
     }
 
     @Test
@@ -573,9 +612,31 @@ public class Ikev2VpnTest {
 
         // Requires shell permission to update appops.
         runWithShellPermissionIdentity(
-                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(true, false)));
+                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(
+                        true /* testIpv6Only */, false /* requiresValidation */,
+                        false /* testSessionKey */)));
         runWithShellPermissionIdentity(
-                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(true, true)));
+                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(
+                        true /* testIpv6Only */, true /* requiresValidation */,
+                        false /* testSessionKey */)));
+    }
+
+    @IgnoreUpTo(SC_V2)
+    @Test
+    public void testStartProvisionedVpnProfileSession() throws Exception {
+        assumeTrue(mCtsNetUtils.hasIpsecTunnelsFeature());
+        assumeTrue(TestUtils.shouldTestTApis());
+
+        // Requires shell permission to update appops.
+        runWithShellPermissionIdentity(
+                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(
+                        false /* testIpv6Only */, false /* requiresValidation */,
+                        true /* testSessionKey */)));
+
+        runWithShellPermissionIdentity(
+                new TestNetworkRunnable(new VerifyStartStopVpnProfileTest(
+                        true /* testIpv6Only */, false /* requiresValidation */,
+                        true /* testSessionKey */)));
     }
 
     private static class CertificateAndKey {
