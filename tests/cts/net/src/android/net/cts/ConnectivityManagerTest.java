@@ -151,6 +151,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.os.Process;
+import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.UserHandle;
@@ -590,8 +591,9 @@ public class ConnectivityManagerTest {
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
+    @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
-    public void testRedactLinkPropertiesForPackage() throws Exception {
+    public void testGetRedactedLinkPropertiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
                 List.of(), /* requiredPermissions */
                 List.of(ACCESS_NETWORK_STATE) /* forbiddenPermissions */);
@@ -628,54 +630,58 @@ public class ConnectivityManagerTest {
         // No matter what the given uid is, a SecurityException will be thrown if the caller
         // doesn't hold the NETWORK_SETTINGS permission.
         assertThrows(SecurityException.class,
-                () -> mCm.redactLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
+                () -> mCm.getRedactedLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
         assertThrows(SecurityException.class,
-                () -> mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg));
+                () -> mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg));
         assertThrows(SecurityException.class,
-                () -> mCm.redactLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg));
+                () -> mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg));
 
         runAsShell(NETWORK_SETTINGS, () -> {
             // No matter what the given uid is, if the given LinkProperties is null, then
             // NullPointerException will be thrown.
             assertThrows(NullPointerException.class,
-                    () -> mCm.redactLinkPropertiesForPackage(null, groundedUid, groundedPkg));
+                    () -> mCm.getRedactedLinkPropertiesForPackage(null, groundedUid, groundedPkg));
             assertThrows(NullPointerException.class,
-                    () -> mCm.redactLinkPropertiesForPackage(null, normalUid, normalPkg));
+                    () -> mCm.getRedactedLinkPropertiesForPackage(null, normalUid, normalPkg));
             assertThrows(NullPointerException.class,
-                    () -> mCm.redactLinkPropertiesForPackage(null, privilegedUid, privilegedPkg));
+                    () -> mCm.getRedactedLinkPropertiesForPackage(
+                            null, privilegedUid, privilegedPkg));
 
             // Make sure null is returned for a UID without ACCESS_NETWORK_STATE.
-            assertNull(mCm.redactLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
+            assertNull(mCm.getRedactedLinkPropertiesForPackage(lp, groundedUid, groundedPkg));
 
             // CaptivePortalApiUrl & CaptivePortalData will be set to null if given uid doesn't hold
             // the NETWORK_SETTINGS permission.
-            assertNull(mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg)
+            assertNull(mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg)
                     .getCaptivePortalApiUrl());
-            assertNull(mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg)
+            assertNull(mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg)
                     .getCaptivePortalData());
             // MTU is not sensitive and is not redacted.
-            assertEquals(mtu, mCm.redactLinkPropertiesForPackage(lp, normalUid, normalPkg)
+            assertEquals(mtu, mCm.getRedactedLinkPropertiesForPackage(lp, normalUid, normalPkg)
                     .getMtu());
 
             // CaptivePortalApiUrl & CaptivePortalData will be preserved if the given uid holds the
             // NETWORK_SETTINGS permission.
-            assertEquals(capportUrl,
-                    mCm.redactLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
+            assertNotNull(lp.getCaptivePortalApiUrl());
+            assertNotNull(lp.getCaptivePortalData());
+            assertEquals(lp.getCaptivePortalApiUrl(),
+                    mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalApiUrl());
-            assertEquals(capportData,
-                    mCm.redactLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
+            assertEquals(lp.getCaptivePortalData(),
+                    mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalData());
         });
     }
 
     private NetworkCapabilities redactNc(@NonNull final NetworkCapabilities nc, int uid,
             @NonNull String packageName) {
-        return mCm.redactNetworkCapabilitiesForPackage(nc, uid, packageName);
+        return mCm.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName);
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
+    @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
-    public void testRedactNetworkCapabilitiesForPackage() throws Exception {
+    public void testGetRedactedNetworkCapabilitiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
                 List.of(), /* requiredPermissions */
                 List.of(ACCESS_NETWORK_STATE) /* forbiddenPermissions */);
@@ -884,9 +890,21 @@ public class ConnectivityManagerTest {
         //
         // Note that this test this will still fail in instant mode if a device supports Ethernet
         // via other hardware means. We are not currently aware of any such device.
-        return (mContext.getSystemService(Context.ETHERNET_SERVICE) != null) ||
-            mPackageManager.hasSystemFeature(FEATURE_ETHERNET) ||
-            mPackageManager.hasSystemFeature(FEATURE_USB_HOST);
+        return hasEthernetService()
+                || mPackageManager.hasSystemFeature(FEATURE_ETHERNET)
+                || mPackageManager.hasSystemFeature(FEATURE_USB_HOST);
+    }
+
+    private boolean hasEthernetService() {
+        // On Q creating EthernetManager from a thread that does not have a looper (like the test
+        // thread) crashes because it tried to use Looper.myLooper() through the default Handler
+        // constructor to run onAvailabilityChanged callbacks. Use ServiceManager to check whether
+        // the service exists instead.
+        // TODO: remove once Q is no longer supported in MTS, as ServiceManager is hidden API
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
+            return ServiceManager.getService(Context.ETHERNET_SERVICE) != null;
+        }
+        return mContext.getSystemService(Context.ETHERNET_SERVICE) != null;
     }
 
     private boolean shouldBeSupported(int networkType) {
