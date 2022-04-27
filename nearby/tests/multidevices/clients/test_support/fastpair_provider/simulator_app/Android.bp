@@ -16,9 +16,21 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// Build and install NearbyFastPairProviderSimulatorApp to your phone:
+// m NearbyFastPairProviderSimulatorApp
+// adb root
+// adb remount && adb reboot (make first time remount work)
+//
+// adb root
+// adb remount
+// adb push ${ANDROID_PRODUCT_OUT}/system/app/NearbyFastPairProviderSimulatorApp /system/app/
+// adb reboot
+// Grant all permissions requested to NearbyFastPairProviderSimulatorApp before launching it.
 android_app {
     name: "NearbyFastPairProviderSimulatorApp",
     sdk_version: "test_current",
+    // Sign with "platform" certificate for accessing Bluetooth @SystemAPI
+    certificate: "platform",
     static_libs: ["NearbyFastPairProviderSimulatorLib"],
     optimize: {
         enabled: true,
@@ -30,16 +42,16 @@ android_app {
 android_library {
     name: "NearbyFastPairProviderSimulatorLib",
     sdk_version: "test_current",
-        srcs: [
-            "src/**/*.java",
-            "src/**/*.kt",
-        ],
-        static_libs: [
-            "NearbyFastPairProviderLib",
-            "NearbyFastPairProviderLiteProtos",
-            "NearbyFastPairProviderSimulatorLiteProtos",
-            "androidx.annotation_annotation",
-            "error_prone_annotations",
-            "fast-pair-lite-protos",
-        ],
+    srcs: [
+        "src/**/*.java",
+        "src/**/*.kt",
+    ],
+    static_libs: [
+        "NearbyFastPairProviderLib",
+        "NearbyFastPairProviderLiteProtos",
+        "NearbyFastPairProviderSimulatorLiteProtos",
+        "androidx.annotation_annotation",
+        "error_prone_annotations",
+        "fast-pair-lite-protos",
+    ],
 }
