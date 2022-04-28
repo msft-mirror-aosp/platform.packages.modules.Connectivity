@@ -25,12 +25,11 @@ import static com.android.internal.annotations.VisibleForTesting.Visibility.PACK
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
-import android.content.res.Resources;
 import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.IEthernetServiceListener;
-import android.net.INetworkInterfaceOutcomeReceiver;
 import android.net.INetd;
+import android.net.INetworkInterfaceOutcomeReceiver;
 import android.net.ITetheredInterfaceCallback;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpConfiguration;
@@ -57,6 +56,7 @@ import com.android.net.module.util.PermissionUtils;
 import java.io.FileDescriptor;
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -85,7 +85,6 @@ public class EthernetTracker {
     private static final boolean DBG = EthernetNetworkFactory.DBG;
 
     private static final String TEST_IFACE_REGEXP = TEST_TAP_PREFIX + "\\d+";
-    private static final String LEGACY_IFACE_REGEXP = "eth\\d";
 
     /**
      * Interface names we track. This is a product-dependent regular expression, plus,
@@ -134,48 +133,16 @@ public class EthernetTracker {
     }
 
     public static class Dependencies {
-        // TODO: remove legacy resource fallback after migrating its overlays.
-        private String getPlatformRegexResource(Context context) {
-            final Resources r = context.getResources();
-            final int resId =
-                r.getIdentifier("config_ethernet_iface_regex", "string", context.getPackageName());
-            return r.getString(resId);
-        }
-
-        // TODO: remove legacy resource fallback after migrating its overlays.
-        private String[] getPlatformInterfaceConfigs(Context context) {
-            final Resources r = context.getResources();
-            final int resId = r.getIdentifier("config_ethernet_interfaces", "array",
-                    context.getPackageName());
-            return r.getStringArray(resId);
-        }
-
         public String getInterfaceRegexFromResource(Context context) {
-            final String platformRegex = getPlatformRegexResource(context);
-            final String match;
-            if (!LEGACY_IFACE_REGEXP.equals(platformRegex)) {
-                // Platform resource is not the historical default: use the overlay
-                match = platformRegex;
-            } else {
-                final ConnectivityResources resources = new ConnectivityResources(context);
-                match = resources.get().getString(
-                        com.android.connectivity.resources.R.string.config_ethernet_iface_regex);
-            }
-            return match;
+            final ConnectivityResources resources = new ConnectivityResources(context);
+            return resources.get().getString(
+                    com.android.connectivity.resources.R.string.config_ethernet_iface_regex);
         }
 
         public String[] getInterfaceConfigFromResource(Context context) {
-            final String[] platformInterfaceConfigs = getPlatformInterfaceConfigs(context);
-            final String[] interfaceConfigs;
-            if (platformInterfaceConfigs.length != 0) {
-                // Platform resource is not the historical default: use the overlay
-                interfaceConfigs = platformInterfaceConfigs;
-            } else {
-                final ConnectivityResources resources = new ConnectivityResources(context);
-                interfaceConfigs = resources.get().getStringArray(
-                        com.android.connectivity.resources.R.array.config_ethernet_interfaces);
-            }
-            return interfaceConfigs;
+            final ConnectivityResources resources = new ConnectivityResources(context);
+            return resources.get().getStringArray(
+                    com.android.connectivity.resources.R.array.config_ethernet_interfaces);
         }
     }
 
@@ -390,8 +357,31 @@ public class EthernetTracker {
         mHandler.post(() -> {
             mIncludeTestInterfaces = include;
             updateIfaceMatchRegexp();
+            if (!include) {
+                removeTestData();
+            }
             mHandler.post(() -> trackAvailableInterfaces());
         });
+    }
+
+    private void removeTestData() {
+        removeTestIpData();
+        removeTestCapabilityData();
+    }
+
+    private void removeTestIpData() {
+        final Iterator<String> iterator = mIpConfigurations.keySet().iterator();
+        while (iterator.hasNext()) {
+            final String iface = iterator.next();
+            if (iface.matches(TEST_IFACE_REGEXP)) {
+                mConfigStore.write(iface, null);
+                iterator.remove();
+            }
+        }
+    }
+
+    private void removeTestCapabilityData() {
+        mNetworkCapabilities.keySet().removeIf(iface -> iface.matches(TEST_IFACE_REGEXP));
     }
 
     public void requestTetheredInterface(ITetheredInterfaceCallback callback) {
