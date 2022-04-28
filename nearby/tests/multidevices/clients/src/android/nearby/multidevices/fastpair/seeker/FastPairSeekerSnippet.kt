@@ -23,9 +23,12 @@ import android.nearby.ScanCallback
 import android.nearby.ScanRequest
 import android.nearby.fastpair.seeker.FAKE_TEST_ACCOUNT_NAME
 import android.nearby.multidevices.fastpair.seeker.data.FastPairTestDataManager
+import android.nearby.multidevices.fastpair.seeker.events.PairingCallbackEvents
 import android.nearby.multidevices.fastpair.seeker.events.ScanCallbackEvents
 import android.nearby.multidevices.fastpair.seeker.ui.CheckNearbyHalfSheetUiTest
 import android.nearby.multidevices.fastpair.seeker.ui.DismissNearbyHalfSheetUiTest
+import android.nearby.multidevices.fastpair.seeker.ui.PairByNearbyHalfSheetUiTest
+import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.mobly.snippet.Snippet
 import com.google.android.mobly.snippet.rpc.AsyncRpc
@@ -114,7 +117,7 @@ class FastPairSeekerSnippet : Snippet {
     @Rpc(description = "Puts an array of FastPairAccountKeyDeviceMetadata into test data cache.")
     fun putAccountKeyDeviceMetadata(json: String) {
         Log.i("Puts an array of FastPairAccountKeyDeviceMetadata into test data cache.")
-        fastPairTestDataManager.sendAccountKeyDeviceMetadata(json)
+        fastPairTestDataManager.sendAccountKeyDeviceMetadataJsonArray(json)
     }
 
     /** Dumps all FastPairAccountKeyDeviceMetadata from the test data cache. */
@@ -131,7 +134,9 @@ class FastPairSeekerSnippet : Snippet {
     @Rpc(description = "Writes into Settings whether Fast Pair scan is enabled.")
     fun setFastPairScanEnabled(enable: Boolean) {
         Log.i("Writes into Settings whether Fast Pair scan is enabled.")
-        NearbyManager.setFastPairScanEnabled(appContext, enable)
+        // TODO(b/228406038): Change back to use NearbyManager.setFastPairScanEnabled once un-hide.
+        val resolver = appContext.contentResolver
+        Settings.Secure.putInt(resolver, "fast_pair_scan_enabled", if (enable) 1 else 0)
     }
 
     /** Dismisses the half sheet UI if showed. */
@@ -142,11 +147,25 @@ class FastPairSeekerSnippet : Snippet {
         DismissNearbyHalfSheetUiTest().dismissHalfSheet()
     }
 
+    /** Starts pairing by interacting with half sheet UI.
+     *
+     * @param callbackId the callback ID corresponding to the
+     * {@link FastPairSeekerSnippet#startPairing} call that started the pairing.
+     */
+    @AsyncRpc(description = "Starts pairing by interacting with half sheet UI.")
+    fun startPairing(callbackId: String) {
+        Log.i("Starts pairing by interacting with half sheet UI.")
+
+        PairByNearbyHalfSheetUiTest().clickConnectButton()
+        fastPairTestDataManager.registerDataReceiveListener(PairingCallbackEvents(callbackId))
+    }
+
     /** Invokes when the snippet runner shutting down. */
     override fun shutdown() {
         super.shutdown()
 
         Log.i("Resets the Fast Pair test data cache.")
+        fastPairTestDataManager.unregisterDataReceiveListener()
         fastPairTestDataManager.sendResetCache()
     }
 }
