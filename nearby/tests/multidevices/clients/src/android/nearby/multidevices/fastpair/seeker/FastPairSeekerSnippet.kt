@@ -28,6 +28,7 @@ import android.nearby.multidevices.fastpair.seeker.events.ScanCallbackEvents
 import android.nearby.multidevices.fastpair.seeker.ui.CheckNearbyHalfSheetUiTest
 import android.nearby.multidevices.fastpair.seeker.ui.DismissNearbyHalfSheetUiTest
 import android.nearby.multidevices.fastpair.seeker.ui.PairByNearbyHalfSheetUiTest
+import android.provider.Settings
 import androidx.test.core.app.ApplicationProvider
 import com.google.android.mobly.snippet.Snippet
 import com.google.android.mobly.snippet.rpc.AsyncRpc
@@ -133,7 +134,9 @@ class FastPairSeekerSnippet : Snippet {
     @Rpc(description = "Writes into Settings whether Fast Pair scan is enabled.")
     fun setFastPairScanEnabled(enable: Boolean) {
         Log.i("Writes into Settings whether Fast Pair scan is enabled.")
-        NearbyManager.setFastPairScanEnabled(appContext, enable)
+        // TODO(b/228406038): Change back to use NearbyManager.setFastPairScanEnabled once un-hide.
+        val resolver = appContext.contentResolver
+        Settings.Secure.putInt(resolver, "fast_pair_scan_enabled", if (enable) 1 else 0)
     }
 
     /** Dismisses the half sheet UI if showed. */
