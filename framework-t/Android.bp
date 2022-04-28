@@ -19,6 +19,9 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// Include build rules from Sources.bp
+build = ["Sources.bp"]
+
 java_defaults {
     name: "enable-framework-connectivity-t-targets",
     enabled: true,
@@ -30,7 +33,7 @@ java_defaults {
 // T, and were moved to the module in T. Other bootclasspath classes in connectivity should go to
 // framework-connectivity.
 java_defaults {
-    name: "framework-connectivity-tiramisu-defaults",
+    name: "framework-connectivity-t-defaults",
     sdk_version: "module_current",
     min_sdk_version: "Tiramisu",
     defaults: [
@@ -78,8 +81,8 @@ java_defaults {
 }
 
 java_library {
-    name: "framework-connectivity-tiramisu-pre-jarjar",
-    defaults: ["framework-connectivity-tiramisu-defaults"],
+    name: "framework-connectivity-t-pre-jarjar",
+    defaults: ["framework-connectivity-t-defaults"],
     libs: [
         "framework-bluetooth",
         "framework-wifi",
@@ -92,9 +95,9 @@ java_library {
 // T, and were moved to the module in T. Other bootclasspath classes in connectivity should go to
 // framework-connectivity.
 java_sdk_library {
-    name: "framework-connectivity-tiramisu",
+    name: "framework-connectivity-t",
     defaults: [
-        "framework-connectivity-tiramisu-defaults",
+        "framework-connectivity-t-defaults",
         "enable-framework-connectivity-t-targets",
     ],
     // Do not add static_libs to this library: put them in framework-connectivity instead.
@@ -114,7 +117,7 @@ java_sdk_library {
         // In preparation for future move
         "//packages/modules/Connectivity/apex",
         "//packages/modules/Connectivity/service-t",
-        "//packages/modules/Nearby/service",
+        "//packages/modules/Connectivity/nearby/service",
         "//frameworks/base",
 
         // Tests using hidden APIs
@@ -127,13 +130,14 @@ java_sdk_library {
         "//frameworks/base/tests/vcn",
         "//frameworks/libs/net/common/testutils",
         "//frameworks/libs/net/common/tests:__subpackages__",
+        "//frameworks/opt/net/ethernet/tests:__subpackages__",
         "//frameworks/opt/telephony/tests/telephonytests",
         "//packages/modules/CaptivePortalLogin/tests",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
+        "//packages/modules/Connectivity/nearby/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
-        "//packages/modules/Nearby/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
     ],
 }
