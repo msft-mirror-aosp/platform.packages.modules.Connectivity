@@ -19,8 +19,6 @@ package com.android.server.connectivity;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_CBS;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 
-import static com.android.networkstack.apishim.ConstantsShim.RECEIVER_NOT_EXPORTED;
-
 import android.annotation.NonNull;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -31,7 +29,6 @@ import android.content.pm.PackageManager;
 import android.net.NetworkCapabilities;
 import android.net.NetworkSpecifier;
 import android.net.TelephonyNetworkSpecifier;
-import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Process;
@@ -96,11 +93,7 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
             @NonNull final TelephonyManager t) {
         mContext = c;
         mTelephonyManager = t;
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.S) {
-            mTelephonyManagerShim = new TelephonyManagerShimImpl(mTelephonyManager);
-        } else {
-            mTelephonyManagerShim = null;
-        }
+        mTelephonyManagerShim = TelephonyManagerShimImpl.newInstance(mTelephonyManager);
         mThread = new HandlerThread(TAG);
         mThread.start();
         mHandler = new Handler(mThread.getLooper()) {};
@@ -160,7 +153,7 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
     private void registerForCarrierChanges() {
         final IntentFilter filter = new IntentFilter();
         filter.addAction(TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED);
-        mContext.registerReceiver(this, filter, null, mHandler, RECEIVER_NOT_EXPORTED /* flags */);
+        mContext.registerReceiver(this, filter, null, mHandler);
         registerCarrierPrivilegesListeners();
     }
 
@@ -194,36 +187,30 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
 
     private void addCarrierPrivilegesListener(int logicalSlotIndex, Executor executor,
             CarrierPrivilegesListenerShim listener) {
-        if (mTelephonyManagerShim  == null) {
-            return;
-        }
         try {
             mTelephonyManagerShim.addCarrierPrivilegesListener(
                     logicalSlotIndex, executor, listener);
         } catch (UnsupportedApiLevelException unsupportedApiLevelException) {
+            // Should not happen since CarrierPrivilegeAuthenticator is only used on T+
             Log.e(TAG, "addCarrierPrivilegesListener API is not available");
         }
     }
 
     private void removeCarrierPrivilegesListener(CarrierPrivilegesListenerShim listener) {
-        if (mTelephonyManagerShim  == null) {
-            return;
-        }
         try {
             mTelephonyManagerShim.removeCarrierPrivilegesListener(listener);
         } catch (UnsupportedApiLevelException unsupportedApiLevelException) {
+            // Should not happen since CarrierPrivilegeAuthenticator is only used on T+
             Log.e(TAG, "removeCarrierPrivilegesListener API is not available");
         }
     }
 
     private String getCarrierServicePackageNameForLogicalSlot(int logicalSlotIndex) {
-        if (mTelephonyManagerShim  == null) {
-            return null;
-        }
         try {
             return mTelephonyManagerShim.getCarrierServicePackageNameForLogicalSlot(
                     logicalSlotIndex);
         } catch (UnsupportedApiLevelException unsupportedApiLevelException) {
+            // Should not happen since CarrierPrivilegeAuthenticator is only used on T+
             Log.e(TAG, "getCarrierServicePackageNameForLogicalSlot API is not available");
         }
         return null;

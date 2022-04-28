@@ -47,10 +47,11 @@ java_defaults {
         "net-utils-device-common-bpf",
         "net-utils-device-common-netlink",
         "netd-client",
+        "tetheringstatsprotos",
     ],
     libs: [
         "framework-connectivity",
-        "framework-connectivity-tiramisu.stubs.module_lib",
+        "framework-connectivity-t.stubs.module_lib",
         "framework-statsd.stubs.module_lib",
         "framework-tethering.impl",
         "framework-wifi",
@@ -177,9 +178,9 @@ android_app {
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The permission configuration *must* be included to ensure security of the device
+    // The network stack *must* be included to ensure security of the device
     required: [
-        "NetworkPermissionConfig",
+        "NetworkStack",
         "privapp_allowlist_com.android.tethering",
     ],
     apex_available: ["com.android.tethering"],
@@ -197,9 +198,9 @@ android_app {
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The permission configuration *must* be included to ensure security of the device
+    // The network stack *must* be included to ensure security of the device
     required: [
-        "NetworkPermissionConfig",
+        "NetworkStackNext",
         "privapp_allowlist_com.android.tethering",
     ],
     apex_available: ["com.android.tethering"],
@@ -210,4 +211,15 @@ sdk {
     name: "tethering-module-sdk",
     bootclasspath_fragments: ["com.android.tethering-bootclasspath-fragment"],
     systemserverclasspath_fragments: ["com.android.tethering-systemserverclasspath-fragment"],
+}
+
+java_library_static {
+    name: "tetheringstatsprotos",
+    proto: {type: "lite"},
+    srcs: [
+        "src/com/android/networkstack/tethering/metrics/stats.proto",
+    ],
+    static_libs: ["tetheringprotos"],
+    apex_available: ["com.android.tethering"],
+    min_sdk_version: "30",
 }
