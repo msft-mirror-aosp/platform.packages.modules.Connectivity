@@ -21,12 +21,16 @@
     <option name="config-descriptor:metadata" key="parameter" value="secondary_user" />
 
     <option name="config-descriptor:metadata" key="mainline-param" value="CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex" />
+    <option name="config-descriptor:metadata" key="mainline-param" value="CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk" />
+    <option name="config-descriptor:metadata" key="mainline-param" value="com.google.android.tethering.apex" />
     <option name="not-shardable" value="true" />
     <target_preparer class="com.android.tradefed.targetprep.suite.SuiteApkInstaller">
         <option name="cleanup-apks" value="true" />
         <option name="test-file-name" value="{MODULE}.apk" />
     </target_preparer>
     <target_preparer class="com.android.testutils.ConnectivityCheckTargetPreparer">
+    </target_preparer>
+    <target_preparer class="com.android.testutils.DisableConfigSyncTargetPreparer">
     </target_preparer>
     <test class="com.android.tradefed.testtype.AndroidJUnitTest" >
         <option name="package" value="android.net.cts" />

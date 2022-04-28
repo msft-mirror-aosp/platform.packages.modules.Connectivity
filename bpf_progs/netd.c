@@ -297,12 +297,12 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, int
     return match;
 }
 
-DEFINE_BPF_PROG("cgroupskb/ingress/stats", AID_ROOT, AID_ROOT, bpf_cgroup_ingress)
+DEFINE_BPF_PROG("cgroupskb/ingress/stats", AID_ROOT, AID_SYSTEM, bpf_cgroup_ingress)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, BPF_INGRESS);
 }
 
-DEFINE_BPF_PROG("cgroupskb/egress/stats", AID_ROOT, AID_ROOT, bpf_cgroup_egress)
+DEFINE_BPF_PROG("cgroupskb/egress/stats", AID_ROOT, AID_SYSTEM, bpf_cgroup_egress)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, BPF_EGRESS);
 }
@@ -340,9 +340,11 @@ DEFINE_BPF_PROG("skfilter/ingress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_ingres
 
 DEFINE_BPF_PROG("schedact/ingress/account", AID_ROOT, AID_NET_ADMIN, tc_bpf_ingress_account_prog)
 (struct __sk_buff* skb) {
-    // Account for ingress traffic before tc drops it.
-    uint32_t key = skb->ifindex;
-    update_iface_stats_map(skb, BPF_INGRESS, &key);
+    if (is_received_skb(skb)) {
+        // Account for ingress traffic before tc drops it.
+        uint32_t key = skb->ifindex;
+        update_iface_stats_map(skb, BPF_INGRESS, &key);
+    }
     return TC_ACT_UNSPEC;
 }
 
