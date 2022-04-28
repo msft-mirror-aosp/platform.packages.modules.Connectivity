@@ -25,7 +25,7 @@ import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.wifi.WifiConfiguration.METERED_OVERRIDE_METERED;
 import static android.net.wifi.WifiConfiguration.METERED_OVERRIDE_NONE;
 
-import static com.android.compatibility.common.util.SystemUtil.runShellCommand;
+import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
 import static com.android.cts.net.hostside.AbstractRestrictBackgroundNetworkTestCase.TAG;
 
 import static org.junit.Assert.assertEquals;
@@ -38,6 +38,7 @@ import android.app.ActivityManager;
 import android.app.Instrumentation;
 import android.app.UiAutomation;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.location.LocationManager;
 import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.NetworkCallback;
@@ -99,6 +100,10 @@ public class NetworkPolicyTestUtils {
         return mBatterySaverSupported;
     }
 
+    private static boolean isWear() {
+        return getContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_WATCH);
+    }
+
     /**
      * As per CDD requirements, if the device doesn't support data saver mode then
      * ConnectivityManager.getRestrictBackgroundStatus() will always return
@@ -107,6 +112,9 @@ public class NetworkPolicyTestUtils {
      * RESTRICT_BACKGROUND_STATUS_DISABLED or not.
      */
     public static boolean isDataSaverSupported() {
+        if (isWear()) {
+            return false;
+        }
         if (mDataSaverSupported == null) {
             assertMyRestrictBackgroundStatus(RESTRICT_BACKGROUND_STATUS_DISABLED);
             try {
@@ -382,7 +390,7 @@ public class NetworkPolicyTestUtils {
     }
 
     public static String executeShellCommand(String command) {
-        final String result = runShellCommand(command).trim();
+        final String result = runShellCommandOrThrow(command).trim();
         Log.d(TAG, "Output of '" + command + "': '" + result + "'");
         return result;
     }
