@@ -29,6 +29,7 @@ import android.os.Build;
 
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 
 import libcore.net.InetAddressUtils;
@@ -106,6 +107,10 @@ public final class IpConfigurationTest {
         assertIpConfigurationEqual(ipConfig, new IpConfiguration(ipConfig));
     }
 
+    @ConnectivityModuleTest // The builder was added in an S+ module update.
+    // This whole class is not skipped (marked @ConnectivityModuleTest) in MTS for non-connectivity
+    // modules like NetworkStack, as NetworkStack uses IpConfiguration a lot on Q+, so tests that
+    // cover older APIs are still useful to provide used API coverage for NetworkStack.
     @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
     @Test
     public void testBuilder() {

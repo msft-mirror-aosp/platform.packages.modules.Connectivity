@@ -23,6 +23,7 @@
 #include <android/api-level.h>
 #include <android-base/properties.h>
 #include <android-modules-utils/sdk_level.h>
+#include <bpf/BpfUtils.h>
 
 #include <gtest/gtest.h>
 
@@ -41,6 +42,7 @@ using android::modules::sdklevel::IsAtLeastT;
 
 #define PLATFORM "/sys/fs/bpf/"
 #define TETHERING "/sys/fs/bpf/tethering/"
+#define SHARED "/sys/fs/bpf/net_shared/"
 
 class BpfExistenceTest : public ::testing::Test {
 };
@@ -83,6 +85,42 @@ static const set<string> REMOVED_S = {
 };
 
 static const set<string> INTRODUCED_T = {
+    SHARED "map_block_blocked_ports_map",
+    SHARED "map_clatd_clat_egress4_map",
+    SHARED "map_clatd_clat_ingress6_map",
+    SHARED "map_dscp_policy_ipv4_dscp_policies_map",
+    SHARED "map_dscp_policy_ipv4_socket_to_policies_map_A",
+    SHARED "map_dscp_policy_ipv4_socket_to_policies_map_B",
+    SHARED "map_dscp_policy_ipv6_dscp_policies_map",
+    SHARED "map_dscp_policy_ipv6_socket_to_policies_map_A",
+    SHARED "map_dscp_policy_ipv6_socket_to_policies_map_B",
+    SHARED "map_dscp_policy_switch_comp_map",
+    SHARED "map_netd_app_uid_stats_map",
+    SHARED "map_netd_configuration_map",
+    SHARED "map_netd_cookie_tag_map",
+    SHARED "map_netd_iface_index_name_map",
+    SHARED "map_netd_iface_stats_map",
+    SHARED "map_netd_stats_map_A",
+    SHARED "map_netd_stats_map_B",
+    SHARED "map_netd_uid_counterset_map",
+    SHARED "map_netd_uid_owner_map",
+    SHARED "map_netd_uid_permission_map",
+    SHARED "prog_block_bind4_block_port",
+    SHARED "prog_block_bind6_block_port",
+    SHARED "prog_clatd_schedcls_egress4_clat_ether",
+    SHARED "prog_clatd_schedcls_egress4_clat_rawip",
+    SHARED "prog_clatd_schedcls_ingress6_clat_ether",
+    SHARED "prog_clatd_schedcls_ingress6_clat_rawip",
+    SHARED "prog_dscp_policy_schedcls_set_dscp_ether",
+    SHARED "prog_dscp_policy_schedcls_set_dscp_raw_ip",
+    SHARED "prog_netd_cgroupskb_egress_stats",
+    SHARED "prog_netd_cgroupskb_ingress_stats",
+    SHARED "prog_netd_cgroupsock_inet_create",
+    SHARED "prog_netd_schedact_ingress_account",
+    SHARED "prog_netd_skfilter_allowlist_xtbpf",
+    SHARED "prog_netd_skfilter_denylist_xtbpf",
+    SHARED "prog_netd_skfilter_egress_xtbpf",
+    SHARED "prog_netd_skfilter_ingress_xtbpf",
 };
 
 static const set<string> REMOVED_T = {
@@ -151,6 +189,8 @@ void checkFiles() {
 }
 
 TEST_F(BpfExistenceTest, TestPrograms) {
+    SKIP_IF_BPF_NOT_SUPPORTED;
+
     // Pre-flight check to ensure test has been updated.
     uint64_t buildVersionSdk = android_get_device_api_level();
     ASSERT_NE(0, buildVersionSdk) << "Unable to determine device SDK version";
