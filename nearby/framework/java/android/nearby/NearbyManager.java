@@ -109,6 +109,26 @@ public class NearbyManager {
                     .setBluetoothAddress(nearbyDeviceParcelable.getBluetoothAddress())
                     .setData(nearbyDeviceParcelable.getData()).build();
         }
+
+        if (scanType == ScanRequest.SCAN_TYPE_NEARBY_PRESENCE) {
+            PublicCredential publicCredential = nearbyDeviceParcelable.getPublicCredential();
+            if (publicCredential == null) {
+                return null;
+            }
+            byte[] salt = nearbyDeviceParcelable.getSalt();
+            if (salt == null) {
+                salt = new byte[0];
+            }
+            return new PresenceDevice.Builder(
+                    // Use the public credential hash as the device Id.
+                    String.valueOf(publicCredential.hashCode()),
+                    salt,
+                    publicCredential.getSecretId(),
+                    publicCredential.getEncryptedMetadata())
+                    .setRssi(nearbyDeviceParcelable.getRssi())
+                    .addMedium(nearbyDeviceParcelable.getMedium())
+                    .build();
+        }
         return null;
     }
 
@@ -246,6 +266,7 @@ public class NearbyManager {
      *
      * @param context the {@link Context} to query the setting
      * @return whether the Fast Pair is enabled
+     * @hide
      */
     public static boolean getFastPairScanEnabled(@NonNull Context context) {
         final int enabled = Settings.Secure.getInt(
@@ -258,6 +279,7 @@ public class NearbyManager {
      *
      * @param context the {@link Context} to set the setting
      * @param enable whether the Fast Pair scan should be enabled
+     * @hide
      */
     @RequiresPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
     public static void setFastPairScanEnabled(@NonNull Context context, boolean enable) {
@@ -300,23 +322,33 @@ public class NearbyManager {
         @Override
         public void onDiscovered(NearbyDeviceParcelable nearbyDeviceParcelable)
                 throws RemoteException {
-            mExecutor.execute(() -> mScanCallback.onDiscovered(
-                    toClientNearbyDevice(nearbyDeviceParcelable, mScanType)));
+            mExecutor.execute(() -> {
+                if (mScanCallback != null) {
+                    mScanCallback.onDiscovered(
+                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
+                }
+            });
         }
 
         @Override
         public void onUpdated(NearbyDeviceParcelable nearbyDeviceParcelable)
                 throws RemoteException {
-            mExecutor.execute(
-                    () -> mScanCallback.onUpdated(
-                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType)));
+            mExecutor.execute(() -> {
+                if (mScanCallback != null) {
+                    mScanCallback.onUpdated(
+                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
+                }
+            });
         }
 
         @Override
         public void onLost(NearbyDeviceParcelable nearbyDeviceParcelable) throws RemoteException {
-            mExecutor.execute(
-                    () -> mScanCallback.onLost(
-                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType)));
+            mExecutor.execute(() -> {
+                if (mScanCallback != null) {
+                    mScanCallback.onLost(
+                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
+                }
+            });
         }
     }
 
