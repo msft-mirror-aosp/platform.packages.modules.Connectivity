@@ -28,7 +28,6 @@ java_defaults {
         "libbinder",
         "libbpf_bcc",
         "libc++",
-        "libcgrouprc",
         "libcrypto",
         "libcutils",
         "libdl_android",
@@ -43,7 +42,6 @@ java_defaults {
         "libnetworkstatsfactorytestjni",
         "libpackagelistparser",
         "libpcre2",
-        "libprocessgroup",
         "libselinux",
         "libtinyxml2",
         "libui",
@@ -61,6 +59,7 @@ filegroup {
     name: "non-connectivity-module-test",
     srcs: [
         "java/android/app/usage/*.java",
+        "java/android/net/EthernetNetworkUpdateRequestTest.java",
         "java/android/net/Ikev2VpnProfileTest.java",
         "java/android/net/IpMemoryStoreTest.java",
         "java/android/net/IpSecAlgorithmTest.java",
@@ -68,6 +67,7 @@ filegroup {
         "java/android/net/IpSecManagerTest.java",
         "java/android/net/IpSecTransformTest.java",
         "java/android/net/KeepalivePacketDataUtilTest.java",
+        "java/android/net/NetworkIdentitySetTest.kt",
         "java/android/net/NetworkIdentityTest.kt",
         "java/android/net/NetworkStats*.java",
         "java/android/net/NetworkTemplateTest.kt",
@@ -88,8 +88,10 @@ filegroup {
         "java/com/android/server/connectivity/MultipathPolicyTrackerTest.java",
         "java/com/android/server/connectivity/NetdEventListenerServiceTest.java",
         "java/com/android/server/connectivity/VpnTest.java",
+        "java/com/android/server/ethernet/*.java",
         "java/com/android/server/net/ipmemorystore/*.java",
         "java/com/android/server/net/BpfInterfaceMapUpdaterTest.java",
+        "java/com/android/server/net/IpConfigStoreTest.java",
         "java/com/android/server/net/NetworkStats*.java",
         "java/com/android/server/net/TestableUsageCallback.kt",
     ]
@@ -133,6 +135,7 @@ java_defaults {
         "service-connectivity-pre-jarjar",
         "service-connectivity-tiramisu-pre-jarjar",
         "services.core-vpn",
+        "cts-net-utils"
     ],
     libs: [
         "android.net.ipsec.ike.stubs.module_lib",
