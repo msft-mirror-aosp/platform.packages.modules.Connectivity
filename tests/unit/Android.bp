@@ -67,6 +67,7 @@ filegroup {
         "java/android/net/IpSecManagerTest.java",
         "java/android/net/IpSecTransformTest.java",
         "java/android/net/KeepalivePacketDataUtilTest.java",
+        "java/android/net/NetworkIdentitySetTest.kt",
         "java/android/net/NetworkIdentityTest.kt",
         "java/android/net/NetworkStats*.java",
         "java/android/net/NetworkTemplateTest.kt",
@@ -80,7 +81,6 @@ filegroup {
         "java/com/android/server/IpSecServiceParameterizedTest.java",
         "java/com/android/server/IpSecServiceRefcountedResourceTest.java",
         "java/com/android/server/IpSecServiceTest.java",
-        "java/com/android/server/NativeDaemonConnectorTest.java",
         "java/com/android/server/NetworkManagementServiceTest.java",
         "java/com/android/server/NsdServiceTest.java",
         "java/com/android/server/connectivity/IpConnectivityEventBuilderTest.java",
@@ -135,6 +135,7 @@ java_defaults {
         "service-connectivity-pre-jarjar",
         "service-connectivity-tiramisu-pre-jarjar",
         "services.core-vpn",
+        "cts-net-utils"
     ],
     libs: [
         "android.net.ipsec.ike.stubs.module_lib",
