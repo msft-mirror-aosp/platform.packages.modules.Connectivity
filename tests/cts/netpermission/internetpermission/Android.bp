@@ -1,4 +1,4 @@
-// Copyright (C) 2021 The Android Open Source Project
+// Copyright (C) 2019 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,29 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#pragma once
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
 
-#include <arpa/inet.h>
-#include <linux/if.h>
+android_test {
+    name: "CtsNetTestCasesInternetPermission",
+    defaults: ["cts_defaults"],
 
-namespace android {
-namespace net {
-namespace clat {
+    srcs: ["src/**/*.java"],
 
-struct ClatdTracker {
-    unsigned ifIndex;
-    char iface[IFNAMSIZ];
-    unsigned v4ifIndex;
-    char v4iface[IFNAMSIZ];
-    in_addr v4;
-    in6_addr v6;
-    in6_addr pfx96;
-};
+    static_libs: ["ctstestrunner-axt"],
 
-int initMaps(void);
-void maybeStartBpf(const ClatdTracker& tracker);
-void maybeStopBpf(const ClatdTracker& tracker);
+    // Tag this module as a cts test artifact
+    test_suites: [
+        "cts",
+        "general-tests",
+    ],
 
-}  // namespace clat
-}  // namespace net
-}  // namespace android
+}
