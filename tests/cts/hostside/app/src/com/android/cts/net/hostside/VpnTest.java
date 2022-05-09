@@ -334,9 +334,8 @@ public class VpnTest {
             @Nullable ProxyInfo proxyInfo,
             @Nullable ArrayList<Network> underlyingNetworks, boolean isAlwaysMetered)
             throws Exception {
-        startVpn(addresses, routes, new String[0] /* excludedRoutes */, allowedApplications,
-                disallowedApplications, proxyInfo, underlyingNetworks, isAlwaysMetered,
-                false /* addRoutesByIpPrefix */);
+        startVpn(addresses, routes, excludedRoutes, allowedApplications, disallowedApplications,
+                proxyInfo, underlyingNetworks, isAlwaysMetered, false /* addRoutesByIpPrefix */);
     }
 
     private void startVpn(
@@ -638,8 +637,8 @@ public class VpnTest {
 
         if (address instanceof Inet6Address) {
             checkUdpEcho(destination, "2001:db8:1:2::ffe");
-            checkTcpReflection(destination, "2001:db8:1:2::ffe");
             checkPing(destination);
+            checkTcpReflection(destination, "2001:db8:1:2::ffe");
         } else {
             checkUdpEcho(destination, "192.0.2.2");
             checkTcpReflection(destination, "192.0.2.2");
