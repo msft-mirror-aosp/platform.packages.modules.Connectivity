@@ -16,6 +16,7 @@
 
 package com.android.cts.net.hostside;
 
+import static android.app.job.JobScheduler.RESULT_SUCCESS;
 import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED;
 import static android.os.BatteryManager.BATTERY_PLUGGED_AC;
 import static android.os.BatteryManager.BATTERY_PLUGGED_USB;
@@ -151,9 +152,9 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     private static final String APP_NOT_FOREGROUND_ERROR = "app_not_fg";
 
-    protected static final long TEMP_POWERSAVE_WHITELIST_DURATION_MS = 5_000; // 5 sec
+    protected static final long TEMP_POWERSAVE_WHITELIST_DURATION_MS = 20_000; // 20 sec
 
-    private static final long BROADCAST_TIMEOUT_MS = 15_000;
+    private static final long BROADCAST_TIMEOUT_MS = 5_000;
 
     protected Context mContext;
     protected Instrumentation mInstrumentation;
@@ -331,7 +332,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     + "; sleeping 1s before trying again");
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("App2 is not on background state after " + maxTries + " attempts: " + state );
+        fail("App2 (" + mUid + ") is not on background state after "
+                + maxTries + " attempts: " + state);
     }
 
     protected final void assertForegroundState() throws Exception {
@@ -349,7 +351,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             turnScreenOn();
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("App2 is not on foreground state after " + maxTries + " attempts: " + state );
+        fail("App2 (" + mUid + ") is not on foreground state after "
+                + maxTries + " attempts: " + state);
     }
 
     protected final void assertForegroundServiceState() throws Exception {
@@ -366,7 +369,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     + "; sleeping 1s before trying again");
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("App2 is not on foreground service state after " + maxTries + " attempts: " + state );
+        fail("App2 (" + mUid + ") is not on foreground service state after "
+                + maxTries + " attempts: " + state);
     }
 
     /**
@@ -408,8 +412,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             // Exponential back-off.
             timeoutMs = Math.min(timeoutMs*2, NETWORK_TIMEOUT_MS);
         }
-        fail("Invalid state for expectAvailable=" + expectAvailable + " after " + maxTries
-                + " attempts.\nLast error: " + error);
+        fail("Invalid state for " + mUid + "; expectAvailable=" + expectAvailable + " after "
+                + maxTries + " attempts.\nLast error: " + error);
     }
 
     /**
@@ -765,7 +769,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             Log.v(TAG, "app2 receiver is not ready yet; sleeping 1s before polling again");
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("app2 receiver is not ready");
+        fail("app2 receiver is not ready in " + mUid);
     }
 
     protected void registerNetworkCallback(final NetworkRequest request, INetworkCallback cb)
@@ -870,7 +874,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                     .setTransientExtras(extras)
                     .build();
-            mServiceClient.scheduleJob(jobInfo);
+            assertEquals("Error scheduling " + jobInfo,
+                    RESULT_SUCCESS, mServiceClient.scheduleJob(jobInfo));
             forceRunJob(TEST_APP2_PKG, TEST_JOB_ID);
             if (latch.await(JOB_NETWORK_STATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 final int resultCode = result.get(0).first;
@@ -896,6 +901,11 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         }
     }
 
+    protected void startActivity() throws Exception {
+        final Intent launchIntent = getIntentForComponent(TYPE_COMPONENT_ACTIVTIY);
+        mContext.startActivity(launchIntent);
+    }
+
     private void startForegroundService() throws Exception {
         final Intent launchIntent = getIntentForComponent(TYPE_COMPONENT_FOREGROUND_SERVICE);
         mContext.startForegroundService(launchIntent);
@@ -906,7 +916,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         final Intent intent = new Intent();
         if (type == TYPE_COMPONENT_ACTIVTIY) {
             intent.setComponent(new ComponentName(TEST_APP2_PKG, TEST_APP2_ACTIVITY_CLASS))
-                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         } else if (type == TYPE_COMPONENT_FOREGROUND_SERVICE) {
             intent.setComponent(new ComponentName(TEST_APP2_PKG, TEST_APP2_SERVICE_CLASS))
                     .setFlags(1);

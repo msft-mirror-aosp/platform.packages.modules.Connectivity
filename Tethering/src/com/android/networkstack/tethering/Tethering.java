@@ -18,7 +18,6 @@ package com.android.networkstack.tethering;
 
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_STACK;
-import static android.content.pm.PackageManager.GET_ACTIVITIES;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.hardware.usb.UsbManager.USB_CONFIGURED;
 import static android.hardware.usb.UsbManager.USB_CONNECTED;
@@ -136,6 +135,7 @@ import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
+import com.android.net.module.util.CollectionUtils;
 import com.android.networkstack.apishim.common.BluetoothPanShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceCallbackShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceRequestShim;
@@ -279,6 +279,11 @@ public class Tethering {
     private BluetoothPan mBluetoothPan;
     private PanServiceListener mBluetoothPanListener;
     private ArrayList<Pair<Boolean, IIntResultListener>> mPendingPanRequests;
+    // AIDL doesn't support Set<Integer>. Maintain a int bitmap here. When the bitmap is passed to
+    // TetheringManager, TetheringManager would convert it to a set of Integer types.
+    // mSupportedTypeBitmap should always be updated inside tethering internal thread but it may be
+    // read from binder thread which called TetheringService directly.
+    private volatile long mSupportedTypeBitmap;
 
     public Tethering(TetheringDependencies deps) {
         mLog.mark("Tethering.constructed");
@@ -319,8 +324,8 @@ public class Tethering {
         mEntitlementMgr = mDeps.getEntitlementManager(mContext, mHandler, mLog,
                 () -> mTetherMainSM.sendMessage(
                 TetherMainSM.EVENT_UPSTREAM_PERMISSION_CHANGED));
-        mEntitlementMgr.setOnUiEntitlementFailedListener((int downstream) -> {
-            mLog.log("OBSERVED UiEnitlementFailed");
+        mEntitlementMgr.setOnTetherProvisioningFailedListener((downstream, reason) -> {
+            mLog.log("OBSERVED OnTetherProvisioningFailed : " + reason);
             stopTethering(downstream);
         });
         mEntitlementMgr.setTetheringConfigurationFetcher(() -> {
@@ -477,7 +482,7 @@ public class Tethering {
             // To avoid launching unexpected provisioning checks, ignore re-provisioning
             // when no CarrierConfig loaded yet. Assume reevaluateSimCardProvisioning()
             // will be triggered again when CarrierConfig is loaded.
-            if (mEntitlementMgr.getCarrierConfig(mConfig) != null) {
+            if (TetheringConfiguration.getCarrierConfig(mContext, subId) != null) {
                 mEntitlementMgr.reevaluateSimCardProvisioning(mConfig);
             } else {
                 mLog.log("IGNORED reevaluate provisioning, no carrier config loaded");
@@ -495,6 +500,8 @@ public class Tethering {
         mUpstreamNetworkMonitor.setUpstreamConfig(mConfig.chooseUpstreamAutomatically,
                 mConfig.isDunRequired);
         reportConfigurationChanged(mConfig.toStableParcelable());
+
+        updateSupportedDownstreams(mConfig);
     }
 
     private void maybeDunSettingChanged() {
@@ -995,28 +1002,9 @@ public class Tethering {
         return tetherState.lastError;
     }
 
-    private boolean isProvisioningNeededButUnavailable() {
-        return isTetherProvisioningRequired() && !doesEntitlementPackageExist();
-    }
-
     boolean isTetherProvisioningRequired() {
         final TetheringConfiguration cfg = mConfig;
         return mEntitlementMgr.isTetherProvisioningRequired(cfg);
-    }
-
-    private boolean doesEntitlementPackageExist() {
-        // provisioningApp must contain package and class name.
-        if (mConfig.provisioningApp.length != 2) {
-            return false;
-        }
-
-        final PackageManager pm = mContext.getPackageManager();
-        try {
-            pm.getPackageInfo(mConfig.provisioningApp[0], GET_ACTIVITIES);
-        } catch (PackageManager.NameNotFoundException e) {
-            return false;
-        }
-        return true;
     }
 
     private int getRequestedState(int type) {
@@ -1533,16 +1521,8 @@ public class Tethering {
         return mConfig;
     }
 
-    boolean hasTetherableConfiguration() {
-        final TetheringConfiguration cfg = mConfig;
-        final boolean hasDownstreamConfiguration =
-                (cfg.tetherableUsbRegexs.length != 0)
-                || (cfg.tetherableWifiRegexs.length != 0)
-                || (cfg.tetherableBluetoothRegexs.length != 0);
-        final boolean hasUpstreamConfiguration = !cfg.preferredUpstreamIfaceTypes.isEmpty()
-                || cfg.chooseUpstreamAutomatically;
-
-        return hasDownstreamConfiguration && hasUpstreamConfiguration;
+    private boolean isEthernetSupported() {
+        return mContext.getSystemService(Context.ETHERNET_SERVICE) != null;
     }
 
     void setUsbTethering(boolean enable, IIntResultListener listener) {
@@ -1745,7 +1725,7 @@ public class Tethering {
 
             // TODO: Randomize DHCPv4 ranges, especially in hotspot mode.
             // Legacy DHCP server is disabled if passed an empty ranges array
-            final String[] dhcpRanges = cfg.enableLegacyDhcpServer
+            final String[] dhcpRanges = cfg.useLegacyDhcpServer()
                     ? cfg.legacyDhcpRanges : new String[0];
             try {
                 NetdUtils.tetherStart(mNetd, true /** usingLegacyDnsProxy */, dhcpRanges);
@@ -2330,7 +2310,7 @@ public class Tethering {
         mHandler.post(() -> {
             mTetheringEventCallbacks.register(callback, new CallbackCookie(hasListPermission));
             final TetheringCallbackStartedParcel parcel = new TetheringCallbackStartedParcel();
-            parcel.tetheringSupported = isTetheringSupported();
+            parcel.supportedTypes = mSupportedTypeBitmap;
             parcel.upstreamNetwork = mTetherUpstream;
             parcel.config = mConfig.toStableParcelable();
             parcel.states =
@@ -2367,6 +2347,22 @@ public class Tethering {
         mHandler.post(() -> {
             mTetheringEventCallbacks.unregister(callback);
         });
+    }
+
+    private void reportTetheringSupportedChange(final long supportedBitmap) {
+        final int length = mTetheringEventCallbacks.beginBroadcast();
+        try {
+            for (int i = 0; i < length; i++) {
+                try {
+                    mTetheringEventCallbacks.getBroadcastItem(i).onSupportedTetheringTypes(
+                            supportedBitmap);
+                } catch (RemoteException e) {
+                    // Not really very much to do here.
+                }
+            }
+        } finally {
+            mTetheringEventCallbacks.finishBroadcast();
+        }
     }
 
     private void reportUpstreamChanged(UpstreamNetworkState ns) {
@@ -2453,18 +2449,56 @@ public class Tethering {
         }
     }
 
+    private void updateSupportedDownstreams(final TetheringConfiguration config) {
+        final long preSupportedBitmap = mSupportedTypeBitmap;
+
+        if (!isTetheringAllowed() || mEntitlementMgr.isProvisioningNeededButUnavailable()) {
+            mSupportedTypeBitmap = 0;
+        } else {
+            mSupportedTypeBitmap = makeSupportedDownstreams(config);
+        }
+
+        if (preSupportedBitmap != mSupportedTypeBitmap) {
+            reportTetheringSupportedChange(mSupportedTypeBitmap);
+        }
+    }
+
+    private long makeSupportedDownstreams(final TetheringConfiguration config) {
+        long types = 0;
+        if (config.tetherableUsbRegexs.length != 0) types |= (1 << TETHERING_USB);
+
+        if (config.tetherableWifiRegexs.length != 0) types |= (1 << TETHERING_WIFI);
+
+        if (config.tetherableBluetoothRegexs.length != 0) types |= (1 << TETHERING_BLUETOOTH);
+
+        // Before T, isTetheringSupported would return true if wifi, usb and bluetooth tethering are
+        // disabled (whole tethering settings would be hidden). This means tethering would also not
+        // support wifi p2p, ethernet tethering and mirrorlink. This is wrong but probably there are
+        // some devices in the field rely on this to disable tethering entirely.
+        if (!SdkLevel.isAtLeastT() && types == 0) return types;
+
+        if (config.tetherableNcmRegexs.length != 0) types |= (1 << TETHERING_NCM);
+
+        if (config.tetherableWifiP2pRegexs.length != 0) types |= (1 << TETHERING_WIFI_P2P);
+
+        if (isEthernetSupported()) types |= (1 << TETHERING_ETHERNET);
+
+        return types;
+    }
+
     // if ro.tether.denied = true we default to no tethering
     // gservices could set the secure setting to 1 though to enable it on a build where it
     // had previously been turned off.
-    boolean isTetheringSupported() {
+    private boolean isTetheringAllowed() {
         final int defaultVal = mDeps.isTetheringDenied() ? 0 : 1;
         final boolean tetherSupported = Settings.Global.getInt(mContext.getContentResolver(),
                 Settings.Global.TETHER_SUPPORTED, defaultVal) != 0;
-        final boolean tetherEnabledInSettings = tetherSupported
+        return tetherSupported
                 && !mUserManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING);
+    }
 
-        return tetherEnabledInSettings && hasTetherableConfiguration()
-                && !isProvisioningNeededButUnavailable();
+    boolean isTetheringSupported() {
+        return mSupportedTypeBitmap > 0;
     }
 
     private void dumpBpf(IndentingPrintWriter pw) {
@@ -2480,13 +2514,12 @@ public class Tethering {
                 writer, "  ");
 
         // Used for testing instead of human debug.
-        // TODO: add options to choose which map to dump.
-        if (argsContain(args, "bpfRawMap")) {
-            mBpfCoordinator.dumpRawMap(pw);
+        if (CollectionUtils.contains(args, "bpfRawMap")) {
+            mBpfCoordinator.dumpRawMap(pw, args);
             return;
         }
 
-        if (argsContain(args, "bpf")) {
+        if (CollectionUtils.contains(args, "bpf")) {
             dumpBpf(pw);
             return;
         }
@@ -2552,7 +2585,7 @@ public class Tethering {
 
         pw.println("Log:");
         pw.increaseIndent();
-        if (argsContain(args, "--short")) {
+        if (CollectionUtils.contains(args, "--short")) {
             pw.println("<log removed for brevity>");
         } else {
             mLog.dump(fd, pw, args);
@@ -2594,13 +2627,6 @@ public class Tethering {
 
         final RuntimeException e = exceptionRef.get();
         if (e != null) throw e;
-    }
-
-    private static boolean argsContain(String[] args, String target) {
-        for (String arg : args) {
-            if (target.equals(arg)) return true;
-        }
-        return false;
     }
 
     private void updateConnectedClients(final List<WifiClient> wifiClients) {
@@ -2722,8 +2748,7 @@ public class Tethering {
         mLog.i("adding IpServer for: " + iface);
         final TetherState tetherState = new TetherState(
                 new IpServer(iface, mLooper, interfaceType, mLog, mNetd, mBpfCoordinator,
-                             makeControlCallback(), mConfig.enableLegacyDhcpServer,
-                             mConfig.isBpfOffloadEnabled(), mPrivateAddressCoordinator,
+                             makeControlCallback(), mConfig, mPrivateAddressCoordinator,
                              mDeps.getIpServerDependencies()), isNcm);
         mTetherStates.put(iface, tetherState);
         tetherState.ipServer.start();
