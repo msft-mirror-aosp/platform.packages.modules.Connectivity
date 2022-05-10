@@ -108,6 +108,7 @@ import android.annotation.TargetApi;
 import android.app.AppOpsManager;
 import android.app.BroadcastOptions;
 import android.app.PendingIntent;
+import android.app.admin.DevicePolicyManager;
 import android.app.usage.NetworkStatsManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -258,6 +259,7 @@ import com.android.net.module.util.TcUtils;
 import com.android.net.module.util.netlink.InetDiagMessage;
 import com.android.server.connectivity.AutodestructReference;
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
+import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
 import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
@@ -753,7 +755,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * The BPF program attached to the tc-police hook to account for to-be-dropped traffic.
      */
     private static final String TC_POLICE_BPF_PROG_PATH =
-            "/sys/fs/bpf/prog_netd_schedact_ingress_account";
+            "/sys/fs/bpf/net_shared/prog_netd_schedact_ingress_account";
 
     private static String eventName(int what) {
         return sMagicDecoderRing.get(what, Integer.toString(what));
@@ -1402,6 +1404,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
          */
         public BpfNetMaps getBpfNetMaps(INetd netd) {
             return new BpfNetMaps(netd);
+        }
+
+        /**
+         * @see ClatCoordinator
+         */
+        public ClatCoordinator getClatCoordinator(INetd netd) {
+            return new ClatCoordinator(
+                new ClatCoordinator.Dependencies() {
+                    @NonNull
+                    public INetd getNetd() {
+                        return netd;
+                    }
+                });
         }
 
         /**
@@ -2864,12 +2879,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceNetworkFactoryPermission() {
+        // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
+        if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
     private void enforceNetworkFactoryOrSettingsPermission() {
+        // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
+        if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_SETTINGS,
                 android.Manifest.permission.NETWORK_FACTORY,
@@ -2877,6 +2896,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceNetworkFactoryOrTestNetworksPermission() {
+        // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
+        if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_FACTORY,
@@ -2889,7 +2910,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 || PERMISSION_GRANTED == mContext.checkPermission(
                 android.Manifest.permission.NETWORK_SETTINGS, pid, uid)
                 || PERMISSION_GRANTED == mContext.checkPermission(
-                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, pid, uid);
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, pid, uid)
+                || UserHandle.getAppId(uid) == Process.BLUETOOTH_UID;
     }
 
     private boolean checkSettingsPermission() {
@@ -3259,11 +3281,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return;
         }
 
-        pw.print("NetworkProviders for:");
+        pw.println("NetworkProviders for:");
+        pw.increaseIndent();
         for (NetworkProviderInfo npi : mNetworkProviderInfos.values()) {
-            pw.print(" " + npi.name);
+            pw.println(npi.providerId + ": " + npi.name);
         }
-        pw.println();
+        pw.decreaseIndent();
         pw.println();
 
         final NetworkAgentInfo defaultNai = getDefaultNetwork();
@@ -3309,6 +3332,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.println("Network Requests:");
         pw.increaseIndent();
         dumpNetworkRequests(pw);
+        pw.decreaseIndent();
+        pw.println();
+
+        pw.println("Network Offers:");
+        pw.increaseIndent();
+        for (final NetworkOfferInfo offerInfo : mNetworkOffers) {
+            pw.println(offerInfo.offer);
+        }
         pw.decreaseIndent();
         pw.println();
 
@@ -3400,6 +3431,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             pw.println("Inactivity Timers:");
             pw.increaseIndent();
             nai.dumpInactivityTimers(pw);
+            pw.decreaseIndent();
+            pw.println("Nat464Xlat:");
+            pw.increaseIndent();
+            nai.dumpNat464Xlat(pw);
             pw.decreaseIndent();
             pw.decreaseIndent();
         }
@@ -3662,7 +3697,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 }
                 case NetworkAgent.EVENT_REMOVE_ALL_DSCP_POLICIES: {
                     if (mDscpPolicyTracker != null) {
-                        mDscpPolicyTracker.removeAllDscpPolicies(nai);
+                        mDscpPolicyTracker.removeAllDscpPolicies(nai, true);
                     }
                     break;
                 }
@@ -4403,6 +4438,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void destroyNativeNetwork(@NonNull NetworkAgentInfo nai) {
+        if (mDscpPolicyTracker != null) {
+            mDscpPolicyTracker.removeAllDscpPolicies(nai, false);
+        }
         try {
             mNetd.networkDestroy(nai.network.getNetId());
         } catch (RemoteException | ServiceSpecificException e) {
@@ -5457,6 +5495,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public int getLastTetherError(String iface) {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getLastTetherError(iface);
@@ -5465,6 +5504,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableIfaces();
@@ -5473,6 +5513,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetheredIfaces();
@@ -5482,6 +5523,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheringErroredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5491,6 +5533,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableUsbRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5500,6 +5543,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableWifiRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableWifiRegexs();
@@ -8049,7 +8093,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 && nc.getOwnerUid() != Process.SYSTEM_UID
                 && lp.getInterfaceName() != null
                 && (lp.hasIpv4DefaultRoute() || lp.hasIpv4UnreachableDefaultRoute())
-                && (lp.hasIpv6DefaultRoute() || lp.hasIpv6UnreachableDefaultRoute());
+                && (lp.hasIpv6DefaultRoute() || lp.hasIpv6UnreachableDefaultRoute())
+                && !lp.hasExcludeRoute();
     }
 
     private static UidRangeParcel[] toUidRangeStableParcels(final @NonNull Set<UidRange> ranges) {
@@ -10602,13 +10647,29 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mQosCallbackTracker.unregisterCallback(callback);
     }
 
+    private boolean isNetworkPreferenceAllowedForProfile(@NonNull UserHandle profile) {
+        // UserManager.isManagedProfile returns true for all apps in managed user profiles.
+        // Enterprise device can be fully managed like device owner and such use case
+        // also should be supported. Calling app check for work profile and fully managed device
+        // is already done in DevicePolicyManager.
+        // This check is an extra caution to be sure device is fully managed or not.
+        final UserManager um = mContext.getSystemService(UserManager.class);
+        final DevicePolicyManager dpm = mContext.getSystemService(DevicePolicyManager.class);
+        if (um.isManagedProfile(profile.getIdentifier())) {
+            return true;
+        }
+        if (SdkLevel.isAtLeastT() && dpm.getDeviceOwner() != null) return true;
+        return false;
+    }
+
     /**
-     * Request that a user profile is put by default on a network matching a given preference.
+     * Set a list of default network selection policies for a user profile or device owner.
      *
      * See the documentation for the individual preferences for a description of the supported
      * behaviors.
      *
-     * @param profile the user profile for whih the preference is being set.
+     * @param profile If the device owner is set, any profile is allowed.
+              Otherwise, the given profile can only be managed profile.
      * @param preferences the list of profile network preferences for the
      *        provided profile.
      * @param listener an optional listener to listen for completion of the operation.
@@ -10633,9 +10694,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
             throw new IllegalArgumentException("Must explicitly specify a user handle ("
                     + "UserHandle.CURRENT not supported)");
         }
-        final UserManager um = mContext.getSystemService(UserManager.class);
-        if (!um.isManagedProfile(profile.getIdentifier())) {
-            throw new IllegalArgumentException("Profile must be a managed profile");
+        if (!isNetworkPreferenceAllowedForProfile(profile)) {
+            throw new IllegalArgumentException("Profile must be a managed profile "
+                    + "or the device owner must be set. ");
         }
 
         final List<ProfileNetworkPreferenceList.Preference> preferenceList =
@@ -10778,10 +10839,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void handleSetProfileNetworkPreference(
             @NonNull final List<ProfileNetworkPreferenceList.Preference> preferenceList,
             @Nullable final IOnCompleteListener listener) {
+        /*
+         * handleSetProfileNetworkPreference is always called for single user.
+         * preferenceList only contains preferences for different uids within the same user
+         * (enforced by getUidListToBeAppliedForNetworkPreference).
+         * Clear all the existing preferences for the user before applying new preferences.
+         *
+         */
+        mProfileNetworkPreferences = mProfileNetworkPreferences.clearUser(
+                preferenceList.get(0).user);
         for (final ProfileNetworkPreferenceList.Preference preference : preferenceList) {
             validateNetworkCapabilitiesOfProfileNetworkPreference(preference.capabilities);
             mProfileNetworkPreferences = mProfileNetworkPreferences.plus(preference);
         }
+
         removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_PROFILE);
         addPerAppDefaultNetworkRequests(
                 createNrisFromProfileNetworkPreferences(mProfileNetworkPreferences));
