@@ -22,16 +22,16 @@ package {
 // different value depending on the branch.
 java_defaults {
     name: "ConnectivityNextEnableDefaults",
-    enabled: false,
+    enabled: true,
 }
 apex_defaults {
     name: "ConnectivityApexDefaults",
     // Tethering app to include in the AOSP apex. Branches that disable the "next" targets may use
     // a stable tethering app instead, but will generally override the AOSP apex to use updatable
     // package names and keys, so that apex will be unused anyway.
-    apps: ["Tethering"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
+    apps: ["TetheringNext"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
 }
-enable_tethering_next_apex = false
+enable_tethering_next_apex = true
 // This is a placeholder comment to avoid merge conflicts
 // as the above target may have different "enabled" values
 // depending on the branch
@@ -60,8 +60,7 @@ apex {
         both: {
             jni_libs: [
                 "libframework-connectivity-jni",
-                // Changed in sc-mainline-prod only: no framework-connectivity-t
-                // "libframework-connectivity-tiramisu-jni"
+                "libframework-connectivity-tiramisu-jni"
             ],
         },
     },
@@ -71,14 +70,15 @@ apex {
     canned_fs_config: "canned_fs_config",
     bpfs: [
         "block.o",
-        "clatd.o_mainline",
+        "clatd.o",
         "dscp_policy.o",
-        "netd.o_mainline",
+        "netd.o",
         "offload.o",
         "test.o",
     ],
     apps: [
         "ServiceConnectivityResources",
+        "HalfSheetUX",
     ],
     prebuilts: [
         "current_sdkinfo",
@@ -91,6 +91,8 @@ apex {
     compressible: true,
 
     androidManifest: "AndroidManifest.xml",
+
+    compat_configs: ["connectivity-platform-compat-config"],
 }
 
 apex_key {
@@ -109,7 +111,7 @@ bootclasspath_fragment {
     name: "com.android.tethering-bootclasspath-fragment",
     contents: [
         "framework-connectivity",
-        // Changed in sc-mainline-prod only: no framework-connectivity-t
+        "framework-connectivity-t",
         "framework-tethering",
     ],
     apex_available: ["com.android.tethering"],
@@ -132,18 +134,15 @@ bootclasspath_fragment {
     // modified by the Soong or platform compat team.
     hidden_api: {
         max_target_r_low_priority: [
-            // Changed in sc-mainline-prod only: no list for
-            // framework-connectivity-t APIs as it is not in the APEX
-	],
+            "hiddenapi/hiddenapi-max-target-r-loprio.txt",
+        ],
         max_target_o_low_priority: [
             "hiddenapi/hiddenapi-max-target-o-low-priority.txt",
-            // Changed in sc-mainline-prod only: no list for
-            // framework-connectivity-t APIs as it is not in the APEX
-	],
+            "hiddenapi/hiddenapi-max-target-o-low-priority-tiramisu.txt",
+        ],
         unsupported: [
             "hiddenapi/hiddenapi-unsupported.txt",
-            // Changed in sc-mainline-prod only: no framework-connectivity-t
-            // "hiddenapi/hiddenapi-unsupported-tiramisu.txt",
+            "hiddenapi/hiddenapi-unsupported-tiramisu.txt",
         ],
 
         // The following packages contain classes from other modules on the
@@ -154,6 +153,7 @@ bootclasspath_fragment {
         // API.
         split_packages: [
             "android.app.usage",
+            "android.nearby",
             "android.net",
             "android.net.netstats",
             "android.net.util",
@@ -166,6 +166,7 @@ bootclasspath_fragment {
         // classes into an API surface, e.g. public, system, etc.. Doing so will
         // result in a build failure due to inconsistent flags.
         package_prefixes: [
+            "android.nearby.aidl",
             "android.net.apf",
             "android.net.connectivity",
             "android.net.netstats.provider",
