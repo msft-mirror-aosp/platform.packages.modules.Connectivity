@@ -72,6 +72,7 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Message
 import android.os.SystemClock
+import android.platform.test.annotations.AppModeFull
 import android.telephony.TelephonyManager
 import android.telephony.data.EpsBearerQosSessionAttributes
 import android.util.DebugUtils.valueToString
@@ -106,7 +107,6 @@ import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnValidationStat
 import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.assertThrows
 import org.junit.After
-import org.junit.Assume.assumeFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -493,33 +493,33 @@ class NetworkAgentTest {
         }
     }
 
-    private fun ncWithAccessUids(vararg uids: Int) = NetworkCapabilities.Builder()
+    private fun ncWithAllowedUids(vararg uids: Int) = NetworkCapabilities.Builder()
                 .addTransportType(TRANSPORT_TEST)
-                .setAccessUids(uids.toSet()).build()
+                .setAllowedUids(uids.toSet()).build()
 
     @Test
     fun testRejectedUpdates() {
         val callback = TestableNetworkCallback(DEFAULT_TIMEOUT_MS)
         // will be cleaned up in tearDown
         registerNetworkCallback(makeTestNetworkRequest(), callback)
-        val agent = createNetworkAgent(initialNc = ncWithAccessUids(200))
+        val agent = createNetworkAgent(initialNc = ncWithAllowedUids(200))
         agent.register()
         agent.markConnected()
 
         // Make sure the UIDs have been ignored.
         callback.expectCallback<Available>(agent.network!!)
         callback.expectCapabilitiesThat(agent.network!!) {
-            it.accessUids.isEmpty() && !it.hasCapability(NET_CAPABILITY_VALIDATED)
+            it.allowedUids.isEmpty() && !it.hasCapability(NET_CAPABILITY_VALIDATED)
         }
         callback.expectCallback<LinkPropertiesChanged>(agent.network!!)
         callback.expectCallback<BlockedStatus>(agent.network!!)
         callback.expectCapabilitiesThat(agent.network!!) {
-            it.accessUids.isEmpty() && it.hasCapability(NET_CAPABILITY_VALIDATED)
+            it.allowedUids.isEmpty() && it.hasCapability(NET_CAPABILITY_VALIDATED)
         }
         callback.assertNoCallback(NO_CALLBACK_TIMEOUT)
 
         // Make sure that the UIDs are also ignored upon update
-        agent.sendNetworkCapabilities(ncWithAccessUids(200, 300))
+        agent.sendNetworkCapabilities(ncWithAllowedUids(200, 300))
         callback.assertNoCallback(NO_CALLBACK_TIMEOUT)
     }
 
@@ -946,11 +946,9 @@ class NetworkAgentTest {
         return Pair(agent, qosTestSocket!!)
     }
 
+    @AppModeFull(reason = "Instant apps don't have permission to bind sockets.")
     @Test
     fun testQosCallbackRegisterWithUnregister() {
-        // Instant apps can't bind sockets to localhost
-        // TODO: use @AppModeFull when supported by DevSdkIgnoreRunner
-        assumeFalse(realContext.packageManager.isInstantApp())
         val (agent, socket) = setupForQosCallbackTesting()
 
         val qosCallback = TestableQosCallback()
@@ -975,11 +973,9 @@ class NetworkAgentTest {
         }
     }
 
+    @AppModeFull(reason = "Instant apps don't have permission to bind sockets.")
     @Test
     fun testQosCallbackOnQosSession() {
-        // Instant apps can't bind sockets to localhost
-        // TODO: use @AppModeFull when supported by DevSdkIgnoreRunner
-        assumeFalse(realContext.packageManager.isInstantApp())
         val (agent, socket) = setupForQosCallbackTesting()
         val qosCallback = TestableQosCallback()
         Executors.newSingleThreadExecutor().let { executor ->
@@ -1023,11 +1019,9 @@ class NetworkAgentTest {
         }
     }
 
+    @AppModeFull(reason = "Instant apps don't have permission to bind sockets.")
     @Test
     fun testQosCallbackOnError() {
-        // Instant apps can't bind sockets to localhost
-        // TODO: use @AppModeFull when supported by DevSdkIgnoreRunner
-        assumeFalse(realContext.packageManager.isInstantApp())
         val (agent, socket) = setupForQosCallbackTesting()
         val qosCallback = TestableQosCallback()
         Executors.newSingleThreadExecutor().let { executor ->
@@ -1064,11 +1058,9 @@ class NetworkAgentTest {
         }
     }
 
+    @AppModeFull(reason = "Instant apps don't have permission to bind sockets.")
     @Test
     fun testQosCallbackIdsAreMappedCorrectly() {
-        // Instant apps can't bind sockets to localhost
-        // TODO: use @AppModeFull when supported by DevSdkIgnoreRunner
-        assumeFalse(realContext.packageManager.isInstantApp())
         val (agent, socket) = setupForQosCallbackTesting()
         val qosCallback1 = TestableQosCallback()
         val qosCallback2 = TestableQosCallback()
@@ -1107,11 +1099,9 @@ class NetworkAgentTest {
         }
     }
 
+    @AppModeFull(reason = "Instant apps don't have permission to bind sockets.")
     @Test
     fun testQosCallbackWhenNetworkReleased() {
-        // Instant apps can't bind sockets to localhost
-        // TODO: use @AppModeFull when supported by DevSdkIgnoreRunner
-        assumeFalse(realContext.packageManager.isInstantApp())
         val (agent, socket) = setupForQosCallbackTesting()
         Executors.newSingleThreadExecutor().let { executor ->
             try {
@@ -1151,8 +1141,9 @@ class NetworkAgentTest {
         )
     }
 
+    @AppModeFull(reason = "Instant apps don't have permission to bind sockets.")
     @Test
-    fun testDestroyAndAwaitReplacement() {
+    fun testUnregisterAfterReplacement() {
         // Keeps an eye on all test networks.
         val matchAllCallback = TestableNetworkCallback(timeoutMs = DEFAULT_TIMEOUT_MS)
         registerNetworkCallback(makeTestNetworkRequest(), matchAllCallback)
@@ -1180,15 +1171,15 @@ class NetworkAgentTest {
         // Mark the first network as awaiting replacement. This should destroy the underlying
         // native network and send onNetworkDestroyed, but will not send any NetworkCallbacks,
         // because for callback and scoring purposes network1 is still connected.
-        agent1.destroyAndAwaitReplacement(5_000 /* timeoutMillis */)
+        agent1.unregisterAfterReplacement(5_000 /* timeoutMillis */)
         agent1.expectCallback<OnNetworkDestroyed>()
         assertThrows(IOException::class.java) { network1.bindSocket(DatagramSocket()) }
         assertNotNull(mCM.getLinkProperties(network1))
 
-        // Calling destroyAndAwaitReplacement more than once has no effect.
+        // Calling unregisterAfterReplacement more than once has no effect.
         // If it did, this test would fail because the 1ms timeout means that the network would be
         // torn down before the replacement arrives.
-        agent1.destroyAndAwaitReplacement(1 /* timeoutMillis */)
+        agent1.unregisterAfterReplacement(1 /* timeoutMillis */)
 
         // Connect a third network. Because network1 is awaiting replacement, network3 is preferred
         // as soon as it validates (until then, it is outscored by network1).
@@ -1216,14 +1207,14 @@ class NetworkAgentTest {
         matchAllCallback.expectCallback<Losing>(network3)
         testCallback.expectAvailableCallbacks(network4, validated = true)
         mCM.unregisterNetworkCallback(agent4callback)
-        agent3.destroyAndAwaitReplacement(5_000)
+        agent3.unregisterAfterReplacement(5_000)
         agent3.expectCallback<OnNetworkUnwanted>()
         matchAllCallback.expectCallback<Lost>(network3, 1000L)
         agent3.expectCallback<OnNetworkDestroyed>()
 
         // Now mark network4 awaiting replacement with a low timeout, and check that if no
         // replacement arrives, it is torn down.
-        agent4.destroyAndAwaitReplacement(100 /* timeoutMillis */)
+        agent4.unregisterAfterReplacement(100 /* timeoutMillis */)
         matchAllCallback.expectCallback<Lost>(network4, 1000L /* timeoutMs */)
         testCallback.expectCallback<Lost>(network4, 1000L /* timeoutMs */)
         agent4.expectCallback<OnNetworkDestroyed>()
@@ -1234,7 +1225,7 @@ class NetworkAgentTest {
         val (agent5, network5) = connectNetwork()
         matchAllCallback.expectAvailableThenValidatedCallbacks(network5)
         testCallback.expectAvailableThenValidatedCallbacks(network5)
-        agent5.destroyAndAwaitReplacement(5_000 /* timeoutMillis */)
+        agent5.unregisterAfterReplacement(5_000 /* timeoutMillis */)
         agent5.unregister()
         matchAllCallback.expectCallback<Lost>(network5, 1000L /* timeoutMs */)
         testCallback.expectCallback<Lost>(network5, 1000L /* timeoutMs */)
@@ -1257,7 +1248,7 @@ class NetworkAgentTest {
             it.hasCapability(NET_CAPABILITY_VALIDATED)
         }
 
-        wifiAgent.destroyAndAwaitReplacement(5_000 /* timeoutMillis */)
+        wifiAgent.unregisterAfterReplacement(5_000 /* timeoutMillis */)
         wifiAgent.expectCallback<OnNetworkDestroyed>()
 
         // Once the network is awaiting replacement, changing LinkProperties, NetworkCapabilities or
@@ -1283,5 +1274,24 @@ class NetworkAgentTest {
         matchAllCallback.expectAvailableThenValidatedCallbacks(newWifiNetwork)
         matchAllCallback.expectCallback<Lost>(wifiNetwork)
         wifiAgent.expectCallback<OnNetworkUnwanted>()
+    }
+
+    @Test
+    fun testUnregisterAgentBeforeAgentFullyConnected() {
+        val specifier = UUID.randomUUID().toString()
+        val callback = TestableNetworkCallback()
+        val transports = intArrayOf(TRANSPORT_CELLULAR)
+        // Ensure this NetworkAgent is never unneeded by filing a request with its specifier.
+        requestNetwork(makeTestNetworkRequest(specifier = specifier), callback)
+        val nc = makeTestNetworkCapabilities(specifier, transports)
+        val agent = createNetworkAgent(realContext, initialNc = nc)
+        // Connect the agent
+        agent.register()
+        // Mark agent connected then unregister agent immediately. Verify that both available and
+        // lost callback should be sent still.
+        agent.markConnected()
+        agent.unregister()
+        callback.expectCallback<Available>(agent.network!!)
+        callback.eventuallyExpect<Lost> { it.network == agent.network }
     }
 }

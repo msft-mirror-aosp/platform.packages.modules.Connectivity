@@ -21,6 +21,8 @@ import android.annotation.NonNull;
 import android.annotation.SystemApi;
 import android.util.Log;
 
+import com.android.internal.annotations.VisibleForTesting;
+
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
@@ -44,8 +46,10 @@ public final class QosCallbackException extends Exception {
             EX_TYPE_FILTER_NONE,
             EX_TYPE_FILTER_NETWORK_RELEASED,
             EX_TYPE_FILTER_SOCKET_NOT_BOUND,
+            EX_TYPE_FILTER_SOCKET_NOT_CONNECTED,
             EX_TYPE_FILTER_NOT_SUPPORTED,
             EX_TYPE_FILTER_SOCKET_LOCAL_ADDRESS_CHANGED,
+            EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ExceptionType {}
@@ -63,10 +67,16 @@ public final class QosCallbackException extends Exception {
     public static final int EX_TYPE_FILTER_SOCKET_NOT_BOUND = 2;
 
     /** {@hide} */
-    public static final int EX_TYPE_FILTER_NOT_SUPPORTED = 3;
+    public static final int EX_TYPE_FILTER_SOCKET_NOT_CONNECTED = 3;
 
     /** {@hide} */
-    public static final int EX_TYPE_FILTER_SOCKET_LOCAL_ADDRESS_CHANGED = 4;
+    public static final int EX_TYPE_FILTER_NOT_SUPPORTED = 4;
+
+    /** {@hide} */
+    public static final int EX_TYPE_FILTER_SOCKET_LOCAL_ADDRESS_CHANGED = 5;
+
+    /** {@hide} */
+    public static final int EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED = 6;
 
     /**
      * Creates exception based off of a type and message.  Not all types of exceptions accept a
@@ -81,12 +91,17 @@ public final class QosCallbackException extends Exception {
                 return new QosCallbackException(new NetworkReleasedException());
             case EX_TYPE_FILTER_SOCKET_NOT_BOUND:
                 return new QosCallbackException(new SocketNotBoundException());
+            case EX_TYPE_FILTER_SOCKET_NOT_CONNECTED:
+                return new QosCallbackException(new SocketNotConnectedException());
             case EX_TYPE_FILTER_NOT_SUPPORTED:
                 return new QosCallbackException(new UnsupportedOperationException(
                         "This device does not support the specified filter"));
             case EX_TYPE_FILTER_SOCKET_LOCAL_ADDRESS_CHANGED:
                 return new QosCallbackException(
                         new SocketLocalAddressChangedException());
+            case EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED:
+                return new QosCallbackException(
+                        new SocketRemoteAddressChangedException());
             default:
                 Log.wtf(TAG, "create: No case setup for exception type: '" + type + "'");
                 return new QosCallbackException(
@@ -94,16 +109,12 @@ public final class QosCallbackException extends Exception {
         }
     }
 
-    /**
-     * @hide
-     */
+    @VisibleForTesting
     public QosCallbackException(@NonNull final String message) {
         super(message);
     }
 
-    /**
-     * @hide
-     */
+    @VisibleForTesting
     public QosCallbackException(@NonNull final Throwable cause) {
         super(cause);
     }

@@ -82,12 +82,11 @@ import android.test.suitebuilder.annotation.SmallTest;
 import android.util.ArraySet;
 import android.util.Range;
 
-import androidx.test.runner.AndroidJUnit4;
-
 import com.android.testutils.CompatUtil;
 import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -99,8 +98,12 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
-@RunWith(AndroidJUnit4.class)
 @SmallTest
+@RunWith(DevSdkIgnoreRunner.class)
+// NetworkCapabilities is only updatable on S+, and this test covers behavior which implementation
+// is self-contained within NetworkCapabilities.java, so it does not need to be run on, or
+// compatible with, earlier releases.
+@IgnoreUpTo(Build.VERSION_CODES.R)
 @ConnectivityModuleTest
 public class NetworkCapabilitiesTest {
     private static final String TEST_SSID = "TEST_SSID";
@@ -310,38 +313,38 @@ public class NetworkCapabilitiesTest {
     }
 
     @Test @IgnoreUpTo(SC_V2)
-    public void testSetAccessUids() {
+    public void testSetAllowedUids() {
         final NetworkCapabilities nc = new NetworkCapabilities();
-        assertThrows(NullPointerException.class, () -> nc.setAccessUids(null));
-        assertFalse(nc.hasAccessUids());
-        assertFalse(nc.isAccessUid(0));
-        assertFalse(nc.isAccessUid(1000));
-        assertEquals(0, nc.getAccessUids().size());
-        nc.setAccessUids(new ArraySet<>());
-        assertFalse(nc.hasAccessUids());
-        assertFalse(nc.isAccessUid(0));
-        assertFalse(nc.isAccessUid(1000));
-        assertEquals(0, nc.getAccessUids().size());
+        assertThrows(NullPointerException.class, () -> nc.setAllowedUids(null));
+        assertFalse(nc.hasAllowedUids());
+        assertFalse(nc.isUidWithAccess(0));
+        assertFalse(nc.isUidWithAccess(1000));
+        assertEquals(0, nc.getAllowedUids().size());
+        nc.setAllowedUids(new ArraySet<>());
+        assertFalse(nc.hasAllowedUids());
+        assertFalse(nc.isUidWithAccess(0));
+        assertFalse(nc.isUidWithAccess(1000));
+        assertEquals(0, nc.getAllowedUids().size());
 
         final ArraySet<Integer> uids = new ArraySet<>();
         uids.add(200);
         uids.add(250);
         uids.add(-1);
         uids.add(Integer.MAX_VALUE);
-        nc.setAccessUids(uids);
+        nc.setAllowedUids(uids);
         assertNotEquals(nc, new NetworkCapabilities());
-        assertTrue(nc.hasAccessUids());
+        assertTrue(nc.hasAllowedUids());
 
         final List<Integer> includedList = List.of(-2, 0, 199, 700, 901, 1000, Integer.MIN_VALUE);
         final List<Integer> excludedList = List.of(-1, 200, 250, Integer.MAX_VALUE);
         for (final int uid : includedList) {
-            assertFalse(nc.isAccessUid(uid));
+            assertFalse(nc.isUidWithAccess(uid));
         }
         for (final int uid : excludedList) {
-            assertTrue(nc.isAccessUid(uid));
+            assertTrue(nc.isUidWithAccess(uid));
         }
 
-        final Set<Integer> outUids = nc.getAccessUids();
+        final Set<Integer> outUids = nc.getAllowedUids();
         assertEquals(4, outUids.size());
         for (final int uid : includedList) {
             assertFalse(outUids.contains(uid));
@@ -361,10 +364,10 @@ public class NetworkCapabilitiesTest {
             .addCapability(NET_CAPABILITY_EIMS)
             .addCapability(NET_CAPABILITY_NOT_METERED);
         if (isAtLeastS()) {
-            final ArraySet<Integer> accessUids = new ArraySet<>();
-            accessUids.add(4);
-            accessUids.add(9);
-            netCap.setAccessUids(accessUids);
+            final ArraySet<Integer> allowedUids = new ArraySet<>();
+            allowedUids.add(4);
+            allowedUids.add(9);
+            netCap.setAllowedUids(allowedUids);
             netCap.setSubscriptionIds(Set.of(TEST_SUBID1, TEST_SUBID2));
             netCap.setUids(uids);
         }
@@ -489,7 +492,7 @@ public class NetworkCapabilitiesTest {
         assertTrue(netCap.hasCapability(NET_CAPABILITY_NOT_RESTRICTED));
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testOemPrivate() {
         NetworkCapabilities nc = new NetworkCapabilities();
         // By default OEM_PRIVATE is neither in the required or forbidden lists and the network is
@@ -516,7 +519,7 @@ public class NetworkCapabilitiesTest {
         assertFalse(nr.satisfiedByNetworkCapabilities(new NetworkCapabilities()));
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testForbiddenCapabilities() {
         NetworkCapabilities network = new NetworkCapabilities();
 
@@ -630,7 +633,7 @@ public class NetworkCapabilitiesTest {
         return new Range<Integer>(from, to);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     public void testSetAdministratorUids() {
         NetworkCapabilities nc =
                 new NetworkCapabilities().setAdministratorUids(new int[] {2, 1, 3});
@@ -638,7 +641,7 @@ public class NetworkCapabilitiesTest {
         assertArrayEquals(new int[] {1, 2, 3}, nc.getAdministratorUids());
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     public void testSetAdministratorUidsWithDuplicates() {
         try {
             new NetworkCapabilities().setAdministratorUids(new int[] {1, 1});
@@ -750,7 +753,7 @@ public class NetworkCapabilitiesTest {
                 () -> nc2.addTransportType(TRANSPORT_WIFI));
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R) // New behavior in updatable NetworkCapabilities (S+)
+    @Test
     public void testSetNetworkSpecifierOnTestMultiTransportNc() {
         final NetworkSpecifier specifier = CompatUtil.makeEthernetNetworkSpecifier("eth0");
         NetworkCapabilities nc = new NetworkCapabilities.Builder()
@@ -859,7 +862,7 @@ public class NetworkCapabilitiesTest {
         assertEquals(TRANSPORT_TEST, transportTypes[3]);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     public void testTelephonyNetworkSpecifier() {
         final TelephonyNetworkSpecifier specifier = new TelephonyNetworkSpecifier(1);
         final NetworkCapabilities nc1 = new NetworkCapabilities.Builder()
@@ -970,7 +973,7 @@ public class NetworkCapabilitiesTest {
         assertEquals(specifier, nc.getNetworkSpecifier());
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     public void testAdministratorUidsAndOwnerUid() {
         // Test default owner uid.
         // If the owner uid is not set, the default value should be Process.INVALID_UID.
@@ -1014,7 +1017,7 @@ public class NetworkCapabilitiesTest {
         return nc;
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testSubIds() throws Exception {
         final NetworkCapabilities ncWithoutId = capsWithSubIds();
         final NetworkCapabilities ncWithId = capsWithSubIds(TEST_SUBID1);
@@ -1036,7 +1039,7 @@ public class NetworkCapabilitiesTest {
         assertTrue(requestWithoutId.canBeSatisfiedBy(ncWithId));
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testEqualsSubIds() throws Exception {
         assertEquals(capsWithSubIds(), capsWithSubIds());
         assertNotEquals(capsWithSubIds(), capsWithSubIds(TEST_SUBID1));
@@ -1185,7 +1188,7 @@ public class NetworkCapabilitiesTest {
         }
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     public void testBuilder() {
         final int ownerUid = 1001;
         final int signalStrength = -80;
@@ -1255,7 +1258,7 @@ public class NetworkCapabilitiesTest {
         }
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testBuilderWithoutDefaultCap() {
         final NetworkCapabilities nc =
                 NetworkCapabilities.Builder.withoutDefaultCapabilities().build();
@@ -1266,12 +1269,12 @@ public class NetworkCapabilitiesTest {
         assertEquals(0, nc.getCapabilities().length);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testRestrictCapabilitiesForTestNetworkByNotOwnerWithNonRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithNonRestrictedNc(false /* isOwner */);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testRestrictCapabilitiesForTestNetworkByOwnerWithNonRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithNonRestrictedNc(true /* isOwner */);
     }
@@ -1316,12 +1319,12 @@ public class NetworkCapabilitiesTest {
         assertEquals(expectedNcBuilder.build(), nonRestrictedNc);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testRestrictCapabilitiesForTestNetworkByNotOwnerWithRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithRestrictedNc(false /* isOwner */);
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
     public void testRestrictCapabilitiesForTestNetworkByOwnerWithRestrictedNc() {
         testRestrictCapabilitiesForTestNetworkWithRestrictedNc(true /* isOwner */);
     }
