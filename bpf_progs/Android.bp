@@ -47,6 +47,7 @@ cc_library_headers {
         "//packages/modules/Connectivity/service/native/libs/libclat",
         "//packages/modules/Connectivity/Tethering",
         "//packages/modules/Connectivity/service/native",
+        "//packages/modules/Connectivity/tests/native",
         "//packages/modules/Connectivity/service-t/native/libs/libnetworkstats",
         "//packages/modules/Connectivity/tests/unit/jni",
         "//system/netd/server",
@@ -58,8 +59,20 @@ cc_library_headers {
 // bpf kernel programs
 //
 bpf {
+    name: "block.o",
+    srcs: ["block.c"],
+    btf: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+    ],
+    sub_dir: "net_shared",
+}
+
+bpf {
     name: "dscp_policy.o",
     srcs: ["dscp_policy.c"],
+    btf: true,
     cflags: [
         "-Wall",
         "-Werror",
@@ -86,8 +99,9 @@ bpf {
 }
 
 bpf {
-    name: "clatd.o_mainline",
+    name: "clatd.o",
     srcs: ["clatd.c"],
+    btf: true,
     cflags: [
         "-Wall",
         "-Werror",
@@ -99,8 +113,9 @@ bpf {
 }
 
 bpf {
-    name: "netd.o_mainline",
+    name: "netd.o",
     srcs: ["netd.c"],
+    btf: true,
     cflags: [
         "-Wall",
         "-Werror",

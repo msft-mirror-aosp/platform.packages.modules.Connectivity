@@ -941,6 +941,7 @@ public class ConnectivityManager {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 130143562)
     private final IConnectivityManager mService;
 
+    // LINT.IfChange(firewall_chain)
     /**
      * Firewall chain for device idle (doze mode).
      * Allowlist of apps that have network access in device idle.
@@ -991,6 +992,41 @@ public class ConnectivityManager {
         FIREWALL_CHAIN_LOW_POWER_STANDBY
     })
     public @interface FirewallChain {}
+    // LINT.ThenChange(packages/modules/Connectivity/service/native/include/Common.h)
+
+    /**
+     * A firewall rule which allows or drops packets depending on existing policy.
+     * Used by {@link #setUidFirewallRule(int, int, int)} to follow existing policy to handle
+     * specific uid's packets in specific firewall chain.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_RULE_DEFAULT = 0;
+
+    /**
+     * A firewall rule which allows packets. Used by {@link #setUidFirewallRule(int, int, int)} to
+     * allow specific uid's packets in specific firewall chain.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_RULE_ALLOW = 1;
+
+    /**
+     * A firewall rule which drops packets. Used by {@link #setUidFirewallRule(int, int, int)} to
+     * drop specific uid's packets in specific firewall chain.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_RULE_DENY = 2;
+
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(flag = false, prefix = "FIREWALL_RULE_", value = {
+        FIREWALL_RULE_DEFAULT,
+        FIREWALL_RULE_ALLOW,
+        FIREWALL_RULE_DENY
+    })
+    public @interface FirewallRule {}
 
     /**
      * A kludge to facilitate static access where a Context pointer isn't available, like in the
@@ -1623,16 +1659,45 @@ public class ConnectivityManager {
     }
 
     /**
-     * Get the {@link NetworkCapabilities} for the given {@link Network}.  This
-     * will return {@code null} if the network is unknown or if the |network| argument is null.
+     * Redact {@link LinkProperties} for a given package
      *
-     * This will remove any location sensitive data in {@link TransportInfo} embedded in
-     * {@link NetworkCapabilities#getTransportInfo()}. Some transport info instances like
-     * {@link android.net.wifi.WifiInfo} contain location sensitive information. Retrieving
-     * this location sensitive information (subject to app's location permissions) will be
-     * noted by system. To include any location sensitive data in {@link TransportInfo},
-     * use a {@link NetworkCallback} with
-     * {@link NetworkCallback#FLAG_INCLUDE_LOCATION_INFO} flag.
+     * Returns an instance of the given {@link LinkProperties} appropriately redacted to send to the
+     * given package, considering its permissions.
+     *
+     * @param lp A {@link LinkProperties} which will be redacted.
+     * @param uid The target uid.
+     * @param packageName The name of the package, for appops logging.
+     * @return A redacted {@link LinkProperties} which is appropriate to send to the given uid,
+     *         or null if the uid lacks the ACCESS_NETWORK_STATE permission.
+     * @hide
+     */
+    @RequiresPermission(anyOf = {
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+            android.Manifest.permission.NETWORK_STACK,
+            android.Manifest.permission.NETWORK_SETTINGS})
+    @SystemApi(client = MODULE_LIBRARIES)
+    @Nullable
+    public LinkProperties getRedactedLinkPropertiesForPackage(@NonNull LinkProperties lp, int uid,
+            @NonNull String packageName) {
+        try {
+            return mService.getRedactedLinkPropertiesForPackage(
+                    lp, uid, packageName, getAttributionTag());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Get the {@link NetworkCapabilities} for the given {@link Network}, or null.
+     *
+     * This will remove any location sensitive data in the returned {@link NetworkCapabilities}.
+     * Some {@link TransportInfo} instances like {@link android.net.wifi.WifiInfo} contain location
+     * sensitive information. To retrieve this location sensitive information (subject to
+     * the caller's location permissions), use a {@link NetworkCallback} with the
+     * {@link NetworkCallback#FLAG_INCLUDE_LOCATION_INFO} flag instead.
+     *
+     * This method returns {@code null} if the network is unknown or if the |network| argument
+     * is null.
      *
      * @param network The {@link Network} object identifying the network in question.
      * @return The {@link NetworkCapabilities} for the network, or {@code null}.
@@ -1643,6 +1708,40 @@ public class ConnectivityManager {
         try {
             return mService.getNetworkCapabilities(
                     network, mContext.getOpPackageName(), getAttributionTag());
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Redact {@link NetworkCapabilities} for a given package.
+     *
+     * Returns an instance of {@link NetworkCapabilities} that is appropriately redacted to send
+     * to the given package, considering its permissions. If the passed capabilities contain
+     * location-sensitive information, they will be redacted to the correct degree for the location
+     * permissions of the app (COARSE or FINE), and will blame the UID accordingly for retrieving
+     * that level of location. If the UID holds no location permission, the returned object will
+     * contain no location-sensitive information and the UID is not blamed.
+     *
+     * @param nc A {@link NetworkCapabilities} instance which will be redacted.
+     * @param uid The target uid.
+     * @param packageName The name of the package, for appops logging.
+     * @return A redacted {@link NetworkCapabilities} which is appropriate to send to the given uid,
+     *         or null if the uid lacks the ACCESS_NETWORK_STATE permission.
+     * @hide
+     */
+    @RequiresPermission(anyOf = {
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+            android.Manifest.permission.NETWORK_STACK,
+            android.Manifest.permission.NETWORK_SETTINGS})
+    @SystemApi(client = MODULE_LIBRARIES)
+    @Nullable
+    public NetworkCapabilities getRedactedNetworkCapabilitiesForPackage(
+            @NonNull NetworkCapabilities nc,
+            int uid, @NonNull String packageName) {
+        try {
+            return mService.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName,
+                    getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2490,9 +2589,24 @@ public class ConnectivityManager {
      * {@hide}
      */
     public ConnectivityManager(Context context, IConnectivityManager service) {
+        this(context, service, true /* newStatic */);
+    }
+
+    private ConnectivityManager(Context context, IConnectivityManager service, boolean newStatic) {
         mContext = Objects.requireNonNull(context, "missing context");
         mService = Objects.requireNonNull(service, "missing IConnectivityManager");
-        sInstance = this;
+        // sInstance is accessed without a lock, so it may actually be reassigned several times with
+        // different ConnectivityManager, but that's still OK considering its usage.
+        if (sInstance == null && newStatic) {
+            final Context appContext = mContext.getApplicationContext();
+            // Don't create static ConnectivityManager instance again to prevent infinite loop.
+            // If the application context is null, we're either in the system process or
+            // it's the application context very early in app initialization. In both these
+            // cases, the passed-in Context will not be freed, so it's safe to pass it to the
+            // service. http://b/27532714 .
+            sInstance = new ConnectivityManager(appContext != null ? appContext : context, service,
+                    false /* newStatic */);
+        }
     }
 
     /** {@hide} */
@@ -3545,7 +3659,20 @@ public class ConnectivityManager {
          * @hide
          */
         public static final int FLAG_NONE = 0;
+
         /**
+         * Inclusion of this flag means location-sensitive redaction requests keeping location info.
+         *
+         * Some objects like {@link NetworkCapabilities} may contain location-sensitive information.
+         * Prior to Android 12, this information is always returned to apps holding the appropriate
+         * permission, possibly noting that the app has used location.
+         * <p>In Android 12 and above, by default the sent objects do not contain any location
+         * information, even if the app holds the necessary permissions, and the system does not
+         * take note of location usage by the app. Apps can request that location information is
+         * included, in which case the system will check location permission and the location
+         * toggle state, and take note of location usage by the app if any such information is
+         * returned.
+         *
          * Use this flag to include any location sensitive data in {@link NetworkCapabilities} sent
          * via {@link #onCapabilitiesChanged(Network, NetworkCapabilities)}.
          * <p>
@@ -3562,8 +3689,7 @@ public class ConnectivityManager {
          * <li> Retrieving this location sensitive information (subject to app's location
          * permissions) will be noted by system. </li>
          * <li> Without this flag any {@link NetworkCapabilities} provided via the callback does
-         * not include location sensitive info.
-         * </p>
+         * not include location sensitive information.
          */
         // Note: Some existing fields which are location sensitive may still be included without
         // this flag if the app targets SDK < S (to maintain backwards compatibility).
@@ -5631,8 +5757,8 @@ public class ConnectivityManager {
     }
 
     /**
-     * Sets whether the specified UID is allowed to use data on metered networks even when
-     * background data is restricted.
+     * Adds the specified UID to the list of UIds that are allowed to use data on metered networks
+     * even when background data is restricted. The deny list takes precedence over the allow list.
      *
      * @param uid uid of target app
      * @throws IllegalStateException if updating allow list failed.
@@ -5644,17 +5770,40 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_STACK,
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
     })
-    public void updateMeteredNetworkAllowList(final int uid, final boolean add) {
+    public void addUidToMeteredNetworkAllowList(final int uid) {
         try {
-            mService.updateMeteredNetworkAllowList(uid, add);
+            mService.updateMeteredNetworkAllowList(uid, true /* add */);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
     }
 
     /**
-     * Sets whether the specified UID is prevented from using background data on metered networks.
-     * Takes precedence over {@link #updateMeteredNetworkAllowList}.
+     * Removes the specified UID from the list of UIDs that are allowed to use background data on
+     * metered networks when background data is restricted. The deny list takes precedence over
+     * the allow list.
+     *
+     * @param uid uid of target app
+     * @throws IllegalStateException if updating allow list failed.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.NETWORK_SETTINGS,
+            android.Manifest.permission.NETWORK_STACK,
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
+    })
+    public void removeUidFromMeteredNetworkAllowList(final int uid) {
+        try {
+            mService.updateMeteredNetworkAllowList(uid, false /* remove */);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Adds the specified UID to the list of UIDs that are not allowed to use background data on
+     * metered networks. Takes precedence over {@link #addUidToMeteredNetworkAllowList}.
      *
      * @param uid uid of target app
      * @throws IllegalStateException if updating deny list failed.
@@ -5666,9 +5815,32 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_STACK,
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
     })
-    public void updateMeteredNetworkDenyList(final int uid, final boolean add) {
+    public void addUidToMeteredNetworkDenyList(final int uid) {
         try {
-            mService.updateMeteredNetworkDenyList(uid, add);
+            mService.updateMeteredNetworkDenyList(uid, true /* add */);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Removes the specified UID from the list of UIds that can use use background data on metered
+     * networks if background data is not restricted. The deny list takes precedence over the
+     * allow list.
+     *
+     * @param uid uid of target app
+     * @throws IllegalStateException if updating deny list failed.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.NETWORK_SETTINGS,
+            android.Manifest.permission.NETWORK_STACK,
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
+    })
+    public void removeUidFromMeteredNetworkDenyList(final int uid) {
+        try {
+            mService.updateMeteredNetworkDenyList(uid, false /* remove */);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -5679,8 +5851,9 @@ public class ConnectivityManager {
      *
      * @param chain target chain.
      * @param uid uid to allow/deny.
-     * @param allow whether networking is allowed or denied.
+     * @param rule firewall rule to allow/drop packets.
      * @throws IllegalStateException if updating firewall rule failed.
+     * @throws IllegalArgumentException if {@code rule} is not a valid rule.
      * @hide
      */
     @SystemApi(client = MODULE_LIBRARIES)
@@ -5689,10 +5862,10 @@ public class ConnectivityManager {
             android.Manifest.permission.NETWORK_STACK,
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
     })
-    public void updateFirewallRule(@FirewallChain final int chain, final int uid,
-            final boolean allow) {
+    public void setUidFirewallRule(@FirewallChain final int chain, final int uid,
+            @FirewallRule final int rule) {
         try {
-            mService.updateFirewallRule(chain, uid, allow);
+            mService.setUidFirewallRule(chain, uid, rule);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -5739,29 +5912,6 @@ public class ConnectivityManager {
         Objects.requireNonNull(uids);
         try {
             mService.replaceFirewallChain(chain, uids);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
-    }
-
-    /**
-     * Request to change the current active network stats map.
-     * STOPSHIP: Remove this API before T sdk finalized, this API is temporary added for the
-     * NetworkStatsFactory which is platform code but will be moved into connectivity (tethering)
-     * mainline module.
-     *
-     * @throws IllegalStateException if swapping active stats map failed.
-     * @hide
-     */
-    @SystemApi(client = MODULE_LIBRARIES)
-    @RequiresPermission(anyOf = {
-            android.Manifest.permission.NETWORK_SETTINGS,
-            android.Manifest.permission.NETWORK_STACK,
-            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
-    })
-    public void swapActiveStatsMap() {
-        try {
-            mService.swapActiveStatsMap();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
