@@ -24,6 +24,7 @@
 #include <nativehelper/JNIHelp.h>
 #include <nativehelper/ScopedUtfChars.h>
 #include <nativehelper/ScopedPrimitiveArray.h>
+#include <netjniutils/netjniutils.h>
 #include <net/if.h>
 #include <vector>
 
@@ -108,6 +109,7 @@ static jint native_replaceUidChain(JNIEnv* env, jobject clazz, jstring name, jbo
     }
 
     size_t size = uids.size();
+    static_assert(sizeof(*(uids.get())) == sizeof(int32_t));
     std::vector<int32_t> data ((int32_t *)&uids[0], (int32_t*)&uids[size]);
     int res = mTc.replaceUidOwnerMap(chainName, isAllowlist, data);
     if (res) {
@@ -116,27 +118,11 @@ static jint native_replaceUidChain(JNIEnv* env, jobject clazz, jstring name, jbo
     return (jint)res;
 }
 
-static FirewallType getFirewallType(ChildChain chain) {
-    switch (chain) {
-        case DOZABLE:
-            return ALLOWLIST;
-        case STANDBY:
-            return DENYLIST;
-        case POWERSAVE:
-            return ALLOWLIST;
-        case RESTRICTED:
-            return ALLOWLIST;
-        case NONE:
-        default:
-            return DENYLIST;
-    }
-}
-
 static jint native_setUidRule(JNIEnv* env, jobject clazz, jint childChain, jint uid,
                           jint firewallRule) {
     auto chain = static_cast<ChildChain>(childChain);
     auto rule = static_cast<FirewallRule>(firewallRule);
-    FirewallType fType = getFirewallType(chain);
+    FirewallType fType = mTc.getFirewallType(chain);
 
     int res = mTc.changeUidOwnerRule(chain, uid, rule, fType);
     if (res) {
@@ -160,6 +146,7 @@ static jint native_addUidInterfaceRules(JNIEnv* env, jobject clazz, jstring ifNa
     }
 
     size_t size = uids.size();
+    static_assert(sizeof(*(uids.get())) == sizeof(int32_t));
     std::vector<int32_t> data ((int32_t *)&uids[0], (int32_t*)&uids[size]);
     Status status = mTc.addUidInterfaceRules(ifIndex, data);
     if (!isOk(status)) {
@@ -175,6 +162,7 @@ static jint native_removeUidInterfaceRules(JNIEnv* env, jobject clazz, jintArray
     }
 
     size_t size = uids.size();
+    static_assert(sizeof(*(uids.get())) == sizeof(int32_t));
     std::vector<int32_t> data ((int32_t *)&uids[0], (int32_t*)&uids[size]);
     Status status = mTc.removeUidInterfaceRules(data);
     if (!isOk(status)) {
@@ -202,22 +190,13 @@ static void native_setPermissionForUids(JNIEnv* env, jobject clazz, jint permiss
     mTc.setPermissionForUids(permission, data);
 }
 
-static jint native_setCounterSet(JNIEnv* env, jobject clazz, jint setNum, jint uid) {
-    uid_t callingUid = getuid();
-    int res = mTc.setCounterSet(setNum, (uid_t)uid, callingUid);
-    if (res) {
-      ALOGE("%s failed, error code = %d", __func__, res);
+static void native_dump(JNIEnv* env, jobject clazz, jobject javaFd, jboolean verbose) {
+    int fd = netjniutils::GetNativeFileDescriptor(env, javaFd);
+    if (fd < 0) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid file descriptor");
+        return;
     }
-    return (jint)res;
-}
-
-static jint native_deleteTagData(JNIEnv* env, jobject clazz, jint tagNum, jint uid) {
-    uid_t callingUid = getuid();
-    int res = mTc.deleteTagData(tagNum, (uid_t)uid, callingUid);
-    if (res) {
-      ALOGE("%s failed, error code = %d", __func__, res);
-    }
-    return (jint)res;
+    mTc.dump(fd, verbose);
 }
 
 /*
@@ -250,10 +229,8 @@ static const JNINativeMethod gMethods[] = {
     (void*)native_swapActiveStatsMap},
     {"native_setPermissionForUids", "(I[I)V",
     (void*)native_setPermissionForUids},
-    {"native_setCounterSet", "(II)I",
-    (void*)native_setCounterSet},
-    {"native_deleteTagData", "(II)I",
-    (void*)native_deleteTagData},
+    {"native_dump", "(Ljava/io/FileDescriptor;Z)V",
+    (void*)native_dump},
 };
 // clang-format on
 
