@@ -16,6 +16,7 @@
 
 package com.android.cts.net.hostside;
 
+import static android.app.job.JobScheduler.RESULT_SUCCESS;
 import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED;
 import static android.os.BatteryManager.BATTERY_PLUGGED_AC;
 import static android.os.BatteryManager.BATTERY_PLUGGED_USB;
@@ -53,6 +54,7 @@ import android.net.NetworkRequest;
 import android.os.BatteryManager;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.RemoteCallback;
 import android.os.SystemClock;
 import android.provider.DeviceConfig;
 import android.service.notification.NotificationListenerService;
@@ -140,6 +142,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     private static final int ACTIVITY_NETWORK_STATE_TIMEOUT_MS = 6_000;
     private static final int JOB_NETWORK_STATE_TIMEOUT_MS = 10_000;
+    private static final int LAUNCH_ACTIVITY_TIMEOUT_MS = 10_000;
 
     // Must be higher than NETWORK_TIMEOUT_MS
     private static final int ORDERED_BROADCAST_TIMEOUT_MS = NETWORK_TIMEOUT_MS * 4;
@@ -151,7 +154,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     protected static final long TEMP_POWERSAVE_WHITELIST_DURATION_MS = 20_000; // 20 sec
 
-    private static final long BROADCAST_TIMEOUT_MS = 15_000;
+    private static final long BROADCAST_TIMEOUT_MS = 5_000;
 
     protected Context mContext;
     protected Instrumentation mInstrumentation;
@@ -801,6 +804,22 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         mDeviceIdleDeviceConfigStateHelper.restoreOriginalValues();
     }
 
+    protected void launchActivity() throws Exception {
+        turnScreenOn();
+        final CountDownLatch latch = new CountDownLatch(1);
+        final Intent launchIntent = getIntentForComponent(TYPE_COMPONENT_ACTIVTIY);
+        final RemoteCallback callback = new RemoteCallback(result -> latch.countDown());
+        launchIntent.putExtra(Intent.EXTRA_REMOTE_CALLBACK, callback);
+        mContext.startActivity(launchIntent);
+        // There might be a race when app2 is launched but ACTION_FINISH_ACTIVITY has not registered
+        // before test calls finishActivity(). When the issue is happened, there is no way to fix
+        // it, so have a callback design to make sure that the app is launched completely and
+        // ACTION_FINISH_ACTIVITY will be registered before leaving this method.
+        if (!latch.await(LAUNCH_ACTIVITY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            fail("Timed out waiting for launching activity");
+        }
+    }
+
     protected void launchComponentAndAssertNetworkAccess(int type) throws Exception {
         launchComponentAndAssertNetworkAccess(type, true);
     }
@@ -855,7 +874,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                     .setTransientExtras(extras)
                     .build();
-            mServiceClient.scheduleJob(jobInfo);
+            assertEquals("Error scheduling " + jobInfo,
+                    RESULT_SUCCESS, mServiceClient.scheduleJob(jobInfo));
             forceRunJob(TEST_APP2_PKG, TEST_JOB_ID);
             if (latch.await(JOB_NETWORK_STATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 final int resultCode = result.get(0).first;
@@ -896,7 +916,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         final Intent intent = new Intent();
         if (type == TYPE_COMPONENT_ACTIVTIY) {
             intent.setComponent(new ComponentName(TEST_APP2_PKG, TEST_APP2_ACTIVITY_CLASS))
-                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         } else if (type == TYPE_COMPONENT_FOREGROUND_SERVICE) {
             intent.setComponent(new ComponentName(TEST_APP2_PKG, TEST_APP2_SERVICE_CLASS))
                     .setFlags(1);
