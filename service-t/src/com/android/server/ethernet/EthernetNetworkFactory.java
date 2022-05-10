@@ -19,7 +19,6 @@ package com.android.server.ethernet;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
-import android.content.res.Resources;
 import android.net.ConnectivityManager;
 import android.net.ConnectivityResources;
 import android.net.EthernetManager;
@@ -71,8 +70,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
 
     private final static int NETWORK_SCORE = 70;
     private static final String NETWORK_TYPE = "Ethernet";
-    private static final String LEGACY_TCP_BUFFER_SIZES =
-            "524288,1048576,3145728,524288,1048576,2097152";
 
     private final ConcurrentHashMap<String, NetworkInterfaceState> mTrackingInterfaces =
             new ConcurrentHashMap<>();
@@ -99,25 +96,9 @@ public class EthernetNetworkFactory extends NetworkFactory {
             return InterfaceParams.getByName(name);
         }
 
-        // TODO: remove legacy resource fallback after migrating its overlays.
-        private String getPlatformTcpBufferSizes(Context context) {
-            final Resources r = context.getResources();
-            final int resId = r.getIdentifier("config_ethernet_tcp_buffers", "string",
-                    context.getPackageName());
-            return r.getString(resId);
-        }
-
         public String getTcpBufferSizesFromResource(Context context) {
-            final String tcpBufferSizes;
-            final String platformTcpBufferSizes = getPlatformTcpBufferSizes(context);
-            if (!LEGACY_TCP_BUFFER_SIZES.equals(platformTcpBufferSizes)) {
-                // Platform resource is not the historical default: use the overlay.
-                tcpBufferSizes = platformTcpBufferSizes;
-            } else {
-                final ConnectivityResources resources = new ConnectivityResources(context);
-                tcpBufferSizes = resources.get().getString(R.string.config_ethernet_tcp_buffers);
-            }
-            return tcpBufferSizes;
+            final ConnectivityResources resources = new ConnectivityResources(context);
+            return resources.get().getString(R.string.config_ethernet_tcp_buffers);
         }
     }
 
@@ -213,7 +194,7 @@ public class EthernetNetworkFactory extends NetworkFactory {
         }
 
         final NetworkInterfaceState iface = new NetworkInterfaceState(
-                ifaceName, hwAddress, mHandler, mContext, ipConfig, nc, this, mDeps);
+                ifaceName, hwAddress, mHandler, mContext, ipConfig, nc, getProvider(), mDeps);
         mTrackingInterfaces.put(ifaceName, iface);
         updateCapabilityFilter();
     }
@@ -380,7 +361,7 @@ public class EthernetNetworkFactory extends NetworkFactory {
         private final String mHwAddress;
         private final Handler mHandler;
         private final Context mContext;
-        private final NetworkFactory mNetworkFactory;
+        private final NetworkProvider mNetworkProvider;
         private final Dependencies mDeps;
 
         private static String sTcpBufferSizes = null;  // Lazy initialized.
@@ -490,14 +471,14 @@ public class EthernetNetworkFactory extends NetworkFactory {
 
         NetworkInterfaceState(String ifaceName, String hwAddress, Handler handler, Context context,
                 @NonNull IpConfiguration ipConfig, @NonNull NetworkCapabilities capabilities,
-                NetworkFactory networkFactory, Dependencies deps) {
+                NetworkProvider networkProvider, Dependencies deps) {
             name = ifaceName;
             mIpConfig = Objects.requireNonNull(ipConfig);
             mCapabilities = Objects.requireNonNull(capabilities);
             mLegacyType = getLegacyType(mCapabilities);
             mHandler = handler;
             mContext = context;
-            mNetworkFactory = networkFactory;
+            mNetworkProvider = networkProvider;
             mDeps = deps;
             mHwAddress = hwAddress;
         }
@@ -594,7 +575,7 @@ public class EthernetNetworkFactory extends NetworkFactory {
                     .setLegacyExtraInfo(mHwAddress)
                     .build();
             mNetworkAgent = mDeps.makeEthernetNetworkAgent(mContext, mHandler.getLooper(),
-                    mCapabilities, mLinkProperties, config, mNetworkFactory.getProvider(),
+                    mCapabilities, mLinkProperties, config, mNetworkProvider,
                     new EthernetNetworkAgent.Callbacks() {
                         @Override
                         public void onNetworkUnwanted() {
