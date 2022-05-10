@@ -16,6 +16,7 @@
 
 package com.android.cts.net.hostside;
 
+import static android.app.job.JobScheduler.RESULT_SUCCESS;
 import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED;
 import static android.os.BatteryManager.BATTERY_PLUGGED_AC;
 import static android.os.BatteryManager.BATTERY_PLUGGED_USB;
@@ -53,6 +54,7 @@ import android.net.NetworkRequest;
 import android.os.BatteryManager;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.RemoteCallback;
 import android.os.SystemClock;
 import android.provider.DeviceConfig;
 import android.service.notification.NotificationListenerService;
@@ -99,6 +101,9 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             "com.android.cts.net.hostside.app2.action.FINISH_ACTIVITY";
     private static final String ACTION_FINISH_JOB =
             "com.android.cts.net.hostside.app2.action.FINISH_JOB";
+    // Copied from com.android.server.net.NetworkPolicyManagerService class
+    private static final String ACTION_SNOOZE_WARNING =
+            "com.android.server.net.action.SNOOZE_WARNING";
 
     private static final String ACTION_RECEIVER_READY =
             "com.android.cts.net.hostside.app2.action.RECEIVER_READY";
@@ -137,6 +142,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     private static final int ACTIVITY_NETWORK_STATE_TIMEOUT_MS = 6_000;
     private static final int JOB_NETWORK_STATE_TIMEOUT_MS = 10_000;
+    private static final int LAUNCH_ACTIVITY_TIMEOUT_MS = 10_000;
 
     // Must be higher than NETWORK_TIMEOUT_MS
     private static final int ORDERED_BROADCAST_TIMEOUT_MS = NETWORK_TIMEOUT_MS * 4;
@@ -146,7 +152,9 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     private static final String APP_NOT_FOREGROUND_ERROR = "app_not_fg";
 
-    protected static final long TEMP_POWERSAVE_WHITELIST_DURATION_MS = 5_000; // 5 sec
+    protected static final long TEMP_POWERSAVE_WHITELIST_DURATION_MS = 20_000; // 20 sec
+
+    private static final long BROADCAST_TIMEOUT_MS = 5_000;
 
     protected Context mContext;
     protected Instrumentation mInstrumentation;
@@ -215,6 +223,12 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         } while (attempts <= maxAttempts);
         assertEquals("Number of expected broadcasts for " + receiverName + " not reached after "
                 + maxAttempts * SLEEP_TIME_SEC + " seconds", expectedCount, count);
+    }
+
+    protected void assertSnoozeWarningNotReceived() throws Exception {
+        // Wait for a while to take broadcast queue delays into account
+        SystemClock.sleep(BROADCAST_TIMEOUT_MS);
+        assertEquals(0, getNumberBroadcastsReceived(DYNAMIC_RECEIVER, ACTION_SNOOZE_WARNING));
     }
 
     protected String sendOrderedBroadcast(Intent intent) throws Exception {
@@ -318,7 +332,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     + "; sleeping 1s before trying again");
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("App2 is not on background state after " + maxTries + " attempts: " + state );
+        fail("App2 (" + mUid + ") is not on background state after "
+                + maxTries + " attempts: " + state);
     }
 
     protected final void assertForegroundState() throws Exception {
@@ -336,7 +351,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             turnScreenOn();
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("App2 is not on foreground state after " + maxTries + " attempts: " + state );
+        fail("App2 (" + mUid + ") is not on foreground state after "
+                + maxTries + " attempts: " + state);
     }
 
     protected final void assertForegroundServiceState() throws Exception {
@@ -353,7 +369,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     + "; sleeping 1s before trying again");
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("App2 is not on foreground service state after " + maxTries + " attempts: " + state );
+        fail("App2 (" + mUid + ") is not on foreground service state after "
+                + maxTries + " attempts: " + state);
     }
 
     /**
@@ -395,8 +412,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             // Exponential back-off.
             timeoutMs = Math.min(timeoutMs*2, NETWORK_TIMEOUT_MS);
         }
-        fail("Invalid state for expectAvailable=" + expectAvailable + " after " + maxTries
-                + " attempts.\nLast error: " + error);
+        fail("Invalid state for " + mUid + "; expectAvailable=" + expectAvailable + " after "
+                + maxTries + " attempts.\nLast error: " + error);
     }
 
     /**
@@ -752,7 +769,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             Log.v(TAG, "app2 receiver is not ready yet; sleeping 1s before polling again");
             SystemClock.sleep(SECOND_IN_MS);
         }
-        fail("app2 receiver is not ready");
+        fail("app2 receiver is not ready in " + mUid);
     }
 
     protected void registerNetworkCallback(final NetworkRequest request, INetworkCallback cb)
@@ -785,6 +802,22 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     protected void resetDeviceIdleSettings() {
         mDeviceIdleDeviceConfigStateHelper.restoreOriginalValues();
+    }
+
+    protected void launchActivity() throws Exception {
+        turnScreenOn();
+        final CountDownLatch latch = new CountDownLatch(1);
+        final Intent launchIntent = getIntentForComponent(TYPE_COMPONENT_ACTIVTIY);
+        final RemoteCallback callback = new RemoteCallback(result -> latch.countDown());
+        launchIntent.putExtra(Intent.EXTRA_REMOTE_CALLBACK, callback);
+        mContext.startActivity(launchIntent);
+        // There might be a race when app2 is launched but ACTION_FINISH_ACTIVITY has not registered
+        // before test calls finishActivity(). When the issue is happened, there is no way to fix
+        // it, so have a callback design to make sure that the app is launched completely and
+        // ACTION_FINISH_ACTIVITY will be registered before leaving this method.
+        if (!latch.await(LAUNCH_ACTIVITY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            fail("Timed out waiting for launching activity");
+        }
     }
 
     protected void launchComponentAndAssertNetworkAccess(int type) throws Exception {
@@ -841,7 +874,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
                     .setTransientExtras(extras)
                     .build();
-            mServiceClient.scheduleJob(jobInfo);
+            assertEquals("Error scheduling " + jobInfo,
+                    RESULT_SUCCESS, mServiceClient.scheduleJob(jobInfo));
             forceRunJob(TEST_APP2_PKG, TEST_JOB_ID);
             if (latch.await(JOB_NETWORK_STATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 final int resultCode = result.get(0).first;
@@ -867,6 +901,11 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         }
     }
 
+    protected void startActivity() throws Exception {
+        final Intent launchIntent = getIntentForComponent(TYPE_COMPONENT_ACTIVTIY);
+        mContext.startActivity(launchIntent);
+    }
+
     private void startForegroundService() throws Exception {
         final Intent launchIntent = getIntentForComponent(TYPE_COMPONENT_FOREGROUND_SERVICE);
         mContext.startForegroundService(launchIntent);
@@ -877,7 +916,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         final Intent intent = new Intent();
         if (type == TYPE_COMPONENT_ACTIVTIY) {
             intent.setComponent(new ComponentName(TEST_APP2_PKG, TEST_APP2_ACTIVITY_CLASS))
-                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         } else if (type == TYPE_COMPONENT_FOREGROUND_SERVICE) {
             intent.setComponent(new ComponentName(TEST_APP2_PKG, TEST_APP2_SERVICE_CLASS))
                     .setFlags(1);

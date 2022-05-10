@@ -32,6 +32,7 @@ import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
 import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
+import static com.android.networkstack.tethering.util.TetheringUtils.getTetheringJniLibraryName;
 
 import android.app.usage.NetworkStatsManager;
 import android.net.INetd;
@@ -42,19 +43,15 @@ import android.net.TetherOffloadRuleParcel;
 import android.net.ip.ConntrackMonitor;
 import android.net.ip.ConntrackMonitor.ConntrackEventConsumer;
 import android.net.ip.IpServer;
-import android.net.netlink.ConntrackMessage;
-import android.net.netlink.NetlinkConstants;
-import android.net.netlink.NetlinkSocket;
 import android.net.netstats.provider.NetworkStatsProvider;
-import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
-import android.net.util.TetheringUtils.ForwardedStats;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.OsConstants;
 import android.text.TextUtils;
 import android.util.ArraySet;
+import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -64,9 +61,21 @@ import androidx.annotation.Nullable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.BpfMap;
+import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
 import com.android.net.module.util.Struct;
+import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.bpf.Tether4Key;
+import com.android.net.module.util.bpf.Tether4Value;
+import com.android.net.module.util.bpf.TetherStatsKey;
+import com.android.net.module.util.bpf.TetherStatsValue;
+import com.android.net.module.util.netlink.ConntrackMessage;
+import com.android.net.module.util.netlink.NetlinkConstants;
+import com.android.net.module.util.netlink.NetlinkSocket;
 import com.android.networkstack.tethering.apishim.common.BpfCoordinatorShim;
+import com.android.networkstack.tethering.util.TetheringUtils.ForwardedStats;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -97,7 +106,7 @@ public class BpfCoordinator {
     // TetherService, but for tests it needs to be either loaded here or loaded by every test.
     // TODO: is there a better way?
     static {
-        System.loadLibrary("tetherutilsjni");
+        System.loadLibrary(getTetheringJniLibraryName());
     }
 
     private static final String TAG = BpfCoordinator.class.getSimpleName();
@@ -112,6 +121,11 @@ public class BpfCoordinator {
     private static final String TETHER_LIMIT_MAP_PATH = makeMapPath("limit");
     private static final String TETHER_ERROR_MAP_PATH = makeMapPath("error");
     private static final String TETHER_DEV_MAP_PATH = makeMapPath("dev");
+    private static final String DUMPSYS_RAWMAP_ARG_STATS = "--stats";
+    private static final String DUMPSYS_RAWMAP_ARG_UPSTREAM4 = "--upstream4";
+
+    // Using "," as a separator is safe because base64 characters are [0-9a-zA-Z/=+].
+    private static final String DUMP_BASE64_DELIMITER = ",";
 
     /** The names of all the BPF counters defined in bpf_tethering.h. */
     public static final String[] sBpfCounterNames = getBpfCounterNames();
@@ -124,23 +138,18 @@ public class BpfCoordinator {
         return makeMapPath((downstream ? "downstream" : "upstream") + ipVersion);
     }
 
-    // TODO: probably to remember what the timeout updated things to last is. But that requires
-    // either r/w map entries (which seems bad/racy) or a separate map to keep track of all flows
-    // and remember when they were updated and with what timeout.
     @VisibleForTesting
     static final int CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS = 60_000;
     @VisibleForTesting
-    static final int CONNTRACK_TIMEOUT_UPDATE_SLACK_MS = 20_000;
-
-    // Default timeouts sync from /proc/sys/net/netfilter/nf_conntrack_*
-    // See also kernel document nf_conntrack-sysctl.txt.
-    @VisibleForTesting
     static final int NF_CONNTRACK_TCP_TIMEOUT_ESTABLISHED = 432_000;
-    static final int NF_CONNTRACK_TCP_TIMEOUT_UNACKNOWLEDGED = 300;
-    // The default value is 120 for 5.10 and that thus the periodicity of the updates of 60s is
-    // low enough to support all ACK kernels.
     @VisibleForTesting
     static final int NF_CONNTRACK_UDP_TIMEOUT_STREAM = 180;
+
+    // List of TCP port numbers which aren't offloaded because the packets require the netfilter
+    // conntrack helper. See also TetherController::setForwardRules in netd.
+    @VisibleForTesting
+    static final short [] NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS = new short [] {
+            21 /* ftp */, 1723 /* pptp */};
 
     @VisibleForTesting
     enum StatsType {
@@ -1068,6 +1077,60 @@ public class BpfCoordinator {
         }
     }
 
+    private <K extends Struct, V extends Struct> String bpfMapEntryToBase64String(
+            final K key, final V value) {
+        final byte[] keyBytes = key.writeToBytes();
+        final String keyBase64Str = Base64.encodeToString(keyBytes, Base64.DEFAULT)
+                .replace("\n", "");
+        final byte[] valueBytes = value.writeToBytes();
+        final String valueBase64Str = Base64.encodeToString(valueBytes, Base64.DEFAULT)
+                .replace("\n", "");
+
+        return keyBase64Str + DUMP_BASE64_DELIMITER + valueBase64Str;
+    }
+
+    private <K extends Struct, V extends Struct> void dumpRawMap(BpfMap<K, V> map,
+            IndentingPrintWriter pw) throws ErrnoException {
+        if (map == null) {
+            pw.println("No BPF support");
+            return;
+        }
+        if (map.isEmpty()) {
+            pw.println("No entries");
+            return;
+        }
+        map.forEach((k, v) -> pw.println(bpfMapEntryToBase64String(k, v)));
+    }
+
+    /**
+     * Dump raw BPF map in base64 encoded strings. For test only.
+     * Only allow to dump one map path once.
+     * Format:
+     * $ dumpsys tethering bpfRawMap --<map name>
+     */
+    public void dumpRawMap(@NonNull IndentingPrintWriter pw, @Nullable String[] args) {
+        // TODO: consider checking the arg order that <map name> is after "bpfRawMap". Probably
+        // it is okay for now because this is used by test only and test is supposed to use
+        // expected argument order.
+        // TODO: dump downstream4 map.
+        if (CollectionUtils.contains(args, DUMPSYS_RAWMAP_ARG_STATS)) {
+            try (BpfMap<TetherStatsKey, TetherStatsValue> statsMap = mDeps.getBpfStatsMap()) {
+                dumpRawMap(statsMap, pw);
+            } catch (ErrnoException e) {
+                pw.println("Error dumping stats map: " + e);
+            }
+            return;
+        }
+        if (CollectionUtils.contains(args, DUMPSYS_RAWMAP_ARG_UPSTREAM4)) {
+            try (BpfMap<Tether4Key, Tether4Value> upstreamMap = mDeps.getBpfUpstream4Map()) {
+                dumpRawMap(upstreamMap, pw);
+            } catch (ErrnoException e) {
+                pw.println("Error dumping IPv4 map: " + e);
+            }
+            return;
+        }
+    }
+
     private String l4protoToString(int proto) {
         if (proto == OsConstants.IPPROTO_TCP) {
             return "tcp";
@@ -1137,22 +1200,13 @@ public class BpfCoordinator {
         }
     }
 
-    /**
-     * Simple struct that only contains a u32. Must be public because Struct needs access to it.
-     * TODO: make this a public inner class of Struct so anyone can use it as, e.g., Struct.U32?
-     */
-    public static class U32Struct extends Struct {
-        @Struct.Field(order = 0, type = Struct.Type.U32)
-        public long val;
-    }
-
     private void dumpCounters(@NonNull IndentingPrintWriter pw) {
         if (!mDeps.isAtLeastS()) {
             pw.println("No counter support");
             return;
         }
-        try (BpfMap<U32Struct, U32Struct> map = new BpfMap<>(TETHER_ERROR_MAP_PATH,
-                BpfMap.BPF_F_RDONLY, U32Struct.class, U32Struct.class)) {
+        try (BpfMap<U32, U32> map = new BpfMap<>(TETHER_ERROR_MAP_PATH, BpfMap.BPF_F_RDONLY,
+                U32.class, U32.class)) {
 
             map.forEach((k, v) -> {
                 String counterName;
@@ -1456,7 +1510,8 @@ public class BpfCoordinator {
     }
 
     @NonNull
-    private byte[] toIpv4MappedAddressBytes(Inet4Address ia4) {
+    @VisibleForTesting
+    static byte[] toIpv4MappedAddressBytes(Inet4Address ia4) {
         final byte[] addr4 = ia4.getAddress();
         final byte[] addr6 = new byte[16];
         addr6[10] = (byte) 0xff;
@@ -1567,7 +1622,15 @@ public class BpfCoordinator {
                     0 /* lastUsed, filled by bpf prog only */);
         }
 
+        private boolean allowOffload(ConntrackEvent e) {
+            if (e.tupleOrig.protoNum != OsConstants.IPPROTO_TCP) return true;
+            return !CollectionUtils.contains(
+                    NON_OFFLOADED_UPSTREAM_IPV4_TCP_PORTS, e.tupleOrig.dstPort);
+        }
+
         public void accept(ConntrackEvent e) {
+            if (!allowOffload(e)) return;
+
             final ClientInfo tetherClient = getClientInfo(e.tupleOrig.srcIp);
             if (tetherClient == null) return;
 
@@ -1578,34 +1641,8 @@ public class BpfCoordinator {
             final Tether4Key downstream4Key = makeTetherDownstream4Key(e, tetherClient,
                     upstreamIndex);
 
-            final boolean isConntrackEventDelete =
-                    e.msgType == (NetlinkConstants.NFNL_SUBSYS_CTNETLINK << 8
-                    | NetlinkConstants.IPCTNL_MSG_CT_DELETE);
-
-            // Using the timeout to distinguish tcp state is not a decent way. Need to fix.
-            // The received IPCTNL_MSG_CT_NEW must pass ConntrackMonitor#isEstablishedNatSession
-            // which checks CTA_STATUS. It implies that this entry has at least reached tcp
-            // state "established". For safety, treat any timeout which is equal or larger than 300
-            // seconds (UNACKNOWLEDGED, ESTABLISHED, ..) to be "established".
-            // TODO: parse tcp state in conntrack monitor.
-            final boolean isTcpEstablished =
-                    e.msgType == (NetlinkConstants.NFNL_SUBSYS_CTNETLINK << 8
-                    | NetlinkConstants.IPCTNL_MSG_CT_NEW)
-                    && e.tupleOrig.protoNum == OsConstants.IPPROTO_TCP
-                    && (e.timeoutSec >= NF_CONNTRACK_TCP_TIMEOUT_UNACKNOWLEDGED);
-
-            final boolean isTcpNonEstablished =
-                    e.msgType == (NetlinkConstants.NFNL_SUBSYS_CTNETLINK << 8
-                    | NetlinkConstants.IPCTNL_MSG_CT_NEW)
-                    && e.tupleOrig.protoNum == OsConstants.IPPROTO_TCP
-                    && (e.timeoutSec < NF_CONNTRACK_TCP_TIMEOUT_UNACKNOWLEDGED);
-
-            // Delete the BPF rules:
-            // 1. Contrack event IPCTNL_MSG_CT_DELETE received.
-            // 2. For TCP conntrack entry, the tcp state has left "established" and going to be
-            // closed.
-            // TODO: continue to offload half-closed tcp connections.
-            if (isConntrackEventDelete || isTcpNonEstablished) {
+            if (e.msgType == (NetlinkConstants.NFNL_SUBSYS_CTNETLINK << 8
+                    | NetlinkConstants.IPCTNL_MSG_CT_DELETE)) {
                 final boolean deletedUpstream = mBpfCoordinatorShim.tetherOffloadRuleRemove(
                         UPSTREAM, upstream4Key);
                 final boolean deletedDownstream = mBpfCoordinatorShim.tetherOffloadRuleRemove(
@@ -1620,7 +1657,6 @@ public class BpfCoordinator {
                     Log.wtf(TAG, "The bidirectional rules should be removed concurrently ("
                             + "upstream: " + deletedUpstream
                             + ", downstream: " + deletedDownstream + ")");
-                    // TODO: consider better error handling for the stubs {rule, limit, ..}.
                     return;
                 }
 
@@ -1631,41 +1667,11 @@ public class BpfCoordinator {
             final Tether4Value upstream4Value = makeTetherUpstream4Value(e, upstreamIndex);
             final Tether4Value downstream4Value = makeTetherDownstream4Value(e, tetherClient,
                     upstreamIndex);
+
             maybeAddDevMap(upstreamIndex, tetherClient.downstreamIfindex);
             maybeSetLimit(upstreamIndex);
-
-            final boolean upstreamAdded = mBpfCoordinatorShim.tetherOffloadRuleAdd(UPSTREAM,
-                    upstream4Key, upstream4Value);
-            final boolean downstreamAdded = mBpfCoordinatorShim.tetherOffloadRuleAdd(DOWNSTREAM,
-                    downstream4Key, downstream4Value);
-
-            if (upstreamAdded != downstreamAdded) {
-                mLog.e("The bidirectional rules should be added or not added concurrently ("
-                        + "upstream: " + upstreamAdded
-                        + ", downstream: " + downstreamAdded + "). "
-                        + "Remove the added rules.");
-                if (upstreamAdded) {
-                    mBpfCoordinatorShim.tetherOffloadRuleRemove(UPSTREAM, upstream4Key);
-                }
-                if (downstreamAdded) {
-                    mBpfCoordinatorShim.tetherOffloadRuleRemove(DOWNSTREAM, downstream4Key);
-                }
-                return;
-            }
-
-            // Update TCP timeout iif it is first time we're adding the rules. Needed because a
-            // payload data packet may have gone through non-offload path, before we added offload
-            // rules, and that this may result in in-kernel conntrack state being in ESTABLISHED
-            // but pending ACK (ie. UNACKED) state. But the in-kernel conntrack might never see the
-            // ACK because we just added offload rules. As such after adding the rules we need to
-            // force the timeout back to the normal ESTABLISHED timeout of 5 days. Note that
-            // updating the timeout will trigger another netlink event with the updated timeout.
-            // TODO: Remove this once the tcp state is parsed.
-            if (isTcpEstablished && upstreamAdded && downstreamAdded) {
-                updateConntrackTimeout((byte) upstream4Key.l4proto,
-                        parseIPv4Address(upstream4Key.src4), (short) upstream4Key.srcPort,
-                        parseIPv4Address(upstream4Key.dst4), (short) upstream4Key.dstPort);
-            }
+            mBpfCoordinatorShim.tetherOffloadRuleAdd(UPSTREAM, upstream4Key, upstream4Value);
+            mBpfCoordinatorShim.tetherOffloadRuleAdd(DOWNSTREAM, downstream4Key, downstream4Value);
         }
     }
 
@@ -1948,7 +1954,6 @@ public class BpfCoordinator {
         // - proc/sys/net/netfilter/nf_conntrack_tcp_timeout_established
         // - proc/sys/net/netfilter/nf_conntrack_udp_timeout_stream
         // See kernel document nf_conntrack-sysctl.txt.
-        // TODO: we should account for the fact that lastUsed is in the past and not exactly now.
         final int timeoutSec = (proto == OsConstants.IPPROTO_TCP)
                 ? NF_CONNTRACK_TCP_TIMEOUT_ESTABLISHED
                 : NF_CONNTRACK_UDP_TIMEOUT_STREAM;
@@ -1979,23 +1984,6 @@ public class BpfCoordinator {
         }
     }
 
-    boolean requireConntrackTimeoutUpdate(long nowNs, long lastUsedNs, int proto) {
-        // Refreshing tcp timeout without checking tcp state may make the conntrack entry live
-        // 5 days (432000s) even while the session is being closed. Its BPF rule may not be
-        // deleted for 5 days because the tcp state gets stuck and conntrack delete message is
-        // not sent. Note that both the conntrack monitor and refreshing timeout updater are
-        // in the same thread. Beware while the tcp status may be changed running in refreshing
-        // timeout updater and may read out-of-date tcp stats.
-        // See nf_conntrack_tcp_timeout_established in kernel document.
-        // TODO: support refreshing TCP conntrack timeout.
-        if (proto == OsConstants.IPPROTO_TCP) return false;
-
-        // The timeout requirement check needs the slack time because the scheduled timer may
-        // be not precise. The timeout update has a chance to be missed.
-        return (nowNs - lastUsedNs) < (long) (CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS
-                + CONNTRACK_TIMEOUT_UPDATE_SLACK_MS) * 1_000_000;
-    }
-
     private void refreshAllConntrackTimeouts() {
         final long now = mDeps.elapsedRealtimeNanos();
 
@@ -2003,7 +1991,7 @@ public class BpfCoordinator {
         // because TCP is a bidirectional traffic. Probably don't need to extend timeout by
         // both directions for TCP.
         mBpfCoordinatorShim.tetherOffloadRuleForEach(UPSTREAM, (k, v) -> {
-            if (requireConntrackTimeoutUpdate(now, v.lastUsed, k.l4proto)) {
+            if ((now - v.lastUsed) / 1_000_000 < CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS) {
                 updateConntrackTimeout((byte) k.l4proto,
                         parseIPv4Address(k.src4), (short) k.srcPort,
                         parseIPv4Address(k.dst4), (short) k.dstPort);
@@ -2011,10 +1999,10 @@ public class BpfCoordinator {
         });
 
         // Reverse the source and destination {address, port} from downstream value because
-        // #updateConntrackTimeout refreshes the timeout of netlink attribute CTA_TUPLE_ORIG
+        // #updateConntrackTimeout refresh the timeout of netlink attribute CTA_TUPLE_ORIG
         // which is opposite direction for downstream map value.
         mBpfCoordinatorShim.tetherOffloadRuleForEach(DOWNSTREAM, (k, v) -> {
-            if (requireConntrackTimeoutUpdate(now, v.lastUsed, k.l4proto)) {
+            if ((now - v.lastUsed) / 1_000_000 < CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS) {
                 updateConntrackTimeout((byte) k.l4proto,
                         parseIPv4Address(v.dst46), (short) v.dstPort,
                         parseIPv4Address(v.src46), (short) v.srcPort);
@@ -2066,6 +2054,14 @@ public class BpfCoordinator {
     @VisibleForTesting
     final BpfConntrackEventConsumer getBpfConntrackEventConsumerForTesting() {
         return mBpfConntrackEventConsumer;
+    }
+
+    // Return tethering client information. This is used for testing only.
+    @NonNull
+    @VisibleForTesting
+    final HashMap<IpServer, HashMap<Inet4Address, ClientInfo>>
+            getTetherClientsForTesting() {
+        return mTetherClients;
     }
 
     private static native String[] getBpfCounterNames();
