@@ -151,6 +151,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.os.Process;
+import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.UserHandle;
@@ -163,7 +164,6 @@ import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.ArraySet;
 import android.util.Log;
-import android.util.Pair;
 import android.util.Range;
 
 import androidx.test.InstrumentationRegistry;
@@ -181,6 +181,7 @@ import com.android.testutils.CompatUtil;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRuleKt;
+import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.TestHttpServer;
@@ -590,6 +591,7 @@ public class ConnectivityManagerTest {
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
+    @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
     public void testGetRedactedLinkPropertiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
@@ -660,10 +662,12 @@ public class ConnectivityManagerTest {
 
             // CaptivePortalApiUrl & CaptivePortalData will be preserved if the given uid holds the
             // NETWORK_SETTINGS permission.
-            assertEquals(capportUrl,
+            assertNotNull(lp.getCaptivePortalApiUrl());
+            assertNotNull(lp.getCaptivePortalData());
+            assertEquals(lp.getCaptivePortalApiUrl(),
                     mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalApiUrl());
-            assertEquals(capportData,
+            assertEquals(lp.getCaptivePortalData(),
                     mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalData());
         });
@@ -675,6 +679,7 @@ public class ConnectivityManagerTest {
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
+    @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
     public void testGetRedactedNetworkCapabilitiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
@@ -885,9 +890,21 @@ public class ConnectivityManagerTest {
         //
         // Note that this test this will still fail in instant mode if a device supports Ethernet
         // via other hardware means. We are not currently aware of any such device.
-        return (mContext.getSystemService(Context.ETHERNET_SERVICE) != null) ||
-            mPackageManager.hasSystemFeature(FEATURE_ETHERNET) ||
-            mPackageManager.hasSystemFeature(FEATURE_USB_HOST);
+        return hasEthernetService()
+                || mPackageManager.hasSystemFeature(FEATURE_ETHERNET)
+                || mPackageManager.hasSystemFeature(FEATURE_USB_HOST);
+    }
+
+    private boolean hasEthernetService() {
+        // On Q creating EthernetManager from a thread that does not have a looper (like the test
+        // thread) crashes because it tried to use Looper.myLooper() through the default Handler
+        // constructor to run onAvailabilityChanged callbacks. Use ServiceManager to check whether
+        // the service exists instead.
+        // TODO: remove once Q is no longer supported in MTS, as ServiceManager is hidden API
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
+            return ServiceManager.getService(Context.ETHERNET_SERVICE) != null;
+        }
+        return mContext.getSystemService(Context.ETHERNET_SERVICE) != null;
     }
 
     private boolean shouldBeSupported(int networkType) {
@@ -1588,51 +1605,7 @@ public class ConnectivityManagerTest {
 
     private static boolean isTcpKeepaliveSupportedByKernel() {
         final String kVersionString = VintfRuntimeInfo.getKernelVersion();
-        return compareMajorMinorVersion(kVersionString, "4.8") >= 0;
-    }
-
-    private static Pair<Integer, Integer> getVersionFromString(String version) {
-        // Only gets major and minor number of the version string.
-        final Pattern versionPattern = Pattern.compile("^(\\d+)(\\.(\\d+))?.*");
-        final Matcher m = versionPattern.matcher(version);
-        if (m.matches()) {
-            final int major = Integer.parseInt(m.group(1));
-            final int minor = TextUtils.isEmpty(m.group(3)) ? 0 : Integer.parseInt(m.group(3));
-            return new Pair<>(major, minor);
-        } else {
-            return new Pair<>(0, 0);
-        }
-    }
-
-    // TODO: Move to util class.
-    private static int compareMajorMinorVersion(final String s1, final String s2) {
-        final Pair<Integer, Integer> v1 = getVersionFromString(s1);
-        final Pair<Integer, Integer> v2 = getVersionFromString(s2);
-
-        if (v1.first == v2.first) {
-            return Integer.compare(v1.second, v2.second);
-        } else {
-            return Integer.compare(v1.first, v2.first);
-        }
-    }
-
-    /**
-     * Verifies that version string compare logic returns expected result for various cases.
-     * Note that only major and minor number are compared.
-     */
-    @Test
-    public void testMajorMinorVersionCompare() {
-        assertEquals(0, compareMajorMinorVersion("4.8.1", "4.8"));
-        assertEquals(1, compareMajorMinorVersion("4.9", "4.8.1"));
-        assertEquals(1, compareMajorMinorVersion("5.0", "4.8"));
-        assertEquals(1, compareMajorMinorVersion("5", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("5", "5.0"));
-        assertEquals(1, compareMajorMinorVersion("5-beta1", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("4.8.0.0", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("4.8-RC1", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("4.8", "4.8"));
-        assertEquals(-1, compareMajorMinorVersion("3.10", "4.8.0"));
-        assertEquals(-1, compareMajorMinorVersion("4.7.10.10", "4.8"));
+        return DeviceInfoUtils.compareMajorMinorVersion(kVersionString, "4.8") >= 0;
     }
 
     /**
