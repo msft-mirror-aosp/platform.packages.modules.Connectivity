@@ -36,6 +36,7 @@ import android.system.ErrnoException;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.IBpfMap;
@@ -115,10 +116,12 @@ public class ClatCoordinator {
     private final INetd mNetd;
     @NonNull
     private final Dependencies mDeps;
+    // IBpfMap objects {mIngressMap, mEgressMap} are initialized in #maybeStartBpf and closed in
+    // #maybeStopBpf.
     @Nullable
-    private final IBpfMap<ClatIngress6Key, ClatIngress6Value> mIngressMap;
+    private IBpfMap<ClatIngress6Key, ClatIngress6Value> mIngressMap = null;
     @Nullable
-    private final IBpfMap<ClatEgress4Key, ClatEgress4Value> mEgressMap;
+    private IBpfMap<ClatEgress4Key, ClatEgress4Value> mEgressMap = null;
     @Nullable
     private ClatdTracker mClatdTracker = null;
 
@@ -372,12 +375,35 @@ public class ClatCoordinator {
     public ClatCoordinator(@NonNull Dependencies deps) {
         mDeps = deps;
         mNetd = mDeps.getNetd();
-        mIngressMap = mDeps.getBpfIngress6Map();
-        mEgressMap = mDeps.getBpfEgress4Map();
+    }
+
+    private void closeEgressMap() {
+        try {
+            mEgressMap.close();
+        } catch (Exception e) {
+            Log.e(TAG, "Cannot close egress4 map: " + e);
+        }
+        mEgressMap = null;
+    }
+
+    private void closeIngressMap() {
+        try {
+            mIngressMap.close();
+        } catch (Exception e) {
+            Log.e(TAG, "Cannot close ingress6 map: " + e);
+        }
+        mIngressMap = null;
     }
 
     private void maybeStartBpf(final ClatdTracker tracker) {
-        if (mIngressMap == null || mEgressMap == null) return;
+        mEgressMap = mDeps.getBpfEgress4Map();
+        if (mEgressMap == null) return;
+
+        mIngressMap = mDeps.getBpfIngress6Map();
+        if (mIngressMap == null) {
+            closeEgressMap();
+            return;
+        }
 
         final boolean isEthernet;
         try {
@@ -721,6 +747,13 @@ public class ClatCoordinator {
         } catch (ErrnoException | IllegalStateException e) {
             Log.e(TAG, "Could not delete entry (" + rxKey + "): " + e);
         }
+
+        // Manual close BPF map file descriptors. Just don't rely on that GC releasing to close
+        // the file descriptors even if class BpfMap supports close file descriptor in
+        // finalize(). If the interfaces are added and removed quickly, too many unclosed file
+        // descriptors may cause unexpected problem.
+        closeEgressMap();
+        closeIngressMap();
     }
 
     /**
@@ -740,6 +773,69 @@ public class ClatCoordinator {
 
         Log.i(TAG, "clatd on " + mClatdTracker.iface + " stopped");
         mClatdTracker = null;
+    }
+
+    private void dumpBpfIngress(@NonNull IndentingPrintWriter pw) {
+        if (mIngressMap == null) {
+            pw.println("No BPF ingress6 map");
+            return;
+        }
+
+        try {
+            if (mIngressMap.isEmpty()) {
+                pw.println("<empty>");
+            }
+            pw.println("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif");
+            pw.increaseIndent();
+            mIngressMap.forEach((k, v) -> {
+                // TODO: print interface name
+                pw.println(String.format("%d %s/96 %s -> %s %d", k.iif, k.pfx96, k.local6,
+                        v.local4, v.oif));
+            });
+            pw.decreaseIndent();
+        } catch (ErrnoException e) {
+            pw.println("Error dumping BPF ingress6 map: " + e);
+        }
+    }
+
+    private void dumpBpfEgress(@NonNull IndentingPrintWriter pw) {
+        if (mEgressMap == null) {
+            pw.println("No BPF egress4 map");
+            return;
+        }
+
+        try {
+            if (mEgressMap.isEmpty()) {
+                pw.println("<empty>");
+            }
+            pw.println("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif");
+            pw.increaseIndent();
+            mEgressMap.forEach((k, v) -> {
+                // TODO: print interface name
+                pw.println(String.format("%d %s -> %s %s/96 %d %s", k.iif, k.local4, v.local6,
+                        v.pfx96, v.oif, v.oifIsEthernet != 0 ? "ether" : "rawip"));
+            });
+            pw.decreaseIndent();
+        } catch (ErrnoException e) {
+            pw.println("Error dumping BPF egress4 map: " + e);
+        }
+    }
+
+    /**
+     * Dump the cordinator information. Only called when clat is started. See Nat464Xlat#dump.
+     *
+     * @param pw print writer.
+     */
+    public void dump(@NonNull IndentingPrintWriter pw) {
+        // TODO: dump ClatdTracker
+        // TODO: move map dump to a global place to avoid duplicate dump while there are two or
+        // more IPv6 only networks.
+        pw.println("Forwarding rules:");
+        pw.increaseIndent();
+        dumpBpfIngress(pw);
+        dumpBpfEgress(pw);
+        pw.decreaseIndent();
+        pw.println();
     }
 
     /**
