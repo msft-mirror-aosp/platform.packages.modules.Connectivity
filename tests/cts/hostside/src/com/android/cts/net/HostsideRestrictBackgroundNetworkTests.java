@@ -16,7 +16,7 @@
 
 package com.android.cts.net;
 
-import android.platform.test.annotations.FlakyTest;
+import android.platform.test.annotations.SecurityTest;
 
 import com.android.ddmlib.Log;
 import com.android.tradefed.device.DeviceNotAvailableException;
@@ -36,6 +36,12 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
         super.tearDown();
 
         uninstallPackage(TEST_APP2_PKG, true);
+    }
+
+    @SecurityTest
+    public void testDataWarningReceiver() throws Exception {
+        runDeviceTests(TEST_PKG, TEST_PKG + ".DataWarningReceiverTest",
+                "testSnoozeWarningNotReceived");
     }
 
     /**************************
@@ -148,7 +154,6 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
                 "testBackgroundNetworkAccess_disabled");
     }
 
-    @FlakyTest(bugId=170180675)
     public void testAppIdleMetered_whitelisted() throws Exception {
         runDeviceTests(TEST_PKG, TEST_PKG + ".AppIdleMeteredTest",
                 "testBackgroundNetworkAccess_whitelisted");
@@ -179,7 +184,6 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
                 "testBackgroundNetworkAccess_disabled");
     }
 
-    @FlakyTest(bugId=170180675)
     public void testAppIdleNonMetered_whitelisted() throws Exception {
         runDeviceTests(TEST_PKG, TEST_PKG + ".AppIdleNonMeteredTest",
                 "testBackgroundNetworkAccess_whitelisted");
@@ -321,6 +325,11 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
     public void testNetworkAccess_restrictedMode() throws Exception {
         runDeviceTests(TEST_PKG, TEST_PKG + ".RestrictedModeTest",
                 "testNetworkAccess");
+    }
+
+    public void testNetworkAccess_restrictedMode_withBatterySaver() throws Exception {
+        runDeviceTests(TEST_PKG, TEST_PKG + ".RestrictedModeTest",
+                "testNetworkAccess_withBatterySaver");
     }
 
     /************************

@@ -29,6 +29,8 @@ import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.content.Context;
 import android.net.ConnectivityManager.MultipathPreference;
+import android.os.Binder;
+import android.os.Build;
 import android.os.Process;
 import android.os.UserHandle;
 import android.provider.Settings;
@@ -380,6 +382,14 @@ public class ConnectivitySettingsManager {
      */
     public static final String UIDS_ALLOWED_ON_RESTRICTED_NETWORKS =
             "uids_allowed_on_restricted_networks";
+
+    /**
+     * A global rate limit that applies to all networks with NET_CAPABILITY_INTERNET when enabled.
+     *
+     * @hide
+     */
+    public static final String INGRESS_RATE_LIMIT_BYTES_PER_SECOND =
+            "ingress_rate_limit_bytes_per_second";
 
     /**
      * Get mobile data activity timeout from {@link Settings}.
@@ -1039,6 +1049,15 @@ public class ConnectivitySettingsManager {
         return getUidSetFromString(uidList);
     }
 
+    private static boolean isCallingFromSystem() {
+        final int uid = Binder.getCallingUid();
+        final int pid = Binder.getCallingPid();
+        if (uid == Process.SYSTEM_UID && pid == Process.myPid()) {
+            return true;
+        }
+        return false;
+    }
+
     /**
      * Set the list of uids(from {@link Settings}) that is allowed to use restricted networks.
      *
@@ -1047,8 +1066,52 @@ public class ConnectivitySettingsManager {
      */
     public static void setUidsAllowedOnRestrictedNetworks(@NonNull Context context,
             @NonNull Set<Integer> uidList) {
+        final boolean calledFromSystem = isCallingFromSystem();
+        if (!calledFromSystem) {
+            // Enforce NETWORK_SETTINGS check if it's debug build. This is for MTS test only.
+            if (!Build.isDebuggable()) {
+                throw new SecurityException("Only system can set this setting.");
+            }
+            context.enforceCallingOrSelfPermission(android.Manifest.permission.NETWORK_SETTINGS,
+                    "Requires NETWORK_SETTINGS permission");
+        }
         final String uids = getUidStringFromSet(uidList);
         Settings.Global.putString(context.getContentResolver(), UIDS_ALLOWED_ON_RESTRICTED_NETWORKS,
                 uids);
+    }
+
+    /**
+     * Get the network bandwidth ingress rate limit.
+     *
+     * The limit is only applicable to networks that provide internet connectivity. -1 codes for no
+     * bandwidth limitation.
+     *
+     * @param context The {@link Context} to query the setting.
+     * @return The rate limit in number of bytes per second or -1 if disabled.
+     */
+    public static long getIngressRateLimitInBytesPerSecond(@NonNull Context context) {
+        return Settings.Global.getLong(context.getContentResolver(),
+                INGRESS_RATE_LIMIT_BYTES_PER_SECOND, -1);
+    }
+
+    /**
+     * Set the network bandwidth ingress rate limit.
+     *
+     * The limit is applied to all networks that provide internet connectivity. It is applied on a
+     * per-network basis, meaning that global ingress rate could exceed the limit when communicating
+     * on multiple networks simultaneously.
+     *
+     * @param context The {@link Context} to set the setting.
+     * @param rateLimitInBytesPerSec The rate limit in number of bytes per second or -1 to disable.
+     */
+    public static void setIngressRateLimitInBytesPerSecond(@NonNull Context context,
+            @IntRange(from = -1L, to = 0xFFFFFFFFL) long rateLimitInBytesPerSec) {
+        if (rateLimitInBytesPerSec < -1) {
+            throw new IllegalArgumentException(
+                    "Rate limit must be within the range [-1, Integer.MAX_VALUE]");
+        }
+        Settings.Global.putLong(context.getContentResolver(),
+                INGRESS_RATE_LIMIT_BYTES_PER_SECOND,
+                rateLimitInBytesPerSec);
     }
 }

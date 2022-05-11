@@ -58,7 +58,9 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.os.Binder;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.os.RemoteException;
 import android.system.Os;
 import android.test.mock.MockContext;
 import android.util.ArraySet;
@@ -66,9 +68,11 @@ import android.util.ArraySet;
 import androidx.test.filters.SmallTest;
 
 import com.android.server.IpSecService.TunnelInterfaceRecord;
+import com.android.testutils.DevSdkIgnoreRule;
 
 import org.junit.Before;
 import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
@@ -83,6 +87,9 @@ import java.util.Set;
 @SmallTest
 @RunWith(Parameterized.class)
 public class IpSecServiceParameterizedTest {
+    @Rule
+    public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule(
+            Build.VERSION_CODES.R /* ignoreClassUpTo */);
 
     private static final int TEST_SPI = 0xD1201D;
 
@@ -182,9 +189,15 @@ public class IpSecServiceParameterizedTest {
         }
     }
 
+    private IpSecService.Dependencies makeDependencies() throws RemoteException {
+        final IpSecService.Dependencies deps = mock(IpSecService.Dependencies.class);
+        when(deps.getNetdInstance(mTestContext)).thenReturn(mMockNetd);
+        return deps;
+    }
+
     INetd mMockNetd;
     PackageManager mMockPkgMgr;
-    IpSecService.IpSecServiceConfiguration mMockIpSecSrvConfig;
+    IpSecService.Dependencies mDeps;
     IpSecService mIpSecService;
     Network fakeNetwork = new Network(0xAB);
     int mUid = Os.getuid();
@@ -213,11 +226,8 @@ public class IpSecServiceParameterizedTest {
     public void setUp() throws Exception {
         mMockNetd = mock(INetd.class);
         mMockPkgMgr = mock(PackageManager.class);
-        mMockIpSecSrvConfig = mock(IpSecService.IpSecServiceConfiguration.class);
-        mIpSecService = new IpSecService(mTestContext, mMockIpSecSrvConfig);
-
-        // Injecting mock netd
-        when(mMockIpSecSrvConfig.getNetdInstance()).thenReturn(mMockNetd);
+        mDeps = makeDependencies();
+        mIpSecService = new IpSecService(mTestContext, mDeps);
 
         // PackageManager should always return true (feature flag tests in IpSecServiceTest)
         when(mMockPkgMgr.hasSystemFeature(anyString())).thenReturn(true);

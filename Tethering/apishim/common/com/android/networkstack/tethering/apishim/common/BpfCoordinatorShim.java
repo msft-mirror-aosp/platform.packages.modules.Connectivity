@@ -22,11 +22,12 @@ import android.util.SparseArray;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.android.net.module.util.IBpfMap.ThrowingBiConsumer;
+import com.android.net.module.util.bpf.Tether4Key;
+import com.android.net.module.util.bpf.Tether4Value;
+import com.android.net.module.util.bpf.TetherStatsValue;
 import com.android.networkstack.tethering.BpfCoordinator.Dependencies;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
-import com.android.networkstack.tethering.Tether4Key;
-import com.android.networkstack.tethering.Tether4Value;
-import com.android.networkstack.tethering.TetherStatsValue;
 
 /**
  * Bpf coordinator class for API shims.
@@ -145,8 +146,23 @@ public abstract class BpfCoordinatorShim {
 
     /**
      * Deletes a tethering IPv4 offload rule from the appropriate BPF map.
+     *
+     * @param downstream true if downstream, false if upstream.
+     * @param key the key to delete.
+     * @return true iff the map was modified, false if the key did not exist or there was an error.
      */
     public abstract boolean tetherOffloadRuleRemove(boolean downstream, @NonNull Tether4Key key);
+
+    /**
+     * Iterate through the map and handle each key -> value retrieved base on the given BiConsumer.
+     *
+     * @param downstream true if downstream, false if upstream.
+     * @param action represents the action for each key -> value. The entry deletion is not
+     *        allowed and use #tetherOffloadRuleRemove instead.
+     */
+    @Nullable
+    public abstract void tetherOffloadRuleForEach(boolean downstream,
+            @NonNull ThrowingBiConsumer<Tether4Key, Tether4Value> action);
 
     /**
      * Whether there is currently any IPv4 rule on the specified upstream.

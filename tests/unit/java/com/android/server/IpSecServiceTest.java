@@ -43,15 +43,19 @@ import android.net.IpSecManager;
 import android.net.IpSecSpiResponse;
 import android.net.IpSecUdpEncapResponse;
 import android.os.Binder;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
+import android.os.RemoteException;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.StructStat;
 import android.util.Range;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import dalvik.system.SocketTagger;
 
@@ -70,7 +74,8 @@ import java.util.List;
 
 /** Unit tests for {@link IpSecService}. */
 @SmallTest
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecServiceTest {
 
     private static final int DROID_SPI = 0xD1201D;
@@ -118,24 +123,22 @@ public class IpSecServiceTest {
 
     Context mMockContext;
     INetd mMockNetd;
-    IpSecService.IpSecServiceConfiguration mMockIpSecSrvConfig;
+    IpSecService.Dependencies mDeps;
     IpSecService mIpSecService;
 
     @Before
     public void setUp() throws Exception {
         mMockContext = mock(Context.class);
         mMockNetd = mock(INetd.class);
-        mMockIpSecSrvConfig = mock(IpSecService.IpSecServiceConfiguration.class);
-        mIpSecService = new IpSecService(mMockContext, mMockIpSecSrvConfig);
-
-        // Injecting mock netd
-        when(mMockIpSecSrvConfig.getNetdInstance()).thenReturn(mMockNetd);
+        mDeps = makeDependencies();
+        mIpSecService = new IpSecService(mMockContext, mDeps);
+        assertNotNull(mIpSecService);
     }
 
-    @Test
-    public void testIpSecServiceCreate() throws InterruptedException {
-        IpSecService ipSecSrv = IpSecService.create(mMockContext);
-        assertNotNull(ipSecSrv);
+    private IpSecService.Dependencies makeDependencies() throws RemoteException {
+        final IpSecService.Dependencies deps = mock(IpSecService.Dependencies.class);
+        when(deps.getNetdInstance(mMockContext)).thenReturn(mMockNetd);
+        return deps;
     }
 
     @Test
@@ -607,7 +610,7 @@ public class IpSecServiceTest {
     public void testOpenUdpEncapSocketTagsSocket() throws Exception {
         IpSecService.UidFdTagger mockTagger = mock(IpSecService.UidFdTagger.class);
         IpSecService testIpSecService = new IpSecService(
-                mMockContext, mMockIpSecSrvConfig, mockTagger);
+                mMockContext, mDeps, mockTagger);
 
         IpSecUdpEncapResponse udpEncapResp =
                 testIpSecService.openUdpEncapsulationSocket(0, new Binder());

@@ -36,11 +36,14 @@ import android.net.INetworkStatsSession;
 import android.net.NetworkStats.Entry;
 import android.net.NetworkStatsHistory;
 import android.net.NetworkTemplate;
+import android.os.Build;
 import android.os.RemoteException;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -49,8 +52,9 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsManagerTest {
     private static final String TEST_SUBSCRIBER_ID = "subid";
 
@@ -214,6 +218,47 @@ public class NetworkStatsManagerTest {
                 TEST_SUBSCRIBER_ID,
                 NetworkTemplate.buildTemplateWifi(NetworkTemplate.WIFI_NETWORKID_ALL,
                         TEST_SUBSCRIBER_ID));
+    }
+
+    @Test
+    public void testQueryTaggedSummary() throws Exception {
+        final long startTime = 1;
+        final long endTime = 100;
+
+        reset(mStatsSession);
+        when(mService.openSessionForUsageStats(anyInt(), anyString())).thenReturn(mStatsSession);
+        when(mStatsSession.getTaggedSummaryForAllUid(any(NetworkTemplate.class),
+                anyLong(), anyLong()))
+                .thenReturn(new android.net.NetworkStats(0, 0));
+        final NetworkTemplate template = new NetworkTemplate.Builder(NetworkTemplate.MATCH_MOBILE)
+                .setMeteredness(NetworkStats.Bucket.METERED_YES).build();
+        NetworkStats stats = mManager.queryTaggedSummary(template, startTime, endTime);
+
+        verify(mStatsSession, times(1)).getTaggedSummaryForAllUid(
+                eq(template), eq(startTime), eq(endTime));
+
+        assertFalse(stats.hasNextBucket());
+    }
+
+
+    @Test
+    public void testQueryDetailsForDevice() throws Exception {
+        final long startTime = 1;
+        final long endTime = 100;
+
+        reset(mStatsSession);
+        when(mService.openSessionForUsageStats(anyInt(), anyString())).thenReturn(mStatsSession);
+        when(mStatsSession.getHistoryIntervalForNetwork(any(NetworkTemplate.class),
+                anyInt(), anyLong(), anyLong()))
+                .thenReturn(new NetworkStatsHistory(10, 0));
+        final NetworkTemplate template = new NetworkTemplate.Builder(NetworkTemplate.MATCH_MOBILE)
+                .setMeteredness(NetworkStats.Bucket.METERED_YES).build();
+        NetworkStats stats = mManager.queryDetailsForDevice(template, startTime, endTime);
+
+        verify(mStatsSession, times(1)).getHistoryIntervalForNetwork(
+                eq(template), eq(NetworkStatsHistory.FIELD_ALL), eq(startTime), eq(endTime));
+
+        assertFalse(stats.hasNextBucket());
     }
 
     private void assertBucketMatches(Entry expected, NetworkStats.Bucket actual) {

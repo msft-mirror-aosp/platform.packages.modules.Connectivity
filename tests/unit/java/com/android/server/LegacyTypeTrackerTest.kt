@@ -23,6 +23,8 @@ package com.android.server
 
 import android.content.Context
 import android.content.pm.PackageManager
+import android.content.pm.PackageManager.FEATURE_ETHERNET
+import android.content.pm.PackageManager.FEATURE_USB_HOST
 import android.content.pm.PackageManager.FEATURE_WIFI
 import android.content.pm.PackageManager.FEATURE_WIFI_DIRECT
 import android.net.ConnectivityManager.TYPE_ETHERNET
@@ -40,14 +42,15 @@ import android.net.ConnectivityManager.TYPE_VPN
 import android.net.ConnectivityManager.TYPE_WIFI
 import android.net.ConnectivityManager.TYPE_WIFI_P2P
 import android.net.ConnectivityManager.TYPE_WIMAX
-import android.net.EthernetManager
 import android.net.NetworkInfo.DetailedState.CONNECTED
 import android.net.NetworkInfo.DetailedState.DISCONNECTED
+import android.os.Build
 import android.telephony.TelephonyManager
 import androidx.test.filters.SmallTest
-import androidx.test.runner.AndroidJUnit4
 import com.android.server.ConnectivityService.LegacyTypeTracker
 import com.android.server.connectivity.NetworkAgentInfo
+import com.android.testutils.DevSdkIgnoreRule
+import com.android.testutils.DevSdkIgnoreRunner
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -64,8 +67,9 @@ import org.mockito.Mockito.verify
 
 const val UNSUPPORTED_TYPE = TYPE_WIMAX
 
-@RunWith(AndroidJUnit4::class)
+@RunWith(DevSdkIgnoreRunner::class)
 @SmallTest
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 class LegacyTypeTrackerTest {
     private val supportedTypes = arrayOf(TYPE_WIFI, TYPE_WIFI_P2P, TYPE_ETHERNET, TYPE_MOBILE,
             TYPE_MOBILE_SUPL, TYPE_MOBILE_MMS, TYPE_MOBILE_SUPL, TYPE_MOBILE_DUN, TYPE_MOBILE_HIPRI,
@@ -79,9 +83,8 @@ class LegacyTypeTrackerTest {
     private val mContext = mock(Context::class.java).apply {
         doReturn(true).`when`(mPm).hasSystemFeature(FEATURE_WIFI)
         doReturn(true).`when`(mPm).hasSystemFeature(FEATURE_WIFI_DIRECT)
+        doReturn(true).`when`(mPm).hasSystemFeature(FEATURE_ETHERNET)
         doReturn(mPm).`when`(this).packageManager
-        doReturn(mock(EthernetManager::class.java)).`when`(this).getSystemService(
-                Context.ETHERNET_SERVICE)
     }
     private val mTm = mock(TelephonyManager::class.java).apply {
         doReturn(true).`when`(this).isDataCapable
@@ -102,7 +105,8 @@ class LegacyTypeTrackerTest {
 
     @Test
     fun testSupportedTypes_NoEthernet() {
-        doReturn(null).`when`(mContext).getSystemService(Context.ETHERNET_SERVICE)
+        doReturn(false).`when`(mPm).hasSystemFeature(FEATURE_ETHERNET)
+        doReturn(false).`when`(mPm).hasSystemFeature(FEATURE_USB_HOST)
         assertFalse(makeTracker().isTypeSupported(TYPE_ETHERNET))
     }
 

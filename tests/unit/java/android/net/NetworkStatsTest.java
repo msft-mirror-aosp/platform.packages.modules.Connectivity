@@ -37,24 +37,31 @@ import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import android.os.Build;
 import android.os.Process;
 import android.util.ArrayMap;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
+
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 
 import com.google.android.collect.Sets;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.Iterator;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsTest {
 
     private static final String TEST_IFACE = "test0";
@@ -730,6 +737,56 @@ public class NetworkStatsTest {
                 ROAMING_ALL, DEFAULT_NETWORK_ALL, 50500L, 27L, 100200L, 55, 0);
     }
 
+    // Tests a case where an PlatformVpn is used, where the entire datapath is in the kernel,
+    // including all encapsulation/decapsulation.
+    @Test
+    public void testMigrateTun_platformVpn() {
+        final int ownerUid = Process.SYSTEM_UID;
+        final String tunIface = "ipsec1";
+        final String underlyingIface = "wlan0";
+        NetworkStats delta = new NetworkStats(TEST_START, 9)
+                // 2 different apps sent/receive data via ipsec1.
+                .insertEntry(tunIface, 10100, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                        DEFAULT_NETWORK_NO, 50000L, 25L, 100000L, 50L, 0L)
+                .insertEntry(tunIface, 20100, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                        DEFAULT_NETWORK_NO, 500L, 2L, 200L, 5L, 0L)
+                // Owner (system) sends data through the tunnel
+                .insertEntry(tunIface, ownerUid, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                        DEFAULT_NETWORK_NO, 2000L, 20L, 3000L, 30L, 0L)
+                // 1 app already has some traffic on the underlying interface, the other doesn't yet
+                .insertEntry(underlyingIface, 10100, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                        DEFAULT_NETWORK_NO, 1000L, 10L, 2000L, 20L, 0L);
+
+        delta.migrateTun(ownerUid, tunIface, Arrays.asList(underlyingIface));
+        assertEquals(9, delta.size()); // 3 DBG entries + 1 entry per app per interface
+
+        // tunIface entries should not be changed.
+        assertValues(delta, 0, tunIface, 10100, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                DEFAULT_NETWORK_NO, 50000L, 25L, 100000L, 50L, 0L);
+        assertValues(delta, 1, tunIface, 20100, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                DEFAULT_NETWORK_NO, 500L, 2L, 200L, 5L, 0L);
+        assertValues(delta, 2, tunIface, ownerUid, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                DEFAULT_NETWORK_NO, 2000L, 20L, 3000L, 30L, 0L);
+
+        // Existing underlying Iface entries are updated to include usage over ipsec1
+        assertValues(delta, 3, underlyingIface, 10100, SET_DEFAULT, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, 51000L, 35L, 102000L, 70L, 0L);
+
+        // New entries are added on underlying Iface traffic
+        assertContains(delta, underlyingIface, ownerUid, SET_DEFAULT, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, 2000L, 20L, 3000L, 30L, 0L);
+        assertContains(delta, underlyingIface, 20100, SET_DEFAULT, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, 500L, 2L, 200L, 5L, 0L);
+
+        // New entries are added for debug purpose
+        assertContains(delta, underlyingIface, 10100, SET_DBG_VPN_IN, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, 50000L, 25L, 100000L, 50L, 0L);
+        assertContains(delta, underlyingIface, 20100, SET_DBG_VPN_IN, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, 500, 2L, 200L, 5L, 0L);
+        assertContains(delta, underlyingIface, ownerUid, SET_DBG_VPN_IN, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, 2000L, 20L, 3000L, 30L, 0L);
+    }
+
     @Test
     public void testFilter_NoFilter() {
         NetworkStats.Entry entry1 = new NetworkStats.Entry(
@@ -983,6 +1040,29 @@ public class NetworkStatsTest {
         assertEquals(secondEntry, stats.getValues(1, null));
     }
 
+    @Test
+    public void testIterator() {
+        final NetworkStats emptyStats = new NetworkStats(0, 0);
+        final Iterator emptyIterator = emptyStats.iterator();
+        assertFalse(emptyIterator.hasNext());
+
+        final int numEntries = 10;
+        final ArrayList<NetworkStats.Entry> entries = new ArrayList<>();
+        final NetworkStats stats = new NetworkStats(TEST_START, 1);
+        for (int i = 0; i < numEntries; ++i) {
+            NetworkStats.Entry entry = new NetworkStats.Entry("test1", 10100, SET_DEFAULT,
+                    TAG_NONE, METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO,
+                    i * 10L /* rxBytes */, i * 3L /* rxPackets */,
+                    i * 15L /* txBytes */, i * 2L /* txPackets */, 0L /* operations */);
+            stats.insertEntry(entry);
+            entries.add(entry);
+        }
+
+        for (NetworkStats.Entry e : stats) {
+            assertEquals(e, entries.remove(0));
+        }
+    }
+
     private static void assertContains(NetworkStats stats,  String iface, int uid, int set,
             int tag, int metered, int roaming, int defaultNetwork, long rxBytes, long rxPackets,
             long txBytes, long txPackets, long operations) {
@@ -1003,22 +1083,22 @@ public class NetworkStatsTest {
     private static void assertValues(
             NetworkStats.Entry entry, String iface, int uid, int set, int tag, int metered,
             int roaming, int defaultNetwork) {
-        assertEquals(iface, entry.iface);
-        assertEquals(uid, entry.uid);
-        assertEquals(set, entry.set);
-        assertEquals(tag, entry.tag);
-        assertEquals(metered, entry.metered);
-        assertEquals(roaming, entry.roaming);
-        assertEquals(defaultNetwork, entry.defaultNetwork);
+        assertEquals(iface, entry.getIface());
+        assertEquals(uid, entry.getUid());
+        assertEquals(set, entry.getSet());
+        assertEquals(tag, entry.getTag());
+        assertEquals(metered, entry.getMetered());
+        assertEquals(roaming, entry.getRoaming());
+        assertEquals(defaultNetwork, entry.getDefaultNetwork());
     }
 
     private static void assertValues(NetworkStats.Entry entry, long rxBytes, long rxPackets,
             long txBytes, long txPackets, long operations) {
-        assertEquals(rxBytes, entry.rxBytes);
-        assertEquals(rxPackets, entry.rxPackets);
-        assertEquals(txBytes, entry.txBytes);
-        assertEquals(txPackets, entry.txPackets);
-        assertEquals(operations, entry.operations);
+        assertEquals(rxBytes, entry.getRxBytes());
+        assertEquals(rxPackets, entry.getRxPackets());
+        assertEquals(txBytes, entry.getTxBytes());
+        assertEquals(txPackets, entry.getTxPackets());
+        assertEquals(operations, entry.getOperations());
     }
 
 }

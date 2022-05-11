@@ -32,6 +32,7 @@ import android.util.Log
 import androidx.test.InstrumentationRegistry
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.testutils.CompatUtil
+import com.android.testutils.ConnectivityModuleTest
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
@@ -62,6 +63,7 @@ private val PROVIDER_NAME = "NetworkProviderTest"
 
 @RunWith(DevSdkIgnoreRunner::class)
 @IgnoreUpTo(Build.VERSION_CODES.Q)
+@ConnectivityModuleTest
 class NetworkProviderTest {
     @Rule @JvmField
     val mIgnoreRule = DevSdkIgnoreRule()
@@ -315,9 +317,7 @@ class NetworkProviderTest {
                 LinkProperties(), scoreWeaker, config, provider) {}
         agent.register()
         agent.markConnected()
-        // TODO: The request is satisying by offer 2 instead of offer 1, thus it should not be
-        //  considered as needed.
-        offerCallback1.expectOnNetworkNeeded(ncFilter2)
+        offerCallback1.assertNoCallback()  // Still unneeded.
         offerCallback2.assertNoCallback()  // Still needed.
         offerCallback3.assertNoCallback()  // Still needed.
         offerCallback4.expectOnNetworkUnneeded(ncFilter4)
@@ -326,7 +326,7 @@ class NetworkProviderTest {
         // if a request is currently satisfied by the network provided by the same provider.
         // TODO: Consider offers with weaker score are unneeded.
         agent.sendNetworkScore(scoreStronger)
-        offerCallback1.assertNoCallback()
+        offerCallback1.assertNoCallback()  // Still unneeded.
         offerCallback2.assertNoCallback()  // Still needed.
         offerCallback3.assertNoCallback()  // Still needed.
         offerCallback4.assertNoCallback()  // Still unneeded.
@@ -334,7 +334,7 @@ class NetworkProviderTest {
         // Verify that offer callbacks cannot receive any event if offer is unregistered.
         provider2.unregisterNetworkOffer(offerCallback4)
         agent.unregister()
-        offerCallback1.assertNoCallback()  // Still needed.
+        offerCallback1.assertNoCallback()  // Still unneeded.
         offerCallback2.assertNoCallback()  // Still needed.
         offerCallback3.assertNoCallback()  // Still needed.
         // Since the agent is unregistered, and the offer has chance to satisfy the request,
@@ -344,7 +344,7 @@ class NetworkProviderTest {
         // Verify that offer callbacks cannot receive any event if provider is unregistered.
         mCm.unregisterNetworkProvider(provider)
         mCm.unregisterNetworkCallback(cb2)
-        offerCallback1.assertNoCallback()  // Should be unneeded if not unregistered.
+        offerCallback1.assertNoCallback()  // No callback since it is still unneeded.
         offerCallback2.assertNoCallback()  // Should be unneeded if not unregistered.
         offerCallback3.assertNoCallback()  // Should be unneeded if not unregistered.
         offerCallback4.assertNoCallback()  // Already unregistered.

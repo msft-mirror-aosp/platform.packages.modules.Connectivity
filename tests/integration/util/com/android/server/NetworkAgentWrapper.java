@@ -21,12 +21,14 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
+import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI_AWARE;
 
 import static com.android.server.ConnectivityServiceTestUtils.transportToLegacyType;
 
+import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
 
 import static org.junit.Assert.assertEquals;
@@ -55,6 +57,7 @@ import com.android.net.module.util.ArrayTrackRecord;
 import com.android.testutils.HandlerUtils;
 import com.android.testutils.TestableNetworkCallback;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -82,6 +85,12 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
 
     public NetworkAgentWrapper(int transport, LinkProperties linkProperties,
             NetworkCapabilities ncTemplate, Context context) throws Exception {
+        this(transport, linkProperties, ncTemplate, null /* provider */, context);
+    }
+
+    public NetworkAgentWrapper(int transport, LinkProperties linkProperties,
+            NetworkCapabilities ncTemplate, NetworkProvider provider,
+            Context context) throws Exception {
         final int type = transportToLegacyType(transport);
         final String typeName = ConnectivityManager.getNetworkTypeName(type);
         mNetworkCapabilities = (ncTemplate != null) ? ncTemplate : new NetworkCapabilities();
@@ -100,6 +109,9 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
                 break;
             case TRANSPORT_WIFI_AWARE:
                 mScore = new NetworkScore.Builder().setLegacyInt(20).build();
+                break;
+            case TRANSPORT_TEST:
+                mScore = new NetworkScore.Builder().build();
                 break;
             case TRANSPORT_VPN:
                 mNetworkCapabilities.removeCapability(NET_CAPABILITY_NOT_VPN);
@@ -123,12 +135,12 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
                 .setLegacyTypeName(typeName)
                 .setLegacyExtraInfo(extraInfo)
                 .build();
-        mNetworkAgent = makeNetworkAgent(linkProperties, mNetworkAgentConfig);
+        mNetworkAgent = makeNetworkAgent(linkProperties, mNetworkAgentConfig, provider);
     }
 
     protected InstrumentedNetworkAgent makeNetworkAgent(LinkProperties linkProperties,
-            final NetworkAgentConfig nac) throws Exception {
-        return new InstrumentedNetworkAgent(this, linkProperties, nac);
+            final NetworkAgentConfig nac, NetworkProvider provider) throws Exception {
+        return new InstrumentedNetworkAgent(this, linkProperties, nac, provider);
     }
 
     public static class InstrumentedNetworkAgent extends NetworkAgent {
@@ -137,10 +149,15 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
 
         public InstrumentedNetworkAgent(NetworkAgentWrapper wrapper, LinkProperties lp,
                 NetworkAgentConfig nac) {
+            this(wrapper, lp, nac, null /* provider */);
+        }
+
+        public InstrumentedNetworkAgent(NetworkAgentWrapper wrapper, LinkProperties lp,
+                NetworkAgentConfig nac, NetworkProvider provider) {
             super(wrapper.mContext, wrapper.mHandlerThread.getLooper(), wrapper.mLogTag,
                     wrapper.mNetworkCapabilities, lp, wrapper.mScore, nac,
-                    new NetworkProvider(wrapper.mContext, wrapper.mHandlerThread.getLooper(),
-                            PROVIDER_NAME));
+                    null != provider ? provider : new NetworkProvider(wrapper.mContext,
+                            wrapper.mHandlerThread.getLooper(), PROVIDER_NAME));
             mWrapper = wrapper;
             register();
         }
@@ -255,6 +272,15 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
         }
     }
 
+    public void setUnderlyingNetworks(List<Network> underlyingNetworks) {
+        mNetworkAgent.setUnderlyingNetworks(underlyingNetworks);
+    }
+
+    public void setOwnerUid(int uid) {
+        mNetworkCapabilities.setOwnerUid(uid);
+        mNetworkAgent.sendNetworkCapabilities(mNetworkCapabilities);
+    }
+
     public void connect() {
         if (!mConnected.compareAndSet(false /* expect */, true /* update */)) {
             // compareAndSet returns false when the value couldn't be updated because it did not
@@ -289,6 +315,10 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
         assertTrue(mDisconnected.block(timeoutMs));
     }
 
+    public void assertNotDisconnected(long timeoutMs) {
+        assertFalse(mDisconnected.block(timeoutMs));
+    }
+
     public void sendLinkProperties(LinkProperties lp) {
         mNetworkAgent.sendLinkProperties(lp);
     }
@@ -311,6 +341,10 @@ public class NetworkAgentWrapper implements TestableNetworkCallback.HasNetwork {
 
     public NetworkAgent getNetworkAgent() {
         return mNetworkAgent;
+    }
+
+    public NetworkAgentConfig getNetworkAgentConfig() {
+        return mNetworkAgentConfig;
     }
 
     public NetworkCapabilities getNetworkCapabilities() {

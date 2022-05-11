@@ -18,8 +18,10 @@ package com.android.cts.net.hostside.app2;
 import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED;
 
 import static com.android.cts.net.hostside.app2.Common.ACTION_RECEIVER_READY;
+import static com.android.cts.net.hostside.app2.Common.ACTION_SNOOZE_WARNING;
 import static com.android.cts.net.hostside.app2.Common.DYNAMIC_RECEIVER;
 import static com.android.cts.net.hostside.app2.Common.TAG;
+import static com.android.networkstack.apishim.ConstantsShim.RECEIVER_EXPORTED;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
@@ -39,6 +41,7 @@ import android.util.Log;
 
 import com.android.cts.net.hostside.IMyService;
 import com.android.cts.net.hostside.INetworkCallback;
+import com.android.modules.utils.build.SdkLevel;
 
 /**
  * Service used to dynamically register a broadcast receiver.
@@ -63,10 +66,14 @@ public class MyService extends Service {
                 return;
             }
             final Context context = getApplicationContext();
+            final int flags = SdkLevel.isAtLeastT() ? RECEIVER_EXPORTED : 0;
             mReceiver = new MyBroadcastReceiver(DYNAMIC_RECEIVER);
-            context.registerReceiver(mReceiver, new IntentFilter(ACTION_RECEIVER_READY));
             context.registerReceiver(mReceiver,
-                    new IntentFilter(ACTION_RESTRICT_BACKGROUND_CHANGED));
+                    new IntentFilter(ACTION_RECEIVER_READY), flags);
+            context.registerReceiver(mReceiver,
+                    new IntentFilter(ACTION_RESTRICT_BACKGROUND_CHANGED), flags);
+            context.registerReceiver(mReceiver,
+                    new IntentFilter(ACTION_SNOOZE_WARNING), flags);
             Log.d(TAG, "receiver registered");
         }
 
@@ -158,10 +165,10 @@ public class MyService extends Service {
         }
 
         @Override
-        public void scheduleJob(JobInfo jobInfo) {
+        public int scheduleJob(JobInfo jobInfo) {
             final JobScheduler jobScheduler = getApplicationContext()
                     .getSystemService(JobScheduler.class);
-            jobScheduler.schedule(jobInfo);
+            return jobScheduler.schedule(jobInfo);
         }
       };
 

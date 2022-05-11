@@ -16,6 +16,10 @@
 
 package com.android.internal.net;
 
+import static android.net.cts.util.IkeSessionTestUtils.CHILD_PARAMS;
+import static android.net.cts.util.IkeSessionTestUtils.IKE_PARAMS_V4;
+
+import static com.android.modules.utils.build.SdkLevel.isAtLeastT;
 import static com.android.testutils.ParcelUtils.assertParcelSane;
 
 import static org.junit.Assert.assertEquals;
@@ -25,12 +29,16 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import android.net.IpSecAlgorithm;
+import android.net.ipsec.ike.IkeTunnelConnectionParams;
+import android.os.Build;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
+
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.junit.runners.JUnit4;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -38,12 +46,15 @@ import java.util.List;
 
 /** Unit tests for {@link VpnProfile}. */
 @SmallTest
-@RunWith(JUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class VpnProfileTest {
     private static final String DUMMY_PROFILE_KEY = "Test";
 
     private static final int ENCODED_INDEX_AUTH_PARAMS_INLINE = 23;
     private static final int ENCODED_INDEX_RESTRICTED_TO_TEST_NETWORKS = 24;
+    private static final int ENCODED_INDEX_EXCLUDE_LOCAL_ROUTE = 25;
+    private static final int ENCODED_INDEX_REQUIRE_PLATFORM_VALIDATION = 26;
 
     @Test
     public void testDefaults() throws Exception {
@@ -72,10 +83,14 @@ public class VpnProfileTest {
         assertEquals(1360, p.maxMtu);
         assertFalse(p.areAuthParamsInline);
         assertFalse(p.isRestrictedToTestNetworks);
+        assertFalse(p.excludeLocalRoutes);
+        assertFalse(p.requiresInternetValidation);
     }
 
     private VpnProfile getSampleIkev2Profile(String key) {
-        final VpnProfile p = new VpnProfile(key, true /* isRestrictedToTestNetworks */);
+        final VpnProfile p = new VpnProfile(key, true /* isRestrictedToTestNetworks */,
+                false /* excludesLocalRoutes */, true /* requiresPlatformValidation */,
+                null /* ikeTunConnParams */);
 
         p.name = "foo";
         p.type = VpnProfile.TYPE_IKEV2_IPSEC_USER_PASS;
@@ -110,6 +125,35 @@ public class VpnProfileTest {
         return p;
     }
 
+    private VpnProfile getSampleIkev2ProfileWithIkeTunConnParams(String key) {
+        final VpnProfile p = new VpnProfile(key, true /* isRestrictedToTestNetworks */,
+                false /* excludesLocalRoutes */, true /* requiresPlatformValidation */,
+                new IkeTunnelConnectionParams(IKE_PARAMS_V4, CHILD_PARAMS));
+
+        p.name = "foo";
+        p.server = "bar";
+        p.dnsServers = "8.8.8.8";
+        p.searchDomains = "";
+        p.routes = "0.0.0.0/0";
+        p.mppe = false;
+        p.proxy = null;
+        p.setAllowedAlgorithms(
+                Arrays.asList(
+                        IpSecAlgorithm.AUTH_CRYPT_AES_GCM,
+                        IpSecAlgorithm.AUTH_CRYPT_CHACHA20_POLY1305,
+                        IpSecAlgorithm.AUTH_HMAC_SHA512,
+                        IpSecAlgorithm.CRYPT_AES_CBC));
+        p.isBypassable = true;
+        p.isMetered = true;
+        p.maxMtu = 1350;
+        p.areAuthParamsInline = true;
+
+        // Not saved, but also not compared.
+        p.saveLogin = true;
+
+        return p;
+    }
+
     @Test
     public void testEquals() {
         assertEquals(
@@ -122,7 +166,20 @@ public class VpnProfileTest {
 
     @Test
     public void testParcelUnparcel() {
-        assertParcelSane(getSampleIkev2Profile(DUMMY_PROFILE_KEY), 23);
+        if (isAtLeastT()) {
+            // excludeLocalRoutes, requiresPlatformValidation were added in T.
+            assertParcelSane(getSampleIkev2Profile(DUMMY_PROFILE_KEY), 26);
+            assertParcelSane(getSampleIkev2ProfileWithIkeTunConnParams(DUMMY_PROFILE_KEY), 26);
+        } else {
+            assertParcelSane(getSampleIkev2Profile(DUMMY_PROFILE_KEY), 23);
+        }
+    }
+
+    @Test
+    public void testEncodeDecodeWithIkeTunConnParams() {
+        final VpnProfile profile = getSampleIkev2ProfileWithIkeTunConnParams(DUMMY_PROFILE_KEY);
+        final VpnProfile decoded = VpnProfile.decode(DUMMY_PROFILE_KEY, profile.encode());
+        assertEquals(profile, decoded);
     }
 
     @Test
@@ -162,7 +219,9 @@ public class VpnProfileTest {
         final String tooFewValues =
                 getEncodedDecodedIkev2ProfileMissingValues(
                         ENCODED_INDEX_AUTH_PARAMS_INLINE,
-                        ENCODED_INDEX_RESTRICTED_TO_TEST_NETWORKS /* missingIndices */);
+                        ENCODED_INDEX_RESTRICTED_TO_TEST_NETWORKS,
+                        ENCODED_INDEX_EXCLUDE_LOCAL_ROUTE,
+                        ENCODED_INDEX_REQUIRE_PLATFORM_VALIDATION /* missingIndices */);
 
         assertNull(VpnProfile.decode(DUMMY_PROFILE_KEY, tooFewValues.getBytes()));
     }
@@ -176,6 +235,29 @@ public class VpnProfileTest {
         // Verify decoding without isRestrictedToTestNetworks defaults to false
         final VpnProfile decoded = VpnProfile.decode(DUMMY_PROFILE_KEY, tooFewValues.getBytes());
         assertFalse(decoded.isRestrictedToTestNetworks);
+    }
+
+    @Test
+    public void testEncodeDecodeMissingExcludeLocalRoutes() {
+        final String tooFewValues =
+                getEncodedDecodedIkev2ProfileMissingValues(
+                        ENCODED_INDEX_EXCLUDE_LOCAL_ROUTE,
+                        ENCODED_INDEX_REQUIRE_PLATFORM_VALIDATION /* missingIndices */);
+
+        // Verify decoding without excludeLocalRoutes defaults to false
+        final VpnProfile decoded = VpnProfile.decode(DUMMY_PROFILE_KEY, tooFewValues.getBytes());
+        assertFalse(decoded.excludeLocalRoutes);
+    }
+
+    @Test
+    public void testEncodeDecodeMissingRequiresValidation() {
+        final String tooFewValues =
+                getEncodedDecodedIkev2ProfileMissingValues(
+                        ENCODED_INDEX_REQUIRE_PLATFORM_VALIDATION /* missingIndices */);
+
+        // Verify decoding without requiresValidation defaults to false
+        final VpnProfile decoded = VpnProfile.decode(DUMMY_PROFILE_KEY, tooFewValues.getBytes());
+        assertFalse(decoded.requiresInternetValidation);
     }
 
     @Test

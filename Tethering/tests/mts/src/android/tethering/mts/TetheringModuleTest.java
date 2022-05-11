@@ -22,7 +22,6 @@ import static android.Manifest.permission.READ_DEVICE_CONFIG;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
 import static android.Manifest.permission.WRITE_SETTINGS;
 import static android.net.TetheringManager.TETHERING_WIFI;
-import static android.net.cts.util.CtsTetheringUtils.isWifiTetheringSupported;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
 
 import static com.android.testutils.TestNetworkTrackerKt.initTestNetwork;
@@ -30,7 +29,6 @@ import static com.android.testutils.TestNetworkTrackerKt.initTestNetwork;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
-import static org.junit.Assume.assumeTrue;
 
 import android.app.UiAutomation;
 import android.content.Context;
@@ -82,12 +80,8 @@ public class TetheringModuleTest {
         mUiAutomation.dropShellPermissionIdentity();
     }
 
-    private static final String TETHER_ENABLE_SELECT_ALL_PREFIX_RANGES =
-            "tether_enable_select_all_prefix_ranges";
     @Test
     public void testSwitchBasePrefixRangeWhenConflict() throws Exception {
-        assumeTrue(isFeatureEnabled(TETHER_ENABLE_SELECT_ALL_PREFIX_RANGES, true));
-
         addressConflictTest(true);
     }
 
@@ -102,8 +96,7 @@ public class TetheringModuleTest {
 
         TestNetworkTracker tnt = null;
         try {
-            tetherEventCallback.assumeTetheringSupported();
-            assumeTrue(isWifiTetheringSupported(mContext, tetherEventCallback));
+            tetherEventCallback.assumeWifiTetheringSupported(mContext);
             tetherEventCallback.expectNoTetheringActive();
 
             final TetheringInterface tetheredIface =
