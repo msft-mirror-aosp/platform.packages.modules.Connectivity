@@ -57,6 +57,7 @@ import android.telephony.data.ApnSetting;
 import android.util.Log;
 
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.uiautomator.UiDevice;
 
 import com.android.compatibility.common.util.AppStandbyUtils;
 import com.android.compatibility.common.util.BatteryUtils;
@@ -438,6 +439,10 @@ public class NetworkPolicyTestUtils {
         return InstrumentationRegistry.getInstrumentation();
     }
 
+    public static UiDevice getUiDevice() {
+        return UiDevice.getInstance(getInstrumentation());
+    }
+
     // When power saver mode or restrict background enabled or adding any white/black list into
     // those modes, NetworkPolicy may need to take some time to update the rules of uids. So having
     // this function and using PollingCheck to try to make sure the uid has updated and reduce the
@@ -445,6 +450,11 @@ public class NetworkPolicyTestUtils {
     public static void assertNetworkingBlockedStatusForUid(int uid, boolean metered,
             boolean expectedResult) throws Exception {
         PollingCheck.waitFor(() -> (expectedResult == isUidNetworkingBlocked(uid, metered)));
+    }
+
+    public static void assertIsUidRestrictedOnMeteredNetworks(int uid, boolean expectedResult)
+            throws Exception {
+        PollingCheck.waitFor(() -> (expectedResult == isUidRestrictedOnMeteredNetworks(uid)));
     }
 
     public static boolean isUidNetworkingBlocked(int uid, boolean meteredNetwork) {

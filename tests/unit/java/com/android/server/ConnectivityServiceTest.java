@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.ACCESS_NETWORK_STATE;
 import static android.Manifest.permission.CHANGE_NETWORK_STATE;
 import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.CONTROL_OEM_PAID_NETWORK_PREFERENCE;
@@ -104,6 +105,7 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_VSIM;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_WIFI_P2P;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_XCAP;
 import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_1;
+import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_2;
 import static android.net.NetworkCapabilities.REDACT_FOR_ACCESS_FINE_LOCATION;
 import static android.net.NetworkCapabilities.REDACT_FOR_LOCAL_MAC_ADDRESS;
 import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
@@ -136,6 +138,8 @@ import static com.android.server.ConnectivityService.PREFERENCE_ORDER_OEM;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_PROFILE;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_VPN;
 import static com.android.server.ConnectivityServiceTestUtils.transportToLegacyType;
+import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackRegister;
+import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister;
 import static com.android.testutils.ConcurrentUtils.await;
 import static com.android.testutils.ConcurrentUtils.durationOf;
 import static com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
@@ -194,6 +198,7 @@ import android.app.AlarmManager;
 import android.app.AppOpsManager;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.admin.DevicePolicyManager;
 import android.app.usage.NetworkStatsManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -269,6 +274,7 @@ import android.net.RouteInfo;
 import android.net.RouteInfoParcel;
 import android.net.SocketKeepalive;
 import android.net.TelephonyNetworkSpecifier;
+import android.net.TetheringManager;
 import android.net.TransportInfo;
 import android.net.UidRange;
 import android.net.UidRangeParcel;
@@ -338,6 +344,7 @@ import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.networkstack.apishim.NetworkAgentConfigShimImpl;
+import com.android.networkstack.apishim.api29.ConstantsShim;
 import com.android.server.ConnectivityService.ConnectivityDiagnosticsCallbackInfo;
 import com.android.server.ConnectivityService.NetworkRequestInfo;
 import com.android.server.ConnectivityServiceTest.ConnectivityServiceDependencies.ReportedInterfaces;
@@ -465,6 +472,7 @@ public class ConnectivityServiceTest {
     private static final int TEST_APP_ID_2 = 104;
     private static final int TEST_WORK_PROFILE_APP_UID_2 =
             UserHandle.getUid(TEST_WORK_PROFILE_USER_ID, TEST_APP_ID_2);
+    private static final int TEST_APP_ID_3 = 105;
 
     private static final String CLAT_PREFIX = "v4-";
     private static final String MOBILE_IFNAME = "test_rmnet_data0";
@@ -540,11 +548,13 @@ public class ConnectivityServiceTest {
     @Mock NetworkPolicyManager mNetworkPolicyManager;
     @Mock VpnProfileStore mVpnProfileStore;
     @Mock SystemConfigManager mSystemConfigManager;
+    @Mock DevicePolicyManager mDevicePolicyManager;
     @Mock Resources mResources;
     @Mock ClatCoordinator mClatCoordinator;
     @Mock PacProxyManager mPacProxyManager;
     @Mock BpfNetMaps mBpfNetMaps;
     @Mock CarrierPrivilegeAuthenticator mCarrierPrivilegeAuthenticator;
+    @Mock TetheringManager mTetheringManager;
 
     // BatteryStatsManager is final and cannot be mocked with regular mockito, so just mock the
     // underlying binder calls.
@@ -644,7 +654,8 @@ public class ConnectivityServiceTest {
         @Override
         public ComponentName startService(Intent service) {
             final String action = service.getAction();
-            if (!VpnConfig.SERVICE_INTERFACE.equals(action)) {
+            if (!VpnConfig.SERVICE_INTERFACE.equals(action)
+                    && !ConstantsShim.ACTION_VPN_MANAGER_EVENT.equals(action)) {
                 fail("Attempt to start unknown service, action=" + action);
             }
             return new ComponentName(service.getPackage(), "com.android.test.Service");
@@ -661,10 +672,12 @@ public class ConnectivityServiceTest {
             if (Context.TELEPHONY_SERVICE.equals(name)) return mTelephonyManager;
             if (Context.ETHERNET_SERVICE.equals(name)) return mEthernetManager;
             if (Context.NETWORK_POLICY_SERVICE.equals(name)) return mNetworkPolicyManager;
+            if (Context.DEVICE_POLICY_SERVICE.equals(name)) return mDevicePolicyManager;
             if (Context.SYSTEM_CONFIG_SERVICE.equals(name)) return mSystemConfigManager;
             if (Context.NETWORK_STATS_SERVICE.equals(name)) return mStatsManager;
             if (Context.BATTERY_STATS_SERVICE.equals(name)) return mBatteryStatsManager;
             if (Context.PAC_PROXY_SERVICE.equals(name)) return mPacProxyManager;
+            if (Context.TETHERING_SERVICE.equals(name)) return mTetheringManager;
             return super.getSystemService(name);
         }
 
@@ -687,6 +700,14 @@ public class ConnectivityServiceTest {
                     .getSystemService(UserManager.class);
             doReturn(value).when(umMock).isManagedProfile();
             doReturn(value).when(mUserManager).isManagedProfile(eq(userHandle.getIdentifier()));
+        }
+
+        public void setDeviceOwner(@NonNull final UserHandle userHandle, String value) {
+            // This relies on all contexts for a given user returning the same UM mock
+            final DevicePolicyManager dpmMock = createContextAsUser(userHandle, 0 /* flags */)
+                    .getSystemService(DevicePolicyManager.class);
+            doReturn(value).when(dpmMock).getDeviceOwner();
+            doReturn(value).when(mDevicePolicyManager).getDeviceOwner();
         }
 
         @Override
@@ -11924,16 +11945,14 @@ public class ConnectivityServiceTest {
         mQosCallbackMockHelper.registerQosCallback(
                 mQosCallbackMockHelper.mFilter, mQosCallbackMockHelper.mCallback);
 
-        final NetworkAgentWrapper.CallbackType.OnQosCallbackRegister cbRegister1 =
-                (NetworkAgentWrapper.CallbackType.OnQosCallbackRegister)
-                        wrapper.getCallbackHistory().poll(1000, x -> true);
+        final OnQosCallbackRegister cbRegister1 =
+                (OnQosCallbackRegister) wrapper.getCallbackHistory().poll(1000, x -> true);
         assertNotNull(cbRegister1);
 
         final int registerCallbackId = cbRegister1.mQosCallbackId;
         mService.unregisterQosCallback(mQosCallbackMockHelper.mCallback);
-        final NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister cbUnregister;
-        cbUnregister = (NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister)
-                wrapper.getCallbackHistory().poll(1000, x -> true);
+        final OnQosCallbackUnregister cbUnregister =
+                (OnQosCallbackUnregister) wrapper.getCallbackHistory().poll(1000, x -> true);
         assertNotNull(cbUnregister);
         assertEquals(registerCallbackId, cbUnregister.mQosCallbackId);
         assertNull(wrapper.getCallbackHistory().poll(200, x -> true));
@@ -12010,6 +12029,86 @@ public class ConnectivityServiceTest {
         verify(mQosCallbackMockHelper.mCallback).onQosSessionLost(argThat(session ->
                 session.getSessionId() == sessionId
                         && session.getSessionType() == QosSession.TYPE_NR_BEARER));
+    }
+
+    @Test @IgnoreUpTo(SC_V2)
+    public void testQosCallbackAvailableOnValidationError() throws Exception {
+        mQosCallbackMockHelper = new QosCallbackMockHelper();
+        final NetworkAgentWrapper wrapper = mQosCallbackMockHelper.mAgentWrapper;
+        final int sessionId = 10;
+        final int qosCallbackId = 1;
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_NONE)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+        mQosCallbackMockHelper.registerQosCallback(
+                mQosCallbackMockHelper.mFilter, mQosCallbackMockHelper.mCallback);
+        OnQosCallbackRegister cbRegister1 =
+                (OnQosCallbackRegister) wrapper.getCallbackHistory().poll(1000, x -> true);
+        assertNotNull(cbRegister1);
+        final int registerCallbackId = cbRegister1.mQosCallbackId;
+
+        waitForIdle();
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+        final EpsBearerQosSessionAttributes attributes = new EpsBearerQosSessionAttributes(
+                1, 2, 3, 4, 5, new ArrayList<>());
+        mQosCallbackMockHelper.mAgentWrapper.getNetworkAgent()
+                .sendQosSessionAvailable(qosCallbackId, sessionId, attributes);
+        waitForIdle();
+
+        final NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister cbUnregister;
+        cbUnregister = (NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister)
+                wrapper.getCallbackHistory().poll(1000, x -> true);
+        assertNotNull(cbUnregister);
+        assertEquals(registerCallbackId, cbUnregister.mQosCallbackId);
+        waitForIdle();
+        verify(mQosCallbackMockHelper.mCallback)
+                .onError(eq(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED));
+    }
+
+    @Test @IgnoreUpTo(SC_V2)
+    public void testQosCallbackLostOnValidationError() throws Exception {
+        mQosCallbackMockHelper = new QosCallbackMockHelper();
+        final int sessionId = 10;
+        final int qosCallbackId = 1;
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_NONE)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+        mQosCallbackMockHelper.registerQosCallback(
+                mQosCallbackMockHelper.mFilter, mQosCallbackMockHelper.mCallback);
+        waitForIdle();
+        EpsBearerQosSessionAttributes attributes =
+                sendQosSessionEvent(qosCallbackId, sessionId, true);
+        waitForIdle();
+
+        verify(mQosCallbackMockHelper.mCallback).onQosEpsBearerSessionAvailable(argThat(session ->
+                session.getSessionId() == sessionId
+                        && session.getSessionType() == QosSession.TYPE_EPS_BEARER), eq(attributes));
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+
+        sendQosSessionEvent(qosCallbackId, sessionId, false);
+        waitForIdle();
+        verify(mQosCallbackMockHelper.mCallback)
+                .onError(eq(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED));
+    }
+
+    private EpsBearerQosSessionAttributes sendQosSessionEvent(
+            int qosCallbackId, int sessionId, boolean available) {
+        if (available) {
+            final EpsBearerQosSessionAttributes attributes = new EpsBearerQosSessionAttributes(
+                    1, 2, 3, 4, 5, new ArrayList<>());
+            mQosCallbackMockHelper.mAgentWrapper.getNetworkAgent()
+                    .sendQosSessionAvailable(qosCallbackId, sessionId, attributes);
+            return attributes;
+        } else {
+            mQosCallbackMockHelper.mAgentWrapper.getNetworkAgent()
+                    .sendQosSessionLost(qosCallbackId, sessionId, QosSession.TYPE_EPS_BEARER);
+            return null;
+        }
+
     }
 
     @Test
@@ -14535,7 +14634,7 @@ public class ConnectivityServiceTest {
         profileNetworkPreferenceBuilder.setPreference(
                 PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK);
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(
-                NetworkCapabilities.NET_ENTERPRISE_ID_2);
+                NET_ENTERPRISE_ID_2);
         registerDefaultNetworkCallbacks();
         testPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), true,
@@ -14557,6 +14656,146 @@ public class ConnectivityServiceTest {
         registerDefaultNetworkCallbacks();
         assertThrows("Should not be able to set invalid enterprise id",
                 IllegalStateException.class, () -> profileNetworkPreferenceBuilder.build());
+    }
+
+    /**
+     * Make sure per profile network preferences behave as expected when two slices with
+     * two different apps within same user profile is configured
+     * Make sure per profile network preferences overrides with latest preference when
+     * same user preference is set twice
+     */
+    @Test
+    public void testSetPreferenceWithOverridingPreference()
+            throws Exception {
+        final InOrder inOrder = inOrder(mMockNetd);
+        final UserHandle testHandle = setupEnterpriseNetwork();
+        mServiceContext.setWorkProfile(testHandle, true);
+        registerDefaultNetworkCallbacks();
+
+        final TestNetworkCallback appCb1 = new TestNetworkCallback();
+        final TestNetworkCallback appCb2 = new TestNetworkCallback();
+        final TestNetworkCallback appCb3 = new TestNetworkCallback();
+
+        final int testWorkProfileAppUid1 =
+                UserHandle.getUid(testHandle.getIdentifier(), TEST_APP_ID);
+        final int testWorkProfileAppUid2 =
+                UserHandle.getUid(testHandle.getIdentifier(), TEST_APP_ID_2);
+        final int testWorkProfileAppUid3 =
+                UserHandle.getUid(testHandle.getIdentifier(), TEST_APP_ID_3);
+
+        registerDefaultNetworkCallbackAsUid(appCb1, testWorkProfileAppUid1);
+        registerDefaultNetworkCallbackAsUid(appCb2, testWorkProfileAppUid2);
+        registerDefaultNetworkCallbackAsUid(appCb3, testWorkProfileAppUid3);
+
+        // Connect both a regular cell agent and an enterprise network first.
+        mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
+        mCellNetworkAgent.connect(true);
+
+        final TestNetworkAgentWrapper workAgent1 = makeEnterpriseNetworkAgent(NET_ENTERPRISE_ID_1);
+        final TestNetworkAgentWrapper workAgent2 = makeEnterpriseNetworkAgent(NET_ENTERPRISE_ID_2);
+        workAgent1.connect(true);
+        workAgent2.connect(true);
+
+        mSystemDefaultNetworkCallback.expectAvailableThenValidatedCallbacks(mCellNetworkAgent);
+        mDefaultNetworkCallback.expectAvailableThenValidatedCallbacks(mCellNetworkAgent);
+        appCb1.expectAvailableThenValidatedCallbacks(mCellNetworkAgent);
+        appCb2.expectAvailableThenValidatedCallbacks(mCellNetworkAgent);
+        appCb3.expectAvailableThenValidatedCallbacks(mCellNetworkAgent);
+
+        verify(mMockNetd).networkCreate(nativeNetworkConfigPhysical(
+                mCellNetworkAgent.getNetwork().netId, INetd.PERMISSION_NONE));
+        verify(mMockNetd).networkCreate(nativeNetworkConfigPhysical(
+                workAgent1.getNetwork().netId, INetd.PERMISSION_SYSTEM));
+        verify(mMockNetd).networkCreate(nativeNetworkConfigPhysical(
+                workAgent2.getNetwork().netId, INetd.PERMISSION_SYSTEM));
+
+        final TestOnCompleteListener listener = new TestOnCompleteListener();
+
+        // Set preferences for testHandle to map testWorkProfileAppUid1 to
+        // NET_ENTERPRISE_ID_1 and testWorkProfileAppUid2 to NET_ENTERPRISE_ID_2.
+        ProfileNetworkPreference.Builder profileNetworkPreferenceBuilder1 =
+                new ProfileNetworkPreference.Builder();
+        profileNetworkPreferenceBuilder1.setPreference(PROFILE_NETWORK_PREFERENCE_ENTERPRISE);
+        profileNetworkPreferenceBuilder1.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
+        profileNetworkPreferenceBuilder1.setIncludedUids(new int[]{testWorkProfileAppUid1});
+
+        ProfileNetworkPreference.Builder profileNetworkPreferenceBuilder2 =
+                new ProfileNetworkPreference.Builder();
+        profileNetworkPreferenceBuilder2.setPreference(PROFILE_NETWORK_PREFERENCE_ENTERPRISE);
+        profileNetworkPreferenceBuilder2.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_2);
+        profileNetworkPreferenceBuilder2.setIncludedUids(new int[]{testWorkProfileAppUid2});
+
+        mCm.setProfileNetworkPreferences(testHandle,
+                List.of(profileNetworkPreferenceBuilder1.build(),
+                        profileNetworkPreferenceBuilder2.build()),
+                r -> r.run(), listener);
+        listener.expectOnComplete();
+        verify(mMockNetd).networkAddUidRangesParcel(new NativeUidRangeConfig(
+                workAgent2.getNetwork().netId,
+                uidRangeFor(testHandle, profileNetworkPreferenceBuilder2.build()),
+                PREFERENCE_ORDER_PROFILE));
+        verify(mMockNetd).networkAddUidRangesParcel(new NativeUidRangeConfig(
+                workAgent1.getNetwork().netId,
+                uidRangeFor(testHandle, profileNetworkPreferenceBuilder1.build()),
+                PREFERENCE_ORDER_PROFILE));
+
+        assertNoCallbacks(mSystemDefaultNetworkCallback, mDefaultNetworkCallback);
+        appCb1.expectAvailableCallbacksValidated(workAgent1);
+        appCb2.expectAvailableCallbacksValidated(workAgent2);
+
+        // Set preferences for testHandle to map testWorkProfileAppUid3 to
+        // to NET_ENTERPRISE_ID_1.
+        ProfileNetworkPreference.Builder profileNetworkPreferenceBuilder3 =
+                new ProfileNetworkPreference.Builder();
+        profileNetworkPreferenceBuilder3.setPreference(PROFILE_NETWORK_PREFERENCE_ENTERPRISE);
+        profileNetworkPreferenceBuilder3.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
+        profileNetworkPreferenceBuilder3.setIncludedUids(new int[]{testWorkProfileAppUid3});
+
+        mCm.setProfileNetworkPreferences(testHandle,
+                List.of(profileNetworkPreferenceBuilder3.build()),
+                r -> r.run(), listener);
+        listener.expectOnComplete();
+        verify(mMockNetd).networkAddUidRangesParcel(new NativeUidRangeConfig(
+                workAgent1.getNetwork().netId,
+                uidRangeFor(testHandle, profileNetworkPreferenceBuilder3.build()),
+                PREFERENCE_ORDER_PROFILE));
+        verify(mMockNetd).networkRemoveUidRangesParcel(new NativeUidRangeConfig(
+                workAgent2.getNetwork().netId,
+                uidRangeFor(testHandle, profileNetworkPreferenceBuilder2.build()),
+                PREFERENCE_ORDER_PROFILE));
+        verify(mMockNetd).networkRemoveUidRangesParcel(new NativeUidRangeConfig(
+                workAgent1.getNetwork().netId,
+                uidRangeFor(testHandle, profileNetworkPreferenceBuilder1.build()),
+                PREFERENCE_ORDER_PROFILE));
+
+        assertNoCallbacks(mSystemDefaultNetworkCallback, mDefaultNetworkCallback);
+        appCb3.expectAvailableCallbacksValidated(workAgent1);
+        appCb2.expectAvailableCallbacksValidated(mCellNetworkAgent);
+        appCb1.expectAvailableCallbacksValidated(mCellNetworkAgent);
+
+        // Set the preferences for testHandle to default.
+        ProfileNetworkPreference.Builder profileNetworkPreferenceBuilder =
+                new ProfileNetworkPreference.Builder();
+        profileNetworkPreferenceBuilder.setPreference(PROFILE_NETWORK_PREFERENCE_DEFAULT);
+
+        mCm.setProfileNetworkPreferences(testHandle,
+                List.of(profileNetworkPreferenceBuilder.build()),
+                r -> r.run(), listener);
+        listener.expectOnComplete();
+        verify(mMockNetd).networkRemoveUidRangesParcel(new NativeUidRangeConfig(
+                workAgent1.getNetwork().netId,
+                uidRangeFor(testHandle, profileNetworkPreferenceBuilder3.build()),
+                PREFERENCE_ORDER_PROFILE));
+
+        assertNoCallbacks(mSystemDefaultNetworkCallback, mDefaultNetworkCallback, appCb1, appCb2);
+        appCb3.expectAvailableCallbacksValidated(mCellNetworkAgent);
+        workAgent2.disconnect();
+        mCellNetworkAgent.disconnect();
+
+        mCm.unregisterNetworkCallback(appCb1);
+        mCm.unregisterNetworkCallback(appCb2);
+        mCm.unregisterNetworkCallback(appCb3);
+        // Other callbacks will be unregistered by tearDown()
     }
 
     /**
@@ -14729,10 +14968,40 @@ public class ConnectivityServiceTest {
     public void testProfileNetworkPrefWrongProfile() throws Exception {
         final UserHandle testHandle = UserHandle.of(TEST_WORK_PROFILE_USER_ID);
         mServiceContext.setWorkProfile(testHandle, false);
-        assertThrows("Should not be able to set a user pref for a non-work profile",
+        mServiceContext.setDeviceOwner(testHandle, null);
+        assertThrows("Should not be able to set a user pref for a non-work profile "
+                + "and non device owner",
                 IllegalArgumentException.class , () ->
                         mCm.setProfileNetworkPreference(testHandle,
                                 PROFILE_NETWORK_PREFERENCE_ENTERPRISE, null, null));
+    }
+
+    /**
+     * Make sure requests for per-profile default networking for a device owner is
+     * accepted on T and not accepted on S
+     */
+    @Test
+    public void testProfileNetworkDeviceOwner() throws Exception {
+        final UserHandle testHandle = UserHandle.of(TEST_WORK_PROFILE_USER_ID);
+        mServiceContext.setWorkProfile(testHandle, false);
+        mServiceContext.setDeviceOwner(testHandle, "deviceOwnerPackage");
+        ProfileNetworkPreference.Builder profileNetworkPreferenceBuilder =
+                new ProfileNetworkPreference.Builder();
+        profileNetworkPreferenceBuilder.setPreference(PROFILE_NETWORK_PREFERENCE_ENTERPRISE);
+        profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
+        final TestOnCompleteListener listener = new TestOnCompleteListener();
+        if (SdkLevel.isAtLeastT()) {
+            mCm.setProfileNetworkPreferences(testHandle,
+                    List.of(profileNetworkPreferenceBuilder.build()),
+                    r -> r.run(), listener);
+        } else {
+            // S should not allow setting preference on device owner
+            assertThrows("Should not be able to set a user pref for a non-work profile on S",
+                    IllegalArgumentException.class , () ->
+                            mCm.setProfileNetworkPreferences(testHandle,
+                                    List.of(profileNetworkPreferenceBuilder.build()),
+                                    r -> r.run(), listener));
+        }
     }
 
     @Test
@@ -15770,5 +16039,37 @@ public class ConnectivityServiceTest {
         waitForValidationBlock.block(150);
         mCm.reportNetworkConnectivity(mWiFiNetworkAgent.getNetwork(), false);
         mDefaultNetworkCallback.expectAvailableCallbacksValidated(mCellNetworkAgent);
+    }
+
+    @Test
+    public void testLegacyTetheringApiGuardWithProperPermission() throws Exception {
+        final String testIface = "test0";
+        mServiceContext.setPermission(ACCESS_NETWORK_STATE, PERMISSION_DENIED);
+        assertThrows(SecurityException.class, () -> mService.getLastTetherError(testIface));
+        assertThrows(SecurityException.class, () -> mService.getTetherableIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetheredIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetheringErroredIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetherableUsbRegexs());
+        assertThrows(SecurityException.class, () -> mService.getTetherableWifiRegexs());
+
+        withPermission(ACCESS_NETWORK_STATE, () -> {
+            mService.getLastTetherError(testIface);
+            verify(mTetheringManager).getLastTetherError(testIface);
+
+            mService.getTetherableIfaces();
+            verify(mTetheringManager).getTetherableIfaces();
+
+            mService.getTetheredIfaces();
+            verify(mTetheringManager).getTetheredIfaces();
+
+            mService.getTetheringErroredIfaces();
+            verify(mTetheringManager).getTetheringErroredIfaces();
+
+            mService.getTetherableUsbRegexs();
+            verify(mTetheringManager).getTetherableUsbRegexs();
+
+            mService.getTetherableWifiRegexs();
+            verify(mTetheringManager).getTetherableWifiRegexs();
+        });
     }
 }
