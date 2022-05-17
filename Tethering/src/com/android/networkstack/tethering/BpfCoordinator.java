@@ -44,7 +44,6 @@ import android.net.ip.ConntrackMonitor;
 import android.net.ip.ConntrackMonitor.ConntrackEventConsumer;
 import android.net.ip.IpServer;
 import android.net.netstats.provider.NetworkStatsProvider;
-import android.net.util.InterfaceParams;
 import android.net.util.SharedLog;
 import android.os.Handler;
 import android.os.SystemClock;
@@ -52,6 +51,7 @@ import android.system.ErrnoException;
 import android.system.OsConstants;
 import android.text.TextUtils;
 import android.util.ArraySet;
+import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -63,14 +63,21 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
 import com.android.net.module.util.Struct;
+import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.bpf.Tether4Key;
+import com.android.net.module.util.bpf.Tether4Value;
+import com.android.net.module.util.bpf.TetherStatsKey;
+import com.android.net.module.util.bpf.TetherStatsValue;
 import com.android.net.module.util.netlink.ConntrackMessage;
 import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkSocket;
 import com.android.networkstack.tethering.apishim.common.BpfCoordinatorShim;
 import com.android.networkstack.tethering.util.TetheringUtils.ForwardedStats;
 
+import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -115,6 +122,11 @@ public class BpfCoordinator {
     private static final String TETHER_LIMIT_MAP_PATH = makeMapPath("limit");
     private static final String TETHER_ERROR_MAP_PATH = makeMapPath("error");
     private static final String TETHER_DEV_MAP_PATH = makeMapPath("dev");
+    private static final String DUMPSYS_RAWMAP_ARG_STATS = "--stats";
+    private static final String DUMPSYS_RAWMAP_ARG_UPSTREAM4 = "--upstream4";
+
+    // Using "," as a separator is safe because base64 characters are [0-9a-zA-Z/=+].
+    private static final String DUMP_BASE64_DELIMITER = ",";
 
     /** The names of all the BPF counters defined in bpf_tethering.h. */
     public static final String[] sBpfCounterNames = getBpfCounterNames();
@@ -1013,7 +1025,7 @@ public class BpfCoordinator {
             map.forEach((k, v) -> {
                 pw.println(String.format("%s: %s", k, v));
             });
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping BPF stats map: " + e);
         }
     }
@@ -1061,8 +1073,62 @@ public class BpfCoordinator {
                 return;
             }
             map.forEach((k, v) -> pw.println(ipv6UpstreamRuletoString(k, v)));
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping IPv6 upstream map: " + e);
+        }
+    }
+
+    private <K extends Struct, V extends Struct> String bpfMapEntryToBase64String(
+            final K key, final V value) {
+        final byte[] keyBytes = key.writeToBytes();
+        final String keyBase64Str = Base64.encodeToString(keyBytes, Base64.DEFAULT)
+                .replace("\n", "");
+        final byte[] valueBytes = value.writeToBytes();
+        final String valueBase64Str = Base64.encodeToString(valueBytes, Base64.DEFAULT)
+                .replace("\n", "");
+
+        return keyBase64Str + DUMP_BASE64_DELIMITER + valueBase64Str;
+    }
+
+    private <K extends Struct, V extends Struct> void dumpRawMap(BpfMap<K, V> map,
+            IndentingPrintWriter pw) throws ErrnoException {
+        if (map == null) {
+            pw.println("No BPF support");
+            return;
+        }
+        if (map.isEmpty()) {
+            pw.println("No entries");
+            return;
+        }
+        map.forEach((k, v) -> pw.println(bpfMapEntryToBase64String(k, v)));
+    }
+
+    /**
+     * Dump raw BPF map in base64 encoded strings. For test only.
+     * Only allow to dump one map path once.
+     * Format:
+     * $ dumpsys tethering bpfRawMap --<map name>
+     */
+    public void dumpRawMap(@NonNull IndentingPrintWriter pw, @Nullable String[] args) {
+        // TODO: consider checking the arg order that <map name> is after "bpfRawMap". Probably
+        // it is okay for now because this is used by test only and test is supposed to use
+        // expected argument order.
+        // TODO: dump downstream4 map.
+        if (CollectionUtils.contains(args, DUMPSYS_RAWMAP_ARG_STATS)) {
+            try (BpfMap<TetherStatsKey, TetherStatsValue> statsMap = mDeps.getBpfStatsMap()) {
+                dumpRawMap(statsMap, pw);
+            } catch (ErrnoException | IOException e) {
+                pw.println("Error dumping stats map: " + e);
+            }
+            return;
+        }
+        if (CollectionUtils.contains(args, DUMPSYS_RAWMAP_ARG_UPSTREAM4)) {
+            try (BpfMap<Tether4Key, Tether4Value> upstreamMap = mDeps.getBpfUpstream4Map()) {
+                dumpRawMap(upstreamMap, pw);
+            } catch (ErrnoException | IOException e) {
+                pw.println("Error dumping IPv4 map: " + e);
+            }
+            return;
         }
     }
 
@@ -1130,18 +1196,9 @@ public class BpfCoordinator {
             pw.increaseIndent();
             dumpIpv4ForwardingRuleMap(now, DOWNSTREAM, downstreamMap, pw);
             pw.decreaseIndent();
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping IPv4 map: " + e);
         }
-    }
-
-    /**
-     * Simple struct that only contains a u32. Must be public because Struct needs access to it.
-     * TODO: make this a public inner class of Struct so anyone can use it as, e.g., Struct.U32?
-     */
-    public static class U32Struct extends Struct {
-        @Struct.Field(order = 0, type = Struct.Type.U32)
-        public long val;
     }
 
     private void dumpCounters(@NonNull IndentingPrintWriter pw) {
@@ -1149,8 +1206,8 @@ public class BpfCoordinator {
             pw.println("No counter support");
             return;
         }
-        try (BpfMap<U32Struct, U32Struct> map = new BpfMap<>(TETHER_ERROR_MAP_PATH,
-                BpfMap.BPF_F_RDONLY, U32Struct.class, U32Struct.class)) {
+        try (BpfMap<U32, U32> map = new BpfMap<>(TETHER_ERROR_MAP_PATH, BpfMap.BPF_F_RDONLY,
+                U32.class, U32.class)) {
 
             map.forEach((k, v) -> {
                 String counterName;
@@ -1164,7 +1221,7 @@ public class BpfCoordinator {
                 }
                 if (v.val > 0) pw.println(String.format("%s: %d", counterName, v.val));
             });
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping counter map: " + e);
         }
     }
@@ -1188,7 +1245,7 @@ public class BpfCoordinator {
                 pw.println(String.format("%d (%s) -> %d (%s)", k.ifIndex, getIfName(k.ifIndex),
                         v.ifIndex, getIfName(v.ifIndex)));
             });
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping dev map: " + e);
         }
         pw.decreaseIndent();
@@ -1454,7 +1511,8 @@ public class BpfCoordinator {
     }
 
     @NonNull
-    private byte[] toIpv4MappedAddressBytes(Inet4Address ia4) {
+    @VisibleForTesting
+    static byte[] toIpv4MappedAddressBytes(Inet4Address ia4) {
         final byte[] addr4 = ia4.getAddress();
         final byte[] addr6 = new byte[16];
         addr6[10] = (byte) 0xff;
@@ -1997,6 +2055,14 @@ public class BpfCoordinator {
     @VisibleForTesting
     final BpfConntrackEventConsumer getBpfConntrackEventConsumerForTesting() {
         return mBpfConntrackEventConsumer;
+    }
+
+    // Return tethering client information. This is used for testing only.
+    @NonNull
+    @VisibleForTesting
+    final HashMap<IpServer, HashMap<Inet4Address, ClientInfo>>
+            getTetherClientsForTesting() {
+        return mTetherClients;
     }
 
     private static native String[] getBpfCounterNames();

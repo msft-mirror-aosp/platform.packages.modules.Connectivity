@@ -21,6 +21,8 @@
     <option name="config-descriptor:metadata" key="parameter" value="secondary_user" />
 
     <option name="config-descriptor:metadata" key="mainline-param" value="CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex" />
+    <option name="config-descriptor:metadata" key="mainline-param" value="CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk" />
+    <option name="config-descriptor:metadata" key="mainline-param" value="com.google.android.tethering.apex" />
     <option name="not-shardable" value="true" />
     <target_preparer class="com.android.tradefed.targetprep.suite.SuiteApkInstaller">
         <option name="cleanup-apks" value="true" />
@@ -28,10 +30,28 @@
     </target_preparer>
     <target_preparer class="com.android.testutils.ConnectivityCheckTargetPreparer">
     </target_preparer>
+    <target_preparer class="com.android.testutils.DisableConfigSyncTargetPreparer">
+    </target_preparer>
     <test class="com.android.tradefed.testtype.AndroidJUnitTest" >
         <option name="package" value="android.net.cts" />
         <option name="runtime-hint" value="9m4s" />
         <option name="hidden-api-checks" value="false" />
         <option name="isolated-storage" value="false" />
     </test>
+    <!-- When this test is run in a Mainline context (e.g. with `mts-tradefed`), only enable it if
+        one of the Mainline modules below is present on the device used for testing. -->
+    <object type="module_controller" class="com.android.tradefed.testtype.suite.module.MainlineTestModuleController">
+        <!-- Tethering Module (internal version). -->
+        <option name="mainline-module-package-name" value="com.google.android.tethering" />
+        <!-- Tethering Module (AOSP version). -->
+        <option name="mainline-module-package-name" value="com.android.tethering" />
+        <!-- NetworkStack Module (internal version). Should always be installed with CaptivePortalLogin. -->
+        <option name="mainline-module-package-name" value="com.google.android.networkstack" />
+        <!-- NetworkStack Module (AOSP version). Should always be installed with CaptivePortalLogin. -->
+        <option name="mainline-module-package-name" value="com.android.networkstack" />
+        <!-- Resolver Module (internal version). -->
+        <option name="mainline-module-package-name" value="com.google.android.resolv" />
+        <!-- Resolver Module (AOSP version). -->
+        <option name="mainline-module-package-name" value="com.android.resolv" />
+    </object>
 </configuration>

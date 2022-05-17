@@ -21,6 +21,7 @@ package {
 java_defaults {
     name: "TetheringApiLevel",
     sdk_version: "module_current",
+    target_sdk_version: "31",
     min_sdk_version: "30",
 }
 
@@ -32,6 +33,7 @@ java_defaults {
         ":framework-connectivity-shared-srcs",
         ":tethering-module-utils-srcs",
         ":services-tethering-shared-srcs",
+        ":statslog-tethering-java-gen",
     ],
     static_libs: [
         "androidx.annotation_annotation",
@@ -46,22 +48,27 @@ java_defaults {
         "net-utils-device-common-bpf",
         "net-utils-device-common-netlink",
         "netd-client",
+        "tetheringstatsprotos",
     ],
     libs: [
         "framework-connectivity",
+        "framework-connectivity-t.stubs.module_lib",
         "framework-statsd.stubs.module_lib",
         "framework-tethering.impl",
         "framework-wifi",
+        "framework-bluetooth",
         "unsupportedappusage",
     ],
     plugins: ["java_api_finder"],
     manifest: "AndroidManifestBase.xml",
+    lint: { strict_updatability_linting: true },
 }
 
 // build tethering static library, used to compile both variants of the tethering.
 android_library {
     name: "TetheringApiCurrentLib",
     defaults: [
+        "ConnectivityNextEnableDefaults",
         "TetheringAndroidLibraryDefaults",
         "TetheringApiLevel"
     ],
@@ -69,6 +76,7 @@ android_library {
         "NetworkStackApiCurrentShims",
     ],
     apex_available: ["com.android.tethering"],
+    lint: { strict_updatability_linting: true },
 }
 
 android_library {
@@ -81,6 +89,7 @@ android_library {
         "NetworkStackApiStableShims",
     ],
     apex_available: ["com.android.tethering"],
+    lint: { strict_updatability_linting: true },
 }
 
 // Due to b/143733063, APK can't access a jni lib that is in APEX (but not in the APK).
@@ -93,8 +102,7 @@ cc_library {
     ],
     min_sdk_version: "30",
     header_libs: [
-        "bpf_syscall_wrappers",
-        "bpf_tethering_headers",
+        "bpf_connectivity_headers",
     ],
     srcs: [
         "jni/*.cpp",
@@ -147,18 +155,20 @@ java_defaults {
     optimize: {
         proguard_flags_files: ["proguard.flags"],
     },
+    lint: { strict_updatability_linting: true },
 }
 
 // Non-updatable tethering running in the system server process for devices not using the module
 android_app {
     name: "InProcessTethering",
-    defaults: ["TetheringAppDefaults", "TetheringApiLevel"],
+    defaults: ["TetheringAppDefaults", "TetheringApiLevel", "ConnectivityNextEnableDefaults"],
     static_libs: ["TetheringApiCurrentLib"],
     certificate: "platform",
     manifest: "AndroidManifest_InProcess.xml",
     // InProcessTethering is a replacement for Tethering
     overrides: ["Tethering"],
     apex_available: ["com.android.tethering"],
+    lint: { strict_updatability_linting: true },
 }
 
 // Updatable tethering packaged for finalized API
@@ -169,30 +179,56 @@ android_app {
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The permission configuration *must* be included to ensure security of the device
+    // The network stack *must* be included to ensure security of the device
     required: [
-        "NetworkPermissionConfig",
-        "privapp_whitelist_com.android.networkstack.tethering",
+        "NetworkStack",
+        "privapp_allowlist_com.android.tethering",
     ],
     apex_available: ["com.android.tethering"],
+    lint: { strict_updatability_linting: true },
 }
 
 android_app {
     name: "TetheringNext",
-    defaults: ["TetheringAppDefaults", "TetheringApiLevel"],
+    defaults: [
+        "TetheringAppDefaults",
+        "TetheringApiLevel",
+        "ConnectivityNextEnableDefaults",
+    ],
     static_libs: ["TetheringApiCurrentLib"],
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The permission configuration *must* be included to ensure security of the device
+    // The network stack *must* be included to ensure security of the device
     required: [
-        "NetworkPermissionConfig",
-        "privapp_whitelist_com.android.networkstack.tethering",
+        "NetworkStackNext",
+        "privapp_allowlist_com.android.tethering",
     ],
     apex_available: ["com.android.tethering"],
+    lint: { strict_updatability_linting: true },
 }
 
 sdk {
     name: "tethering-module-sdk",
     bootclasspath_fragments: ["com.android.tethering-bootclasspath-fragment"],
+    systemserverclasspath_fragments: ["com.android.tethering-systemserverclasspath-fragment"],
+}
+
+java_library_static {
+    name: "tetheringstatsprotos",
+    proto: {type: "lite"},
+    srcs: [
+        "src/com/android/networkstack/tethering/metrics/stats.proto",
+    ],
+    static_libs: ["tetheringprotos"],
+    apex_available: ["com.android.tethering"],
+    min_sdk_version: "30",
+}
+
+genrule {
+    name: "statslog-tethering-java-gen",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --java $(out) --module network_tethering" +
+         " --javaPackage com.android.networkstack.tethering.metrics --javaClass TetheringStatsLog",
+    out: ["com/android/networkstack/tethering/metrics/TetheringStatsLog.java"],
 }

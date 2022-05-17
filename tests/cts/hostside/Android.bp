@@ -25,10 +25,22 @@ java_test_host {
         "cts-tradefed",
         "tradefed",
     ],
+    static_libs: [
+        "CompatChangeGatingTestBase",
+        "modules-utils-build-testing",
+    ],
     // Tag this module as a cts test artifact
     test_suites: [
         "cts",
         "general-tests",
         "sts"
     ],
+    data: [
+        ":CtsHostsideNetworkTestsApp",
+        ":CtsHostsideNetworkTestsApp2",
+        ":CtsHostsideNetworkTestsApp3",
+        ":CtsHostsideNetworkTestsApp3PreT",
+        ":CtsHostsideNetworkTestsAppNext",
+    ],
+    per_testcase_directory: true,
 }
