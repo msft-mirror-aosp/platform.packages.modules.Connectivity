@@ -65,6 +65,7 @@ import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
+import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
@@ -76,6 +77,7 @@ import com.android.net.module.util.netlink.NetlinkSocket;
 import com.android.networkstack.tethering.apishim.common.BpfCoordinatorShim;
 import com.android.networkstack.tethering.util.TetheringUtils.ForwardedStats;
 
+import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -120,6 +122,8 @@ public class BpfCoordinator {
     private static final String TETHER_LIMIT_MAP_PATH = makeMapPath("limit");
     private static final String TETHER_ERROR_MAP_PATH = makeMapPath("error");
     private static final String TETHER_DEV_MAP_PATH = makeMapPath("dev");
+    private static final String DUMPSYS_RAWMAP_ARG_STATS = "--stats";
+    private static final String DUMPSYS_RAWMAP_ARG_UPSTREAM4 = "--upstream4";
 
     // Using "," as a separator is safe because base64 characters are [0-9a-zA-Z/=+].
     private static final String DUMP_BASE64_DELIMITER = ",";
@@ -1021,7 +1025,7 @@ public class BpfCoordinator {
             map.forEach((k, v) -> {
                 pw.println(String.format("%s: %s", k, v));
             });
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping BPF stats map: " + e);
         }
     }
@@ -1069,12 +1073,13 @@ public class BpfCoordinator {
                 return;
             }
             map.forEach((k, v) -> pw.println(ipv6UpstreamRuletoString(k, v)));
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping IPv6 upstream map: " + e);
         }
     }
 
-    private String ipv4RuleToBase64String(Tether4Key key, Tether4Value value) {
+    private <K extends Struct, V extends Struct> String bpfMapEntryToBase64String(
+            final K key, final V value) {
         final byte[] keyBytes = key.writeToBytes();
         final String keyBase64Str = Base64.encodeToString(keyBytes, Base64.DEFAULT)
                 .replace("\n", "");
@@ -1085,28 +1090,45 @@ public class BpfCoordinator {
         return keyBase64Str + DUMP_BASE64_DELIMITER + valueBase64Str;
     }
 
-    private void dumpRawIpv4ForwardingRuleMap(
-            BpfMap<Tether4Key, Tether4Value> map, IndentingPrintWriter pw) throws ErrnoException {
+    private <K extends Struct, V extends Struct> void dumpRawMap(BpfMap<K, V> map,
+            IndentingPrintWriter pw) throws ErrnoException {
         if (map == null) {
-            pw.println("No IPv4 support");
+            pw.println("No BPF support");
             return;
         }
         if (map.isEmpty()) {
-            pw.println("No rules");
+            pw.println("No entries");
             return;
         }
-        map.forEach((k, v) -> pw.println(ipv4RuleToBase64String(k, v)));
+        map.forEach((k, v) -> pw.println(bpfMapEntryToBase64String(k, v)));
     }
 
     /**
      * Dump raw BPF map in base64 encoded strings. For test only.
+     * Only allow to dump one map path once.
+     * Format:
+     * $ dumpsys tethering bpfRawMap --<map name>
      */
-    public void dumpRawMap(@NonNull IndentingPrintWriter pw) {
-        try (BpfMap<Tether4Key, Tether4Value> upstreamMap = mDeps.getBpfUpstream4Map()) {
-            // TODO: dump downstream map.
-            dumpRawIpv4ForwardingRuleMap(upstreamMap, pw);
-        } catch (ErrnoException e) {
-            pw.println("Error dumping IPv4 map: " + e);
+    public void dumpRawMap(@NonNull IndentingPrintWriter pw, @Nullable String[] args) {
+        // TODO: consider checking the arg order that <map name> is after "bpfRawMap". Probably
+        // it is okay for now because this is used by test only and test is supposed to use
+        // expected argument order.
+        // TODO: dump downstream4 map.
+        if (CollectionUtils.contains(args, DUMPSYS_RAWMAP_ARG_STATS)) {
+            try (BpfMap<TetherStatsKey, TetherStatsValue> statsMap = mDeps.getBpfStatsMap()) {
+                dumpRawMap(statsMap, pw);
+            } catch (ErrnoException | IOException e) {
+                pw.println("Error dumping stats map: " + e);
+            }
+            return;
+        }
+        if (CollectionUtils.contains(args, DUMPSYS_RAWMAP_ARG_UPSTREAM4)) {
+            try (BpfMap<Tether4Key, Tether4Value> upstreamMap = mDeps.getBpfUpstream4Map()) {
+                dumpRawMap(upstreamMap, pw);
+            } catch (ErrnoException | IOException e) {
+                pw.println("Error dumping IPv4 map: " + e);
+            }
+            return;
         }
     }
 
@@ -1174,7 +1196,7 @@ public class BpfCoordinator {
             pw.increaseIndent();
             dumpIpv4ForwardingRuleMap(now, DOWNSTREAM, downstreamMap, pw);
             pw.decreaseIndent();
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping IPv4 map: " + e);
         }
     }
@@ -1199,7 +1221,7 @@ public class BpfCoordinator {
                 }
                 if (v.val > 0) pw.println(String.format("%s: %d", counterName, v.val));
             });
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping counter map: " + e);
         }
     }
@@ -1223,7 +1245,7 @@ public class BpfCoordinator {
                 pw.println(String.format("%d (%s) -> %d (%s)", k.ifIndex, getIfName(k.ifIndex),
                         v.ifIndex, getIfName(v.ifIndex)));
             });
-        } catch (ErrnoException e) {
+        } catch (ErrnoException | IOException e) {
             pw.println("Error dumping dev map: " + e);
         }
         pw.decreaseIndent();

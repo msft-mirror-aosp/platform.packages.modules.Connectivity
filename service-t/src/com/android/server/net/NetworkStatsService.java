@@ -159,8 +159,11 @@ import java.time.Clock;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -218,17 +221,16 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private static final String NETSTATS_COMBINE_SUBTYPE_ENABLED =
             "netstats_combine_subtype_enabled";
 
-    // This is current path but may be changed soon.
     private static final String UID_COUNTERSET_MAP_PATH =
-            "/sys/fs/bpf/map_netd_uid_counterset_map";
+            "/sys/fs/bpf/net_shared/map_netd_uid_counterset_map";
     private static final String COOKIE_TAG_MAP_PATH =
-            "/sys/fs/bpf/map_netd_cookie_tag_map";
+            "/sys/fs/bpf/net_shared/map_netd_cookie_tag_map";
     private static final String APP_UID_STATS_MAP_PATH =
-            "/sys/fs/bpf/map_netd_app_uid_stats_map";
+            "/sys/fs/bpf/net_shared/map_netd_app_uid_stats_map";
     private static final String STATS_MAP_A_PATH =
-            "/sys/fs/bpf/map_netd_stats_map_A";
+            "/sys/fs/bpf/net_shared/map_netd_stats_map_A";
     private static final String STATS_MAP_B_PATH =
-            "/sys/fs/bpf/map_netd_stats_map_B";
+            "/sys/fs/bpf/net_shared/map_netd_stats_map_B";
 
     private final Context mContext;
     private final NetworkStatsFactory mStatsFactory;
@@ -375,9 +377,19 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private long mLastStatsSessionPoll;
 
-    /** Map from UID to number of opened sessions */
-    @GuardedBy("mOpenSessionCallsPerUid")
+    private final Object mOpenSessionCallsLock = new Object();
+    /**
+     * Map from UID to number of opened sessions. This is used for rate-limt an app to open
+     * session frequently
+     */
+    @GuardedBy("mOpenSessionCallsLock")
     private final SparseIntArray mOpenSessionCallsPerUid = new SparseIntArray();
+    /**
+     * Map from key {@code OpenSessionKey} to count of opened sessions. This is for recording
+     * the caller of open session and it is only for debugging.
+     */
+    @GuardedBy("mOpenSessionCallsLock")
+    private final HashMap<OpenSessionKey, Integer> mOpenSessionCallsPerCaller = new HashMap<>();
 
     private final static int DUMP_STATS_SESSION_COUNT = 20;
 
@@ -406,6 +418,44 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private static @NonNull Clock getDefaultClock() {
         return new BestClock(ZoneOffset.UTC, SystemClock.currentNetworkTimeClock(),
                 Clock.systemUTC());
+    }
+
+    /**
+     * This class is a key that used in {@code mOpenSessionCallsPerCaller} to identify the count of
+     * the caller.
+     */
+    private static class OpenSessionKey {
+        public final int uid;
+        public final String packageName;
+
+        OpenSessionKey(int uid, @NonNull String packageName) {
+            this.uid = uid;
+            this.packageName = packageName;
+        }
+
+        @Override
+        public String toString() {
+            final StringBuilder sb = new StringBuilder();
+            sb.append("{");
+            sb.append("uid=").append(uid).append(",");
+            sb.append("package=").append(packageName);
+            sb.append("}");
+            return sb.toString();
+        }
+
+        @Override
+        public boolean equals(@NonNull Object o) {
+            if (this == o) return true;
+            if (o.getClass() != getClass()) return false;
+
+            final OpenSessionKey key = (OpenSessionKey) o;
+            return this.uid == key.uid && TextUtils.equals(this.packageName, key.packageName);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(uid, packageName);
+        }
     }
 
     private final class NetworkStatsHandler extends Handler {
@@ -795,16 +845,27 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return openSessionInternal(flags, callingPackage);
     }
 
-    private boolean isRateLimitedForPoll(int callingUid) {
-        if (callingUid == android.os.Process.SYSTEM_UID) {
-            return false;
-        }
-
+    private boolean isRateLimitedForPoll(@NonNull OpenSessionKey key) {
         final long lastCallTime;
         final long now = SystemClock.elapsedRealtime();
-        synchronized (mOpenSessionCallsPerUid) {
-            int calls = mOpenSessionCallsPerUid.get(callingUid, 0);
-            mOpenSessionCallsPerUid.put(callingUid, calls + 1);
+
+        synchronized (mOpenSessionCallsLock) {
+            Integer callsPerCaller = mOpenSessionCallsPerCaller.get(key);
+            if (callsPerCaller == null) {
+                mOpenSessionCallsPerCaller.put((key), 1);
+            } else {
+                mOpenSessionCallsPerCaller.put(key, Integer.sum(callsPerCaller, 1));
+            }
+
+            int callsPerUid = mOpenSessionCallsPerUid.get(key.uid, 0);
+            mOpenSessionCallsPerUid.put(key.uid, callsPerUid + 1);
+
+            if (key.uid == android.os.Process.SYSTEM_UID) {
+                return false;
+            }
+
+            // To avoid a non-system user to be rate-limited after system users open sessions,
+            // so update mLastStatsSessionPoll after checked if the uid is SYSTEM_UID.
             lastCallTime = mLastStatsSessionPoll;
             mLastStatsSessionPoll = now;
         }
@@ -812,7 +873,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return now - lastCallTime < POLL_RATE_LIMIT_MS;
     }
 
-    private int restrictFlagsForCaller(int flags) {
+    private int restrictFlagsForCaller(int flags, @NonNull String callingPackage) {
         // All non-privileged callers are not allowed to turn off POLL_ON_OPEN.
         final boolean isPrivileged = PermissionUtils.checkAnyPermissionOf(mContext,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
@@ -822,14 +883,15 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
         // Non-system uids are rate limited for POLL_ON_OPEN.
         final int callingUid = Binder.getCallingUid();
-        flags = isRateLimitedForPoll(callingUid)
+        final OpenSessionKey key = new OpenSessionKey(callingUid, callingPackage);
+        flags = isRateLimitedForPoll(key)
                 ? flags & (~NetworkStatsManager.FLAG_POLL_ON_OPEN)
                 : flags;
         return flags;
     }
 
     private INetworkStatsSession openSessionInternal(final int flags, final String callingPackage) {
-        final int restrictedFlags = restrictFlagsForCaller(flags);
+        final int restrictedFlags = restrictFlagsForCaller(flags, callingPackage);
         if ((restrictedFlags & (NetworkStatsManager.FLAG_POLL_ON_OPEN
                 | NetworkStatsManager.FLAG_POLL_FORCE)) != 0) {
             final long ident = Binder.clearCallingIdentity();
@@ -1280,13 +1342,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         Objects.requireNonNull(request.template, "NetworkTemplate is null");
         Objects.requireNonNull(callback, "callback is null");
 
-        int callingUid = Binder.getCallingUid();
+        final int callingPid = Binder.getCallingPid();
+        final int callingUid = Binder.getCallingUid();
         @NetworkStatsAccess.Level int accessLevel = checkAccessLevel(callingPackage);
         DataUsageRequest normalizedRequest;
         final long token = Binder.clearCallingIdentity();
         try {
             normalizedRequest = mStatsObservers.register(mContext,
-                    request, callback, callingUid, accessLevel);
+                    request, callback, callingPid, callingUid, callingPackage, accessLevel);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
@@ -1938,6 +2001,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         for (int uid : uids) {
             deleteKernelTagData(uid);
         }
+
+       // TODO: Remove the UID's entries from mOpenSessionCallsPerUid and
+       // mOpenSessionCallsPerCaller
     }
 
     /**
@@ -2061,25 +2127,21 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             pw.decreaseIndent();
 
             // Get the top openSession callers
-            final SparseIntArray calls;
-            synchronized (mOpenSessionCallsPerUid) {
-                calls = mOpenSessionCallsPerUid.clone();
+            final HashMap calls;
+            synchronized (mOpenSessionCallsLock) {
+                calls = new HashMap<>(mOpenSessionCallsPerCaller);
             }
-
-            final int N = calls.size();
-            final long[] values = new long[N];
-            for (int j = 0; j < N; j++) {
-                values[j] = ((long) calls.valueAt(j) << 32) | calls.keyAt(j);
-            }
-            Arrays.sort(values);
-
-            pw.println("Top openSession callers (uid=count):");
+            final List<Map.Entry<OpenSessionKey, Integer>> list = new ArrayList<>(calls.entrySet());
+            Collections.sort(list,
+                    (left, right) -> Integer.compare(left.getValue(), right.getValue()));
+            final int num = list.size();
+            final int end = Math.max(0, num - DUMP_STATS_SESSION_COUNT);
+            pw.println("Top openSession callers:");
             pw.increaseIndent();
-            final int end = Math.max(0, N - DUMP_STATS_SESSION_COUNT);
-            for (int j = N - 1; j >= end; j--) {
-                final int uid = (int) (values[j] & 0xffffffff);
-                final int count = (int) (values[j] >> 32);
-                pw.print(uid); pw.print("="); pw.println(count);
+            for (int j = num - 1; j >= end; j--) {
+                final Map.Entry<OpenSessionKey, Integer> entry = list.get(j);
+                pw.print(entry.getKey()); pw.print("="); pw.println(entry.getValue());
+
             }
             pw.decreaseIndent();
             pw.println();
@@ -2099,6 +2161,13 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 }
             });
             pw.decreaseIndent();
+            pw.println();
+
+            pw.println("Stats Observers:");
+            pw.increaseIndent();
+            mStatsObservers.dump(pw);
+            pw.decreaseIndent();
+            pw.println();
 
             pw.println("Dev stats:");
             pw.increaseIndent();

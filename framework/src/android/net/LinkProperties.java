@@ -64,7 +64,7 @@ public final class LinkProperties implements Parcelable {
      * @hide
      */
     @ChangeId
-    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.S) // Switch to S_V2 when it is available.
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.S_V2)
     @VisibleForTesting
     public static final long EXCLUDED_ROUTES = 186082280;
 
@@ -1362,6 +1362,21 @@ public final class LinkProperties implements Parcelable {
             }
         }
 
+        return false;
+    }
+
+    /**
+     * Returns true if this link has a throw route.
+     *
+     * @return {@code true} if there is an exclude route, {@code false} otherwise.
+     * @hide
+     */
+    public boolean hasExcludeRoute() {
+        for (RouteInfo r : mRoutes) {
+            if (r.getType() == RouteInfo.RTN_THROW) {
+                return true;
+            }
+        }
         return false;
     }
 

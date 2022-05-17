@@ -27,9 +27,12 @@ import static android.content.pm.UserInfo.FLAG_RESTRICTED;
 import static android.net.ConnectivityManager.NetworkCallback;
 import static android.net.INetd.IF_STATE_DOWN;
 import static android.net.INetd.IF_STATE_UP;
+import static android.net.VpnManager.TYPE_VPN_PLATFORM;
+import static android.os.Build.VERSION_CODES.S_V2;
 import static android.os.UserHandle.PER_USER_RANGE;
 
 import static com.android.modules.utils.build.SdkLevel.isAtLeastT;
+import static com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import static com.android.testutils.MiscAsserts.assertThrows;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -54,6 +57,7 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -65,6 +69,7 @@ import android.app.AppOpsManager;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
@@ -83,19 +88,28 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.LocalSocket;
 import android.net.Network;
+import android.net.NetworkAgent;
+import android.net.NetworkAgentConfig;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo.DetailedState;
+import android.net.NetworkProvider;
 import android.net.RouteInfo;
 import android.net.UidRangeParcel;
 import android.net.VpnManager;
+import android.net.VpnProfileState;
 import android.net.VpnService;
 import android.net.VpnTransportInfo;
 import android.net.ipsec.ike.IkeSessionCallback;
+import android.net.ipsec.ike.exceptions.IkeException;
+import android.net.ipsec.ike.exceptions.IkeNetworkLostException;
+import android.net.ipsec.ike.exceptions.IkeNonProtocolException;
 import android.net.ipsec.ike.exceptions.IkeProtocolException;
+import android.net.ipsec.ike.exceptions.IkeTimeoutException;
 import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
 import android.os.ConditionVariable;
 import android.os.INetworkManagementService;
+import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.UserHandle;
@@ -113,12 +127,16 @@ import com.android.internal.R;
 import com.android.internal.net.LegacyVpnInfo;
 import com.android.internal.net.VpnConfig;
 import com.android.internal.net.VpnProfile;
+import com.android.internal.util.HexDump;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.server.IpSecService;
+import com.android.server.vcn.util.PersistableBundleUtils;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 
+import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.AdditionalAnswers;
@@ -135,6 +153,7 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -154,9 +173,12 @@ import java.util.stream.Stream;
  */
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@DevSdkIgnoreRule.IgnoreUpTo(VERSION_CODES.R)
+@IgnoreUpTo(VERSION_CODES.S_V2)
 public class VpnTest {
     private static final String TAG = "VpnTest";
+
+    @Rule
+    public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
 
     // Mock users
     static final UserInfo primaryUser = new UserInfo(27, "Primary", FLAG_ADMIN | FLAG_PRIMARY);
@@ -181,14 +203,16 @@ public class VpnTest {
     private static final String TEST_IFACE_NAME = "TEST_IFACE";
     private static final int TEST_TUNNEL_RESOURCE_ID = 0x2345;
     private static final long TEST_TIMEOUT_MS = 500L;
-
+    private static final String PRIMARY_USER_APP_EXCLUDE_KEY =
+            "VPN_APP_EXCLUDED_27_com.testvpn.vpn";
     /**
      * Names and UIDs for some fake packages. Important points:
      *  - UID is ordered increasing.
      *  - One pair of packages have consecutive UIDs.
      */
     static final String[] PKGS = {"com.example", "org.example", "net.example", "web.vpn"};
-    static final int[] PKG_UIDS = {66, 77, 78, 400};
+    static final String PKGS_BYTES = getPackageByteString(List.of(PKGS));
+    static final int[] PKG_UIDS = {10066, 10077, 10078, 10400};
 
     // Mock packages
     static final Map<String, Integer> mPackages = new ArrayMap<>();
@@ -271,6 +295,11 @@ public class VpnTest {
         doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(any());
     }
 
+    @After
+    public void tearDown() throws Exception {
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(CONTROL_VPN);
+    }
+
     private <T> void mockService(Class<T> clazz, String name, T service) {
         doReturn(service).when(mContext).getSystemService(name);
         doReturn(name).when(mContext).getSystemServiceName(clazz);
@@ -294,6 +323,17 @@ public class VpnTest {
 
     private Range<Integer> uidRange(int start, int stop) {
         return new Range<Integer>(start, stop);
+    }
+
+    private static String getPackageByteString(List<String> packages) {
+        try {
+            return HexDump.toHexString(
+                    PersistableBundleUtils.toDiskStableBytes(PersistableBundleUtils.fromList(
+                            packages, PersistableBundleUtils.STRING_SERIALIZER)),
+                        true /* upperCase */);
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     @Test
@@ -345,7 +385,11 @@ public class VpnTest {
                 Arrays.asList(packages), null /* disallowedApplications */);
         assertEquals(rangeSet(
                 uidRange(userStart + PKG_UIDS[0], userStart + PKG_UIDS[0]),
-                uidRange(userStart + PKG_UIDS[1], userStart + PKG_UIDS[2])),
+                uidRange(userStart + PKG_UIDS[1], userStart + PKG_UIDS[2]),
+                uidRange(Process.toSdkSandboxUid(userStart + PKG_UIDS[0]),
+                         Process.toSdkSandboxUid(userStart + PKG_UIDS[0])),
+                uidRange(Process.toSdkSandboxUid(userStart + PKG_UIDS[1]),
+                         Process.toSdkSandboxUid(userStart + PKG_UIDS[2]))),
                 allow);
 
         // Denied list
@@ -356,7 +400,11 @@ public class VpnTest {
                 uidRange(userStart, userStart + PKG_UIDS[0] - 1),
                 uidRange(userStart + PKG_UIDS[0] + 1, userStart + PKG_UIDS[1] - 1),
                 /* Empty range between UIDS[1] and UIDS[2], should be excluded, */
-                uidRange(userStart + PKG_UIDS[2] + 1, userStop)),
+                uidRange(userStart + PKG_UIDS[2] + 1,
+                         Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                uidRange(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1),
+                         Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                uidRange(Process.toSdkSandboxUid(userStart + PKG_UIDS[2] + 1), userStop)),
                 disallow);
     }
 
@@ -397,18 +445,24 @@ public class VpnTest {
         assertTrue(vpn.setAlwaysOnPackage(PKGS[1], true, null));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart, userStart + PKG_UIDS[1] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[1] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[1] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[1] + 1), userStop)
         }));
 
         // Switch to another app.
         assertTrue(vpn.setAlwaysOnPackage(PKGS[3], true, null));
         verify(mConnectivityManager).setRequireVpnForUids(false, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart, userStart + PKG_UIDS[1] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[1] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[1] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[1] + 1), userStop)
         }));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart, userStart + PKG_UIDS[3] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[3] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[3] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[3] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[3] + 1), userStop)
         }));
     }
 
@@ -423,17 +477,25 @@ public class VpnTest {
                 PKGS[1], true, Collections.singletonList(PKGS[2])));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[]  {
                 new UidRangeParcel(userStart, userStart + PKG_UIDS[1] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[2] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[2] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1]) - 1),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[2] + 1), userStop)
         }));
         // Change allowed app list to PKGS[3].
         assertTrue(vpn.setAlwaysOnPackage(
                 PKGS[1], true, Collections.singletonList(PKGS[3])));
         verify(mConnectivityManager).setRequireVpnForUids(false, toRanges(new UidRangeParcel[] {
-                new UidRangeParcel(userStart + PKG_UIDS[2] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[2] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[2] + 1), userStop)
         }));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart + PKG_UIDS[1] + 1, userStart + PKG_UIDS[3] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[3] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[3] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[1] + 1),
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[3] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[3] + 1), userStop)
         }));
 
         // Change the VPN app.
@@ -441,32 +503,52 @@ public class VpnTest {
                 PKGS[0], true, Collections.singletonList(PKGS[3])));
         verify(mConnectivityManager).setRequireVpnForUids(false, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart, userStart + PKG_UIDS[1] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[1] + 1, userStart + PKG_UIDS[3] - 1)
+                new UidRangeParcel(userStart + PKG_UIDS[1] + 1, userStart + PKG_UIDS[3] - 1),
+                new UidRangeParcel(userStart + PKG_UIDS[3] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[1] + 1),
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[3] - 1))
         }));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart, userStart + PKG_UIDS[0] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStart + PKG_UIDS[3] - 1)
+                new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStart + PKG_UIDS[3] - 1),
+                new UidRangeParcel(userStart + PKG_UIDS[3] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1),
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[3] - 1))
         }));
 
         // Remove the list of allowed packages.
         assertTrue(vpn.setAlwaysOnPackage(PKGS[0], true, null));
         verify(mConnectivityManager).setRequireVpnForUids(false, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStart + PKG_UIDS[3] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[3] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[3] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1),
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[3] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[3] + 1), userStop)
         }));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[] {
-                new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStop),
+                new UidRangeParcel(userStart + PKG_UIDS[0] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1), userStop),
         }));
 
         // Add the list of allowed packages.
         assertTrue(vpn.setAlwaysOnPackage(
                 PKGS[0], true, Collections.singletonList(PKGS[1])));
         verify(mConnectivityManager).setRequireVpnForUids(false, toRanges(new UidRangeParcel[] {
-                new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[0] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1), userStop),
         }));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStart + PKG_UIDS[1] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[1] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[1] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1),
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[1] + 1), userStop)
         }));
 
         // Try allowing a package with a comma, should be rejected.
@@ -479,11 +561,19 @@ public class VpnTest {
                 PKGS[0], true, Arrays.asList("com.foo.app", PKGS[2], "com.bar.app")));
         verify(mConnectivityManager).setRequireVpnForUids(false, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStart + PKG_UIDS[1] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[1] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[1] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1),
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[1] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[1] + 1), userStop)
         }));
         verify(mConnectivityManager).setRequireVpnForUids(true, toRanges(new UidRangeParcel[] {
                 new UidRangeParcel(userStart + PKG_UIDS[0] + 1, userStart + PKG_UIDS[2] - 1),
-                new UidRangeParcel(userStart + PKG_UIDS[2] + 1, userStop)
+                new UidRangeParcel(userStart + PKG_UIDS[2] + 1,
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[0] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[0] + 1),
+                                   Process.toSdkSandboxUid(userStart + PKG_UIDS[2] - 1)),
+                new UidRangeParcel(Process.toSdkSandboxUid(userStart + PKG_UIDS[2] + 1), userStop)
         }));
     }
 
@@ -528,7 +618,10 @@ public class VpnTest {
         };
         final UidRangeParcel[] exceptPkg0 = {
             new UidRangeParcel(entireUser[0].start, entireUser[0].start + PKG_UIDS[0] - 1),
-            new UidRangeParcel(entireUser[0].start + PKG_UIDS[0] + 1, entireUser[0].stop)
+            new UidRangeParcel(entireUser[0].start + PKG_UIDS[0] + 1,
+                               Process.toSdkSandboxUid(entireUser[0].start + PKG_UIDS[0] - 1)),
+            new UidRangeParcel(Process.toSdkSandboxUid(entireUser[0].start + PKG_UIDS[0] + 1),
+                               entireUser[0].stop),
         };
 
         final InOrder order = inOrder(mConnectivityManager);
@@ -696,6 +789,47 @@ public class VpnTest {
         }
     }
 
+    private Vpn prepareVpnForVerifyAppExclusionList() throws Exception {
+        final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
+        when(mVpnProfileStore.get(vpn.getProfileNameForPackage(TEST_VPN_PKG)))
+                .thenReturn(mVpnProfile.encode());
+        when(mVpnProfileStore.get(PRIMARY_USER_APP_EXCLUDE_KEY))
+                .thenReturn(HexDump.hexStringToByteArray(PKGS_BYTES));
+
+        vpn.startVpnProfile(TEST_VPN_PKG);
+        verify(mVpnProfileStore).get(eq(vpn.getProfileNameForPackage(TEST_VPN_PKG)));
+        vpn.mNetworkAgent = new NetworkAgent(mContext, Looper.getMainLooper(), TAG,
+                new NetworkCapabilities.Builder().build(), new LinkProperties(), 10 /* score */,
+                new NetworkAgentConfig.Builder().build(),
+                new NetworkProvider(mContext, Looper.getMainLooper(), TAG)) {};
+        return vpn;
+    }
+
+    @Test @IgnoreUpTo(S_V2)
+    public void testSetAndGetAppExclusionList() throws Exception {
+        final Vpn vpn = prepareVpnForVerifyAppExclusionList();
+        verify(mVpnProfileStore, never()).put(eq(PRIMARY_USER_APP_EXCLUDE_KEY), any());
+        vpn.setAppExclusionList(TEST_VPN_PKG, Arrays.asList(PKGS));
+        verify(mVpnProfileStore)
+                .put(eq(PRIMARY_USER_APP_EXCLUDE_KEY),
+                     eq(HexDump.hexStringToByteArray(PKGS_BYTES)));
+        assertEquals(vpn.createUserAndRestrictedProfilesRanges(
+                primaryUser.id, null, Arrays.asList(PKGS)),
+                vpn.mNetworkCapabilities.getUids());
+        assertEquals(Arrays.asList(PKGS), vpn.getAppExclusionList(TEST_VPN_PKG));
+    }
+
+    @Test @IgnoreUpTo(S_V2)
+    public void testSetAndGetAppExclusionListRestrictedUser() throws Exception {
+        final Vpn vpn = prepareVpnForVerifyAppExclusionList();
+        // Mock it to restricted profile
+        when(mUserManager.getUserInfo(anyInt())).thenReturn(restrictedProfileA);
+        // Restricted users cannot configure VPNs
+        assertThrows(SecurityException.class,
+                () -> vpn.setAppExclusionList(TEST_VPN_PKG, new ArrayList<>()));
+        assertThrows(SecurityException.class, () -> vpn.getAppExclusionList(TEST_VPN_PKG));
+    }
+
     @Test
     public void testProvisionVpnProfilePreconsented() throws Exception {
         final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
@@ -783,6 +917,30 @@ public class VpnTest {
         verify(mVpnProfileStore).get(eq(vpn.getProfileNameForPackage(TEST_VPN_PKG)));
     }
 
+    private void verifyPlatformVpnIsActivated(String packageName) {
+        verify(mAppOps).noteOpNoThrow(
+                eq(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN),
+                eq(Process.myUid()),
+                eq(packageName),
+                eq(null) /* attributionTag */,
+                eq(null) /* message */);
+        verify(mAppOps).startOp(
+                eq(AppOpsManager.OPSTR_ESTABLISH_VPN_MANAGER),
+                eq(Process.myUid()),
+                eq(packageName),
+                eq(null) /* attributionTag */,
+                eq(null) /* message */);
+    }
+
+    private void verifyPlatformVpnIsDeactivated(String packageName) {
+        // Add a small delay to double confirm that finishOp is only called once.
+        verify(mAppOps, after(100)).finishOp(
+                eq(AppOpsManager.OPSTR_ESTABLISH_VPN_MANAGER),
+                eq(Process.myUid()),
+                eq(packageName),
+                eq(null) /* attributionTag */);
+    }
+
     @Test
     public void testStartVpnProfile() throws Exception {
         final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
@@ -793,13 +951,7 @@ public class VpnTest {
         vpn.startVpnProfile(TEST_VPN_PKG);
 
         verify(mVpnProfileStore).get(eq(vpn.getProfileNameForPackage(TEST_VPN_PKG)));
-        verify(mAppOps)
-                .noteOpNoThrow(
-                        eq(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN),
-                        eq(Process.myUid()),
-                        eq(TEST_VPN_PKG),
-                        eq(null) /* attributionTag */,
-                        eq(null) /* message */);
+        verifyPlatformVpnIsActivated(TEST_VPN_PKG);
     }
 
     @Test
@@ -811,7 +963,7 @@ public class VpnTest {
 
         vpn.startVpnProfile(TEST_VPN_PKG);
 
-        // Verify that the the ACTIVATE_VPN appop was checked, but no error was thrown.
+        // Verify that the ACTIVATE_VPN appop was checked, but no error was thrown.
         verify(mAppOps).noteOpNoThrow(AppOpsManager.OPSTR_ACTIVATE_VPN, Process.myUid(),
                 TEST_VPN_PKG, null /* attributionTag */, null /* message */);
     }
@@ -896,18 +1048,7 @@ public class VpnTest {
         when(mVpnProfileStore.get(vpn.getProfileNameForPackage(TEST_VPN_PKG)))
                 .thenReturn(mVpnProfile.encode());
         vpn.startVpnProfile(TEST_VPN_PKG);
-        verify(mAppOps).noteOpNoThrow(
-                eq(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN),
-                eq(Process.myUid()),
-                eq(TEST_VPN_PKG),
-                eq(null) /* attributionTag */,
-                eq(null) /* message */);
-        verify(mAppOps).startOp(
-                eq(AppOpsManager.OPSTR_ESTABLISH_VPN_MANAGER),
-                eq(Process.myUid()),
-                eq(TEST_VPN_PKG),
-                eq(null) /* attributionTag */,
-                eq(null) /* message */);
+        verifyPlatformVpnIsActivated(TEST_VPN_PKG);
         // Add a small delay to make sure that startOp is only called once.
         verify(mAppOps, after(100).times(1)).startOp(
                 eq(AppOpsManager.OPSTR_ESTABLISH_VPN_MANAGER),
@@ -923,12 +1064,7 @@ public class VpnTest {
                 eq(null) /* attributionTag */,
                 eq(null) /* message */);
         vpn.stopVpnProfile(TEST_VPN_PKG);
-        // Add a small delay to double confirm that startOp is only called once.
-        verify(mAppOps, after(100)).finishOp(
-                eq(AppOpsManager.OPSTR_ESTABLISH_VPN_MANAGER),
-                eq(Process.myUid()),
-                eq(TEST_VPN_PKG),
-                eq(null) /* attributionTag */);
+        verifyPlatformVpnIsDeactivated(TEST_VPN_PKG);
     }
 
     @Test
@@ -964,6 +1100,128 @@ public class VpnTest {
                 eq(null) /* message */);
     }
 
+    private void verifyVpnManagerEvent(String sessionKey, String category, int errorClass,
+            int errorCode, VpnProfileState... profileState) {
+        final Context userContext =
+                mContext.createContextAsUser(UserHandle.of(primaryUser.id), 0 /* flags */);
+        final ArgumentCaptor<Intent> intentArgumentCaptor = ArgumentCaptor.forClass(Intent.class);
+
+        final int verifyTimes = (profileState == null) ? 1 : profileState.length;
+        verify(userContext, times(verifyTimes)).startService(intentArgumentCaptor.capture());
+
+        for (int i = 0; i < verifyTimes; i++) {
+            final Intent intent = intentArgumentCaptor.getAllValues().get(i);
+            assertEquals(sessionKey, intent.getStringExtra(VpnManager.EXTRA_SESSION_KEY));
+            final Set<String> categories = intent.getCategories();
+            assertTrue(categories.contains(category));
+            assertEquals(errorClass,
+                    intent.getIntExtra(VpnManager.EXTRA_ERROR_CLASS, -1 /* defaultValue */));
+            assertEquals(errorCode,
+                    intent.getIntExtra(VpnManager.EXTRA_ERROR_CODE, -1 /* defaultValue */));
+            if (profileState != null) {
+                assertEquals(profileState[i], intent.getParcelableExtra(
+                        VpnManager.EXTRA_VPN_PROFILE_STATE, VpnProfileState.class));
+            }
+        }
+        reset(userContext);
+    }
+
+    @Test
+    public void testVpnManagerEventForUserDeactivated() throws Exception {
+        assumeTrue(SdkLevel.isAtLeastT());
+        // For security reasons, Vpn#prepare() will check that oldPackage and newPackage are either
+        // null or the package of the caller. This test will call Vpn#prepare() to pretend the old
+        // VPN is replaced by a new one. But only Settings can change to some other packages, and
+        // this is checked with CONTROL_VPN so simulate holding CONTROL_VPN in order to pass the
+        // security checks.
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(CONTROL_VPN);
+        final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
+        when(mVpnProfileStore.get(vpn.getProfileNameForPackage(TEST_VPN_PKG)))
+                .thenReturn(mVpnProfile.encode());
+
+        // Test the case that the user deactivates the vpn in vpn app.
+        final String sessionKey1 = vpn.startVpnProfile(TEST_VPN_PKG);
+        verifyPlatformVpnIsActivated(TEST_VPN_PKG);
+        vpn.stopVpnProfile(TEST_VPN_PKG);
+        verifyPlatformVpnIsDeactivated(TEST_VPN_PKG);
+        // CATEGORY_EVENT_DEACTIVATED_BY_USER is not an error event, so both of errorClass and
+        // errorCode won't be set.
+        verifyVpnManagerEvent(sessionKey1, VpnManager.CATEGORY_EVENT_DEACTIVATED_BY_USER,
+                -1 /* errorClass */, -1 /* errorCode */, null /* profileState */);
+        reset(mAppOps);
+
+        // Test the case that the user chooses another vpn and the original one is replaced.
+        final String sessionKey2 = vpn.startVpnProfile(TEST_VPN_PKG);
+        verifyPlatformVpnIsActivated(TEST_VPN_PKG);
+        vpn.prepare(TEST_VPN_PKG, "com.new.vpn" /* newPackage */, TYPE_VPN_PLATFORM);
+        verifyPlatformVpnIsDeactivated(TEST_VPN_PKG);
+        // CATEGORY_EVENT_DEACTIVATED_BY_USER is not an error event, so both of errorClass and
+        // errorCode won't be set.
+        verifyVpnManagerEvent(sessionKey2, VpnManager.CATEGORY_EVENT_DEACTIVATED_BY_USER,
+                -1 /* errorClass */, -1 /* errorCode */, null /* profileState */);
+    }
+
+    @Test
+    public void testVpnManagerEventForAlwaysOnChanged() throws Exception {
+        assumeTrue(SdkLevel.isAtLeastT());
+        // Calling setAlwaysOnPackage() needs to hold CONTROL_VPN.
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(CONTROL_VPN);
+        final Vpn vpn = createVpn(primaryUser.id);
+        // Enable VPN always-on for PKGS[1].
+        assertTrue(vpn.setAlwaysOnPackage(PKGS[1], false /* lockdown */,
+                null /* lockdownAllowlist */));
+        verifyVpnManagerEvent(null /* sessionKey */,
+                VpnManager.CATEGORY_EVENT_ALWAYS_ON_STATE_CHANGED, -1 /* errorClass */,
+                -1 /* errorCode */, new VpnProfileState(VpnProfileState.STATE_DISCONNECTED,
+                        null /* sessionKey */, true /* alwaysOn */, false /* lockdown */));
+
+        // Enable VPN lockdown for PKGS[1].
+        assertTrue(vpn.setAlwaysOnPackage(PKGS[1], true /* lockdown */,
+                null /* lockdownAllowlist */));
+        verifyVpnManagerEvent(null /* sessionKey */,
+                VpnManager.CATEGORY_EVENT_ALWAYS_ON_STATE_CHANGED, -1 /* errorClass */,
+                -1 /* errorCode */, new VpnProfileState(VpnProfileState.STATE_DISCONNECTED,
+                        null /* sessionKey */, true /* alwaysOn */, true /* lockdown */));
+
+        // Disable VPN lockdown for PKGS[1].
+        assertTrue(vpn.setAlwaysOnPackage(PKGS[1], false /* lockdown */,
+                null /* lockdownAllowlist */));
+        verifyVpnManagerEvent(null /* sessionKey */,
+                VpnManager.CATEGORY_EVENT_ALWAYS_ON_STATE_CHANGED, -1 /* errorClass */,
+                -1 /* errorCode */, new VpnProfileState(VpnProfileState.STATE_DISCONNECTED,
+                        null /* sessionKey */, true /* alwaysOn */, false /* lockdown */));
+
+        // Disable VPN always-on.
+        assertTrue(vpn.setAlwaysOnPackage(null, false /* lockdown */,
+                null /* lockdownAllowlist */));
+        verifyVpnManagerEvent(null /* sessionKey */,
+                VpnManager.CATEGORY_EVENT_ALWAYS_ON_STATE_CHANGED, -1 /* errorClass */,
+                -1 /* errorCode */, new VpnProfileState(VpnProfileState.STATE_DISCONNECTED,
+                        null /* sessionKey */, false /* alwaysOn */, false /* lockdown */));
+
+        // Enable VPN always-on for PKGS[1] again.
+        assertTrue(vpn.setAlwaysOnPackage(PKGS[1], false /* lockdown */,
+                null /* lockdownAllowlist */));
+        verifyVpnManagerEvent(null /* sessionKey */,
+                VpnManager.CATEGORY_EVENT_ALWAYS_ON_STATE_CHANGED, -1 /* errorClass */,
+                -1 /* errorCode */, new VpnProfileState(VpnProfileState.STATE_DISCONNECTED,
+                        null /* sessionKey */, true /* alwaysOn */, false /* lockdown */));
+
+        // Enable VPN always-on for PKGS[2].
+        assertTrue(vpn.setAlwaysOnPackage(PKGS[2], false /* lockdown */,
+                null /* lockdownAllowlist */));
+        // PKGS[1] is replaced with PKGS[2].
+        // Pass 2 VpnProfileState objects to verifyVpnManagerEvent(), the first one is sent to
+        // PKGS[1] to notify PKGS[1] that the VPN always-on is disabled, the second one is sent to
+        // PKGS[2] to notify PKGS[2] that the VPN always-on is enabled.
+        verifyVpnManagerEvent(null /* sessionKey */,
+                VpnManager.CATEGORY_EVENT_ALWAYS_ON_STATE_CHANGED, -1 /* errorClass */,
+                -1 /* errorCode */, new VpnProfileState(VpnProfileState.STATE_DISCONNECTED,
+                        null /* sessionKey */, false /* alwaysOn */, false /* lockdown */),
+                new VpnProfileState(VpnProfileState.STATE_DISCONNECTED,
+                        null /* sessionKey */, true /* alwaysOn */, false /* lockdown */));
+    }
+
     @Test
     public void testSetPackageAuthorizationVpnService() throws Exception {
         final Vpn vpn = createVpnAndSetupUidChecks();
@@ -981,7 +1239,7 @@ public class VpnTest {
     public void testSetPackageAuthorizationPlatformVpn() throws Exception {
         final Vpn vpn = createVpnAndSetupUidChecks();
 
-        assertTrue(vpn.setPackageAuthorization(TEST_VPN_PKG, VpnManager.TYPE_VPN_PLATFORM));
+        assertTrue(vpn.setPackageAuthorization(TEST_VPN_PKG, TYPE_VPN_PLATFORM));
         verify(mAppOps)
                 .setMode(
                         eq(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN),
@@ -1031,15 +1289,16 @@ public class VpnTest {
                 config -> Arrays.asList(config.flags).contains(flag)));
     }
 
-    @Test
-    public void testStartPlatformVpnAuthenticationFailed() throws Exception {
+    private void setupPlatformVpnWithSpecificExceptionAndItsErrorCode(IkeException exception,
+            String category, int errorType, int errorCode) throws Exception {
         final ArgumentCaptor<IkeSessionCallback> captor =
                 ArgumentCaptor.forClass(IkeSessionCallback.class);
-        final IkeProtocolException exception = mock(IkeProtocolException.class);
-        when(exception.getErrorType())
-                .thenReturn(IkeProtocolException.ERROR_TYPE_AUTHENTICATION_FAILED);
 
-        final Vpn vpn = startLegacyVpn(createVpn(primaryUser.id), (mVpnProfile));
+        final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
+        when(mVpnProfileStore.get(vpn.getProfileNameForPackage(TEST_VPN_PKG)))
+                .thenReturn(mVpnProfile.encode());
+
+        final String sessionKey = vpn.startVpnProfile(TEST_VPN_PKG);
         final NetworkCallback cb = triggerOnAvailableAndGetCallback();
 
         verifyInterfaceSetCfgWithFlags(IF_STATE_UP);
@@ -1049,10 +1308,75 @@ public class VpnTest {
         verify(mIkev2SessionCreator, timeout(TEST_TIMEOUT_MS))
                 .createIkeSession(any(), any(), any(), any(), captor.capture(), any());
         final IkeSessionCallback ikeCb = captor.getValue();
-        ikeCb.onClosedExceptionally(exception);
+        ikeCb.onClosedWithException(exception);
 
-        verify(mConnectivityManager, timeout(TEST_TIMEOUT_MS)).unregisterNetworkCallback(eq(cb));
-        assertEquals(LegacyVpnInfo.STATE_FAILED, vpn.getLegacyVpnInfo().state);
+        verifyVpnManagerEvent(sessionKey, category, errorType, errorCode, null /* profileState */);
+        if (errorType == VpnManager.ERROR_CLASS_NOT_RECOVERABLE) {
+            verify(mConnectivityManager, timeout(TEST_TIMEOUT_MS))
+                    .unregisterNetworkCallback(eq(cb));
+        }
+    }
+
+    @Test
+    public void testStartPlatformVpnAuthenticationFailed() throws Exception {
+        final IkeProtocolException exception = mock(IkeProtocolException.class);
+        final int errorCode = IkeProtocolException.ERROR_TYPE_AUTHENTICATION_FAILED;
+        when(exception.getErrorType()).thenReturn(errorCode);
+        setupPlatformVpnWithSpecificExceptionAndItsErrorCode(exception,
+                VpnManager.CATEGORY_EVENT_IKE_ERROR, VpnManager.ERROR_CLASS_NOT_RECOVERABLE,
+                errorCode);
+    }
+
+    @Test
+    public void testStartPlatformVpnFailedWithRecoverableError() throws Exception {
+        final IkeProtocolException exception = mock(IkeProtocolException.class);
+        final int errorCode = IkeProtocolException.ERROR_TYPE_TEMPORARY_FAILURE;
+        when(exception.getErrorType()).thenReturn(errorCode);
+        setupPlatformVpnWithSpecificExceptionAndItsErrorCode(exception,
+                VpnManager.CATEGORY_EVENT_IKE_ERROR, VpnManager.ERROR_CLASS_RECOVERABLE, errorCode);
+    }
+
+    @Test
+    public void testStartPlatformVpnFailedWithUnknownHostException() throws Exception {
+        final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
+        final UnknownHostException unknownHostException = new UnknownHostException();
+        final int errorCode = VpnManager.ERROR_CODE_NETWORK_UNKNOWN_HOST;
+        when(exception.getCause()).thenReturn(unknownHostException);
+        setupPlatformVpnWithSpecificExceptionAndItsErrorCode(exception,
+                VpnManager.CATEGORY_EVENT_NETWORK_ERROR, VpnManager.ERROR_CLASS_RECOVERABLE,
+                errorCode);
+    }
+
+    @Test
+    public void testStartPlatformVpnFailedWithIkeTimeoutException() throws Exception {
+        final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
+        final IkeTimeoutException ikeTimeoutException =
+                new IkeTimeoutException("IkeTimeoutException");
+        final int errorCode = VpnManager.ERROR_CODE_NETWORK_PROTOCOL_TIMEOUT;
+        when(exception.getCause()).thenReturn(ikeTimeoutException);
+        setupPlatformVpnWithSpecificExceptionAndItsErrorCode(exception,
+                VpnManager.CATEGORY_EVENT_NETWORK_ERROR, VpnManager.ERROR_CLASS_RECOVERABLE,
+                errorCode);
+    }
+
+    @Test
+    public void testStartPlatformVpnFailedWithIkeNetworkLostException() throws Exception {
+        final IkeNetworkLostException exception = new IkeNetworkLostException(
+                new Network(100));
+        setupPlatformVpnWithSpecificExceptionAndItsErrorCode(exception,
+                VpnManager.CATEGORY_EVENT_NETWORK_ERROR, VpnManager.ERROR_CLASS_RECOVERABLE,
+                VpnManager.ERROR_CODE_NETWORK_LOST);
+    }
+
+    @Test
+    public void testStartPlatformVpnFailedWithIOException() throws Exception {
+        final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
+        final IOException ioException = new IOException();
+        final int errorCode = VpnManager.ERROR_CODE_NETWORK_IO;
+        when(exception.getCause()).thenReturn(ioException);
+        setupPlatformVpnWithSpecificExceptionAndItsErrorCode(exception,
+                VpnManager.CATEGORY_EVENT_NETWORK_ERROR, VpnManager.ERROR_CLASS_RECOVERABLE,
+                errorCode);
     }
 
     @Test

@@ -56,7 +56,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.util.List;
 import java.util.Random;
 
 @RunWith(DevSdkIgnoreRunner.class)
@@ -271,7 +270,7 @@ public class NetworkStatsHistoryTest {
     }
 
     @Test
-    public void testRemove() throws Exception {
+    public void testRemoveStartingBefore() throws Exception {
         stats = new NetworkStatsHistory(HOUR_IN_MILLIS);
 
         // record some data across 24 buckets
@@ -279,28 +278,28 @@ public class NetworkStatsHistoryTest {
         assertEquals(24, stats.size());
 
         // try removing invalid data; should be no change
-        stats.removeBucketsBefore(0 - DAY_IN_MILLIS);
+        stats.removeBucketsStartingBefore(0 - DAY_IN_MILLIS);
         assertEquals(24, stats.size());
 
         // try removing far before buckets; should be no change
-        stats.removeBucketsBefore(TEST_START - YEAR_IN_MILLIS);
+        stats.removeBucketsStartingBefore(TEST_START - YEAR_IN_MILLIS);
         assertEquals(24, stats.size());
 
         // try removing just moments into first bucket; should be no change
-        // since that bucket contains data beyond the cutoff
-        stats.removeBucketsBefore(TEST_START + SECOND_IN_MILLIS);
+        // since that bucket doesn't contain data starts before the cutoff
+        stats.removeBucketsStartingBefore(TEST_START);
         assertEquals(24, stats.size());
 
         // try removing single bucket
-        stats.removeBucketsBefore(TEST_START + HOUR_IN_MILLIS);
+        stats.removeBucketsStartingBefore(TEST_START + HOUR_IN_MILLIS);
         assertEquals(23, stats.size());
 
         // try removing multiple buckets
-        stats.removeBucketsBefore(TEST_START + (4 * HOUR_IN_MILLIS));
+        stats.removeBucketsStartingBefore(TEST_START + (4 * HOUR_IN_MILLIS));
         assertEquals(20, stats.size());
 
         // try removing all buckets
-        stats.removeBucketsBefore(TEST_START + YEAR_IN_MILLIS);
+        stats.removeBucketsStartingBefore(TEST_START + YEAR_IN_MILLIS);
         assertEquals(0, stats.size());
     }
 
@@ -350,7 +349,7 @@ public class NetworkStatsHistoryTest {
                         stats.recordData(start, end, entry);
                     } else {
                         // trim something
-                        stats.removeBucketsBefore(r.nextLong());
+                        stats.removeBucketsStartingBefore(r.nextLong());
                     }
                 }
                 assertConsistent(stats);
@@ -531,40 +530,6 @@ public class NetworkStatsHistoryTest {
         stats.setValues(0, entry);
 
         assertEquals(512L + 4096L, stats.getTotalBytes());
-    }
-
-    @Test
-    public void testBuilder() {
-        final NetworkStatsHistory.Entry entry1 = new NetworkStatsHistory.Entry(10, 30, 40,
-                4, 50, 5, 60);
-        final NetworkStatsHistory.Entry entry2 = new NetworkStatsHistory.Entry(30, 15, 3,
-                41, 7, 1, 0);
-        final NetworkStatsHistory.Entry entry3 = new NetworkStatsHistory.Entry(7, 301, 11,
-                14, 31, 2, 80);
-
-        final NetworkStatsHistory statsEmpty = new NetworkStatsHistory
-                .Builder(HOUR_IN_MILLIS, 10).build();
-        assertEquals(0, statsEmpty.getEntries().size());
-        assertEquals(HOUR_IN_MILLIS, statsEmpty.getBucketDuration());
-
-        NetworkStatsHistory statsSingle = new NetworkStatsHistory
-                .Builder(HOUR_IN_MILLIS, 8)
-                .addEntry(entry1)
-                .build();
-        assertEquals(1, statsSingle.getEntries().size());
-        assertEquals(HOUR_IN_MILLIS, statsSingle.getBucketDuration());
-        assertEquals(entry1, statsSingle.getEntries().get(0));
-
-        NetworkStatsHistory statsMultiple = new NetworkStatsHistory
-                .Builder(SECOND_IN_MILLIS, 0)
-                .addEntry(entry1).addEntry(entry2).addEntry(entry3)
-                .build();
-        final List<NetworkStatsHistory.Entry> entries = statsMultiple.getEntries();
-        assertEquals(3, entries.size());
-        assertEquals(SECOND_IN_MILLIS, statsMultiple.getBucketDuration());
-        assertEquals(entry1, entries.get(0));
-        assertEquals(entry2, entries.get(1));
-        assertEquals(entry3, entries.get(2));
     }
 
     private static void assertIndexBeforeAfter(

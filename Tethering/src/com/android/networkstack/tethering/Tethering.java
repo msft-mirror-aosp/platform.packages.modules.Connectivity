@@ -135,10 +135,12 @@ import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
+import com.android.net.module.util.CollectionUtils;
 import com.android.networkstack.apishim.common.BluetoothPanShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceCallbackShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceRequestShim;
 import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
+import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
 import com.android.networkstack.tethering.util.TetheringUtils;
@@ -253,6 +255,7 @@ public class Tethering {
     private final UserManager mUserManager;
     private final BpfCoordinator mBpfCoordinator;
     private final PrivateAddressCoordinator mPrivateAddressCoordinator;
+    private final TetheringMetrics mTetheringMetrics;
     private int mActiveDataSubId = INVALID_SUBSCRIPTION_ID;
 
     private volatile TetheringConfiguration mConfig;
@@ -278,6 +281,11 @@ public class Tethering {
     private BluetoothPan mBluetoothPan;
     private PanServiceListener mBluetoothPanListener;
     private ArrayList<Pair<Boolean, IIntResultListener>> mPendingPanRequests;
+    // AIDL doesn't support Set<Integer>. Maintain a int bitmap here. When the bitmap is passed to
+    // TetheringManager, TetheringManager would convert it to a set of Integer types.
+    // mSupportedTypeBitmap should always be updated inside tethering internal thread but it may be
+    // read from binder thread which called TetheringService directly.
+    private volatile long mSupportedTypeBitmap;
 
     public Tethering(TetheringDependencies deps) {
         mLog.mark("Tethering.constructed");
@@ -286,6 +294,7 @@ public class Tethering {
         mNetd = mDeps.getINetd(mContext);
         mLooper = mDeps.getTetheringLooper();
         mNotificationUpdater = mDeps.getNotificationUpdater(mContext, mLooper);
+        mTetheringMetrics = mDeps.getTetheringMetrics();
 
         // This is intended to ensrure that if something calls startTethering(bluetooth) just after
         // bluetooth is enabled. Before onServiceConnected is called, store the calls into this
@@ -439,8 +448,22 @@ public class Tethering {
                 mStateReceiver, noUpstreamFilter, PERMISSION_MAINLINE_NETWORK_STACK, mHandler);
 
         final WifiManager wifiManager = getWifiManager();
+        TetheringSoftApCallback softApCallback = new TetheringSoftApCallback();
         if (wifiManager != null) {
-            wifiManager.registerSoftApCallback(mExecutor, new TetheringSoftApCallback());
+            wifiManager.registerSoftApCallback(mExecutor, softApCallback);
+        }
+        if (SdkLevel.isAtLeastT() && wifiManager != null) {
+            try {
+                // Although WifiManager#registerLocalOnlyHotspotSoftApCallback document that it need
+                // NEARBY_WIFI_DEVICES permission, but actually a caller who have NETWORK_STACK
+                // or MAINLINE_NETWORK_STACK permission would also able to use this API.
+                wifiManager.registerLocalOnlyHotspotSoftApCallback(mExecutor, softApCallback);
+            } catch (UnsupportedOperationException e) {
+                // Since wifi module development in internal branch,
+                // #registerLocalOnlyHotspotSoftApCallback currently doesn't supported in AOSP
+                // before AOSP switch to Android T + 1.
+                Log.wtf(TAG, "registerLocalOnlyHotspotSoftApCallback API is not supported");
+            }
         }
 
         startTrackDefaultNetwork();
@@ -476,7 +499,7 @@ public class Tethering {
             // To avoid launching unexpected provisioning checks, ignore re-provisioning
             // when no CarrierConfig loaded yet. Assume reevaluateSimCardProvisioning()
             // will be triggered again when CarrierConfig is loaded.
-            if (mEntitlementMgr.getCarrierConfig(mConfig) != null) {
+            if (TetheringConfiguration.getCarrierConfig(mContext, subId) != null) {
                 mEntitlementMgr.reevaluateSimCardProvisioning(mConfig);
             } else {
                 mLog.log("IGNORED reevaluate provisioning, no carrier config loaded");
@@ -494,6 +517,8 @@ public class Tethering {
         mUpstreamNetworkMonitor.setUpstreamConfig(mConfig.chooseUpstreamAutomatically,
                 mConfig.isDunRequired);
         reportConfigurationChanged(mConfig.toStableParcelable());
+
+        updateSupportedDownstreams(mConfig);
     }
 
     private void maybeDunSettingChanged() {
@@ -534,6 +559,13 @@ public class Tethering {
         }
 
         // Called by wifi when the number of soft AP clients changed.
+        // Currently multiple softAp would not behave well in PrivateAddressCoordinator
+        // (where it gets the address from cache), it ensure tethering only support one ipServer for
+        // TETHERING_WIFI. Once tethering support multiple softAp enabled simultaneously,
+        // onConnectedClientsChanged should also be updated to support tracking different softAp's
+        // clients individually.
+        // TODO: Add wtf log and have check to reject request duplicated type with different
+        // interface.
         @Override
         public void onConnectedClientsChanged(final List<WifiClient> clients) {
             updateConnectedClients(clients);
@@ -608,7 +640,8 @@ public class Tethering {
         processInterfaceStateChange(iface, false /* enabled */);
     }
 
-    void startTethering(final TetheringRequestParcel request, final IIntResultListener listener) {
+    void startTethering(final TetheringRequestParcel request, final String callerPkg,
+            final IIntResultListener listener) {
         mHandler.post(() -> {
             final TetheringRequestParcel unfinishedRequest = mActiveTetheringRequests.get(
                     request.tetheringType);
@@ -628,6 +661,7 @@ public class Tethering {
                         request.showProvisioningUi);
             }
             enableTetheringInternal(request.tetheringType, true /* enabled */, listener);
+            mTetheringMetrics.createBuilder(request.tetheringType, callerPkg);
         });
     }
 
@@ -687,7 +721,11 @@ public class Tethering {
 
         // If changing tethering fail, remove corresponding request
         // no matter who trigger the start/stop.
-        if (result != TETHER_ERROR_NO_ERROR) mActiveTetheringRequests.remove(type);
+        if (result != TETHER_ERROR_NO_ERROR) {
+            mActiveTetheringRequests.remove(type);
+            mTetheringMetrics.updateErrorCode(type, result);
+            mTetheringMetrics.sendReport(type);
+        }
     }
 
     private int setWifiTethering(final boolean enable) {
@@ -1280,7 +1318,7 @@ public class Tethering {
 
             // Finally bring up serving on the new interface
             mWifiP2pTetherInterface = group.getInterface();
-            enableWifiIpServing(mWifiP2pTetherInterface, IFACE_IP_MODE_LOCAL_ONLY);
+            enableWifiP2pIpServing(mWifiP2pTetherInterface);
         }
 
         private void handleUserRestrictionAction() {
@@ -1371,20 +1409,22 @@ public class Tethering {
         changeInterfaceState(ifname, ipServingMode);
     }
 
-    private void disableWifiIpServingCommon(int tetheringType, String ifname, int apState) {
-        mLog.log("Canceling WiFi tethering request -"
-                + " type=" + tetheringType
-                + " interface=" + ifname
-                + " state=" + apState);
-
-        if (!TextUtils.isEmpty(ifname)) {
-            final TetherState ts = mTetherStates.get(ifname);
-            if (ts != null) {
-                ts.ipServer.unwanted();
-                return;
-            }
+    private void disableWifiIpServingCommon(int tetheringType, String ifname) {
+        if (!TextUtils.isEmpty(ifname) && mTetherStates.containsKey(ifname)) {
+            mTetherStates.get(ifname).ipServer.unwanted();
+            return;
         }
 
+        if (SdkLevel.isAtLeastT()) {
+            mLog.e("Tethering no longer handle untracked interface after T: " + ifname);
+            return;
+        }
+
+        // Attempt to guess the interface name before T. Pure AOSP code should never enter here
+        // because WIFI_AP_STATE_CHANGED intent always include ifname and it should be tracked
+        // by mTetherStates. In case OEMs have some modification in wifi side which pass null
+        // or empty ifname. Before T, tethering allow to disable the first wifi ipServer if
+        // given ifname don't match any tracking ipServer.
         for (int i = 0; i < mTetherStates.size(); i++) {
             final IpServer ipServer = mTetherStates.valueAt(i).ipServer;
             if (ipServer.interfaceType() == tetheringType) {
@@ -1392,7 +1432,6 @@ public class Tethering {
                 return;
             }
         }
-
         mLog.log("Error disabling Wi-Fi IP serving; "
                 + (TextUtils.isEmpty(ifname) ? "no interface name specified"
                                            : "specified interface: " + ifname));
@@ -1401,20 +1440,39 @@ public class Tethering {
     private void disableWifiIpServing(String ifname, int apState) {
         // Regardless of whether we requested this transition, the AP has gone
         // down.  Don't try to tether again unless we're requested to do so.
-        // TODO: Remove this altogether, once Wi-Fi reliably gives us an
-        // interface name with every broadcast.
         mWifiTetherRequested = false;
 
-        disableWifiIpServingCommon(TETHERING_WIFI, ifname, apState);
+        mLog.log("Canceling WiFi tethering request - interface=" + ifname + " state=" + apState);
+
+        disableWifiIpServingCommon(TETHERING_WIFI, ifname);
+    }
+
+    private void enableWifiP2pIpServing(String ifname) {
+        if (TextUtils.isEmpty(ifname)) {
+            mLog.e("Cannot enable P2P IP serving with invalid interface");
+            return;
+        }
+
+        // After T, tethering always trust the iface pass by state change intent. This allow
+        // tethering to deprecate tetherable p2p regexs after T.
+        final int type = SdkLevel.isAtLeastT() ? TETHERING_WIFI_P2P : ifaceNameToType(ifname);
+        if (!checkTetherableType(type)) {
+            mLog.e(ifname + " is not a tetherable iface, ignoring");
+            return;
+        }
+        enableIpServing(type, ifname, IpServer.STATE_LOCAL_ONLY);
     }
 
     private void disableWifiP2pIpServingIfNeeded(String ifname) {
         if (TextUtils.isEmpty(ifname)) return;
 
-        disableWifiIpServingCommon(TETHERING_WIFI_P2P, ifname, /* fake */ 0);
+        mLog.log("Canceling P2P tethering request - interface=" + ifname);
+        disableWifiIpServingCommon(TETHERING_WIFI_P2P, ifname);
     }
 
     private void enableWifiIpServing(String ifname, int wifiIpMode) {
+        mLog.log("request WiFi tethering - interface=" + ifname + " state=" + wifiIpMode);
+
         // Map wifiIpMode values to IpServer.Callback serving states, inferring
         // from mWifiTetherRequested as a final "best guess".
         final int ipServingMode;
@@ -1430,13 +1488,18 @@ public class Tethering {
                 return;
         }
 
+        // After T, tethering always trust the iface pass by state change intent. This allow
+        // tethering to deprecate tetherable wifi regexs after T.
+        final int type = SdkLevel.isAtLeastT() ? TETHERING_WIFI : ifaceNameToType(ifname);
+        if (!checkTetherableType(type)) {
+            mLog.e(ifname + " is not a tetherable iface, ignoring");
+            return;
+        }
+
         if (!TextUtils.isEmpty(ifname)) {
-            ensureIpServerStarted(ifname);
-            changeInterfaceState(ifname, ipServingMode);
+            enableIpServing(type, ifname, ipServingMode);
         } else {
-            mLog.e(String.format(
-                    "Cannot enable IP serving in mode %s on missing interface name",
-                    ipServingMode));
+            mLog.e("Cannot enable IP serving on missing interface name");
         }
     }
 
@@ -1513,26 +1576,6 @@ public class Tethering {
         return mConfig;
     }
 
-    boolean hasAnySupportedDownstream() {
-        if ((mConfig.tetherableUsbRegexs.length != 0)
-                || (mConfig.tetherableWifiRegexs.length != 0)
-                || (mConfig.tetherableBluetoothRegexs.length != 0)) {
-            return true;
-        }
-
-        // Before T, isTetheringSupported would return true if wifi, usb and bluetooth tethering are
-        // disabled (whole tethering settings would be hidden). This means tethering would also not
-        // support wifi p2p, ethernet tethering and mirrorlink. This is wrong but probably there are
-        // some devices in the field rely on this to disable tethering entirely.
-        if (!SdkLevel.isAtLeastT()) return false;
-
-        return (mConfig.tetherableWifiP2pRegexs.length != 0)
-                || (mConfig.tetherableNcmRegexs.length != 0)
-                || isEthernetSupported();
-    }
-
-    // TODO: using EtherentManager new API to check whether ethernet is supported when the API is
-    // ready to use.
     private boolean isEthernetSupported() {
         return mContext.getSystemService(Context.ETHERNET_SERVICE) != null;
     }
@@ -2322,7 +2365,7 @@ public class Tethering {
         mHandler.post(() -> {
             mTetheringEventCallbacks.register(callback, new CallbackCookie(hasListPermission));
             final TetheringCallbackStartedParcel parcel = new TetheringCallbackStartedParcel();
-            parcel.tetheringSupported = isTetheringSupported();
+            parcel.supportedTypes = mSupportedTypeBitmap;
             parcel.upstreamNetwork = mTetherUpstream;
             parcel.config = mConfig.toStableParcelable();
             parcel.states =
@@ -2359,6 +2402,22 @@ public class Tethering {
         mHandler.post(() -> {
             mTetheringEventCallbacks.unregister(callback);
         });
+    }
+
+    private void reportTetheringSupportedChange(final long supportedBitmap) {
+        final int length = mTetheringEventCallbacks.beginBroadcast();
+        try {
+            for (int i = 0; i < length; i++) {
+                try {
+                    mTetheringEventCallbacks.getBroadcastItem(i).onSupportedTetheringTypes(
+                            supportedBitmap);
+                } catch (RemoteException e) {
+                    // Not really very much to do here.
+                }
+            }
+        } finally {
+            mTetheringEventCallbacks.finishBroadcast();
+        }
     }
 
     private void reportUpstreamChanged(UpstreamNetworkState ns) {
@@ -2445,18 +2504,56 @@ public class Tethering {
         }
     }
 
+    private void updateSupportedDownstreams(final TetheringConfiguration config) {
+        final long preSupportedBitmap = mSupportedTypeBitmap;
+
+        if (!isTetheringAllowed() || mEntitlementMgr.isProvisioningNeededButUnavailable()) {
+            mSupportedTypeBitmap = 0;
+        } else {
+            mSupportedTypeBitmap = makeSupportedDownstreams(config);
+        }
+
+        if (preSupportedBitmap != mSupportedTypeBitmap) {
+            reportTetheringSupportedChange(mSupportedTypeBitmap);
+        }
+    }
+
+    private long makeSupportedDownstreams(final TetheringConfiguration config) {
+        long types = 0;
+        if (config.tetherableUsbRegexs.length != 0) types |= (1 << TETHERING_USB);
+
+        if (config.tetherableWifiRegexs.length != 0) types |= (1 << TETHERING_WIFI);
+
+        if (config.tetherableBluetoothRegexs.length != 0) types |= (1 << TETHERING_BLUETOOTH);
+
+        // Before T, isTetheringSupported would return true if wifi, usb and bluetooth tethering are
+        // disabled (whole tethering settings would be hidden). This means tethering would also not
+        // support wifi p2p, ethernet tethering and mirrorlink. This is wrong but probably there are
+        // some devices in the field rely on this to disable tethering entirely.
+        if (!SdkLevel.isAtLeastT() && types == 0) return types;
+
+        if (config.tetherableNcmRegexs.length != 0) types |= (1 << TETHERING_NCM);
+
+        if (config.tetherableWifiP2pRegexs.length != 0) types |= (1 << TETHERING_WIFI_P2P);
+
+        if (isEthernetSupported()) types |= (1 << TETHERING_ETHERNET);
+
+        return types;
+    }
+
     // if ro.tether.denied = true we default to no tethering
     // gservices could set the secure setting to 1 though to enable it on a build where it
     // had previously been turned off.
-    boolean isTetheringSupported() {
+    private boolean isTetheringAllowed() {
         final int defaultVal = mDeps.isTetheringDenied() ? 0 : 1;
         final boolean tetherSupported = Settings.Global.getInt(mContext.getContentResolver(),
                 Settings.Global.TETHER_SUPPORTED, defaultVal) != 0;
-        final boolean tetherEnabledInSettings = tetherSupported
+        return tetherSupported
                 && !mUserManager.hasUserRestriction(UserManager.DISALLOW_CONFIG_TETHERING);
+    }
 
-        return tetherEnabledInSettings && hasAnySupportedDownstream()
-                && !mEntitlementMgr.isProvisioningNeededButUnavailable();
+    boolean isTetheringSupported() {
+        return mSupportedTypeBitmap > 0;
     }
 
     private void dumpBpf(IndentingPrintWriter pw) {
@@ -2472,13 +2569,12 @@ public class Tethering {
                 writer, "  ");
 
         // Used for testing instead of human debug.
-        // TODO: add options to choose which map to dump.
-        if (argsContain(args, "bpfRawMap")) {
-            mBpfCoordinator.dumpRawMap(pw);
+        if (CollectionUtils.contains(args, "bpfRawMap")) {
+            mBpfCoordinator.dumpRawMap(pw, args);
             return;
         }
 
-        if (argsContain(args, "bpf")) {
+        if (CollectionUtils.contains(args, "bpf")) {
             dumpBpf(pw);
             return;
         }
@@ -2544,7 +2640,7 @@ public class Tethering {
 
         pw.println("Log:");
         pw.increaseIndent();
-        if (argsContain(args, "--short")) {
+        if (CollectionUtils.contains(args, "--short")) {
             pw.println("<log removed for brevity>");
         } else {
             mLog.dump(fd, pw, args);
@@ -2586,13 +2682,6 @@ public class Tethering {
 
         final RuntimeException e = exceptionRef.get();
         if (e != null) throw e;
-    }
-
-    private static boolean argsContain(String[] args, String target) {
-        for (String arg : args) {
-            if (target.equals(arg)) return true;
-        }
-        return false;
     }
 
     private void updateConnectedClients(final List<WifiClient> wifiClients) {
@@ -2681,23 +2770,28 @@ public class Tethering {
         mTetherMainSM.sendMessage(which, state, 0, newLp);
     }
 
+    private boolean hasSystemFeature(final String feature) {
+        return mContext.getPackageManager().hasSystemFeature(feature);
+    }
+
+    private boolean checkTetherableType(int type) {
+        if ((type == TETHERING_WIFI || type == TETHERING_WIGIG)
+                && !hasSystemFeature(PackageManager.FEATURE_WIFI)) {
+            return false;
+        }
+
+        if (type == TETHERING_WIFI_P2P && !hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
+            return false;
+        }
+
+        return type != TETHERING_INVALID;
+    }
+
     private void ensureIpServerStarted(final String iface) {
         // If we don't care about this type of interface, ignore.
         final int interfaceType = ifaceNameToType(iface);
-        if (interfaceType == TETHERING_INVALID) {
-            mLog.log(iface + " is not a tetherable iface, ignoring");
-            return;
-        }
-
-        final PackageManager pm = mContext.getPackageManager();
-        if ((interfaceType == TETHERING_WIFI || interfaceType == TETHERING_WIGIG)
-                && !pm.hasSystemFeature(PackageManager.FEATURE_WIFI)) {
-            mLog.log(iface + " is not tetherable, because WiFi feature is disabled");
-            return;
-        }
-        if (interfaceType == TETHERING_WIFI_P2P
-                && !pm.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)) {
-            mLog.log(iface + " is not tetherable, because WiFi Direct feature is disabled");
+        if (!checkTetherableType(interfaceType)) {
+            mLog.log(iface + " is used for " + interfaceType + " which is not tetherable");
             return;
         }
 
@@ -2715,7 +2809,7 @@ public class Tethering {
         final TetherState tetherState = new TetherState(
                 new IpServer(iface, mLooper, interfaceType, mLog, mNetd, mBpfCoordinator,
                              makeControlCallback(), mConfig, mPrivateAddressCoordinator,
-                             mDeps.getIpServerDependencies()), isNcm);
+                             mTetheringMetrics, mDeps.getIpServerDependencies()), isNcm);
         mTetherStates.put(iface, tetherState);
         tetherState.ipServer.start();
     }

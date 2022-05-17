@@ -108,6 +108,7 @@ import android.annotation.TargetApi;
 import android.app.AppOpsManager;
 import android.app.BroadcastOptions;
 import android.app.PendingIntent;
+import android.app.admin.DevicePolicyManager;
 import android.app.usage.NetworkStatsManager;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -258,6 +259,7 @@ import com.android.net.module.util.TcUtils;
 import com.android.net.module.util.netlink.InetDiagMessage;
 import com.android.server.connectivity.AutodestructReference;
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
+import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
 import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
@@ -608,13 +610,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     // Handle private DNS validation status updates.
     private static final int EVENT_PRIVATE_DNS_VALIDATION_UPDATE = 38;
 
-    /**
-     * used to remove a network request, either a listener or a real request and call unavailable
-     * arg1 = UID of caller
-     * obj  = NetworkRequest
-     */
-    private static final int EVENT_RELEASE_NETWORK_REQUEST_AND_CALL_UNAVAILABLE = 39;
-
      /**
       * Event for NetworkMonitor/NetworkAgentInfo to inform ConnectivityService that the network has
       * been tested.
@@ -753,7 +748,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * The BPF program attached to the tc-police hook to account for to-be-dropped traffic.
      */
     private static final String TC_POLICE_BPF_PROG_PATH =
-            "/sys/fs/bpf/prog_netd_schedact_ingress_account";
+            "/sys/fs/bpf/net_shared/prog_netd_schedact_ingress_account";
 
     private static String eventName(int what) {
         return sMagicDecoderRing.get(what, Integer.toString(what));
@@ -1192,6 +1187,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     /**
      * Keeps track of the number of requests made under different uids.
      */
+    // TODO: Remove the hack and use com.android.net.module.util.PerUidCounter instead.
     public static class PerUidCounter {
         private final int mMaxCountPerUid;
 
@@ -1402,6 +1398,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
          */
         public BpfNetMaps getBpfNetMaps(INetd netd) {
             return new BpfNetMaps(netd);
+        }
+
+        /**
+         * @see ClatCoordinator
+         */
+        public ClatCoordinator getClatCoordinator(INetd netd) {
+            return new ClatCoordinator(
+                new ClatCoordinator.Dependencies() {
+                    @NonNull
+                    public INetd getNetd() {
+                        return netd;
+                    }
+                });
         }
 
         /**
@@ -2613,7 +2622,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         verifyCallingUidAndPackage(callingPackageName, mDeps.getCallingUid());
         enforceChangePermission(callingPackageName, callingAttributionTag);
         if (mProtectedNetworks.contains(networkType)) {
-            enforceConnectivityRestrictedNetworksPermission();
+            enforceConnectivityRestrictedNetworksPermission(true /* checkUidsAllowedList */);
         }
 
         InetAddress addr;
@@ -2865,7 +2874,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void enforceNetworkFactoryPermission() {
         // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
-        if (getCallingUid() == Process.BLUETOOTH_UID) return;
+        if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
@@ -2873,7 +2882,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void enforceNetworkFactoryOrSettingsPermission() {
         // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
-        if (getCallingUid() == Process.BLUETOOTH_UID) return;
+        if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_SETTINGS,
                 android.Manifest.permission.NETWORK_FACTORY,
@@ -2882,7 +2891,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void enforceNetworkFactoryOrTestNetworksPermission() {
         // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
-        if (getCallingUid() == Process.BLUETOOTH_UID) return;
+        if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
         enforceAnyPermissionOf(
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_FACTORY,
@@ -2896,7 +2905,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 android.Manifest.permission.NETWORK_SETTINGS, pid, uid)
                 || PERMISSION_GRANTED == mContext.checkPermission(
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, pid, uid)
-                || uid == Process.BLUETOOTH_UID;
+                || UserHandle.getAppId(uid) == Process.BLUETOOTH_UID;
     }
 
     private boolean checkSettingsPermission() {
@@ -2967,18 +2976,35 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 android.Manifest.permission.NETWORK_SETTINGS);
     }
 
-    private void enforceConnectivityRestrictedNetworksPermission() {
-        try {
-            mContext.enforceCallingOrSelfPermission(
-                    android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS,
-                    "ConnectivityService");
-            return;
-        } catch (SecurityException e) { /* fallback to ConnectivityInternalPermission */ }
-        //  TODO: Remove this fallback check after all apps have declared
-        //   CONNECTIVITY_USE_RESTRICTED_NETWORKS.
-        mContext.enforceCallingOrSelfPermission(
-                android.Manifest.permission.CONNECTIVITY_INTERNAL,
-                "ConnectivityService");
+    private boolean checkConnectivityRestrictedNetworksPermission(int callingUid,
+            boolean checkUidsAllowedList) {
+        if (PermissionUtils.checkAnyPermissionOf(mContext,
+                android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS)) {
+            return true;
+        }
+
+        // fallback to ConnectivityInternalPermission
+        // TODO: Remove this fallback check after all apps have declared
+        //  CONNECTIVITY_USE_RESTRICTED_NETWORKS.
+        if (PermissionUtils.checkAnyPermissionOf(mContext,
+                android.Manifest.permission.CONNECTIVITY_INTERNAL)) {
+            return true;
+        }
+
+        // Check whether uid is in allowed on restricted networks list.
+        if (checkUidsAllowedList
+                && mPermissionMonitor.isUidAllowedOnRestrictedNetworks(callingUid)) {
+            return true;
+        }
+        return false;
+    }
+
+    private void enforceConnectivityRestrictedNetworksPermission(boolean checkUidsAllowedList) {
+        final int callingUid = mDeps.getCallingUid();
+        if (!checkConnectivityRestrictedNetworksPermission(callingUid, checkUidsAllowedList)) {
+            throw new SecurityException("ConnectivityService: user " + callingUid
+                    + " has no permission to access restricted network.");
+        }
     }
 
     private void enforceKeepalivePermission() {
@@ -3266,11 +3292,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return;
         }
 
-        pw.print("NetworkProviders for:");
+        pw.println("NetworkProviders for:");
+        pw.increaseIndent();
         for (NetworkProviderInfo npi : mNetworkProviderInfos.values()) {
-            pw.print(" " + npi.name);
+            pw.println(npi.providerId + ": " + npi.name);
         }
-        pw.println();
+        pw.decreaseIndent();
         pw.println();
 
         final NetworkAgentInfo defaultNai = getDefaultNetwork();
@@ -3316,6 +3343,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.println("Network Requests:");
         pw.increaseIndent();
         dumpNetworkRequests(pw);
+        pw.decreaseIndent();
+        pw.println();
+
+        pw.println("Network Offers:");
+        pw.increaseIndent();
+        for (final NetworkOfferInfo offerInfo : mNetworkOffers) {
+            pw.println(offerInfo.offer);
+        }
         pw.decreaseIndent();
         pw.println();
 
@@ -3407,6 +3442,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             pw.println("Inactivity Timers:");
             pw.increaseIndent();
             nai.dumpInactivityTimers(pw);
+            pw.decreaseIndent();
+            pw.println("Nat464Xlat:");
+            pw.increaseIndent();
+            nai.dumpNat464Xlat(pw);
             pw.decreaseIndent();
             pw.decreaseIndent();
         }
@@ -4467,7 +4506,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private boolean hasCarrierPrivilegeForNetworkCaps(final int callingUid,
             @NonNull final NetworkCapabilities caps) {
-        if (SdkLevel.isAtLeastT() && mCarrierPrivilegeAuthenticator != null) {
+        if (mCarrierPrivilegeAuthenticator != null) {
             return mCarrierPrivilegeAuthenticator.hasCarrierPrivilegeForNetworkCapabilities(
                     callingUid, caps);
         }
@@ -4497,7 +4536,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void handleRegisterNetworkRequests(@NonNull final Set<NetworkRequestInfo> nris) {
         ensureRunningOnConnectivityServiceThread();
-        NetworkRequest requestToBeReleased = null;
         for (final NetworkRequestInfo nri : nris) {
             mNetworkRequestInfoLogs.log("REGISTER " + nri);
             checkNrisConsistency(nri);
@@ -4512,13 +4550,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         }
                     }
                 }
-                if (req.hasCapability(NetworkCapabilities.NET_CAPABILITY_CBS)) {
-                    if (!hasCarrierPrivilegeForNetworkCaps(nri.mUid, req.networkCapabilities)
-                            && !checkConnectivityRestrictedNetworksPermission(
-                                    nri.mPid, nri.mUid)) {
-                        requestToBeReleased = req;
-                    }
-                }
             }
 
             // If this NRI has a satisfier already, it is replacing an older request that
@@ -4528,11 +4559,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 // If there is an active request, then for sure there is a satisfier.
                 nri.getSatisfier().addRequest(activeRequest);
             }
-        }
-
-        if (requestToBeReleased != null) {
-            releaseNetworkRequestAndCallOnUnavailable(requestToBeReleased);
-            return;
         }
 
         if (mFlags.noRematchAllRequestsOnRegister()) {
@@ -5374,11 +5400,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             /* callOnUnavailable */ false);
                     break;
                 }
-                case EVENT_RELEASE_NETWORK_REQUEST_AND_CALL_UNAVAILABLE: {
-                    handleReleaseNetworkRequest((NetworkRequest) msg.obj, msg.arg1,
-                            /* callOnUnavailable */ true);
-                    break;
-                }
                 case EVENT_SET_ACCEPT_UNVALIDATED: {
                     Network network = (Network) msg.obj;
                     handleSetAcceptUnvalidated(network, toBool(msg.arg1), toBool(msg.arg2));
@@ -5946,6 +5967,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } catch (RemoteException | ServiceSpecificException e) {
             Log.e(TAG, "setRequireVpnForUids(" + requireVpn + ", "
                     + Arrays.toString(ranges) + "): netd command failed: " + e);
+        }
+
+        if (SdkLevel.isAtLeastT()) {
+            mPermissionMonitor.updateVpnLockdownUidRanges(requireVpn, ranges);
         }
 
         for (final NetworkAgentInfo nai : mNetworkAgentInfos) {
@@ -6597,7 +6622,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             case REQUEST:
                 networkCapabilities = new NetworkCapabilities(networkCapabilities);
                 enforceNetworkRequestPermissions(networkCapabilities, callingPackageName,
-                        callingAttributionTag);
+                        callingAttributionTag, callingUid);
                 // TODO: this is incorrect. We mark the request as metered or not depending on
                 //  the state of the app when the request is filed, but we never change the
                 //  request if the app changes network state. http://b/29964605
@@ -6687,24 +6712,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceNetworkRequestPermissions(NetworkCapabilities networkCapabilities,
-            String callingPackageName, String callingAttributionTag) {
+            String callingPackageName, String callingAttributionTag, final int callingUid) {
         if (networkCapabilities.hasCapability(NET_CAPABILITY_NOT_RESTRICTED) == false) {
-            if (!networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CBS)) {
-                enforceConnectivityRestrictedNetworksPermission();
+            // For T+ devices, callers with carrier privilege could request with CBS capabilities.
+            if (networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CBS)
+                    && hasCarrierPrivilegeForNetworkCaps(callingUid, networkCapabilities)) {
+                return;
             }
+            enforceConnectivityRestrictedNetworksPermission(true /* checkUidsAllowedList */);
         } else {
             enforceChangePermission(callingPackageName, callingAttributionTag);
         }
-    }
-
-    private boolean checkConnectivityRestrictedNetworksPermission(int callerPid, int callerUid) {
-        if (checkAnyPermissionOf(callerPid, callerUid,
-                android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS)
-                || checkAnyPermissionOf(callerPid, callerUid,
-                android.Manifest.permission.CONNECTIVITY_INTERNAL)) {
-            return true;
-        }
-        return false;
     }
 
     @Override
@@ -6765,7 +6783,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final int callingUid = mDeps.getCallingUid();
         networkCapabilities = new NetworkCapabilities(networkCapabilities);
         enforceNetworkRequestPermissions(networkCapabilities, callingPackageName,
-                callingAttributionTag);
+                callingAttributionTag, callingUid);
         enforceMeteredApnPolicy(networkCapabilities);
         ensureRequestableCapabilities(networkCapabilities);
         ensureSufficientPermissionsForRequest(networkCapabilities,
@@ -6886,13 +6904,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         ensureNetworkRequestHasType(networkRequest);
         mHandler.sendMessage(mHandler.obtainMessage(
                 EVENT_RELEASE_NETWORK_REQUEST, mDeps.getCallingUid(), 0, networkRequest));
-    }
-
-    private void releaseNetworkRequestAndCallOnUnavailable(NetworkRequest networkRequest) {
-        ensureNetworkRequestHasType(networkRequest);
-        mHandler.sendMessage(mHandler.obtainMessage(
-                EVENT_RELEASE_NETWORK_REQUEST_AND_CALL_UNAVAILABLE, mDeps.getCallingUid(), 0,
-                networkRequest));
     }
 
     private void handleRegisterNetworkProvider(NetworkProviderInfo npi) {
@@ -7725,10 +7736,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void updateVpnFiltering(LinkProperties newLp, LinkProperties oldLp,
             NetworkAgentInfo nai) {
-        final String oldIface = oldLp != null ? oldLp.getInterfaceName() : null;
-        final String newIface = newLp != null ? newLp.getInterfaceName() : null;
-        final boolean wasFiltering = requiresVpnIsolation(nai, nai.networkCapabilities, oldLp);
-        final boolean needsFiltering = requiresVpnIsolation(nai, nai.networkCapabilities, newLp);
+        final String oldIface = getVpnIsolationInterface(nai, nai.networkCapabilities, oldLp);
+        final String newIface = getVpnIsolationInterface(nai, nai.networkCapabilities, newLp);
+        final boolean wasFiltering = requiresVpnAllowRule(nai, oldLp, oldIface);
+        final boolean needsFiltering = requiresVpnAllowRule(nai, newLp, newIface);
 
         if (!wasFiltering && !needsFiltering) {
             // Nothing to do.
@@ -7741,11 +7752,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         final Set<UidRange> ranges = nai.networkCapabilities.getUidRanges();
+        if (ranges == null || ranges.isEmpty()) {
+            return;
+        }
+
         final int vpnAppUid = nai.networkCapabilities.getOwnerUid();
         // TODO: this create a window of opportunity for apps to receive traffic between the time
         // when the old rules are removed and the time when new rules are added. To fix this,
         // make eBPF support two allowlisted interfaces so here new rules can be added before the
         // old rules are being removed.
+
+        // Null iface given to onVpnUidRangesAdded/Removed is a wildcard to allow apps to receive
+        // packets on all interfaces. This is required to accept incoming traffic in Lockdown mode
+        // by overriding the Lockdown blocking rule.
         if (wasFiltering) {
             mPermissionMonitor.onVpnUidRangesRemoved(oldIface, ranges, vpnAppUid);
         }
@@ -8034,15 +8053,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     /**
-     * Returns whether VPN isolation (ingress interface filtering) should be applied on the given
-     * network.
+     * Returns the interface which requires VPN isolation (ingress interface filtering).
      *
      * Ingress interface filtering enforces that all apps under the given network can only receive
      * packets from the network's interface (and loopback). This is important for VPNs because
      * apps that cannot bypass a fully-routed VPN shouldn't be able to receive packets from any
      * non-VPN interfaces.
      *
-     * As a result, this method should return true iff
+     * As a result, this method should return Non-null interface iff
      *  1. the network is an app VPN (not legacy VPN)
      *  2. the VPN does not allow bypass
      *  3. the VPN is fully-routed
@@ -8051,15 +8069,32 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * @see INetd#firewallAddUidInterfaceRules
      * @see INetd#firewallRemoveUidInterfaceRules
      */
-    private boolean requiresVpnIsolation(@NonNull NetworkAgentInfo nai, NetworkCapabilities nc,
+    @Nullable
+    private String getVpnIsolationInterface(@NonNull NetworkAgentInfo nai, NetworkCapabilities nc,
             LinkProperties lp) {
-        if (nc == null || lp == null) return false;
-        return nai.isVPN()
+        if (nc == null || lp == null) return null;
+        if (nai.isVPN()
                 && !nai.networkAgentConfig.allowBypass
                 && nc.getOwnerUid() != Process.SYSTEM_UID
                 && lp.getInterfaceName() != null
                 && (lp.hasIpv4DefaultRoute() || lp.hasIpv4UnreachableDefaultRoute())
-                && (lp.hasIpv6DefaultRoute() || lp.hasIpv6UnreachableDefaultRoute());
+                && (lp.hasIpv6DefaultRoute() || lp.hasIpv6UnreachableDefaultRoute())
+                && !lp.hasExcludeRoute()) {
+            return lp.getInterfaceName();
+        }
+        return null;
+    }
+
+    /**
+     * Returns whether we need to set interface filtering rule or not
+     */
+    private boolean requiresVpnAllowRule(NetworkAgentInfo nai, LinkProperties lp,
+            String filterIface) {
+        // Only filter if lp has an interface.
+        if (lp == null || lp.getInterfaceName() == null) return false;
+        // Before T, allow rules are only needed if VPN isolation is enabled.
+        // T and After T, allow rules are needed for all VPNs.
+        return filterIface != null || (nai.isVPN() && SdkLevel.isAtLeastT());
     }
 
     private static UidRangeParcel[] toUidRangeStableParcels(final @NonNull Set<UidRange> ranges) {
@@ -8187,9 +8222,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (!prevRanges.isEmpty()) {
                 updateVpnUidRanges(false, nai, prevRanges);
             }
-            final boolean wasFiltering = requiresVpnIsolation(nai, prevNc, nai.linkProperties);
-            final boolean shouldFilter = requiresVpnIsolation(nai, newNc, nai.linkProperties);
-            final String iface = nai.linkProperties.getInterfaceName();
+            final String oldIface = getVpnIsolationInterface(nai, prevNc, nai.linkProperties);
+            final String newIface = getVpnIsolationInterface(nai, newNc, nai.linkProperties);
+            final boolean wasFiltering = requiresVpnAllowRule(nai, nai.linkProperties, oldIface);
+            final boolean shouldFilter = requiresVpnAllowRule(nai, nai.linkProperties, newIface);
             // For VPN uid interface filtering, old ranges need to be removed before new ranges can
             // be added, due to the range being expanded and stored as individual UIDs. For example
             // the UIDs might be updated from [0, 99999] to ([0, 10012], [10014, 99999]) which means
@@ -8201,11 +8237,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // above, where the addition of new ranges happens before the removal of old ranges.
             // TODO Fix this window by computing an accurate diff on Set<UidRange>, so the old range
             // to be removed will never overlap with the new range to be added.
+
+            // Null iface given to onVpnUidRangesAdded/Removed is a wildcard to allow apps to
+            // receive packets on all interfaces. This is required to accept incoming traffic in
+            // Lockdown mode by overriding the Lockdown blocking rule.
             if (wasFiltering && !prevRanges.isEmpty()) {
-                mPermissionMonitor.onVpnUidRangesRemoved(iface, prevRanges, prevNc.getOwnerUid());
+                mPermissionMonitor.onVpnUidRangesRemoved(oldIface, prevRanges,
+                        prevNc.getOwnerUid());
             }
             if (shouldFilter && !newRanges.isEmpty()) {
-                mPermissionMonitor.onVpnUidRangesAdded(iface, newRanges, newNc.getOwnerUid());
+                mPermissionMonitor.onVpnUidRangesAdded(newIface, newRanges, newNc.getOwnerUid());
             }
         } catch (Exception e) {
             // Never crash!
@@ -10596,7 +10637,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (callback == null) throw new IllegalArgumentException("callback must be non-null");
 
         if (!nai.networkCapabilities.hasCapability(NET_CAPABILITY_NOT_RESTRICTED)) {
-            enforceConnectivityRestrictedNetworksPermission();
+            // TODO: Check allowed list here and ensure that either a) any QoS callback registered
+            //  on this network is unregistered when the app loses permission or b) no QoS
+            //  callbacks are sent for restricted networks unless the app currently has permission
+            //  to access restricted networks.
+            enforceConnectivityRestrictedNetworksPermission(false /* checkUidsAllowedList */);
         }
         mQosCallbackTracker.registerCallback(callback, filter, nai);
     }
@@ -10612,13 +10657,29 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mQosCallbackTracker.unregisterCallback(callback);
     }
 
+    private boolean isNetworkPreferenceAllowedForProfile(@NonNull UserHandle profile) {
+        // UserManager.isManagedProfile returns true for all apps in managed user profiles.
+        // Enterprise device can be fully managed like device owner and such use case
+        // also should be supported. Calling app check for work profile and fully managed device
+        // is already done in DevicePolicyManager.
+        // This check is an extra caution to be sure device is fully managed or not.
+        final UserManager um = mContext.getSystemService(UserManager.class);
+        final DevicePolicyManager dpm = mContext.getSystemService(DevicePolicyManager.class);
+        if (um.isManagedProfile(profile.getIdentifier())) {
+            return true;
+        }
+        if (SdkLevel.isAtLeastT() && dpm.getDeviceOwner() != null) return true;
+        return false;
+    }
+
     /**
-     * Request that a user profile is put by default on a network matching a given preference.
+     * Set a list of default network selection policies for a user profile or device owner.
      *
      * See the documentation for the individual preferences for a description of the supported
      * behaviors.
      *
-     * @param profile the user profile for whih the preference is being set.
+     * @param profile If the device owner is set, any profile is allowed.
+              Otherwise, the given profile can only be managed profile.
      * @param preferences the list of profile network preferences for the
      *        provided profile.
      * @param listener an optional listener to listen for completion of the operation.
@@ -10632,7 +10693,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         Objects.requireNonNull(profile);
 
         if (preferences.size() == 0) {
-            preferences.add((new ProfileNetworkPreference.Builder()).build());
+            final ProfileNetworkPreference pref = new ProfileNetworkPreference.Builder()
+                    .setPreference(ConnectivityManager.PROFILE_NETWORK_PREFERENCE_DEFAULT)
+                    .build();
+            preferences.add(pref);
         }
 
         PermissionUtils.enforceNetworkStackPermission(mContext);
@@ -10643,19 +10707,21 @@ public class ConnectivityService extends IConnectivityManager.Stub
             throw new IllegalArgumentException("Must explicitly specify a user handle ("
                     + "UserHandle.CURRENT not supported)");
         }
-        final UserManager um = mContext.getSystemService(UserManager.class);
-        if (!um.isManagedProfile(profile.getIdentifier())) {
-            throw new IllegalArgumentException("Profile must be a managed profile");
+        if (!isNetworkPreferenceAllowedForProfile(profile)) {
+            throw new IllegalArgumentException("Profile must be a managed profile "
+                    + "or the device owner must be set. ");
         }
 
         final List<ProfileNetworkPreferenceList.Preference> preferenceList =
                 new ArrayList<ProfileNetworkPreferenceList.Preference>();
-        boolean allowFallback = true;
+        boolean hasDefaultPreference = false;
         for (final ProfileNetworkPreference preference : preferences) {
             final NetworkCapabilities nc;
+            boolean allowFallback = true;
             switch (preference.getPreference()) {
                 case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_DEFAULT:
                     nc = null;
+                    hasDefaultPreference = true;
                     if (preference.getPreferenceEnterpriseId() != 0) {
                         throw new IllegalArgumentException(
                                 "Invalid enterprise identifier in setProfileNetworkPreferences");
@@ -10665,6 +10731,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     allowFallback = false;
                     // continue to process the enterprise preference.
                 case ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE:
+                    // This code is needed even though there is a check later on,
+                    // because isRangeAlreadyInPreferenceList assumes that every preference
+                    // has a UID list.
+                    if (hasDefaultPreference) {
+                        throw new IllegalArgumentException(
+                                "Default profile preference should not be set along with other "
+                                        + "preference");
+                    }
                     if (!isEnterpriseIdentifierValid(preference.getPreferenceEnterpriseId())) {
                         throw new IllegalArgumentException(
                                 "Invalid enterprise identifier in setProfileNetworkPreferences");
@@ -10688,6 +10762,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             preferenceList.add(new ProfileNetworkPreferenceList.Preference(
                     profile, nc, allowFallback));
+            if (hasDefaultPreference && preferenceList.size() > 1) {
+                throw new IllegalArgumentException(
+                        "Default profile preference should not be set along with other preference");
+            }
         }
         mHandler.sendMessage(mHandler.obtainMessage(EVENT_SET_PROFILE_NETWORK_PREFERENCE,
                 new Pair<>(preferenceList, listener)));
@@ -10730,12 +10808,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return true;
         }
         return false;
-    }
-
-    private void validateNetworkCapabilitiesOfProfileNetworkPreference(
-            @Nullable final NetworkCapabilities nc) {
-        if (null == nc) return; // Null caps are always allowed. It means to remove the setting.
-        ensureRequestableCapabilities(nc);
     }
 
     private ArraySet<NetworkRequestInfo> createNrisFromProfileNetworkPreferences(
@@ -10788,10 +10860,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void handleSetProfileNetworkPreference(
             @NonNull final List<ProfileNetworkPreferenceList.Preference> preferenceList,
             @Nullable final IOnCompleteListener listener) {
+        /*
+         * handleSetProfileNetworkPreference is always called for single user.
+         * preferenceList only contains preferences for different uids within the same user
+         * (enforced by getUidListToBeAppliedForNetworkPreference).
+         * Clear all the existing preferences for the user before applying new preferences.
+         *
+         */
+        mProfileNetworkPreferences = mProfileNetworkPreferences.withoutUser(
+                preferenceList.get(0).user);
         for (final ProfileNetworkPreferenceList.Preference preference : preferenceList) {
-            validateNetworkCapabilitiesOfProfileNetworkPreference(preference.capabilities);
             mProfileNetworkPreferences = mProfileNetworkPreferences.plus(preference);
         }
+
         removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_PROFILE);
         addPerAppDefaultNetworkRequests(
                 createNrisFromProfileNetworkPreferences(mProfileNetworkPreferences));

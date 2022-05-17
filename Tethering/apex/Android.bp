@@ -70,9 +70,9 @@ apex {
     canned_fs_config: "canned_fs_config",
     bpfs: [
         "block.o",
-        "clatd.o_mainline",
+        "clatd.o",
         "dscp_policy.o",
-        "netd.o_mainline",
+        "netd.o",
         "offload.o",
         "test.o",
     ],
@@ -103,6 +103,12 @@ apex_key {
 android_app_certificate {
     name: "com.android.tethering.certificate",
     certificate: "com.android.tethering",
+}
+
+filegroup {
+    name: "connectivity-hiddenapi-files",
+    srcs: ["hiddenapi/*.txt"],
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
 // Encapsulate the contributions made by the com.android.tethering to the bootclasspath.
