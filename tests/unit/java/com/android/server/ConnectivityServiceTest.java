@@ -52,6 +52,9 @@ import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_INFO;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_TYPE;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOCKDOWN_VPN;
+import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_DEFAULT;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK;
@@ -9506,6 +9509,46 @@ public class ConnectivityServiceTest {
         b2.expectBroadcast();
     }
 
+    @Test
+    public void testLockdownSetFirewallUidRule() throws Exception {
+        // For ConnectivityService#setAlwaysOnVpnPackage.
+        mServiceContext.setPermission(
+                Manifest.permission.CONTROL_ALWAYS_ON_VPN, PERMISSION_GRANTED);
+        // Needed to call Vpn#setAlwaysOnPackage.
+        mServiceContext.setPermission(Manifest.permission.CONTROL_VPN, PERMISSION_GRANTED);
+        // Needed to call Vpn#isAlwaysOnPackageSupported.
+        mServiceContext.setPermission(NETWORK_SETTINGS, PERMISSION_GRANTED);
+
+        // Enable Lockdown
+        final ArrayList<String> allowList = new ArrayList<>();
+        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, ALWAYS_ON_PACKAGE,
+                true /* lockdown */, allowList);
+        waitForIdle();
+
+        // Lockdown rule is set to apps uids
+        verify(mBpfNetMaps).setUidRule(
+                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP1_UID), eq(FIREWALL_RULE_DENY));
+        verify(mBpfNetMaps).setUidRule(
+                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP2_UID), eq(FIREWALL_RULE_DENY));
+
+        reset(mBpfNetMaps);
+
+        // Disable lockdown
+        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, null, false /* lockdown */,
+                allowList);
+        waitForIdle();
+
+        // Lockdown rule is removed from apps uids
+        verify(mBpfNetMaps).setUidRule(
+                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP1_UID), eq(FIREWALL_RULE_ALLOW));
+        verify(mBpfNetMaps).setUidRule(
+                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP2_UID), eq(FIREWALL_RULE_ALLOW));
+
+        // Interface rules are not changed by Lockdown mode enable/disable
+        verify(mBpfNetMaps, never()).addUidInterfaceRules(any(), any());
+        verify(mBpfNetMaps, never()).removeUidInterfaceRules(any());
+    }
+
     /**
      * Test mutable and requestable network capabilities such as
      * {@link NetworkCapabilities#NET_CAPABILITY_TRUSTED} and
@@ -10377,7 +10420,7 @@ public class ConnectivityServiceTest {
         verify(mBpfNetMaps, times(2)).addUidInterfaceRules(eq("tun0"), uidCaptor.capture());
         assertContainsExactly(uidCaptor.getAllValues().get(0), APP1_UID, APP2_UID);
         assertContainsExactly(uidCaptor.getAllValues().get(1), APP1_UID, APP2_UID);
-        assertTrue(mService.mPermissionMonitor.getVpnUidRanges("tun0").equals(vpnRange));
+        assertTrue(mService.mPermissionMonitor.getVpnInterfaceUidRanges("tun0").equals(vpnRange));
 
         mMockVpn.disconnect();
         waitForIdle();
@@ -10385,11 +10428,11 @@ public class ConnectivityServiceTest {
         // Disconnected VPN should have interface rules removed
         verify(mBpfNetMaps).removeUidInterfaceRules(uidCaptor.capture());
         assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID);
-        assertNull(mService.mPermissionMonitor.getVpnUidRanges("tun0"));
+        assertNull(mService.mPermissionMonitor.getVpnInterfaceUidRanges("tun0"));
     }
 
     @Test
-    public void testLegacyVpnDoesNotResultInInterfaceFilteringRule() throws Exception {
+    public void testLegacyVpnSetInterfaceFilteringRuleWithWildcard() throws Exception {
         LinkProperties lp = new LinkProperties();
         lp.setInterfaceName("tun0");
         lp.addRoute(new RouteInfo(new IpPrefix(Inet6Address.ANY, 0), null));
@@ -10399,13 +10442,29 @@ public class ConnectivityServiceTest {
         mMockVpn.establish(lp, Process.SYSTEM_UID, vpnRange);
         assertVpnUidRangesUpdated(true, vpnRange, Process.SYSTEM_UID);
 
-        // Legacy VPN should not have interface rules set up
-        verify(mBpfNetMaps, never()).addUidInterfaceRules(any(), any());
+        // A connected Legacy VPN should have interface rules with null interface.
+        // Null Interface is a wildcard and this accepts traffic from all the interfaces.
+        // There are two expected invocations, one during the VPN initial connection,
+        // one during the VPN LinkProperties update.
+        ArgumentCaptor<int[]> uidCaptor = ArgumentCaptor.forClass(int[].class);
+        verify(mBpfNetMaps, times(2)).addUidInterfaceRules(
+                eq(null) /* iface */, uidCaptor.capture());
+        assertContainsExactly(uidCaptor.getAllValues().get(0), APP1_UID, APP2_UID, VPN_UID);
+        assertContainsExactly(uidCaptor.getAllValues().get(1), APP1_UID, APP2_UID, VPN_UID);
+        assertEquals(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */),
+                vpnRange);
+
+        mMockVpn.disconnect();
+        waitForIdle();
+
+        // Disconnected VPN should have interface rules removed
+        verify(mBpfNetMaps).removeUidInterfaceRules(uidCaptor.capture());
+        assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID, VPN_UID);
+        assertNull(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */));
     }
 
     @Test
-    public void testLocalIpv4OnlyVpnDoesNotResultInInterfaceFilteringRule()
-            throws Exception {
+    public void testLocalIpv4OnlyVpnSetInterfaceFilteringRuleWithWildcard() throws Exception {
         LinkProperties lp = new LinkProperties();
         lp.setInterfaceName("tun0");
         lp.addRoute(new RouteInfo(new IpPrefix("192.0.2.0/24"), null, "tun0"));
@@ -10416,7 +10475,25 @@ public class ConnectivityServiceTest {
         assertVpnUidRangesUpdated(true, vpnRange, Process.SYSTEM_UID);
 
         // IPv6 unreachable route should not be misinterpreted as a default route
-        verify(mBpfNetMaps, never()).addUidInterfaceRules(any(), any());
+        // A connected VPN should have interface rules with null interface.
+        // Null Interface is a wildcard and this accepts traffic from all the interfaces.
+        // There are two expected invocations, one during the VPN initial connection,
+        // one during the VPN LinkProperties update.
+        ArgumentCaptor<int[]> uidCaptor = ArgumentCaptor.forClass(int[].class);
+        verify(mBpfNetMaps, times(2)).addUidInterfaceRules(
+                eq(null) /* iface */, uidCaptor.capture());
+        assertContainsExactly(uidCaptor.getAllValues().get(0), APP1_UID, APP2_UID, VPN_UID);
+        assertContainsExactly(uidCaptor.getAllValues().get(1), APP1_UID, APP2_UID, VPN_UID);
+        assertEquals(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */),
+                vpnRange);
+
+        mMockVpn.disconnect();
+        waitForIdle();
+
+        // Disconnected VPN should have interface rules removed
+        verify(mBpfNetMaps).removeUidInterfaceRules(uidCaptor.capture());
+        assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID, VPN_UID);
+        assertNull(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */));
     }
 
     @Test
@@ -15446,6 +15523,27 @@ public class ConnectivityServiceTest {
     }
 
     @Test
+    public void testAutomotiveEthernetAllowedUids() throws Exception {
+        mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_GRANTED);
+        mServiceContext.setPermission(MANAGE_TEST_NETWORKS, PERMISSION_GRANTED);
+
+        // In this test the automotive feature will be enabled.
+        mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, true);
+
+        // Simulate a restricted ethernet network.
+        final NetworkCapabilities.Builder agentNetCaps = new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_ETHERNET)
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .addCapability(NET_CAPABILITY_NOT_SUSPENDED)
+                .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+                .removeCapability(NET_CAPABILITY_NOT_RESTRICTED);
+
+        mEthernetNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_ETHERNET,
+                new LinkProperties(), agentNetCaps.build());
+        validateAllowedUids(mEthernetNetworkAgent, TRANSPORT_ETHERNET, agentNetCaps);
+    }
+
+    @Test
     public void testCbsAllowedUids() throws Exception {
         mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_GRANTED);
         mServiceContext.setPermission(MANAGE_TEST_NETWORKS, PERMISSION_GRANTED);
@@ -15454,6 +15552,24 @@ public class ConnectivityServiceTest {
         doReturn(true).when(mCarrierPrivilegeAuthenticator)
                 .hasCarrierPrivilegeForNetworkCapabilities(eq(TEST_PACKAGE_UID), any());
 
+        // Simulate a restricted telephony network. The telephony factory is entitled to set
+        // the access UID to the service package on any of its restricted networks.
+        final NetworkCapabilities.Builder agentNetCaps = new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_CELLULAR)
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .addCapability(NET_CAPABILITY_NOT_SUSPENDED)
+                .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+                .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
+                .setNetworkSpecifier(new TelephonyNetworkSpecifier(1 /* subid */));
+
+        mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR,
+                new LinkProperties(), agentNetCaps.build());
+        validateAllowedUids(mCellNetworkAgent, TRANSPORT_CELLULAR, agentNetCaps);
+    }
+
+    private void validateAllowedUids(final TestNetworkAgentWrapper testAgent,
+            @NetworkCapabilities.Transport final int transportUnderTest,
+            final NetworkCapabilities.Builder ncb) throws Exception {
         final ArraySet<Integer> serviceUidSet = new ArraySet<>();
         serviceUidSet.add(TEST_PACKAGE_UID);
         final ArraySet<Integer> nonServiceUidSet = new ArraySet<>();
@@ -15464,40 +15580,34 @@ public class ConnectivityServiceTest {
 
         final TestNetworkCallback cb = new TestNetworkCallback();
 
-        // Simulate a restricted telephony network. The telephony factory is entitled to set
-        // the access UID to the service package on any of its restricted networks.
-        final NetworkCapabilities.Builder ncb = new NetworkCapabilities.Builder()
-                .addTransportType(TRANSPORT_CELLULAR)
-                .addCapability(NET_CAPABILITY_INTERNET)
-                .addCapability(NET_CAPABILITY_NOT_SUSPENDED)
-                .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
-                .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
-                .setNetworkSpecifier(new TelephonyNetworkSpecifier(1 /* subid */));
-
+        /* Test setting UIDs */
         // Cell gets to set the service UID as access UID
         mCm.requestNetwork(new NetworkRequest.Builder()
-                .addTransportType(TRANSPORT_CELLULAR)
+                .addTransportType(transportUnderTest)
                 .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
                 .build(), cb);
-        mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR,
-                new LinkProperties(), ncb.build());
-        mCellNetworkAgent.connect(true);
-        cb.expectAvailableThenValidatedCallbacks(mCellNetworkAgent);
+        testAgent.connect(true);
+        cb.expectAvailableThenValidatedCallbacks(testAgent);
         ncb.setAllowedUids(serviceUidSet);
-        mCellNetworkAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        testAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
         if (SdkLevel.isAtLeastT()) {
-            cb.expectCapabilitiesThat(mCellNetworkAgent,
+            cb.expectCapabilitiesThat(testAgent,
                     caps -> caps.getAllowedUids().equals(serviceUidSet));
         } else {
             // S must ignore access UIDs.
             cb.assertNoCallback(TEST_CALLBACK_TIMEOUT_MS);
         }
 
+        /* Test setting UIDs is rejected when expected */
+        if (TRANSPORT_ETHERNET == transportUnderTest) {
+            mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, false);
+        }
+
         // ...but not to some other UID. Rejection sets UIDs to the empty set
         ncb.setAllowedUids(nonServiceUidSet);
-        mCellNetworkAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        testAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
         if (SdkLevel.isAtLeastT()) {
-            cb.expectCapabilitiesThat(mCellNetworkAgent,
+            cb.expectCapabilitiesThat(testAgent,
                     caps -> caps.getAllowedUids().isEmpty());
         } else {
             // S must ignore access UIDs.
@@ -15506,18 +15616,18 @@ public class ConnectivityServiceTest {
 
         // ...and also not to multiple UIDs even including the service UID
         ncb.setAllowedUids(serviceUidSetPlus);
-        mCellNetworkAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        testAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
         cb.assertNoCallback(TEST_CALLBACK_TIMEOUT_MS);
 
-        mCellNetworkAgent.disconnect();
-        cb.expectCallback(CallbackEntry.LOST, mCellNetworkAgent);
+        testAgent.disconnect();
+        cb.expectCallback(CallbackEntry.LOST, testAgent);
         mCm.unregisterNetworkCallback(cb);
 
         // Must be unset before touching the transports, because remove and add transport types
         // check the specifier on the builder immediately, contradicting normal builder semantics
         // TODO : fix the builder
         ncb.setNetworkSpecifier(null);
-        ncb.removeTransportType(TRANSPORT_CELLULAR);
+        ncb.removeTransportType(transportUnderTest);
         ncb.addTransportType(TRANSPORT_WIFI);
         // Wifi does not get to set access UID, even to the correct UID
         mCm.requestNetwork(new NetworkRequest.Builder()
