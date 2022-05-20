@@ -748,7 +748,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * The BPF program attached to the tc-police hook to account for to-be-dropped traffic.
      */
     private static final String TC_POLICE_BPF_PROG_PATH =
-            "/sys/fs/bpf/net_shared/prog_netd_schedact_ingress_account";
+            "/sys/fs/bpf/netd_shared/prog_netd_schedact_ingress_account";
 
     private static String eventName(int what) {
         return sMagicDecoderRing.get(what, Integer.toString(what));
@@ -3428,6 +3428,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         for (NetworkAgentInfo nai : networksSortedById()) {
             pw.println(nai.toString());
             pw.increaseIndent();
+            pw.println("Nat464Xlat:");
+            pw.increaseIndent();
+            nai.dumpNat464Xlat(pw);
+            pw.decreaseIndent();
             pw.println(String.format(
                     "Requests: REQUEST:%d LISTEN:%d BACKGROUND_REQUEST:%d total:%d",
                     nai.numForegroundNetworkRequests(),
@@ -3442,10 +3446,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             pw.println("Inactivity Timers:");
             pw.increaseIndent();
             nai.dumpInactivityTimers(pw);
-            pw.decreaseIndent();
-            pw.println("Nat464Xlat:");
-            pw.increaseIndent();
-            nai.dumpNat464Xlat(pw);
             pw.decreaseIndent();
             pw.decreaseIndent();
         }
@@ -7831,6 +7831,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
         nai.declaredCapabilities = new NetworkCapabilities(nc);
         NetworkAgentInfo.restrictCapabilitiesFromNetworkAgent(nc, nai.creatorUid,
+                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE),
                 mCarrierPrivilegeAuthenticator);
     }
 
