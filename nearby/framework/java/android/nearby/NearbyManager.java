@@ -28,6 +28,7 @@ import android.annotation.SystemService;
 import android.content.Context;
 import android.os.RemoteException;
 import android.provider.Settings;
+import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.util.Preconditions;
@@ -69,6 +70,8 @@ public class NearbyManager {
         int ERROR = 2;
     }
 
+    private static final String TAG = "NearbyManager";
+
     /**
      * Whether allows Fast Pair to scan.
      *
@@ -85,6 +88,7 @@ public class NearbyManager {
     private static final WeakHashMap<BroadcastCallback, WeakReference<BroadcastListenerTransport>>
             sBroadcastListeners = new WeakHashMap<>();
 
+    private final Context mContext;
     private final INearbyManager mService;
 
     /**
@@ -92,7 +96,10 @@ public class NearbyManager {
      *
      * @param service the service object
      */
-    NearbyManager(@NonNull INearbyManager service) {
+    NearbyManager(@NonNull Context context, @NonNull INearbyManager service) {
+        Objects.requireNonNull(context);
+        Objects.requireNonNull(service);
+        mContext = context;
         mService = service;
     }
 
@@ -108,6 +115,26 @@ public class NearbyManager {
                     .setModelId(nearbyDeviceParcelable.getFastPairModelId())
                     .setBluetoothAddress(nearbyDeviceParcelable.getBluetoothAddress())
                     .setData(nearbyDeviceParcelable.getData()).build();
+        }
+
+        if (scanType == ScanRequest.SCAN_TYPE_NEARBY_PRESENCE) {
+            PublicCredential publicCredential = nearbyDeviceParcelable.getPublicCredential();
+            if (publicCredential == null) {
+                return null;
+            }
+            byte[] salt = nearbyDeviceParcelable.getSalt();
+            if (salt == null) {
+                salt = new byte[0];
+            }
+            return new PresenceDevice.Builder(
+                    // Use the public credential hash as the device Id.
+                    String.valueOf(publicCredential.hashCode()),
+                    salt,
+                    publicCredential.getSecretId(),
+                    publicCredential.getEncryptedMetadata())
+                    .setRssi(nearbyDeviceParcelable.getRssi())
+                    .addMedium(nearbyDeviceParcelable.getMedium())
+                    .build();
         }
         return null;
     }
@@ -143,7 +170,8 @@ public class NearbyManager {
                     Preconditions.checkState(transport.isRegistered());
                     transport.setExecutor(executor);
                 }
-                @ScanStatus int status = mService.registerScanListener(scanRequest, transport);
+                @ScanStatus int status = mService.registerScanListener(scanRequest, transport,
+                        mContext.getPackageName(), mContext.getAttributionTag());
                 if (status != ScanStatus.SUCCESS) {
                     return status;
                 }
@@ -178,7 +206,11 @@ public class NearbyManager {
                 ScanListenerTransport transport = reference != null ? reference.get() : null;
                 if (transport != null) {
                     transport.unregister();
-                    mService.unregisterScanListener(transport);
+                    mService.unregisterScanListener(transport, mContext.getPackageName(),
+                            mContext.getAttributionTag());
+                } else {
+                    Log.e(TAG, "Cannot stop scan with this callback "
+                            + "because it is never registered.");
                 }
             }
         } catch (RemoteException e) {
@@ -208,8 +240,8 @@ public class NearbyManager {
                     Preconditions.checkState(transport.isRegistered());
                     transport.setExecutor(executor);
                 }
-                mService.startBroadcast(new BroadcastRequestParcelable(broadcastRequest),
-                        transport);
+                mService.startBroadcast(new BroadcastRequestParcelable(broadcastRequest), transport,
+                        mContext.getPackageName(), mContext.getAttributionTag());
                 sBroadcastListeners.put(callback, new WeakReference<>(transport));
             }
         } catch (RemoteException e) {
@@ -233,7 +265,11 @@ public class NearbyManager {
                 BroadcastListenerTransport transport = reference != null ? reference.get() : null;
                 if (transport != null) {
                     transport.unregister();
-                    mService.stopBroadcast(transport);
+                    mService.stopBroadcast(transport, mContext.getPackageName(),
+                            mContext.getAttributionTag());
+                } else {
+                    Log.e(TAG, "Cannot stop broadcast with this callback "
+                            + "because it is never registered.");
                 }
             }
         } catch (RemoteException e) {
@@ -246,6 +282,7 @@ public class NearbyManager {
      *
      * @param context the {@link Context} to query the setting
      * @return whether the Fast Pair is enabled
+     * @hide
      */
     public static boolean getFastPairScanEnabled(@NonNull Context context) {
         final int enabled = Settings.Secure.getInt(
@@ -258,6 +295,7 @@ public class NearbyManager {
      *
      * @param context the {@link Context} to set the setting
      * @param enable whether the Fast Pair scan should be enabled
+     * @hide
      */
     @RequiresPermission(Manifest.permission.WRITE_SECURE_SETTINGS)
     public static void setFastPairScanEnabled(@NonNull Context context, boolean enable) {
@@ -300,23 +338,42 @@ public class NearbyManager {
         @Override
         public void onDiscovered(NearbyDeviceParcelable nearbyDeviceParcelable)
                 throws RemoteException {
-            mExecutor.execute(() -> mScanCallback.onDiscovered(
-                    toClientNearbyDevice(nearbyDeviceParcelable, mScanType)));
+            mExecutor.execute(() -> {
+                if (mScanCallback != null) {
+                    mScanCallback.onDiscovered(
+                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
+                }
+            });
         }
 
         @Override
         public void onUpdated(NearbyDeviceParcelable nearbyDeviceParcelable)
                 throws RemoteException {
-            mExecutor.execute(
-                    () -> mScanCallback.onUpdated(
-                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType)));
+            mExecutor.execute(() -> {
+                if (mScanCallback != null) {
+                    mScanCallback.onUpdated(
+                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
+                }
+            });
         }
 
         @Override
         public void onLost(NearbyDeviceParcelable nearbyDeviceParcelable) throws RemoteException {
-            mExecutor.execute(
-                    () -> mScanCallback.onLost(
-                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType)));
+            mExecutor.execute(() -> {
+                if (mScanCallback != null) {
+                    mScanCallback.onLost(
+                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
+                }
+            });
+        }
+
+        @Override
+        public void onError() {
+            mExecutor.execute(() -> {
+                if (mScanCallback != null) {
+                    Log.e("NearbyManager", "onError: There is an error in scan.");
+                }
+            });
         }
     }
 

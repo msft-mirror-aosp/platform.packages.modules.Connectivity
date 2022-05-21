@@ -21,10 +21,8 @@ import static android.nearby.ScanRequest.SCAN_MODE_BALANCED;
 import static android.nearby.ScanRequest.SCAN_MODE_LOW_LATENCY;
 import static android.nearby.ScanRequest.SCAN_MODE_LOW_POWER;
 import static android.nearby.ScanRequest.SCAN_MODE_NO_POWER;
-import static android.nearby.ScanRequest.SCAN_TYPE_EXPOSURE_NOTIFICATION;
 import static android.nearby.ScanRequest.SCAN_TYPE_FAST_PAIR;
 import static android.nearby.ScanRequest.SCAN_TYPE_NEARBY_PRESENCE;
-import static android.nearby.ScanRequest.SCAN_TYPE_NEARBY_SHARE;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -47,6 +45,7 @@ public class ScanRequestTest {
 
     private static final int UID = 1001;
     private static final String APP_NAME = "android.nearby.tests";
+    private static final int RSSI = -40;
 
     @Test
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
@@ -80,7 +79,7 @@ public class ScanRequestTest {
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testSetWorkSource_nullValue() {
         ScanRequest request = new ScanRequest.Builder()
-                .setScanType(SCAN_TYPE_EXPOSURE_NOTIFICATION)
+                .setScanType(SCAN_TYPE_FAST_PAIR)
                 .setWorkSource(null)
                 .build();
 
@@ -94,14 +93,14 @@ public class ScanRequestTest {
     public void testToString() {
         WorkSource workSource = getWorkSource();
         ScanRequest request = new ScanRequest.Builder()
-                .setScanType(SCAN_TYPE_NEARBY_SHARE)
+                .setScanType(SCAN_TYPE_FAST_PAIR)
                 .setScanMode(SCAN_MODE_BALANCED)
                 .setBleEnabled(true)
                 .setWorkSource(workSource)
                 .build();
 
         assertThat(request.toString()).isEqualTo(
-                "Request[scanType=2, scanMode=SCAN_MODE_BALANCED, "
+                "Request[scanType=1, scanMode=SCAN_MODE_BALANCED, "
                         + "enableBle=true, workSource=WorkSource{" + UID + " " + APP_NAME
                         + "}, scanFilters=[]]");
     }
@@ -132,9 +131,7 @@ public class ScanRequestTest {
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void test_isValidScanType() {
         assertThat(ScanRequest.isValidScanType(SCAN_TYPE_FAST_PAIR)).isTrue();
-        assertThat(ScanRequest.isValidScanType(SCAN_TYPE_NEARBY_SHARE)).isTrue();
         assertThat(ScanRequest.isValidScanType(SCAN_TYPE_NEARBY_PRESENCE)).isTrue();
-        assertThat(ScanRequest.isValidScanType(SCAN_TYPE_EXPOSURE_NOTIFICATION)).isTrue();
 
         assertThat(ScanRequest.isValidScanType(0)).isFalse();
         assertThat(ScanRequest.isValidScanType(5)).isFalse();
@@ -167,6 +164,14 @@ public class ScanRequestTest {
     @Test
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testScanFilter() {
+        ScanRequest request = new ScanRequest.Builder().setScanType(
+                SCAN_TYPE_NEARBY_PRESENCE).addScanFilter(getPresenceScanFilter()).build();
+
+        assertThat(request.getScanFilters()).isNotEmpty();
+        assertThat(request.getScanFilters().get(0).getMaxPathLoss()).isEqualTo(RSSI);
+    }
+
+    private static PresenceScanFilter getPresenceScanFilter() {
         final byte[] secretId = new byte[]{1, 2, 3, 4};
         final byte[] authenticityKey = new byte[]{0, 1, 1, 1};
         final byte[] publicKey = new byte[]{1, 1, 2, 2};
@@ -178,19 +183,12 @@ public class ScanRequestTest {
                 .setIdentityType(IDENTITY_TYPE_PRIVATE)
                 .build();
 
-        final int rssi = -40;
         final int action = 123;
-        PresenceScanFilter filter = new PresenceScanFilter.Builder()
+        return new PresenceScanFilter.Builder()
                 .addCredential(credential)
-                .setMaxPathLoss(rssi)
+                .setMaxPathLoss(RSSI)
                 .addPresenceAction(action)
                 .build();
-
-        ScanRequest request = new ScanRequest.Builder().setScanType(
-                SCAN_TYPE_FAST_PAIR).addScanFilter(filter).build();
-
-        assertThat(request.getScanFilters()).isNotEmpty();
-        assertThat(request.getScanFilters().get(0).getMaxPathLoss()).isEqualTo(rssi);
     }
 
     private static WorkSource getWorkSource() {

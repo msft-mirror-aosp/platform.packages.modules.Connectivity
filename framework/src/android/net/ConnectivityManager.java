@@ -982,6 +982,16 @@ public class ConnectivityManager {
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_LOW_POWER_STANDBY = 5;
 
+    /**
+     * Firewall chain used for lockdown VPN.
+     * Denylist of apps that cannot receive incoming packets except on loopback because they are
+     * subject to an always-on VPN which is not currently connected.
+     *
+     * @see #BLOCKED_REASON_LOCKDOWN_VPN
+     * @hide
+     */
+    public static final int FIREWALL_CHAIN_LOCKDOWN_VPN = 6;
+
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(flag = false, prefix = "FIREWALL_CHAIN_", value = {
@@ -989,27 +999,32 @@ public class ConnectivityManager {
         FIREWALL_CHAIN_STANDBY,
         FIREWALL_CHAIN_POWERSAVE,
         FIREWALL_CHAIN_RESTRICTED,
-        FIREWALL_CHAIN_LOW_POWER_STANDBY
+        FIREWALL_CHAIN_LOW_POWER_STANDBY,
+        FIREWALL_CHAIN_LOCKDOWN_VPN
     })
     public @interface FirewallChain {}
     // LINT.ThenChange(packages/modules/Connectivity/service/native/include/Common.h)
 
     /**
-     * Specify default rule which may allow or drop packets depending on existing policy.
+     * A firewall rule which allows or drops packets depending on existing policy.
+     * Used by {@link #setUidFirewallRule(int, int, int)} to follow existing policy to handle
+     * specific uid's packets in specific firewall chain.
      * @hide
      */
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_RULE_DEFAULT = 0;
 
     /**
-     * Specify allow rule which allows packets.
+     * A firewall rule which allows packets. Used by {@link #setUidFirewallRule(int, int, int)} to
+     * allow specific uid's packets in specific firewall chain.
      * @hide
      */
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_RULE_ALLOW = 1;
 
     /**
-     * Specify deny rule which drops packets.
+     * A firewall rule which drops packets. Used by {@link #setUidFirewallRule(int, int, int)} to
+     * drop specific uid's packets in specific firewall chain.
      * @hide
      */
     @SystemApi(client = MODULE_LIBRARIES)
