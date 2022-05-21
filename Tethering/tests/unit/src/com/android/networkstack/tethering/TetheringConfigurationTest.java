@@ -22,10 +22,13 @@ import static android.net.ConnectivityManager.TYPE_MOBILE_DUN;
 import static android.net.ConnectivityManager.TYPE_MOBILE_HIPRI;
 import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
+import static android.telephony.CarrierConfigManager.KEY_CARRIER_CONFIG_APPLIED_BOOL;
+import static android.telephony.CarrierConfigManager.KEY_REQUIRE_ENTITLEMENT_CHECKS_BOOL;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.doReturn;
 import static com.android.dx.mockito.inline.extended.ExtendedMockito.mockitoSession;
+import static com.android.networkstack.apishim.ConstantsShim.KEY_CARRIER_SUPPORTS_TETHERING_BOOL;
 import static com.android.networkstack.tethering.TetheringConfiguration.TETHER_FORCE_USB_FUNCTIONS;
 import static com.android.networkstack.tethering.TetheringConfiguration.TETHER_USB_NCM_FUNCTION;
 import static com.android.networkstack.tethering.TetheringConfiguration.TETHER_USB_RNDIS_FUNCTION;
@@ -46,8 +49,10 @@ import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.net.util.SharedLog;
 import android.os.Build;
+import android.os.PersistableBundle;
 import android.provider.DeviceConfig;
 import android.provider.Settings;
+import android.telephony.CarrierConfigManager;
 import android.telephony.TelephonyManager;
 import android.test.mock.MockContentResolver;
 
@@ -56,6 +61,7 @@ import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.internal.util.test.FakeSettingsProvider;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
@@ -88,6 +94,7 @@ public class TetheringConfigurationTest {
     private static final long TEST_PACKAGE_VERSION = 1234L;
     @Mock private ApplicationInfo mApplicationInfo;
     @Mock private Context mContext;
+    @Mock private CarrierConfigManager mCarrierConfigManager;
     @Mock private TelephonyManager mTelephonyManager;
     @Mock private Resources mResources;
     @Mock private Resources mResourcesForSubId;
@@ -97,6 +104,7 @@ public class TetheringConfigurationTest {
     private boolean mHasTelephonyManager;
     private MockitoSession mMockingSession;
     private MockContentResolver mContentResolver;
+    private final PersistableBundle mCarrierConfig = new PersistableBundle();
 
     private class MockTetheringConfiguration extends TetheringConfiguration {
         MockTetheringConfiguration(Context ctx, SharedLog log, int id) {
@@ -474,6 +482,56 @@ public class TetheringConfigurationTest {
                 PROVISIONING_APP_RESPONSE);
     }
 
+    private <T> void mockService(String serviceName, Class<T> serviceClass, T service) {
+        when(mMockContext.getSystemServiceName(serviceClass)).thenReturn(serviceName);
+        when(mMockContext.getSystemService(serviceName)).thenReturn(service);
+    }
+
+    @Test
+    public void testGetCarrierConfigBySubId_noCarrierConfigManager_configsAreDefault() {
+        // Act like the CarrierConfigManager is present and ready unless told otherwise.
+        mockService(Context.CARRIER_CONFIG_SERVICE,
+                CarrierConfigManager.class, null);
+        final TetheringConfiguration cfg = new TetheringConfiguration(
+                mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+
+        assertTrue(cfg.isCarrierSupportTethering);
+        assertTrue(cfg.isCarrierConfigAffirmsEntitlementCheckRequired);
+    }
+
+    @Test
+    public void testGetCarrierConfigBySubId_carrierConfigMissing_configsAreDefault() {
+        // Act like the CarrierConfigManager is present and ready unless told otherwise.
+        mockService(Context.CARRIER_CONFIG_SERVICE,
+                CarrierConfigManager.class, mCarrierConfigManager);
+        when(mCarrierConfigManager.getConfigForSubId(anyInt())).thenReturn(null);
+        final TetheringConfiguration cfg = new TetheringConfiguration(
+                mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+
+        assertTrue(cfg.isCarrierSupportTethering);
+        assertTrue(cfg.isCarrierConfigAffirmsEntitlementCheckRequired);
+    }
+
+    @Test
+    public void testGetCarrierConfigBySubId_hasConfigs_carrierUnsupportAndCheckNotRequired() {
+        mockService(Context.CARRIER_CONFIG_SERVICE,
+                CarrierConfigManager.class, mCarrierConfigManager);
+        mCarrierConfig.putBoolean(KEY_CARRIER_CONFIG_APPLIED_BOOL, true);
+        mCarrierConfig.putBoolean(KEY_REQUIRE_ENTITLEMENT_CHECKS_BOOL, false);
+        mCarrierConfig.putBoolean(KEY_CARRIER_SUPPORTS_TETHERING_BOOL, false);
+        when(mCarrierConfigManager.getConfigForSubId(anyInt())).thenReturn(mCarrierConfig);
+        final TetheringConfiguration cfg = new TetheringConfiguration(
+                mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+
+        if (SdkLevel.isAtLeastT()) {
+            assertFalse(cfg.isCarrierSupportTethering);
+        } else {
+            assertTrue(cfg.isCarrierSupportTethering);
+        }
+        assertFalse(cfg.isCarrierConfigAffirmsEntitlementCheckRequired);
+
+    }
+
     @Test
     public void testEnableLegacyWifiP2PAddress() throws Exception {
         final TetheringConfiguration defaultCfg = new TetheringConfiguration(
@@ -616,4 +674,35 @@ public class TetheringConfigurationTest {
         assertArrayEquals(ncmRegexs, cfg.tetherableNcmRegexs);
     }
 
+    @Test
+    public void testP2pLeasesSubnetPrefixLength() throws Exception {
+        when(mResources.getBoolean(R.bool.config_tether_enable_legacy_wifi_p2p_dedicated_ip))
+                .thenReturn(true);
+
+        final int defaultSubnetPrefixLength = 0;
+        final TetheringConfiguration defaultCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(defaultSubnetPrefixLength, defaultCfg.getP2pLeasesSubnetPrefixLength());
+
+        final int prefixLengthTooSmall = -1;
+        when(mResources.getInteger(R.integer.config_p2p_leases_subnet_prefix_length)).thenReturn(
+                prefixLengthTooSmall);
+        final TetheringConfiguration tooSmallCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(defaultSubnetPrefixLength, tooSmallCfg.getP2pLeasesSubnetPrefixLength());
+
+        final int prefixLengthTooLarge = 31;
+        when(mResources.getInteger(R.integer.config_p2p_leases_subnet_prefix_length)).thenReturn(
+                prefixLengthTooLarge);
+        final TetheringConfiguration tooLargeCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(defaultSubnetPrefixLength, tooLargeCfg.getP2pLeasesSubnetPrefixLength());
+
+        final int p2pLeasesSubnetPrefixLength = 27;
+        when(mResources.getInteger(R.integer.config_p2p_leases_subnet_prefix_length)).thenReturn(
+                p2pLeasesSubnetPrefixLength);
+        final TetheringConfiguration p2pCfg =
+                new TetheringConfiguration(mMockContext, mLog, INVALID_SUBSCRIPTION_ID);
+        assertEquals(p2pLeasesSubnetPrefixLength, p2pCfg.getP2pLeasesSubnetPrefixLength());
+    }
 }

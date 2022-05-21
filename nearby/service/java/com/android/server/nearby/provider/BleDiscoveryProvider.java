@@ -74,13 +74,15 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
                             builder.setName(record.getDeviceName());
                         }
                         Map<ParcelUuid, byte[]> serviceDataMap = record.getServiceData();
-                        byte[] fastPairData = serviceDataMap.get(FAST_PAIR_UUID);
-                        if (fastPairData != null) {
-                            builder.setData(serviceDataMap.get(FAST_PAIR_UUID));
-                        } else {
-                            byte [] presenceData = serviceDataMap.get(PRESENCE_UUID);
-                            if (presenceData != null) {
-                                builder.setData(serviceDataMap.get(PRESENCE_UUID));
+                        if (serviceDataMap != null) {
+                            byte[] fastPairData = serviceDataMap.get(FAST_PAIR_UUID);
+                            if (fastPairData != null) {
+                                builder.setData(serviceDataMap.get(FAST_PAIR_UUID));
+                            } else {
+                                byte[] presenceData = serviceDataMap.get(PRESENCE_UUID);
+                                if (presenceData != null) {
+                                    builder.setData(serviceDataMap.get(PRESENCE_UUID));
+                                }
                             }
                         }
                     }
@@ -144,6 +146,7 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
                     + "because BluetoothLeScanner is null.");
             return;
         }
+        Log.v(TAG, "Ble scan stopped.");
         bluetoothLeScanner.stopScan(mScanCallback);
     }
 

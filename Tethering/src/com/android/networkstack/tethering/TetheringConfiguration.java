@@ -24,14 +24,17 @@ import static android.net.ConnectivityManager.TYPE_MOBILE_HIPRI;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
 
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
+import static com.android.networkstack.apishim.ConstantsShim.KEY_CARRIER_SUPPORTS_TETHERING_BOOL;
 
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.Resources;
 import android.net.TetheringConfigurationParcel;
 import android.net.util.SharedLog;
+import android.os.PersistableBundle;
 import android.provider.DeviceConfig;
 import android.provider.Settings;
+import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
@@ -142,6 +145,9 @@ public class TetheringConfiguration {
     public final int provisioningCheckPeriod;
     public final String provisioningResponse;
 
+    public final boolean isCarrierSupportTethering;
+    public final boolean isCarrierConfigAffirmsEntitlementCheckRequired;
+
     public final int activeDataSubId;
 
     private final boolean mEnableLegacyDhcpServer;
@@ -149,6 +155,7 @@ public class TetheringConfiguration {
     // TODO: Add to TetheringConfigurationParcel if required.
     private final boolean mEnableBpfOffload;
     private final boolean mEnableWifiP2pDedicatedIp;
+    private final int mP2pLeasesSubnetPrefixLength;
 
     private final int mUsbTetheringFunction;
     protected final ContentResolver mContentResolver;
@@ -206,6 +213,11 @@ public class TetheringConfiguration {
         provisioningResponse = getResourceString(res,
                 R.string.config_mobile_hotspot_provision_response);
 
+        PersistableBundle carrierConfigs = getCarrierConfig(ctx, activeDataSubId);
+        isCarrierSupportTethering = carrierConfigAffirmsCarrierSupport(carrierConfigs);
+        isCarrierConfigAffirmsEntitlementCheckRequired =
+                carrierConfigAffirmsEntitlementCheckRequired(carrierConfigs);
+
         mOffloadPollInterval = getResourceInteger(res,
                 R.integer.config_tether_offload_poll_interval,
                 DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS);
@@ -214,7 +226,25 @@ public class TetheringConfiguration {
                 R.bool.config_tether_enable_legacy_wifi_p2p_dedicated_ip,
                 false /* defaultValue */);
 
+        mP2pLeasesSubnetPrefixLength = getP2pLeasesSubnetPrefixLengthFromRes(res, configLog);
+
         configLog.log(toString());
+    }
+
+    private int getP2pLeasesSubnetPrefixLengthFromRes(final Resources res, final SharedLog log) {
+        if (!mEnableWifiP2pDedicatedIp) return 0;
+
+        int prefixLength = getResourceInteger(res,
+                R.integer.config_p2p_leases_subnet_prefix_length, 0 /* default value */);
+
+        // DhcpLeaseRepository ignores the first and last addresses of the range so the max prefix
+        // length is 30.
+        if (prefixLength < 0 || prefixLength > 30) {
+            log.e("Invalid p2p leases subnet prefix length configuration: " + prefixLength);
+            return 0;
+        }
+
+        return prefixLength;
     }
 
     /** Check whether using legacy dhcp server. */
@@ -272,6 +302,15 @@ public class TetheringConfiguration {
         return mEnableWifiP2pDedicatedIp;
     }
 
+    /**
+     * Get subnet prefix length of dhcp leases for wifi p2p.
+     * This feature only support when wifi p2p use dedicated address. If
+     * #shouldEnableWifiP2pDedicatedIp is false, this method would always return 0.
+     */
+    public int getP2pLeasesSubnetPrefixLength() {
+        return mP2pLeasesSubnetPrefixLength;
+    }
+
     /** Does the dumping.*/
     public void dump(PrintWriter pw) {
         pw.print("activeDataSubId: ");
@@ -301,6 +340,10 @@ public class TetheringConfiguration {
         pw.print("provisioningAppNoUi: ");
         pw.println(provisioningAppNoUi);
 
+        pw.println("isCarrierSupportTethering: " + isCarrierSupportTethering);
+        pw.println("isCarrierConfigAffirmsEntitlementCheckRequired: "
+                + isCarrierConfigAffirmsEntitlementCheckRequired);
+
         pw.print("enableBpfOffload: ");
         pw.println(mEnableBpfOffload);
 
@@ -309,6 +352,9 @@ public class TetheringConfiguration {
 
         pw.print("enableWifiP2pDedicatedIp: ");
         pw.println(mEnableWifiP2pDedicatedIp);
+
+        pw.print("p2pLeasesSubnetPrefixLength: ");
+        pw.println(mP2pLeasesSubnetPrefixLength);
 
         pw.print("mUsbTetheringFunction: ");
         pw.println(isUsingNcm() ? "NCM" : "RNDIS");
@@ -330,6 +376,9 @@ public class TetheringConfiguration {
                 toIntArray(preferredUpstreamIfaceTypes)));
         sj.add(String.format("provisioningApp:%s", makeString(provisioningApp)));
         sj.add(String.format("provisioningAppNoUi:%s", provisioningAppNoUi));
+        sj.add(String.format("isCarrierSupportTethering:%s", isCarrierSupportTethering));
+        sj.add(String.format("isCarrierConfigAffirmsEntitlementCheckRequired:%s",
+                isCarrierConfigAffirmsEntitlementCheckRequired));
         sj.add(String.format("enableBpfOffload:%s", mEnableBpfOffload));
         sj.add(String.format("enableLegacyDhcpServer:%s", mEnableLegacyDhcpServer));
         return String.format("TetheringConfiguration{%s}", sj.toString());
@@ -563,6 +612,39 @@ public class TetheringConfiguration {
             result[index++] = value;
         }
         return result;
+    }
+
+    private static boolean carrierConfigAffirmsEntitlementCheckRequired(
+            PersistableBundle carrierConfig) {
+        if (carrierConfig == null) {
+            return true;
+        }
+        return carrierConfig.getBoolean(
+                CarrierConfigManager.KEY_REQUIRE_ENTITLEMENT_CHECKS_BOOL, true);
+    }
+
+    private static boolean carrierConfigAffirmsCarrierSupport(PersistableBundle carrierConfig) {
+        if (!SdkLevel.isAtLeastT() || carrierConfig == null) {
+            return true;
+        }
+        return carrierConfig.getBoolean(KEY_CARRIER_SUPPORTS_TETHERING_BOOL, true);
+    }
+
+    /**
+     * Get carrier configuration bundle.
+     */
+    public static PersistableBundle getCarrierConfig(Context context, int activeDataSubId) {
+        final CarrierConfigManager configManager =
+                context.getSystemService(CarrierConfigManager.class);
+        if (configManager == null) {
+            return null;
+        }
+
+        final PersistableBundle carrierConfig = configManager.getConfigForSubId(activeDataSubId);
+        if (CarrierConfigManager.isConfigForIdentifiedCarrier(carrierConfig)) {
+            return carrierConfig;
+        }
+        return null;
     }
 
     /**

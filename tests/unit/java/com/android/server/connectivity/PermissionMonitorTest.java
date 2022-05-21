@@ -30,6 +30,9 @@ import static android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED;
 import static android.content.pm.PackageInfo.REQUESTED_PERMISSION_REQUIRED;
 import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.MATCH_ANY_USER;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOCKDOWN_VPN;
+import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivitySettingsManager.UIDS_ALLOWED_ON_RESTRICTED_NETWORKS;
 import static android.net.INetd.PERMISSION_INTERNET;
 import static android.net.INetd.PERMISSION_NETWORK;
@@ -117,23 +120,32 @@ import java.util.Set;
 public class PermissionMonitorTest {
     private static final int MOCK_USER_ID1 = 0;
     private static final int MOCK_USER_ID2 = 1;
+    private static final int MOCK_USER_ID3 = 2;
     private static final UserHandle MOCK_USER1 = UserHandle.of(MOCK_USER_ID1);
     private static final UserHandle MOCK_USER2 = UserHandle.of(MOCK_USER_ID2);
+    private static final UserHandle MOCK_USER3 = UserHandle.of(MOCK_USER_ID3);
     private static final int MOCK_APPID1 = 10001;
     private static final int MOCK_APPID2 = 10086;
+    private static final int MOCK_APPID3 = 10110;
     private static final int SYSTEM_APPID1 = 1100;
     private static final int SYSTEM_APPID2 = 1108;
     private static final int VPN_APPID = 10002;
     private static final int MOCK_UID11 = MOCK_USER1.getUid(MOCK_APPID1);
     private static final int MOCK_UID12 = MOCK_USER1.getUid(MOCK_APPID2);
+    private static final int MOCK_UID13 = MOCK_USER1.getUid(MOCK_APPID3);
     private static final int SYSTEM_APP_UID11 = MOCK_USER1.getUid(SYSTEM_APPID1);
     private static final int VPN_UID = MOCK_USER1.getUid(VPN_APPID);
     private static final int MOCK_UID21 = MOCK_USER2.getUid(MOCK_APPID1);
     private static final int MOCK_UID22 = MOCK_USER2.getUid(MOCK_APPID2);
+    private static final int MOCK_UID23 = MOCK_USER2.getUid(MOCK_APPID3);
     private static final int SYSTEM_APP_UID21 = MOCK_USER2.getUid(SYSTEM_APPID1);
+    private static final int MOCK_UID31 = MOCK_USER3.getUid(MOCK_APPID1);
+    private static final int MOCK_UID32 = MOCK_USER3.getUid(MOCK_APPID2);
+    private static final int MOCK_UID33 = MOCK_USER3.getUid(MOCK_APPID3);
     private static final String REAL_SYSTEM_PACKAGE_NAME = "android";
     private static final String MOCK_PACKAGE1 = "appName1";
     private static final String MOCK_PACKAGE2 = "appName2";
+    private static final String MOCK_PACKAGE3 = "appName3";
     private static final String SYSTEM_PACKAGE1 = "sysName1";
     private static final String SYSTEM_PACKAGE2 = "sysName2";
     private static final String PARTITION_SYSTEM = "system";
@@ -191,6 +203,7 @@ public class PermissionMonitorTest {
         mBpfMapMonitor = new BpfMapMonitor(mBpfNetMaps);
 
         doReturn(List.of()).when(mPackageManager).getInstalledPackagesAsUser(anyInt(), anyInt());
+        mPermissionMonitor.onUserAdded(MOCK_USER1);
     }
 
     private boolean hasRestrictedNetworkPermission(String partition, int targetSdkVersion,
@@ -281,6 +294,18 @@ public class PermissionMonitorTest {
     private void addPackage(String packageName, int uid, String... permissions) throws Exception {
         buildAndMockPackageInfoWithPermissions(packageName, uid, permissions);
         mPermissionMonitor.onPackageAdded(packageName, uid);
+    }
+
+    private void removePackage(String packageName, int uid) {
+        final String[] oldPackages = mPackageManager.getPackagesForUid(uid);
+        // If the package isn't existed, no need to remove it.
+        if (!CollectionUtils.contains(oldPackages, packageName)) return;
+
+        // Remove the package if this uid is shared with other packages.
+        final String[] newPackages = Arrays.stream(oldPackages).filter(e -> !e.equals(packageName))
+                .toArray(String[]::new);
+        doReturn(newPackages).when(mPackageManager).getPackagesForUid(eq(uid));
+        mPermissionMonitor.onPackageRemoved(packageName, uid);
     }
 
     @Test
@@ -739,8 +764,8 @@ public class PermissionMonitorTest {
                 MOCK_APPID1);
     }
 
-    @Test
-    public void testUidFilteringDuringVpnConnectDisconnectAndUidUpdates() throws Exception {
+    private void doTestuidFilteringDuringVpnConnectDisconnectAndUidUpdates(@Nullable String ifName)
+            throws Exception {
         doReturn(List.of(buildPackageInfo(SYSTEM_PACKAGE1, SYSTEM_APP_UID11, CHANGE_NETWORK_STATE,
                         CONNECTIVITY_USE_RESTRICTED_NETWORKS),
                 buildPackageInfo(MOCK_PACKAGE1, MOCK_UID11),
@@ -756,8 +781,8 @@ public class PermissionMonitorTest {
         final Set<UidRange> vpnRange2 = Set.of(new UidRange(MOCK_UID12, MOCK_UID12));
 
         // When VPN is connected, expect a rule to be set up for user app MOCK_UID11
-        mPermissionMonitor.onVpnUidRangesAdded("tun0", vpnRange1, VPN_UID);
-        verify(mBpfNetMaps).addUidInterfaceRules(eq("tun0"), aryEq(new int[]{MOCK_UID11}));
+        mPermissionMonitor.onVpnUidRangesAdded(ifName, vpnRange1, VPN_UID);
+        verify(mBpfNetMaps).addUidInterfaceRules(eq(ifName), aryEq(new int[]{MOCK_UID11}));
 
         reset(mBpfNetMaps);
 
@@ -765,42 +790,54 @@ public class PermissionMonitorTest {
         mPermissionMonitor.onPackageRemoved(MOCK_PACKAGE1, MOCK_UID11);
         verify(mBpfNetMaps).removeUidInterfaceRules(aryEq(new int[]{MOCK_UID11}));
         mPermissionMonitor.onPackageAdded(MOCK_PACKAGE1, MOCK_UID11);
-        verify(mBpfNetMaps).addUidInterfaceRules(eq("tun0"), aryEq(new int[]{MOCK_UID11}));
+        verify(mBpfNetMaps).addUidInterfaceRules(eq(ifName), aryEq(new int[]{MOCK_UID11}));
 
         reset(mBpfNetMaps);
 
         // During VPN uid update (vpnRange1 -> vpnRange2), ConnectivityService first deletes the
         // old UID rules then adds the new ones. Expect netd to be updated
-        mPermissionMonitor.onVpnUidRangesRemoved("tun0", vpnRange1, VPN_UID);
+        mPermissionMonitor.onVpnUidRangesRemoved(ifName, vpnRange1, VPN_UID);
         verify(mBpfNetMaps).removeUidInterfaceRules(aryEq(new int[] {MOCK_UID11}));
-        mPermissionMonitor.onVpnUidRangesAdded("tun0", vpnRange2, VPN_UID);
-        verify(mBpfNetMaps).addUidInterfaceRules(eq("tun0"), aryEq(new int[]{MOCK_UID12}));
+        mPermissionMonitor.onVpnUidRangesAdded(ifName, vpnRange2, VPN_UID);
+        verify(mBpfNetMaps).addUidInterfaceRules(eq(ifName), aryEq(new int[]{MOCK_UID12}));
 
         reset(mBpfNetMaps);
 
         // When VPN is disconnected, expect rules to be torn down
-        mPermissionMonitor.onVpnUidRangesRemoved("tun0", vpnRange2, VPN_UID);
+        mPermissionMonitor.onVpnUidRangesRemoved(ifName, vpnRange2, VPN_UID);
         verify(mBpfNetMaps).removeUidInterfaceRules(aryEq(new int[] {MOCK_UID12}));
-        assertNull(mPermissionMonitor.getVpnUidRanges("tun0"));
+        assertNull(mPermissionMonitor.getVpnInterfaceUidRanges(ifName));
     }
 
     @Test
-    public void testUidFilteringDuringPackageInstallAndUninstall() throws Exception {
+    public void testUidFilteringDuringVpnConnectDisconnectAndUidUpdates() throws Exception {
+        doTestuidFilteringDuringVpnConnectDisconnectAndUidUpdates("tun0");
+    }
+
+    @Test
+    public void testUidFilteringDuringVpnConnectDisconnectAndUidUpdatesWithWildcard()
+            throws Exception {
+        doTestuidFilteringDuringVpnConnectDisconnectAndUidUpdates(null /* ifName */);
+    }
+
+    private void doTestUidFilteringDuringPackageInstallAndUninstall(@Nullable String ifName) throws
+            Exception {
         doReturn(List.of(buildPackageInfo(SYSTEM_PACKAGE1, SYSTEM_APP_UID11, CHANGE_NETWORK_STATE,
                         NETWORK_STACK, CONNECTIVITY_USE_RESTRICTED_NETWORKS),
                 buildPackageInfo(SYSTEM_PACKAGE2, VPN_UID)))
                 .when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS), anyInt());
         buildAndMockPackageInfoWithPermissions(MOCK_PACKAGE1, MOCK_UID11);
+        doReturn(List.of(MOCK_USER1, MOCK_USER2)).when(mUserManager).getUserHandles(eq(true));
 
         mPermissionMonitor.startMonitoring();
         final Set<UidRange> vpnRange = Set.of(UidRange.createForUser(MOCK_USER1),
                 UidRange.createForUser(MOCK_USER2));
-        mPermissionMonitor.onVpnUidRangesAdded("tun0", vpnRange, VPN_UID);
+        mPermissionMonitor.onVpnUidRangesAdded(ifName, vpnRange, VPN_UID);
 
         // Newly-installed package should have uid rules added
         addPackageForUsers(new UserHandle[]{MOCK_USER1, MOCK_USER2}, MOCK_PACKAGE1, MOCK_APPID1);
-        verify(mBpfNetMaps).addUidInterfaceRules(eq("tun0"), aryEq(new int[]{MOCK_UID11}));
-        verify(mBpfNetMaps).addUidInterfaceRules(eq("tun0"), aryEq(new int[]{MOCK_UID21}));
+        verify(mBpfNetMaps).addUidInterfaceRules(eq(ifName), aryEq(new int[]{MOCK_UID11}));
+        verify(mBpfNetMaps).addUidInterfaceRules(eq(ifName), aryEq(new int[]{MOCK_UID21}));
 
         // Removed package should have its uid rules removed
         mPermissionMonitor.onPackageRemoved(MOCK_PACKAGE1, MOCK_UID11);
@@ -808,6 +845,168 @@ public class PermissionMonitorTest {
         verify(mBpfNetMaps, never()).removeUidInterfaceRules(aryEq(new int[]{MOCK_UID21}));
     }
 
+    @Test
+    public void testUidFilteringDuringPackageInstallAndUninstall() throws Exception {
+        doTestUidFilteringDuringPackageInstallAndUninstall("tun0");
+    }
+
+    @Test
+    public void testUidFilteringDuringPackageInstallAndUninstallWithWildcard() throws Exception {
+        doTestUidFilteringDuringPackageInstallAndUninstall(null /* ifName */);
+    }
+
+    @Test
+    public void testLockdownUidFilteringWithLockdownEnableDisable() {
+        doReturn(List.of(buildPackageInfo(SYSTEM_PACKAGE1, SYSTEM_APP_UID11, CHANGE_NETWORK_STATE,
+                        CONNECTIVITY_USE_RESTRICTED_NETWORKS),
+                buildPackageInfo(MOCK_PACKAGE1, MOCK_UID11),
+                buildPackageInfo(MOCK_PACKAGE2, MOCK_UID12),
+                buildPackageInfo(SYSTEM_PACKAGE2, VPN_UID)))
+                .when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS), anyInt());
+        mPermissionMonitor.startMonitoring();
+        // Every app on user 0 except MOCK_UID12 are under VPN.
+        final UidRange[] vpnRange1 = {
+                new UidRange(0, MOCK_UID12 - 1),
+                new UidRange(MOCK_UID12 + 1, UserHandle.PER_USER_RANGE - 1)
+        };
+
+        // Add Lockdown uid range, expect a rule to be set up for user app MOCK_UID11
+        mPermissionMonitor.updateVpnLockdownUidRanges(true /* add */, vpnRange1);
+        verify(mBpfNetMaps)
+                .setUidRule(
+                        eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_DENY));
+        assertEquals(mPermissionMonitor.getVpnLockdownUidRanges(), Set.of(vpnRange1));
+
+        reset(mBpfNetMaps);
+
+        // Remove Lockdown uid range, expect rules to be torn down
+        mPermissionMonitor.updateVpnLockdownUidRanges(false /* false */, vpnRange1);
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_ALLOW));
+        assertTrue(mPermissionMonitor.getVpnLockdownUidRanges().isEmpty());
+    }
+
+    @Test
+    public void testLockdownUidFilteringWithLockdownEnableDisableWithMultiAdd() {
+        doReturn(List.of(buildPackageInfo(SYSTEM_PACKAGE1, SYSTEM_APP_UID11, CHANGE_NETWORK_STATE,
+                        CONNECTIVITY_USE_RESTRICTED_NETWORKS),
+                buildPackageInfo(MOCK_PACKAGE1, MOCK_UID11),
+                buildPackageInfo(SYSTEM_PACKAGE2, VPN_UID)))
+                .when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS), anyInt());
+        mPermissionMonitor.startMonitoring();
+        // MOCK_UID11 is under VPN.
+        final UidRange range = new UidRange(MOCK_UID11, MOCK_UID11);
+        final UidRange[] vpnRange = {range};
+
+        // Add Lockdown uid range at 1st time, expect a rule to be set up
+        mPermissionMonitor.updateVpnLockdownUidRanges(true /* add */, vpnRange);
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_DENY));
+        assertEquals(mPermissionMonitor.getVpnLockdownUidRanges(), Set.of(vpnRange));
+
+        reset(mBpfNetMaps);
+
+        // Add Lockdown uid range at 2nd time, expect a rule not to be set up because the uid
+        // already has the rule
+        mPermissionMonitor.updateVpnLockdownUidRanges(true /* add */, vpnRange);
+        verify(mBpfNetMaps, never()).setUidRule(anyInt(), anyInt(), anyInt());
+        assertEquals(mPermissionMonitor.getVpnLockdownUidRanges(), Set.of(vpnRange));
+
+        reset(mBpfNetMaps);
+
+        // Remove Lockdown uid range at 1st time, expect a rule not to be torn down because we added
+        // the range 2 times.
+        mPermissionMonitor.updateVpnLockdownUidRanges(false /* false */, vpnRange);
+        verify(mBpfNetMaps, never()).setUidRule(anyInt(), anyInt(), anyInt());
+        assertEquals(mPermissionMonitor.getVpnLockdownUidRanges(), Set.of(vpnRange));
+
+        reset(mBpfNetMaps);
+
+        // Remove Lockdown uid range at 2nd time, expect a rule to be torn down because we added
+        // twice and we removed twice.
+        mPermissionMonitor.updateVpnLockdownUidRanges(false /* false */, vpnRange);
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_ALLOW));
+        assertTrue(mPermissionMonitor.getVpnLockdownUidRanges().isEmpty());
+    }
+
+    @Test
+    public void testLockdownUidFilteringWithLockdownEnableDisableWithDuplicates() {
+        doReturn(List.of(buildPackageInfo(SYSTEM_PACKAGE1, SYSTEM_APP_UID11, CHANGE_NETWORK_STATE,
+                        CONNECTIVITY_USE_RESTRICTED_NETWORKS),
+                buildPackageInfo(MOCK_PACKAGE1, MOCK_UID11),
+                buildPackageInfo(SYSTEM_PACKAGE2, VPN_UID)))
+                .when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS), anyInt());
+        mPermissionMonitor.startMonitoring();
+        // MOCK_UID11 is under VPN.
+        final UidRange range = new UidRange(MOCK_UID11, MOCK_UID11);
+        final UidRange[] vpnRangeDuplicates = {range, range};
+        final UidRange[] vpnRange = {range};
+
+        // Add Lockdown uid ranges which contains duplicated uid ranges
+        mPermissionMonitor.updateVpnLockdownUidRanges(true /* add */, vpnRangeDuplicates);
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_DENY));
+        assertEquals(mPermissionMonitor.getVpnLockdownUidRanges(), Set.of(vpnRange));
+
+        reset(mBpfNetMaps);
+
+        // Remove Lockdown uid range at 1st time, expect a rule not to be torn down because uid
+        // ranges we added contains duplicated uid ranges.
+        mPermissionMonitor.updateVpnLockdownUidRanges(false /* false */, vpnRange);
+        verify(mBpfNetMaps, never()).setUidRule(anyInt(), anyInt(), anyInt());
+        assertEquals(mPermissionMonitor.getVpnLockdownUidRanges(), Set.of(vpnRange));
+
+        reset(mBpfNetMaps);
+
+        // Remove Lockdown uid range at 2nd time, expect a rule to be torn down.
+        mPermissionMonitor.updateVpnLockdownUidRanges(false /* false */, vpnRange);
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_ALLOW));
+        assertTrue(mPermissionMonitor.getVpnLockdownUidRanges().isEmpty());
+    }
+
+    @Test
+    public void testLockdownUidFilteringWithInstallAndUnInstall() {
+        doReturn(List.of(buildPackageInfo(SYSTEM_PACKAGE1, SYSTEM_APP_UID11, CHANGE_NETWORK_STATE,
+                        NETWORK_STACK, CONNECTIVITY_USE_RESTRICTED_NETWORKS),
+                buildPackageInfo(SYSTEM_PACKAGE2, VPN_UID)))
+                .when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS), anyInt());
+        doReturn(List.of(MOCK_USER1, MOCK_USER2)).when(mUserManager).getUserHandles(eq(true));
+
+        mPermissionMonitor.startMonitoring();
+        final UidRange[] vpnRange = {
+                UidRange.createForUser(MOCK_USER1),
+                UidRange.createForUser(MOCK_USER2)
+        };
+        mPermissionMonitor.updateVpnLockdownUidRanges(true /* add */, vpnRange);
+
+        // Installing package should add Lockdown rules
+        addPackageForUsers(new UserHandle[]{MOCK_USER1, MOCK_USER2}, MOCK_PACKAGE1, MOCK_APPID1);
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_DENY));
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID21),
+                        eq(FIREWALL_RULE_DENY));
+
+        reset(mBpfNetMaps);
+
+        // Uninstalling package should remove Lockdown rules
+        mPermissionMonitor.onPackageRemoved(MOCK_PACKAGE1, MOCK_UID11);
+        verify(mBpfNetMaps)
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID11),
+                        eq(FIREWALL_RULE_ALLOW));
+        verify(mBpfNetMaps, never())
+                .setUidRule(eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(MOCK_UID21),
+                        eq(FIREWALL_RULE_ALLOW));
+    }
 
     // Normal package add/remove operations will trigger multiple intent for uids corresponding to
     // each user. To simulate generic package operations, the onPackageAdded/Removed will need to be
@@ -881,7 +1080,7 @@ public class PermissionMonitorTest {
         addPackage(MOCK_PACKAGE1, MOCK_UID11, INTERNET, UPDATE_DEVICE_STATS);
         mBpfMapMonitor.expectTrafficPerm(PERMISSION_TRAFFIC_ALL, MOCK_APPID1);
 
-        // Install another package with the same uid and no permissions should not cause the app id
+        // Install another package with the same uid and no permissions should not cause the appId
         // to lose permissions.
         addPackage(MOCK_PACKAGE2, MOCK_UID11);
         mBpfMapMonitor.expectTrafficPerm(PERMISSION_TRAFFIC_ALL, MOCK_APPID1);
@@ -1248,5 +1447,212 @@ public class PermissionMonitorTest {
         assertTrue(isHigherNetworkPermission(PERMISSION_SYSTEM, PERMISSION_NONE));
         assertTrue(isHigherNetworkPermission(PERMISSION_SYSTEM, PERMISSION_NETWORK));
         assertFalse(isHigherNetworkPermission(PERMISSION_SYSTEM, PERMISSION_SYSTEM));
+    }
+
+    private void prepareMultiUserPackages() {
+        // MOCK_USER1 has installed 3 packages
+        // mockApp1 has no permission and share MOCK_APPID1.
+        // mockApp2 has INTERNET permission and share MOCK_APPID2.
+        // mockApp3 has UPDATE_DEVICE_STATS permission and share MOCK_APPID3.
+        final List<PackageInfo> pkgs1 = List.of(
+                buildPackageInfo("mockApp1", MOCK_UID11),
+                buildPackageInfo("mockApp2", MOCK_UID12, INTERNET),
+                buildPackageInfo("mockApp3", MOCK_UID13, UPDATE_DEVICE_STATS));
+
+        // MOCK_USER2 has installed 2 packages
+        // mockApp4 has UPDATE_DEVICE_STATS permission and share MOCK_APPID1.
+        // mockApp5 has INTERNET permission and share MOCK_APPID2.
+        final List<PackageInfo> pkgs2 = List.of(
+                buildPackageInfo("mockApp4", MOCK_UID21, UPDATE_DEVICE_STATS),
+                buildPackageInfo("mockApp5", MOCK_UID23, INTERNET));
+
+        // MOCK_USER3 has installed 1 packages
+        // mockApp6 has UPDATE_DEVICE_STATS permission and share MOCK_APPID2.
+        final List<PackageInfo> pkgs3 = List.of(
+                buildPackageInfo("mockApp6", MOCK_UID32, UPDATE_DEVICE_STATS));
+
+        doReturn(pkgs1).when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS),
+                eq(MOCK_USER_ID1));
+        doReturn(pkgs2).when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS),
+                eq(MOCK_USER_ID2));
+        doReturn(pkgs3).when(mPackageManager).getInstalledPackagesAsUser(eq(GET_PERMISSIONS),
+                eq(MOCK_USER_ID3));
+    }
+
+    private void addUserAndVerifyAppIdsPermissions(UserHandle user, int appId1Perm,
+            int appId2Perm, int appId3Perm) {
+        mPermissionMonitor.onUserAdded(user);
+        mBpfMapMonitor.expectTrafficPerm(appId1Perm, MOCK_APPID1);
+        mBpfMapMonitor.expectTrafficPerm(appId2Perm, MOCK_APPID2);
+        mBpfMapMonitor.expectTrafficPerm(appId3Perm, MOCK_APPID3);
+    }
+
+    private void removeUserAndVerifyAppIdsPermissions(UserHandle user, int appId1Perm,
+            int appId2Perm, int appId3Perm) {
+        mPermissionMonitor.onUserRemoved(user);
+        mBpfMapMonitor.expectTrafficPerm(appId1Perm, MOCK_APPID1);
+        mBpfMapMonitor.expectTrafficPerm(appId2Perm, MOCK_APPID2);
+        mBpfMapMonitor.expectTrafficPerm(appId3Perm, MOCK_APPID3);
+    }
+
+    @Test
+    public void testAppIdsTrafficPermission_UserAddedRemoved() {
+        prepareMultiUserPackages();
+
+        // Add MOCK_USER1 and verify the permissions with each appIds.
+        addUserAndVerifyAppIdsPermissions(MOCK_USER1, PERMISSION_NONE, PERMISSION_INTERNET,
+                PERMISSION_UPDATE_DEVICE_STATS);
+
+        // Add MOCK_USER2 and verify the permissions upgrade on MOCK_APPID1 & MOCK_APPID3.
+        addUserAndVerifyAppIdsPermissions(MOCK_USER2, PERMISSION_UPDATE_DEVICE_STATS,
+                PERMISSION_INTERNET, PERMISSION_TRAFFIC_ALL);
+
+        // Add MOCK_USER3 and verify the permissions upgrade on MOCK_APPID2.
+        addUserAndVerifyAppIdsPermissions(MOCK_USER3, PERMISSION_UPDATE_DEVICE_STATS,
+                PERMISSION_TRAFFIC_ALL, PERMISSION_TRAFFIC_ALL);
+
+        // Remove MOCK_USER2 and verify the permissions downgrade on MOCK_APPID1 & MOCK_APPID3.
+        removeUserAndVerifyAppIdsPermissions(MOCK_USER2, PERMISSION_NONE, PERMISSION_TRAFFIC_ALL,
+                PERMISSION_UPDATE_DEVICE_STATS);
+
+        // Remove MOCK_USER1 and verify the permissions downgrade on all appIds.
+        removeUserAndVerifyAppIdsPermissions(MOCK_USER1, PERMISSION_UNINSTALLED,
+                PERMISSION_UPDATE_DEVICE_STATS, PERMISSION_UNINSTALLED);
+
+        // Add MOCK_USER2 back and verify the permissions upgrade on MOCK_APPID1 & MOCK_APPID3.
+        addUserAndVerifyAppIdsPermissions(MOCK_USER2, PERMISSION_UPDATE_DEVICE_STATS,
+                PERMISSION_UPDATE_DEVICE_STATS, PERMISSION_INTERNET);
+
+        // Remove MOCK_USER3 and verify the permissions downgrade on MOCK_APPID2.
+        removeUserAndVerifyAppIdsPermissions(MOCK_USER3, PERMISSION_UPDATE_DEVICE_STATS,
+                PERMISSION_UNINSTALLED, PERMISSION_INTERNET);
+    }
+
+    @Test
+    public void testAppIdsTrafficPermission_Multiuser_PackageAdded() throws Exception {
+        // Add two users with empty package list.
+        mPermissionMonitor.onUserAdded(MOCK_USER1);
+        mPermissionMonitor.onUserAdded(MOCK_USER2);
+
+        final int[] netdPermissions = {PERMISSION_NONE, PERMISSION_INTERNET,
+                PERMISSION_UPDATE_DEVICE_STATS, PERMISSION_TRAFFIC_ALL};
+        final String[][] grantPermissions = {new String[]{}, new String[]{INTERNET},
+                new String[]{UPDATE_DEVICE_STATS}, new String[]{INTERNET, UPDATE_DEVICE_STATS}};
+
+        // Verify that the permission combination is expected when same appId package is installed
+        // on another user. List the expected permissions below.
+        // NONE                + NONE                = NONE
+        // NONE                + INTERNET            = INTERNET
+        // NONE                + UPDATE_DEVICE_STATS = UPDATE_DEVICE_STATS
+        // NONE                + ALL                 = ALL
+        // INTERNET            + NONE                = INTERNET
+        // INTERNET            + INTERNET            = INTERNET
+        // INTERNET            + UPDATE_DEVICE_STATS = ALL
+        // INTERNET            + ALL                 = ALL
+        // UPDATE_DEVICE_STATS + NONE                = UPDATE_DEVICE_STATS
+        // UPDATE_DEVICE_STATS + INTERNET            = ALL
+        // UPDATE_DEVICE_STATS + UPDATE_DEVICE_STATS = UPDATE_DEVICE_STATS
+        // UPDATE_DEVICE_STATS + ALL                 = ALL
+        // ALL                 + NONE                = ALL
+        // ALL                 + INTERNET            = ALL
+        // ALL                 + UPDATE_DEVICE_STATS = ALL
+        // ALL                 + ALL                 = ALL
+        for (int i = 0, num = 0; i < netdPermissions.length; i++) {
+            final int current = netdPermissions[i];
+            final String[] user1Perm = grantPermissions[i];
+            for (int j = 0; j < netdPermissions.length; j++) {
+                final int appId = MOCK_APPID1 + num;
+                final int added = netdPermissions[j];
+                final String[] user2Perm = grantPermissions[j];
+                // Add package on MOCK_USER1 and verify the permission is same as package granted.
+                addPackage(MOCK_PACKAGE1, MOCK_USER1.getUid(appId), user1Perm);
+                mBpfMapMonitor.expectTrafficPerm(current, appId);
+
+                // Add package which share the same appId on MOCK_USER2, and verify the permission
+                // has combined.
+                addPackage(MOCK_PACKAGE2, MOCK_USER2.getUid(appId), user2Perm);
+                mBpfMapMonitor.expectTrafficPerm((current | added), appId);
+                num++;
+            }
+        }
+    }
+
+    private void verifyAppIdPermissionsAfterPackageRemoved(int appId, int expectedPerm,
+            String[] user1Perm, String[] user2Perm) throws Exception {
+        // Add package on MOCK_USER1 and verify the permission is same as package granted.
+        addPackage(MOCK_PACKAGE1, MOCK_USER1.getUid(appId), user1Perm);
+        mBpfMapMonitor.expectTrafficPerm(expectedPerm, appId);
+
+        // Add two packages which share the same appId and don't declare permission on
+        // MOCK_USER2. Verify the permission has no change.
+        addPackage(MOCK_PACKAGE2, MOCK_USER2.getUid(appId));
+        addPackage(MOCK_PACKAGE3, MOCK_USER2.getUid(appId), user2Perm);
+        mBpfMapMonitor.expectTrafficPerm(expectedPerm, appId);
+
+        // Remove one packages from MOCK_USER2. Verify the permission has no change too.
+        removePackage(MOCK_PACKAGE2, MOCK_USER2.getUid(appId));
+        mBpfMapMonitor.expectTrafficPerm(expectedPerm, appId);
+
+        // Remove last packages from MOCK_USER2. Verify the permission has still no change.
+        removePackage(MOCK_PACKAGE3, MOCK_USER2.getUid(appId));
+        mBpfMapMonitor.expectTrafficPerm(expectedPerm, appId);
+    }
+
+    @Test
+    public void testAppIdsTrafficPermission_Multiuser_PackageRemoved() throws Exception {
+        // Add two users with empty package list.
+        mPermissionMonitor.onUserAdded(MOCK_USER1);
+        mPermissionMonitor.onUserAdded(MOCK_USER2);
+
+        int appId = MOCK_APPID1;
+        // Verify that the permission combination is expected when same appId package is removed on
+        // another user. List the expected permissions below.
+        /***** NONE *****/
+        // NONE + NONE = NONE
+        verifyAppIdPermissionsAfterPackageRemoved(
+                appId++, PERMISSION_NONE, new String[]{}, new String[]{});
+
+        /***** INTERNET *****/
+        // INTERNET + NONE = INTERNET
+        verifyAppIdPermissionsAfterPackageRemoved(
+                appId++, PERMISSION_INTERNET, new String[]{INTERNET}, new String[]{});
+
+        // INTERNET + INTERNET = INTERNET
+        verifyAppIdPermissionsAfterPackageRemoved(
+                appId++, PERMISSION_INTERNET, new String[]{INTERNET}, new String[]{INTERNET});
+
+        /***** UPDATE_DEVICE_STATS *****/
+        // UPDATE_DEVICE_STATS + NONE = UPDATE_DEVICE_STATS
+        verifyAppIdPermissionsAfterPackageRemoved(appId++, PERMISSION_UPDATE_DEVICE_STATS,
+                new String[]{UPDATE_DEVICE_STATS}, new String[]{});
+
+        // UPDATE_DEVICE_STATS + UPDATE_DEVICE_STATS = UPDATE_DEVICE_STATS
+        verifyAppIdPermissionsAfterPackageRemoved(appId++, PERMISSION_UPDATE_DEVICE_STATS,
+                new String[]{UPDATE_DEVICE_STATS}, new String[]{UPDATE_DEVICE_STATS});
+
+        /***** ALL *****/
+        // ALL + NONE = ALL
+        verifyAppIdPermissionsAfterPackageRemoved(appId++, PERMISSION_TRAFFIC_ALL,
+                new String[]{INTERNET, UPDATE_DEVICE_STATS}, new String[]{});
+
+        // ALL + INTERNET = ALL
+        verifyAppIdPermissionsAfterPackageRemoved(appId++, PERMISSION_TRAFFIC_ALL,
+                new String[]{INTERNET, UPDATE_DEVICE_STATS}, new String[]{INTERNET});
+
+        // ALL + UPDATE_DEVICE_STATS = ALL
+        verifyAppIdPermissionsAfterPackageRemoved(appId++, PERMISSION_TRAFFIC_ALL,
+                new String[]{INTERNET, UPDATE_DEVICE_STATS}, new String[]{UPDATE_DEVICE_STATS});
+
+        // ALL + ALL = ALL
+        verifyAppIdPermissionsAfterPackageRemoved(appId++, PERMISSION_TRAFFIC_ALL,
+                new String[]{INTERNET, UPDATE_DEVICE_STATS},
+                new String[]{INTERNET, UPDATE_DEVICE_STATS});
+
+        /***** UNINSTALL *****/
+        // UNINSTALL + UNINSTALL = UNINSTALL
+        verifyAppIdPermissionsAfterPackageRemoved(
+                appId, PERMISSION_NONE, new String[]{}, new String[]{});
+        removePackage(MOCK_PACKAGE1, MOCK_USER1.getUid(appId));
+        mBpfMapMonitor.expectTrafficPerm(PERMISSION_UNINSTALLED, appId);
     }
 }

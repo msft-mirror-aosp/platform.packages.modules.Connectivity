@@ -16,12 +16,11 @@
 
 package android.nearby;
 
+import static android.nearby.PresenceCredential.IDENTITY_TYPE_PRIVATE;
 import static android.nearby.ScanRequest.SCAN_MODE_BALANCED;
 import static android.nearby.ScanRequest.SCAN_MODE_LOW_POWER;
-import static android.nearby.ScanRequest.SCAN_TYPE_EXPOSURE_NOTIFICATION;
 import static android.nearby.ScanRequest.SCAN_TYPE_FAST_PAIR;
 import static android.nearby.ScanRequest.SCAN_TYPE_NEARBY_PRESENCE;
-import static android.nearby.ScanRequest.SCAN_TYPE_NEARBY_SHARE;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -40,6 +39,8 @@ import org.junit.runner.RunWith;
 @SmallTest
 @RunWith(AndroidJUnit4.class)
 public class ScanRequestTest {
+
+    private static final int RSSI = -40;
 
     private static WorkSource getWorkSource() {
         final int uid = 1001;
@@ -82,7 +83,7 @@ public class ScanRequestTest {
     public void testSetWorkSource() {
         WorkSource workSource = getWorkSource();
         ScanRequest request = new ScanRequest.Builder()
-                .setScanType(SCAN_TYPE_NEARBY_SHARE)
+                .setScanType(SCAN_TYPE_FAST_PAIR)
                 .setWorkSource(workSource)
                 .build();
 
@@ -93,7 +94,7 @@ public class ScanRequestTest {
     @Test
     public void testSetWorkSource_nullValue() {
         ScanRequest request = new ScanRequest.Builder()
-                .setScanType(SCAN_TYPE_EXPOSURE_NOTIFICATION)
+                .setScanType(SCAN_TYPE_FAST_PAIR)
                 .setWorkSource(null)
                 .build();
 
@@ -106,14 +107,14 @@ public class ScanRequestTest {
     public void testToString() {
         WorkSource workSource = getWorkSource();
         ScanRequest request = new ScanRequest.Builder()
-                .setScanType(SCAN_TYPE_NEARBY_SHARE)
+                .setScanType(SCAN_TYPE_FAST_PAIR)
                 .setScanMode(SCAN_MODE_BALANCED)
                 .setBleEnabled(true)
                 .setWorkSource(workSource)
                 .build();
 
         assertThat(request.toString()).isEqualTo(
-                "Request[scanType=2, scanMode=SCAN_MODE_BALANCED, "
+                "Request[scanType=1, scanMode=SCAN_MODE_BALANCED, "
                         + "enableBle=true, workSource=WorkSource{1001 android.nearby.tests}, "
                         + "scanFilters=[]]");
     }
@@ -139,6 +140,7 @@ public class ScanRequestTest {
                 .setScanMode(SCAN_MODE_BALANCED)
                 .setBleEnabled(true)
                 .setWorkSource(workSource)
+                .addScanFilter(getPresenceScanFilter())
                 .build();
 
         // Write the scan request to parcel, then read from it.
@@ -165,5 +167,25 @@ public class ScanRequestTest {
         originalRequest.writeToParcel(parcel, 0);
         parcel.setDataPosition(0);
         return ScanRequest.CREATOR.createFromParcel(parcel);
+    }
+
+    private static PresenceScanFilter getPresenceScanFilter() {
+        final byte[] secretId = new byte[]{1, 2, 3, 4};
+        final byte[] authenticityKey = new byte[]{0, 1, 1, 1};
+        final byte[] publicKey = new byte[]{1, 1, 2, 2};
+        final byte[] encryptedMetadata = new byte[]{1, 2, 3, 4, 5};
+        final byte[] metadataEncryptionKeyTag = new byte[]{1, 1, 3, 4, 5};
+
+        PublicCredential credential = new PublicCredential.Builder(
+                secretId, authenticityKey, publicKey, encryptedMetadata, metadataEncryptionKeyTag)
+                .setIdentityType(IDENTITY_TYPE_PRIVATE)
+                .build();
+
+        final int action = 123;
+        return new PresenceScanFilter.Builder()
+                .addCredential(credential)
+                .setMaxPathLoss(RSSI)
+                .addPresenceAction(action)
+                .build();
     }
 }

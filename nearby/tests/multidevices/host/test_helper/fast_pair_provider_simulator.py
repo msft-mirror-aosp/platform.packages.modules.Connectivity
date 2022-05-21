@@ -14,10 +14,13 @@
 
 """Fast Pair provider simulator role."""
 
+import time
+
 from mobly import asserts
 from mobly.controllers import android_device
+from mobly.controllers.android_device_lib import jsonrpc_client_base
 from mobly.controllers.android_device_lib import snippet_event
-import retry
+from typing import Optional
 
 from test_helper import event_helper
 
@@ -103,7 +106,6 @@ class FastPairProviderSimulator:
         """Tears down the Fast Pair provider simulator."""
         self._ad.fp.teardownProviderSimulator()
 
-    @retry.retry(tries=3)
     def get_ble_mac_address(self) -> str:
         """Gets Bluetooth low energy mac address of the provider simulator.
 
@@ -114,7 +116,11 @@ class FastPairProviderSimulator:
         Returns:
           The BLE mac address of the Fast Pair provider simulator.
         """
-        return self._ad.fp.getBluetoothLeAddress()
+        for _ in range(3):
+            try:
+                return self._ad.fp.getBluetoothLeAddress()
+            except jsonrpc_client_base.ApiError:
+                time.sleep(1)
 
     def wait_for_discoverable_mode(self, timeout_seconds: int) -> None:
         """Waits onScanModeChange event to ensure provider is discoverable.
@@ -179,3 +185,11 @@ class FastPairProviderSimulator:
             on_received=_on_advertising_mode_change_event_received,
             on_waiting=_on_advertising_mode_change_event_waiting,
             on_missed=_on_advertising_mode_change_event_missed)
+
+    def get_latest_received_account_key(self) -> Optional[str]:
+        """Gets the latest account key received on the provider side.
+
+        Returns:
+          The account key received at provider side.
+        """
+        return self._ad.fp.getLatestReceivedAccountKey()

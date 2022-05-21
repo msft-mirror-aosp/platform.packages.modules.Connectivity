@@ -52,6 +52,7 @@ import static android.net.ConnectivityManager.TYPE_MOBILE_SUPL;
 import static android.net.ConnectivityManager.TYPE_PROXY;
 import static android.net.ConnectivityManager.TYPE_VPN;
 import static android.net.ConnectivityManager.TYPE_WIFI_P2P;
+import static android.net.ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_FOREGROUND;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_IMS;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
@@ -151,6 +152,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.MessageQueue;
 import android.os.Process;
+import android.os.ServiceManager;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.UserHandle;
@@ -590,6 +592,7 @@ public class ConnectivityManagerTest {
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
+    @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
     public void testGetRedactedLinkPropertiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
@@ -660,10 +663,12 @@ public class ConnectivityManagerTest {
 
             // CaptivePortalApiUrl & CaptivePortalData will be preserved if the given uid holds the
             // NETWORK_SETTINGS permission.
-            assertEquals(capportUrl,
+            assertNotNull(lp.getCaptivePortalApiUrl());
+            assertNotNull(lp.getCaptivePortalData());
+            assertEquals(lp.getCaptivePortalApiUrl(),
                     mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalApiUrl());
-            assertEquals(capportData,
+            assertEquals(lp.getCaptivePortalData(),
                     mCm.getRedactedLinkPropertiesForPackage(lp, privilegedUid, privilegedPkg)
                             .getCaptivePortalData());
         });
@@ -675,6 +680,7 @@ public class ConnectivityManagerTest {
     }
 
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
+    @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
     public void testGetRedactedNetworkCapabilitiesForPackage() throws Exception {
         final String groundedPkg = findPackageByPermissions(
@@ -885,9 +891,21 @@ public class ConnectivityManagerTest {
         //
         // Note that this test this will still fail in instant mode if a device supports Ethernet
         // via other hardware means. We are not currently aware of any such device.
-        return (mContext.getSystemService(Context.ETHERNET_SERVICE) != null) ||
-            mPackageManager.hasSystemFeature(FEATURE_ETHERNET) ||
-            mPackageManager.hasSystemFeature(FEATURE_USB_HOST);
+        return hasEthernetService()
+                || mPackageManager.hasSystemFeature(FEATURE_ETHERNET)
+                || mPackageManager.hasSystemFeature(FEATURE_USB_HOST);
+    }
+
+    private boolean hasEthernetService() {
+        // On Q creating EthernetManager from a thread that does not have a looper (like the test
+        // thread) crashes because it tried to use Looper.myLooper() through the default Handler
+        // constructor to run onAvailabilityChanged callbacks. Use ServiceManager to check whether
+        // the service exists instead.
+        // TODO: remove once Q is no longer supported in MTS, as ServiceManager is hidden API
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
+            return ServiceManager.getService(Context.ETHERNET_SERVICE) != null;
+        }
+        return mContext.getSystemService(Context.ETHERNET_SERVICE) != null;
     }
 
     private boolean shouldBeSupported(int networkType) {
@@ -3195,7 +3213,7 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "WRITE_SECURE_SETTINGS permission can't be granted to instant apps")
     @Test
     public void testUidsAllowedOnRestrictedNetworks() throws Exception {
-        assumeTrue(TestUtils.shouldTestSApis());
+        assumeTestSApis();
 
         // TODO (b/175199465): figure out a reasonable permission check for
         //  setUidsAllowedOnRestrictedNetworks that allows tests but not system-external callers.
@@ -3208,10 +3226,10 @@ public class ConnectivityManagerTest {
         // because it has been just installed to device. In case the uid is existed in setting
         // mistakenly, try to remove the uid and set correct uids to setting.
         originalUidsAllowedOnRestrictedNetworks.remove(uid);
-        runWithShellPermissionIdentity(() ->
-                ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
-                        mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
+        runWithShellPermissionIdentity(() -> setUidsAllowedOnRestrictedNetworks(
+                mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
 
+        // File a restricted network request with permission first to hold the connection.
         final TestableNetworkCallback testNetworkCb = new TestableNetworkCallback();
         final NetworkRequest testRequest = new NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_TEST)
@@ -3222,6 +3240,19 @@ public class ConnectivityManagerTest {
                 .build();
         runWithShellPermissionIdentity(() -> requestNetwork(testRequest, testNetworkCb),
                 CONNECTIVITY_USE_RESTRICTED_NETWORKS);
+
+        // File another restricted network request without permission.
+        final TestableNetworkCallback restrictedNetworkCb = new TestableNetworkCallback();
+        final NetworkRequest restrictedRequest = new NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_TEST)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                .setNetworkSpecifier(CompatUtil.makeTestNetworkSpecifier(
+                        TEST_RESTRICTED_NW_IFACE_NAME))
+                .build();
+        // Uid is not in allowed list and no permissions. Expect that SecurityException will throw.
+        assertThrows(SecurityException.class,
+                () -> mCm.requestNetwork(restrictedRequest, restrictedNetworkCb));
 
         final NetworkAgent agent = createRestrictedNetworkAgent(mContext);
         final Network network = agent.getNetwork();
@@ -3242,19 +3273,26 @@ public class ConnectivityManagerTest {
             final Set<Integer> newUidsAllowedOnRestrictedNetworks =
                     new ArraySet<>(originalUidsAllowedOnRestrictedNetworks);
             newUidsAllowedOnRestrictedNetworks.add(uid);
-            runWithShellPermissionIdentity(() ->
-                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
-                            mContext, newUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
+            runWithShellPermissionIdentity(() -> setUidsAllowedOnRestrictedNetworks(
+                    mContext, newUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
             // Wait a while for sending allowed uids on the restricted network to netd.
-            // TODD: Have a significant signal to know the uids has been send to netd.
+            // TODD: Have a significant signal to know the uids has been sent to netd.
             assertBindSocketToNetworkSuccess(network);
+
+            // Uid is in allowed list. Try file network request again.
+            requestNetwork(restrictedRequest, restrictedNetworkCb);
+            // Verify that the network is restricted.
+            restrictedNetworkCb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
+                    NETWORK_CALLBACK_TIMEOUT_MS,
+                    entry -> network.equals(entry.getNetwork())
+                            && (!((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                            .hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)));
         } finally {
             agent.unregister();
 
             // Restore setting.
-            runWithShellPermissionIdentity(() ->
-                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
-                            mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
+            runWithShellPermissionIdentity(() -> setUidsAllowedOnRestrictedNetworks(
+                    mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
         }
     }
 
@@ -3276,6 +3314,12 @@ public class ConnectivityManagerTest {
         dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
                 Context.CONNECTIVITY_SERVICE, args[1]);
         assertTrue(dumpOutput, dumpOutput.contains("BPF map content"));
+    }
+
+    private void assumeTestSApis() {
+        // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
+        // shims, and @IgnoreUpTo does not check that.
+        assumeTrue(TestUtils.shouldTestSApis());
     }
 
     private void unregisterRegisteredCallbacks() {

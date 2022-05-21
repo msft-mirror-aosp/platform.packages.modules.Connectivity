@@ -44,12 +44,8 @@ public final class ScanRequest implements Parcelable {
 
     /** Scan type for scanning devices using fast pair protocol. */
     public static final int SCAN_TYPE_FAST_PAIR = 1;
-    /** Scan type for scanning devices using nearby share protocol. */
-    public static final int SCAN_TYPE_NEARBY_SHARE = 2;
     /** Scan type for scanning devices using nearby presence protocol. */
-    public static final int SCAN_TYPE_NEARBY_PRESENCE = 3;
-    /** Scan type for scanning devices using exposure notification protocol. */
-    public static final int SCAN_TYPE_EXPOSURE_NOTIFICATION = 4;
+    public static final int SCAN_TYPE_NEARBY_PRESENCE = 2;
 
     /** Scan mode uses highest duty cycle. */
     public static final int SCAN_MODE_LOW_LATENCY = 2;
@@ -77,7 +73,8 @@ public final class ScanRequest implements Parcelable {
                     .setScanMode(in.readInt())
                     .setBleEnabled(in.readBoolean())
                     .setWorkSource(in.readTypedObject(WorkSource.CREATOR));
-            for (int i = 0; i < in.readInt(); i++) {
+            final int size = in.readInt();
+            for (int i = 0; i < size; i++) {
                 builder.addScanFilter(ScanFilter.createFromParcel(in));
             }
             return builder.build();
@@ -130,9 +127,7 @@ public final class ScanRequest implements Parcelable {
      */
     public static boolean isValidScanType(@ScanType int scanType) {
         return scanType == SCAN_TYPE_FAST_PAIR
-                || scanType == SCAN_TYPE_NEARBY_SHARE
-                || scanType == SCAN_TYPE_NEARBY_PRESENCE
-                || scanType == SCAN_TYPE_EXPOSURE_NOTIFICATION;
+                || scanType == SCAN_TYPE_NEARBY_PRESENCE;
     }
 
     /**
@@ -215,8 +210,9 @@ public final class ScanRequest implements Parcelable {
         dest.writeInt(mScanMode);
         dest.writeBoolean(mBleEnabled);
         dest.writeTypedObject(mWorkSource, /* parcelableFlags= */0);
-        dest.writeInt(mScanFilters.size());
-        for (int i = 0; i < mScanFilters.size(); ++i) {
+        final int size = mScanFilters.size();
+        dest.writeInt(size);
+        for (int i = 0; i < size; i++) {
             mScanFilters.get(i).writeToParcel(dest, flags);
         }
     }
@@ -240,8 +236,7 @@ public final class ScanRequest implements Parcelable {
 
     /** @hide **/
     @Retention(RetentionPolicy.SOURCE)
-    @IntDef({SCAN_TYPE_FAST_PAIR, SCAN_TYPE_NEARBY_SHARE, SCAN_TYPE_NEARBY_PRESENCE,
-            SCAN_TYPE_EXPOSURE_NOTIFICATION})
+    @IntDef({SCAN_TYPE_FAST_PAIR, SCAN_TYPE_NEARBY_PRESENCE})
     public @interface ScanType {
     }
 
