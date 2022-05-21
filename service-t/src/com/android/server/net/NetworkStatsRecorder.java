@@ -21,6 +21,7 @@ import static android.net.TrafficStats.KB_IN_BYTES;
 import static android.net.TrafficStats.MB_IN_BYTES;
 import static android.text.format.DateUtils.YEAR_IN_MILLIS;
 
+import android.annotation.NonNull;
 import android.net.NetworkIdentitySet;
 import android.net.NetworkStats;
 import android.net.NetworkStats.NonMonotonicObserver;
@@ -68,7 +69,7 @@ public class NetworkStatsRecorder {
 
     private static final String TAG_NETSTATS_DUMP = "netstats_dump";
 
-    /** Dump before deleting in {@link #recoverFromWtf()}. */
+    /** Dump before deleting in {@link #recoverAndDeleteData()}. */
     private static final boolean DUMP_BEFORE_DELETE = true;
 
     private final FileRotator mRotator;
@@ -156,6 +157,15 @@ public class NetworkStatsRecorder {
         return mSinceBoot;
     }
 
+    public long getBucketDuration() {
+        return mBucketDuration;
+    }
+
+    @NonNull
+    public String getCookie() {
+        return mCookie;
+    }
+
     /**
      * Load complete history represented by {@link FileRotator}. Caches
      * internally as a {@link WeakReference}, and updated with future
@@ -189,10 +199,10 @@ public class NetworkStatsRecorder {
             res.recordCollection(mPending);
         } catch (IOException e) {
             Log.wtf(TAG, "problem completely reading network stats", e);
-            recoverFromWtf();
+            recoverAndDeleteData();
         } catch (OutOfMemoryError e) {
             Log.wtf(TAG, "problem completely reading network stats", e);
-            recoverFromWtf();
+            recoverAndDeleteData();
         }
         return res;
     }
@@ -300,10 +310,10 @@ public class NetworkStatsRecorder {
                 mPending.reset();
             } catch (IOException e) {
                 Log.wtf(TAG, "problem persisting pending stats", e);
-                recoverFromWtf();
+                recoverAndDeleteData();
             } catch (OutOfMemoryError e) {
                 Log.wtf(TAG, "problem persisting pending stats", e);
-                recoverFromWtf();
+                recoverAndDeleteData();
             }
         }
     }
@@ -319,10 +329,10 @@ public class NetworkStatsRecorder {
                 mRotator.rewriteAll(new RemoveUidRewriter(mBucketDuration, uids));
             } catch (IOException e) {
                 Log.wtf(TAG, "problem removing UIDs " + Arrays.toString(uids), e);
-                recoverFromWtf();
+                recoverAndDeleteData();
             } catch (OutOfMemoryError e) {
                 Log.wtf(TAG, "problem removing UIDs " + Arrays.toString(uids), e);
-                recoverFromWtf();
+                recoverAndDeleteData();
             }
         }
 
@@ -347,8 +357,7 @@ public class NetworkStatsRecorder {
 
     /**
      * Rewriter that will combine current {@link NetworkStatsCollection} values
-     * with anything read from disk, and write combined set to disk. Clears the
-     * original {@link NetworkStatsCollection} when finished writing.
+     * with anything read from disk, and write combined set to disk.
      */
     private static class CombiningRewriter implements FileRotator.Rewriter {
         private final NetworkStatsCollection mCollection;
@@ -375,7 +384,6 @@ public class NetworkStatsRecorder {
         @Override
         public void write(OutputStream out) throws IOException {
             mCollection.write(out);
-            mCollection.reset();
         }
     }
 
@@ -455,6 +463,90 @@ public class NetworkStatsRecorder {
         }
     }
 
+    /**
+     * Import a specified {@link NetworkStatsCollection} instance into this recorder,
+     * and write it into a standalone file.
+     * @param collection The target {@link NetworkStatsCollection} instance to be imported.
+     */
+    public void importCollectionLocked(@NonNull NetworkStatsCollection collection)
+            throws IOException {
+        if (mRotator != null) {
+            mRotator.rewriteSingle(new CombiningRewriter(collection), collection.getStartMillis(),
+                    collection.getEndMillis());
+        }
+
+        if (mComplete != null) {
+            throw new IllegalStateException("cannot import data when data already loaded");
+        }
+    }
+
+    /**
+     * Rewriter that will remove any histories or persisted data points before the
+     * specified cutoff time, only writing data back when modified.
+     */
+    public static class RemoveDataBeforeRewriter implements FileRotator.Rewriter {
+        private final NetworkStatsCollection mTemp;
+        private final long mCutoffMills;
+
+        public RemoveDataBeforeRewriter(long bucketDuration, long cutoffMills) {
+            mTemp = new NetworkStatsCollection(bucketDuration);
+            mCutoffMills = cutoffMills;
+        }
+
+        @Override
+        public void reset() {
+            mTemp.reset();
+        }
+
+        @Override
+        public void read(InputStream in) throws IOException {
+            mTemp.read(in);
+            mTemp.clearDirty();
+            mTemp.removeHistoryBefore(mCutoffMills);
+        }
+
+        @Override
+        public boolean shouldWrite() {
+            return mTemp.isDirty();
+        }
+
+        @Override
+        public void write(OutputStream out) throws IOException {
+            mTemp.write(out);
+        }
+    }
+
+    /**
+     * Remove persisted data which contains or is before the cutoff timestamp.
+     */
+    public void removeDataBefore(long cutoffMillis) throws IOException {
+        if (mRotator != null) {
+            try {
+                mRotator.rewriteAll(new RemoveDataBeforeRewriter(
+                        mBucketDuration, cutoffMillis));
+            } catch (IOException e) {
+                Log.wtf(TAG, "problem importing netstats", e);
+                recoverAndDeleteData();
+            } catch (OutOfMemoryError e) {
+                Log.wtf(TAG, "problem importing netstats", e);
+                recoverAndDeleteData();
+            }
+        }
+
+        // Clean up any pending stats
+        if (mPending != null) {
+            mPending.removeHistoryBefore(cutoffMillis);
+        }
+        if (mSinceBoot != null) {
+            mSinceBoot.removeHistoryBefore(cutoffMillis);
+        }
+
+        final NetworkStatsCollection complete = mComplete != null ? mComplete.get() : null;
+        if (complete != null) {
+            complete.removeHistoryBefore(cutoffMillis);
+        }
+    }
+
     public void dumpLocked(IndentingPrintWriter pw, boolean fullHistory) {
         if (mPending != null) {
             pw.print("Pending bytes: "); pw.println(mPending.getTotalBytes());
@@ -488,7 +580,7 @@ public class NetworkStatsRecorder {
      * Recover from {@link FileRotator} failure by dumping state to
      * {@link DropBoxManager} and deleting contents.
      */
-    private void recoverFromWtf() {
+    void recoverAndDeleteData() {
         if (DUMP_BEFORE_DELETE) {
             final ByteArrayOutputStream os = new ByteArrayOutputStream();
             try {
