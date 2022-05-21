@@ -694,6 +694,26 @@ public class NetworkStatsCollection implements FileRotator.Reader, FileRotator.W
         }
     }
 
+    /**
+     * Remove histories which contains or is before the cutoff timestamp.
+     * @hide
+     */
+    public void removeHistoryBefore(long cutoffMillis) {
+        final ArrayList<Key> knownKeys = new ArrayList<>();
+        knownKeys.addAll(mStats.keySet());
+
+        for (Key key : knownKeys) {
+            final NetworkStatsHistory history = mStats.get(key);
+            if (history.getStart() > cutoffMillis) continue;
+
+            history.removeBucketsStartingBefore(cutoffMillis);
+            if (history.size() == 0) {
+                mStats.remove(key);
+            }
+            mDirty = true;
+        }
+    }
+
     private void noteRecordedHistory(long startMillis, long endMillis, long totalBytes) {
         if (startMillis < mStartMillis) mStartMillis = startMillis;
         if (endMillis > mEndMillis) mEndMillis = endMillis;
@@ -845,6 +865,9 @@ public class NetworkStatsCollection implements FileRotator.Reader, FileRotator.W
          * Add association of the history with the specified key in this map.
          *
          * @param key The object used to identify a network, see {@link Key}.
+         *            If history already exists for this key, then the passed-in history is appended
+         *            to the previously-passed in history. The caller must ensure that the history
+         *            passed-in timestamps are greater than all previously-passed-in timestamps.
          * @param history {@link NetworkStatsHistory} instance associated to the given {@link Key}.
          * @return The builder object.
          */
@@ -854,9 +877,21 @@ public class NetworkStatsCollection implements FileRotator.Reader, FileRotator.W
             Objects.requireNonNull(key);
             Objects.requireNonNull(history);
             final List<Entry> historyEntries = history.getEntries();
+            final NetworkStatsHistory existing = mEntries.get(key);
 
+            final int size = historyEntries.size() + ((existing != null) ? existing.size() : 0);
             final NetworkStatsHistory.Builder historyBuilder =
-                    new NetworkStatsHistory.Builder(mBucketDurationMillis, historyEntries.size());
+                    new NetworkStatsHistory.Builder(mBucketDurationMillis, size);
+
+            // TODO: this simply appends the entries to any entries that were already present in
+            // the builder, which requires the caller to pass in entries in order. We might be
+            // able to do better with something like recordHistory.
+            if (existing != null) {
+                for (Entry entry : existing.getEntries()) {
+                    historyBuilder.addEntry(entry);
+                }
+            }
+
             for (Entry entry : historyEntries) {
                 historyBuilder.addEntry(entry);
             }
