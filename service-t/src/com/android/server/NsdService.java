@@ -513,7 +513,7 @@ public class NsdService extends INsdManager.Stub {
                             break;
                         }
 
-                        String name = fullName.substring(0, index);
+                        String name = unescape(fullName.substring(0, index));
                         String rest = fullName.substring(index);
                         String type = rest.replace(".local.", "");
 
@@ -588,6 +588,35 @@ public class NsdService extends INsdManager.Stub {
                 return true;
             }
        }
+    }
+
+    // The full service name is escaped from standard DNS rules on mdnsresponder, making it suitable
+    // for passing to standard system DNS APIs such as res_query() . Thus, make the service name
+    // unescape for getting right service address. See "Notes on DNS Name Escaping" on
+    // external/mdnsresponder/mDNSShared/dns_sd.h for more details.
+    private String unescape(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); ++i) {
+            char c = s.charAt(i);
+            if (c == '\\') {
+                if (++i >= s.length()) {
+                    Log.e(TAG, "Unexpected end of escape sequence in: " + s);
+                    break;
+                }
+                c = s.charAt(i);
+                if (c != '.' && c != '\\') {
+                    if (i + 2 >= s.length()) {
+                        Log.e(TAG, "Unexpected end of escape sequence in: " + s);
+                        break;
+                    }
+                    c = (char) ((c - '0') * 100 + (s.charAt(i + 1) - '0') * 10
+                            + (s.charAt(i + 2) - '0'));
+                    i += 2;
+                }
+            }
+            sb.append(c);
+        }
+        return sb.toString();
     }
 
     @VisibleForTesting
@@ -738,7 +767,13 @@ public class NsdService extends INsdManager.Stub {
         String type = service.getServiceType();
         int port = service.getPort();
         byte[] textRecord = service.getTxtRecord();
-        return mMDnsManager.registerService(regId, name, type, port, textRecord, IFACE_IDX_ANY);
+        final Network network = service.getNetwork();
+        final int registerInterface = getNetworkInterfaceIndex(network);
+        if (network != null && registerInterface == IFACE_IDX_ANY) {
+            Log.e(TAG, "Interface to register service on not found");
+            return false;
+        }
+        return mMDnsManager.registerService(regId, name, type, port, textRecord, registerInterface);
     }
 
     private boolean unregisterService(int regId) {
