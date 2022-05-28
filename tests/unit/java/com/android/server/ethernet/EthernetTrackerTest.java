@@ -49,12 +49,14 @@ import android.net.IpConfiguration.ProxySettings;
 import android.net.LinkAddress;
 import android.net.NetworkCapabilities;
 import android.net.StaticIpConfiguration;
+import android.os.Build;
 import android.os.HandlerThread;
 import android.os.RemoteException;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
 
 import org.junit.After;
@@ -69,7 +71,8 @@ import java.net.InetAddress;
 import java.util.ArrayList;
 
 @SmallTest
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 public class EthernetTrackerTest {
     private static final String TEST_IFACE = "test123";
     private static final int TIMEOUT_MS = 1_000;
@@ -352,8 +355,8 @@ public class EthernetTrackerTest {
     }
 
     @Test
-    public void testConnectNetworkCorrectlyCallsFactory() {
-        tracker.connectNetwork(TEST_IFACE, NULL_LISTENER);
+    public void testEnableInterfaceCorrectlyCallsFactory() {
+        tracker.enableInterface(TEST_IFACE, NULL_LISTENER);
         waitForIdle();
 
         verify(mFactory).updateInterfaceLinkState(eq(TEST_IFACE), eq(true /* up */),
@@ -361,8 +364,8 @@ public class EthernetTrackerTest {
     }
 
     @Test
-    public void testDisconnectNetworkCorrectlyCallsFactory() {
-        tracker.disconnectNetwork(TEST_IFACE, NULL_LISTENER);
+    public void testDisableInterfaceCorrectlyCallsFactory() {
+        tracker.disableInterface(TEST_IFACE, NULL_LISTENER);
         waitForIdle();
 
         verify(mFactory).updateInterfaceLinkState(eq(TEST_IFACE), eq(false /* up */),
