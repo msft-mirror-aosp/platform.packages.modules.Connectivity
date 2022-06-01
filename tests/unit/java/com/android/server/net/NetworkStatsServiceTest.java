@@ -67,6 +67,9 @@ import static android.text.format.DateUtils.WEEK_IN_MILLIS;
 
 import static com.android.net.module.util.NetworkStatsUtils.SUBSCRIBER_ID_MATCH_RULE_EXACT;
 import static com.android.server.net.NetworkStatsService.ACTION_NETWORK_STATS_POLL;
+import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_ATTEMPTS_COUNTER_NAME;
+import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_FALLBACKS_COUNTER_NAME;
+import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_SUCCESSES_COUNTER_NAME;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
 import static org.junit.Assert.assertEquals;
@@ -141,10 +144,14 @@ import com.android.testutils.TestBpfMap;
 import com.android.testutils.TestableNetworkStatsProviderBinder;
 
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
@@ -239,6 +246,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private int mImportLegacyTargetAttempts = 0;
     private @Mock PersistentInt mImportLegacyAttemptsCounter;
     private @Mock PersistentInt mImportLegacySuccessesCounter;
+    private @Mock PersistentInt mImportLegacyFallbacksCounter;
 
     private class MockContext extends BroadcastInterceptingContext {
         private final Context mBaseContext;
@@ -379,15 +387,18 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
             }
 
             @Override
-            public PersistentInt createImportLegacyAttemptsCounter(
-                    @androidx.annotation.NonNull Path path) {
-                return mImportLegacyAttemptsCounter;
-            }
-
-            @Override
-            public PersistentInt createImportLegacySuccessesCounter(
-                    @androidx.annotation.NonNull Path path) {
-                return mImportLegacySuccessesCounter;
+            public PersistentInt createPersistentCounter(@androidx.annotation.NonNull Path dir,
+                    @androidx.annotation.NonNull String name) throws IOException {
+                switch (name) {
+                    case NETSTATS_IMPORT_ATTEMPTS_COUNTER_NAME:
+                        return mImportLegacyAttemptsCounter;
+                    case NETSTATS_IMPORT_SUCCESSES_COUNTER_NAME:
+                        return mImportLegacySuccessesCounter;
+                    case NETSTATS_IMPORT_FALLBACKS_COUNTER_NAME:
+                        return mImportLegacyFallbacksCounter;
+                    default:
+                        throw new IllegalArgumentException("Unknown counter name: " + name);
+                }
             }
 
             @Override
@@ -1102,6 +1113,40 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertEquals(1, stats.size());
         assertValues(stats, IFACE_ALL, UID_BLUE, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
                 DEFAULT_NETWORK_YES, 1024L, 8L, 512L, 4L, 0);
+    }
+
+    @Test
+    public void testGetLatestSummary() throws Exception {
+        // Pretend that network comes online.
+        expectDefaultSettings();
+        NetworkStateSnapshot[] states = new NetworkStateSnapshot[]{buildWifiState()};
+        expectNetworkStatsSummary(buildEmptyStats());
+        expectNetworkStatsUidDetail(buildEmptyStats());
+
+        mService.notifyNetworkStatus(NETWORKS_WIFI, states, getActiveIface(states),
+                new UnderlyingNetworkInfo[0]);
+
+        // Increase arbitrary time which does not align to the bucket edge, create some traffic.
+        incrementCurrentTime(1751000L);
+        NetworkStats.Entry entry = new NetworkStats.Entry(
+                TEST_IFACE, UID_ALL, SET_DEFAULT, TAG_NONE, 50L, 5L, 51L, 1L, 3L);
+        expectNetworkStatsSummary(new NetworkStats(getElapsedRealtime(), 1).insertEntry(entry));
+        expectNetworkStatsUidDetail(buildEmptyStats());
+        forcePollAndWaitForIdle();
+
+        // Verify the mocked stats is returned by querying with the range of the latest bucket.
+        final ZonedDateTime end =
+                ZonedDateTime.ofInstant(mClock.instant(), ZoneId.systemDefault());
+        final ZonedDateTime start = end.truncatedTo(ChronoUnit.HOURS);
+        NetworkStats stats = mSession.getSummaryForNetwork(buildTemplateWifi(TEST_WIFI_NETWORK_KEY),
+                start.toInstant().toEpochMilli(), end.toInstant().toEpochMilli());
+        assertEquals(1, stats.size());
+        assertValues(stats, IFACE_ALL, UID_ALL, SET_ALL, TAG_NONE, METERED_ALL, ROAMING_ALL,
+                DEFAULT_NETWORK_ALL, 50L, 5L, 51L, 1L, 3L);
+
+        // For getHistoryIntervalForNetwork, only includes buckets that atomically occur in
+        // the inclusive time range, instead of including the latest bucket. This behavior is
+        // already documented publicly, refer to {@link NetworkStatsManager#queryDetails}.
     }
 
     @Test
@@ -1861,7 +1906,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     }
 
     private NetworkStatsCollection getLegacyCollection(String prefix, boolean includeTags) {
-        final NetworkStatsRecorder recorder = makeTestRecorder(mLegacyStatsDir, PREFIX_DEV,
+        final NetworkStatsRecorder recorder = makeTestRecorder(mLegacyStatsDir, prefix,
                 mSettings.getDevConfig(), includeTags);
         return recorder.getOrLoadCompleteLocked();
     }
