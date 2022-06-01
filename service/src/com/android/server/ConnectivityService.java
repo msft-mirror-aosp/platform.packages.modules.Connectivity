@@ -3872,7 +3872,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
 
             final boolean wasValidated = nai.lastValidated;
-            final boolean wasDefault = isDefaultNetwork(nai);
             final boolean wasPartial = nai.partialConnectivity;
             nai.partialConnectivity = ((testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
             final boolean partialConnectivityChanged =
@@ -9252,7 +9251,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
             params.networkCapabilities = networkAgent.networkCapabilities;
             params.linkProperties = new LinkProperties(networkAgent.linkProperties,
                     true /* parcelSensitiveFields */);
-            networkAgent.networkMonitor().notifyNetworkConnected(params);
+            // isAtLeastT() is conservative here, as recent versions of NetworkStack support the
+            // newer callback even before T. However getInterfaceVersion is a synchronized binder
+            // call that would cause a Log.wtf to be emitted from the system_server process, and
+            // in the absence of a satisfactory, scalable solution which follows an easy/standard
+            // process to check the interface version, just use an SDK check. NetworkStack will
+            // always be new enough when running on T+.
+            if (SdkLevel.isAtLeastT()) {
+                networkAgent.networkMonitor().notifyNetworkConnected(params);
+            } else {
+                networkAgent.networkMonitor().notifyNetworkConnected(params.linkProperties,
+                        params.networkCapabilities);
+            }
             scheduleUnvalidatedPrompt(networkAgent);
 
             // Whether a particular NetworkRequest listen should cause signal strength thresholds to
