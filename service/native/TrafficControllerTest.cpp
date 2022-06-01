@@ -36,6 +36,7 @@
 
 #include <netdutils/MockSyscalls.h>
 
+#define TEST_BPF_MAP
 #include "TrafficController.h"
 #include "bpf/BpfUtils.h"
 #include "NetdUpdatablePublic.h"
@@ -65,7 +66,7 @@ class TrafficControllerTest : public ::testing::Test {
     BpfMap<uint64_t, UidTagValue> mFakeCookieTagMap;
     BpfMap<uint32_t, StatsValue> mFakeAppUidStatsMap;
     BpfMap<StatsKey, StatsValue> mFakeStatsMapA;
-    BpfMap<uint32_t, uint8_t> mFakeConfigurationMap;
+    BpfMap<uint32_t, uint32_t> mFakeConfigurationMap;
     BpfMap<uint32_t, UidOwnerValue> mFakeUidOwnerMap;
     BpfMap<uint32_t, uint8_t> mFakeUidPermissionMap;
 
@@ -73,50 +74,40 @@ class TrafficControllerTest : public ::testing::Test {
         std::lock_guard guard(mTc.mMutex);
         ASSERT_EQ(0, setrlimitForTest());
 
-        mFakeCookieTagMap.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(uint64_t), sizeof(UidTagValue),
-                                          TEST_MAP_SIZE, 0));
+        mFakeCookieTagMap.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeCookieTagMap);
 
-        mFakeAppUidStatsMap.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(StatsValue),
-                                            TEST_MAP_SIZE, 0));
+        mFakeAppUidStatsMap.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeAppUidStatsMap);
 
-        mFakeStatsMapA.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(StatsKey), sizeof(StatsValue),
-                                       TEST_MAP_SIZE, 0));
+        mFakeStatsMapA.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeStatsMapA);
 
-        mFakeConfigurationMap.reset(
-                createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint8_t), 1, 0));
+        mFakeConfigurationMap.resetMap(BPF_MAP_TYPE_HASH, 1);
         ASSERT_VALID(mFakeConfigurationMap);
 
-        mFakeUidOwnerMap.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(UidOwnerValue),
-                                         TEST_MAP_SIZE, 0));
+        mFakeUidOwnerMap.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeUidOwnerMap);
-        mFakeUidPermissionMap.reset(
-                createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint8_t), TEST_MAP_SIZE, 0));
+        mFakeUidPermissionMap.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeUidPermissionMap);
 
-        mTc.mCookieTagMap.reset(dupFd(mFakeCookieTagMap.getMap()));
+        mTc.mCookieTagMap = mFakeCookieTagMap;
         ASSERT_VALID(mTc.mCookieTagMap);
-        mTc.mAppUidStatsMap.reset(dupFd(mFakeAppUidStatsMap.getMap()));
+        mTc.mAppUidStatsMap = mFakeAppUidStatsMap;
         ASSERT_VALID(mTc.mAppUidStatsMap);
-        mTc.mStatsMapA.reset(dupFd(mFakeStatsMapA.getMap()));
+        mTc.mStatsMapA = mFakeStatsMapA;
         ASSERT_VALID(mTc.mStatsMapA);
-        mTc.mConfigurationMap.reset(dupFd(mFakeConfigurationMap.getMap()));
+        mTc.mConfigurationMap = mFakeConfigurationMap;
         ASSERT_VALID(mTc.mConfigurationMap);
 
         // Always write to stats map A by default.
         ASSERT_RESULT_OK(mTc.mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY,
                                                           SELECT_MAP_A, BPF_ANY));
-        mTc.mUidOwnerMap.reset(dupFd(mFakeUidOwnerMap.getMap()));
+        mTc.mUidOwnerMap = mFakeUidOwnerMap;
         ASSERT_VALID(mTc.mUidOwnerMap);
-        mTc.mUidPermissionMap.reset(dupFd(mFakeUidPermissionMap.getMap()));
+        mTc.mUidPermissionMap = mFakeUidPermissionMap;
         ASSERT_VALID(mTc.mUidPermissionMap);
         mTc.mPrivilegedUser.clear();
-    }
-
-    int dupFd(const android::base::unique_fd& mapFd) {
-        return fcntl(mapFd.get(), F_DUPFD_CLOEXEC, 0);
     }
 
     void populateFakeStats(uint64_t cookie, uint32_t uid, uint32_t tag, StatsKey* key) {
@@ -673,7 +664,7 @@ class NetlinkListenerTest : public testing::Test {
     BpfMap<uint64_t, UidTagValue> mCookieTagMap;
 
     void SetUp() {
-        mCookieTagMap.reset(android::bpf::mapRetrieveRW(COOKIE_TAG_MAP_PATH));
+        mCookieTagMap.init(COOKIE_TAG_MAP_PATH);
         ASSERT_TRUE(mCookieTagMap.isValid());
     }
 
@@ -685,7 +676,7 @@ class NetlinkListenerTest : public testing::Test {
                 if (res.ok() || (res.error().code() == ENOENT)) {
                     return Result<void>();
                 }
-                ALOGE("Failed to delete data(cookie = %" PRIu64 "): %s\n", key,
+                ALOGE("Failed to delete data(cookie = %" PRIu64 "): %s", key,
                       strerror(res.error().code()));
             }
             // Move forward to next cookie in the map.
