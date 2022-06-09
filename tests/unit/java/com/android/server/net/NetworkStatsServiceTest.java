@@ -143,6 +143,17 @@ import com.android.testutils.HandlerUtils;
 import com.android.testutils.TestBpfMap;
 import com.android.testutils.TestableNetworkStatsProviderBinder;
 
+import libcore.testing.io.TestIoUtils;
+
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Ignore;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
+
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -156,17 +167,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
-
-import libcore.testing.io.TestIoUtils;
-
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Ignore;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
 
 /**
  * Tests for {@link NetworkStatsService}.
@@ -1180,9 +1180,12 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
         assertEquals(3, stats.size());
         entry1.operations = 1;
+        entry1.iface = null;
         assertEquals(entry1, stats.getValues(0, null));
         entry2.operations = 1;
+        entry2.iface = null;
         assertEquals(entry2, stats.getValues(1, null));
+        entry3.iface = null;
         assertEquals(entry3, stats.getValues(2, null));
     }
 
