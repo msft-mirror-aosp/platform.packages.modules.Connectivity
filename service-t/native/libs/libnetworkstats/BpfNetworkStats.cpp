@@ -193,7 +193,7 @@ int parseBpfNetworkStatsDetail(std::vector<stats_line>* lines,
         return ret;
     }
 
-    BpfMapRO<uint32_t, uint8_t> configurationMap(CONFIGURATION_MAP_PATH);
+    BpfMapRO<uint32_t, uint32_t> configurationMap(CONFIGURATION_MAP_PATH);
     if (!configurationMap.isValid()) {
         int ret = -errno;
         ALOGE("get configuration map fd failed: %s", strerror(errno));
@@ -204,6 +204,10 @@ int parseBpfNetworkStatsDetail(std::vector<stats_line>* lines,
         ALOGE("Cannot read the old configuration from map: %s",
               configuration.error().message().c_str());
         return -configuration.error().code();
+    }
+    if (configuration.value() != SELECT_MAP_A && configuration.value() != SELECT_MAP_B) {
+        ALOGE("%s unknown configuration value: %d", __func__, configuration.value());
+        return -EINVAL;
     }
     const char* statsMapPath = STATS_MAP_PATH[configuration.value()];
     BpfMap<StatsKey, StatsValue> statsMap(statsMapPath);

@@ -3872,7 +3872,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
 
             final boolean wasValidated = nai.lastValidated;
-            final boolean wasDefault = isDefaultNetwork(nai);
             final boolean wasPartial = nai.partialConnectivity;
             nai.partialConnectivity = ((testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
             final boolean partialConnectivityChanged =
@@ -8349,7 +8348,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mPendingIntentWakeLock.acquire();
         try {
             if (DBG) log("Sending " + pendingIntent);
-            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */);
+            final BroadcastOptions options = BroadcastOptions.makeBasic();
+            if (SdkLevel.isAtLeastT()) {
+                // Explicitly disallow the receiver from starting activities, to prevent apps from
+                // utilizing the PendingIntent as a backdoor to do this.
+                options.setPendingIntentBackgroundActivityLaunchAllowed(false);
+            }
+            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */,
+                    null /* requiredPermission */,
+                    SdkLevel.isAtLeastT() ? options.toBundle() : null);
         } catch (PendingIntent.CanceledException e) {
             if (DBG) log(pendingIntent + " was not sent, it had been canceled.");
             mPendingIntentWakeLock.release();
@@ -9258,7 +9265,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
             params.networkCapabilities = networkAgent.networkCapabilities;
             params.linkProperties = new LinkProperties(networkAgent.linkProperties,
                     true /* parcelSensitiveFields */);
-            networkAgent.networkMonitor().notifyNetworkConnected(params);
+            // isAtLeastT() is conservative here, as recent versions of NetworkStack support the
+            // newer callback even before T. However getInterfaceVersion is a synchronized binder
+            // call that would cause a Log.wtf to be emitted from the system_server process, and
+            // in the absence of a satisfactory, scalable solution which follows an easy/standard
+            // process to check the interface version, just use an SDK check. NetworkStack will
+            // always be new enough when running on T+.
+            if (SdkLevel.isAtLeastT()) {
+                networkAgent.networkMonitor().notifyNetworkConnected(params);
+            } else {
+                networkAgent.networkMonitor().notifyNetworkConnected(params.linkProperties,
+                        params.networkCapabilities);
+            }
             scheduleUnvalidatedPrompt(networkAgent);
 
             // Whether a particular NetworkRequest listen should cause signal strength thresholds to
@@ -11355,6 +11373,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final int defaultRule;
         switch (chain) {
             case ConnectivityManager.FIREWALL_CHAIN_STANDBY:
+            case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1:
+            case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2:
+            case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3:
                 defaultRule = FIREWALL_RULE_ALLOW;
                 break;
             case ConnectivityManager.FIREWALL_CHAIN_DOZABLE:
@@ -11403,6 +11424,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY:
                     mBpfNetMaps.replaceUidChain("fw_low_power_standby", true /* isAllowList */,
                             uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1:
+                    mBpfNetMaps.replaceUidChain("fw_oem_deny_1", false /* isAllowList */, uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2:
+                    mBpfNetMaps.replaceUidChain("fw_oem_deny_2", false /* isAllowList */, uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3:
+                    mBpfNetMaps.replaceUidChain("fw_oem_deny_3", false /* isAllowList */, uids);
                     break;
                 default:
                     throw new IllegalArgumentException("replaceFirewallChain with invalid chain: "
