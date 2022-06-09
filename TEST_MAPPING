@@ -34,11 +34,26 @@
         }
       ]
     },
+    // CTS tests that target older SDKs.
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk31",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
     {
       "name": "bpf_existence_test"
     },
     {
       "name": "connectivity_native_test"
+    },
+    {
+      "name": "libclat_test"
     },
     {
       "name": "netd_updatable_unit_test"
@@ -68,14 +83,8 @@
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
     },
     {
-      "name": "libclat_test"
-    },
-    {
       "name": "traffic_controller_unit_test",
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
-    },
-    {
-      "name": "libnetworkstats_test"
     },
     {
       "name": "FrameworksNetDeflakeTest"
@@ -84,6 +93,17 @@
   "mainline-presubmit": [
     {
       "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk31[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
