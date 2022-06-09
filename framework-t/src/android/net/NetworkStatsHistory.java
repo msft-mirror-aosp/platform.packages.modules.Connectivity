@@ -32,6 +32,7 @@ import static android.text.format.DateUtils.SECOND_IN_MILLIS;
 import static com.android.net.module.util.NetworkStatsUtils.multiplySafeByRational;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.os.Build;
@@ -57,6 +58,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
+import java.util.TreeMap;
 
 /**
  * Collection of historical network statistics, recorded into equally-sized
@@ -251,6 +253,28 @@ public final class NetworkStatsHistory implements Parcelable {
                     + ", txPackets=" + txPackets
                     + ", operations=" + operations
                     + "}";
+        }
+
+        /**
+         * Add the given {@link Entry} with this instance and return a new {@link Entry}
+         * instance as the result.
+         *
+         * @hide
+         */
+        @NonNull
+        public Entry plus(@NonNull Entry another, long bucketDuration) {
+            if (this.bucketStart != another.bucketStart) {
+                throw new IllegalArgumentException("bucketStart " + this.bucketStart
+                        + " is not equal to " + another.bucketStart);
+            }
+            return new Entry(this.bucketStart,
+                    // Active time should not go over bucket duration.
+                    Math.min(this.activeTime + another.activeTime, bucketDuration),
+                    this.rxBytes + another.rxBytes,
+                    this.rxPackets + another.rxPackets,
+                    this.txBytes + another.txBytes,
+                    this.txPackets + another.txPackets,
+                    this.operations + another.operations);
         }
     }
 
@@ -680,19 +704,21 @@ public final class NetworkStatsHistory implements Parcelable {
     }
 
     /**
-     * Remove buckets older than requested cutoff.
+     * Remove buckets that start older than requested cutoff.
+     *
+     * This method will remove any bucket that contains any data older than the requested
+     * cutoff, even if that same bucket includes some data from after the cutoff.
+     *
      * @hide
      */
-    public void removeBucketsBefore(long cutoff) {
+    public void removeBucketsStartingBefore(final long cutoff) {
         // TODO: Consider use getIndexBefore.
         int i;
         for (i = 0; i < bucketCount; i++) {
             final long curStart = bucketStart[i];
-            final long curEnd = curStart + bucketDuration;
 
-            // cutoff happens before or during this bucket; everything before
-            // this bucket should be removed.
-            if (curEnd > cutoff) break;
+            // This bucket starts after or at the cutoff, so it should be kept.
+            if (curStart >= cutoff) break;
         }
 
         if (i > 0) {
@@ -947,6 +973,25 @@ public final class NetworkStatsHistory implements Parcelable {
         return writer.toString();
     }
 
+    /**
+     * Same as "equals", but not actually called equals as this would affect public API behavior.
+     * @hide
+     */
+    @Nullable
+    public boolean isSameAs(NetworkStatsHistory other) {
+        return bucketCount == other.bucketCount
+                && Arrays.equals(bucketStart, other.bucketStart)
+                // Don't check activeTime since it can change on import due to the importer using
+                // recordHistory. It's also not exposed by the APIs or present in dumpsys or
+                // toString().
+                && Arrays.equals(rxBytes, other.rxBytes)
+                && Arrays.equals(rxPackets, other.rxPackets)
+                && Arrays.equals(txBytes, other.txBytes)
+                && Arrays.equals(txPackets, other.txPackets)
+                && Arrays.equals(operations, other.operations)
+                && totalBytes == other.totalBytes;
+    }
+
     @UnsupportedAppUsage
     public static final @android.annotation.NonNull Creator<NetworkStatsHistory> CREATOR = new Creator<NetworkStatsHistory>() {
         @Override
@@ -1087,14 +1132,8 @@ public final class NetworkStatsHistory implements Parcelable {
      * Builder class for {@link NetworkStatsHistory}.
      */
     public static final class Builder {
+        private final TreeMap<Long, Entry> mEntries;
         private final long mBucketDuration;
-        private final List<Long> mBucketStart;
-        private final List<Long> mActiveTime;
-        private final List<Long> mRxBytes;
-        private final List<Long> mRxPackets;
-        private final List<Long> mTxBytes;
-        private final List<Long> mTxPackets;
-        private final List<Long> mOperations;
 
         /**
          * Creates a new Builder with given bucket duration and initial capacity to construct
@@ -1105,36 +1144,31 @@ public final class NetworkStatsHistory implements Parcelable {
          */
         public Builder(long bucketDuration, int initialCapacity) {
             mBucketDuration = bucketDuration;
-            mBucketStart = new ArrayList<>(initialCapacity);
-            mActiveTime = new ArrayList<>(initialCapacity);
-            mRxBytes = new ArrayList<>(initialCapacity);
-            mRxPackets = new ArrayList<>(initialCapacity);
-            mTxBytes = new ArrayList<>(initialCapacity);
-            mTxPackets = new ArrayList<>(initialCapacity);
-            mOperations = new ArrayList<>(initialCapacity);
+            // Create a collection that is always sorted and can deduplicate items by the timestamp.
+            mEntries = new TreeMap<>();
         }
 
         /**
-         * Add an {@link Entry} into the {@link NetworkStatsHistory} instance.
+         * Add an {@link Entry} into the {@link NetworkStatsHistory} instance. If the timestamp
+         * already exists, the given {@link Entry} will be combined into existing entry.
          *
          * @param entry The target {@link Entry} object.
          * @return The builder object.
          */
         @NonNull
         public Builder addEntry(@NonNull Entry entry) {
-            mBucketStart.add(entry.bucketStart);
-            mActiveTime.add(entry.activeTime);
-            mRxBytes.add(entry.rxBytes);
-            mRxPackets.add(entry.rxPackets);
-            mTxBytes.add(entry.txBytes);
-            mTxPackets.add(entry.txPackets);
-            mOperations.add(entry.operations);
+            final Entry existing = mEntries.get(entry.bucketStart);
+            if (existing != null) {
+                mEntries.put(entry.bucketStart, existing.plus(entry, mBucketDuration));
+            } else {
+                mEntries.put(entry.bucketStart, entry);
+            }
             return this;
         }
 
-        private static long sum(@NonNull List<Long> list) {
-            long sum = 0;
-            for (long entry : list) {
+        private static long sum(@NonNull long[] array) {
+            long sum = 0L;
+            for (long entry : array) {
                 sum += entry;
             }
             return sum;
@@ -1147,16 +1181,30 @@ public final class NetworkStatsHistory implements Parcelable {
          */
         @NonNull
         public NetworkStatsHistory build() {
-            return new NetworkStatsHistory(mBucketDuration,
-                    CollectionUtils.toLongArray(mBucketStart),
-                    CollectionUtils.toLongArray(mActiveTime),
-                    CollectionUtils.toLongArray(mRxBytes),
-                    CollectionUtils.toLongArray(mRxPackets),
-                    CollectionUtils.toLongArray(mTxBytes),
-                    CollectionUtils.toLongArray(mTxPackets),
-                    CollectionUtils.toLongArray(mOperations),
-                    mBucketStart.size(),
-                    sum(mRxBytes) + sum(mTxBytes));
+            int size = mEntries.size();
+            final long[] bucketStart = new long[size];
+            final long[] activeTime = new long[size];
+            final long[] rxBytes = new long[size];
+            final long[] rxPackets = new long[size];
+            final long[] txBytes = new long[size];
+            final long[] txPackets = new long[size];
+            final long[] operations = new long[size];
+
+            int i = 0;
+            for (Entry entry : mEntries.values()) {
+                bucketStart[i] = entry.bucketStart;
+                activeTime[i] = entry.activeTime;
+                rxBytes[i] = entry.rxBytes;
+                rxPackets[i] = entry.rxPackets;
+                txBytes[i] = entry.txBytes;
+                txPackets[i] = entry.txPackets;
+                operations[i] = entry.operations;
+                i++;
+            }
+
+            return new NetworkStatsHistory(mBucketDuration, bucketStart, activeTime,
+                    rxBytes, rxPackets, txBytes, txPackets, operations,
+                    size, sum(rxBytes) + sum(txBytes));
         }
     }
 }

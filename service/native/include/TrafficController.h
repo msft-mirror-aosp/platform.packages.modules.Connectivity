@@ -88,6 +88,9 @@ class TrafficController {
     static const char* LOCAL_POWERSAVE;
     static const char* LOCAL_RESTRICTED;
     static const char* LOCAL_LOW_POWER_STANDBY;
+    static const char* LOCAL_OEM_DENY_1;
+    static const char* LOCAL_OEM_DENY_2;
+    static const char* LOCAL_OEM_DENY_3;
 
   private:
     /*
@@ -149,13 +152,13 @@ class TrafficController {
      * the map right now:
      * - Entry with UID_RULES_CONFIGURATION_KEY:
      *    Store the configuration for the current uid rules. It indicates the device
-     *    is in doze/powersave/standby/restricted/low power standby mode.
+     *    is in doze/powersave/standby/restricted/low power standby/oem deny mode.
      * - Entry with CURRENT_STATS_MAP_CONFIGURATION_KEY:
      *    Stores the current live stats map that kernel program is writing to.
      *    Userspace can do scraping and cleaning job on the other one depending on the
      *    current configs.
      */
-    bpf::BpfMap<uint32_t, uint8_t> mConfigurationMap GUARDED_BY(mMutex);
+    bpf::BpfMap<uint32_t, uint32_t> mConfigurationMap GUARDED_BY(mMutex);
 
     /*
      * mUidOwnerMap: Store uids that are used for bandwidth control uid match.
