@@ -14,22 +14,16 @@
  * limitations under the License.
  */
 
-package com.android.server.nearby.presence;
+package android.net;
 
-import androidx.test.filters.SdkSuppress;
-
-import org.junit.Before;
-import org.junit.Test;
-import org.mockito.MockitoAnnotations;
-
-public class PresenceManagerTest {
-
-    @Before
-    public void setup() {
-        MockitoAnnotations.initMocks(this);
+/**
+ * Thrown when the local address of the socket has changed.
+ *
+ * @hide
+ */
+public class SocketRemoteAddressChangedException extends Exception {
+    /** @hide */
+    public SocketRemoteAddressChangedException() {
+        super("The remote address of the socket changed");
     }
-
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void testInit() {}
 }
