@@ -74,6 +74,9 @@ const char* TrafficController::LOCAL_STANDBY = "fw_standby";
 const char* TrafficController::LOCAL_POWERSAVE = "fw_powersave";
 const char* TrafficController::LOCAL_RESTRICTED = "fw_restricted";
 const char* TrafficController::LOCAL_LOW_POWER_STANDBY = "fw_low_power_standby";
+const char* TrafficController::LOCAL_OEM_DENY_1 = "fw_oem_deny_1";
+const char* TrafficController::LOCAL_OEM_DENY_2 = "fw_oem_deny_2";
+const char* TrafficController::LOCAL_OEM_DENY_3 = "fw_oem_deny_3";
 
 static_assert(BPF_PERMISSION_INTERNET == INetd::PERMISSION_INTERNET,
               "Mismatch between BPF and AIDL permissions: PERMISSION_INTERNET");
@@ -99,6 +102,9 @@ const std::string uidMatchTypeToString(uint32_t match) {
     FLAG_MSG_TRANS(matchType, LOW_POWER_STANDBY_MATCH, match);
     FLAG_MSG_TRANS(matchType, IIF_MATCH, match);
     FLAG_MSG_TRANS(matchType, LOCKDOWN_VPN_MATCH, match);
+    FLAG_MSG_TRANS(matchType, OEM_DENY_1_MATCH, match);
+    FLAG_MSG_TRANS(matchType, OEM_DENY_2_MATCH, match);
+    FLAG_MSG_TRANS(matchType, OEM_DENY_3_MATCH, match);
     if (match) {
         return StringPrintf("Unknown match: %u", match);
     }
@@ -335,6 +341,12 @@ FirewallType TrafficController::getFirewallType(ChildChain chain) {
             return ALLOWLIST;
         case LOCKDOWN:
             return DENYLIST;
+        case OEM_DENY_1:
+            return DENYLIST;
+        case OEM_DENY_2:
+            return DENYLIST;
+        case OEM_DENY_3:
+            return DENYLIST;
         case NONE:
         default:
             return DENYLIST;
@@ -362,6 +374,15 @@ int TrafficController::changeUidOwnerRule(ChildChain chain, uid_t uid, FirewallR
             break;
         case LOCKDOWN:
             res = updateOwnerMapEntry(LOCKDOWN_VPN_MATCH, uid, rule, type);
+            break;
+        case OEM_DENY_1:
+            res = updateOwnerMapEntry(OEM_DENY_1_MATCH, uid, rule, type);
+            break;
+        case OEM_DENY_2:
+            res = updateOwnerMapEntry(OEM_DENY_2_MATCH, uid, rule, type);
+            break;
+        case OEM_DENY_3:
+            res = updateOwnerMapEntry(OEM_DENY_3_MATCH, uid, rule, type);
             break;
         case NONE:
         default:
@@ -440,6 +461,12 @@ int TrafficController::replaceUidOwnerMap(const std::string& name, bool isAllowl
         res = replaceRulesInMap(RESTRICTED_MATCH, uids);
     } else if (!name.compare(LOCAL_LOW_POWER_STANDBY)) {
         res = replaceRulesInMap(LOW_POWER_STANDBY_MATCH, uids);
+    } else if (!name.compare(LOCAL_OEM_DENY_1)) {
+        res = replaceRulesInMap(OEM_DENY_1_MATCH, uids);
+    } else if (!name.compare(LOCAL_OEM_DENY_2)) {
+        res = replaceRulesInMap(OEM_DENY_2_MATCH, uids);
+    } else if (!name.compare(LOCAL_OEM_DENY_3)) {
+        res = replaceRulesInMap(OEM_DENY_3_MATCH, uids);
     } else {
         ALOGE("unknown chain name: %s", name.c_str());
         return -EINVAL;
@@ -454,15 +481,15 @@ int TrafficController::replaceUidOwnerMap(const std::string& name, bool isAllowl
 int TrafficController::toggleUidOwnerMap(ChildChain chain, bool enable) {
     std::lock_guard guard(mMutex);
     uint32_t key = UID_RULES_CONFIGURATION_KEY;
-    auto oldConfiguration = mConfigurationMap.readValue(key);
-    if (!oldConfiguration.ok()) {
+    auto oldConfigure = mConfigurationMap.readValue(key);
+    if (!oldConfigure.ok()) {
         ALOGE("Cannot read the old configuration from map: %s",
-              oldConfiguration.error().message().c_str());
-        return -oldConfiguration.error().code();
+              oldConfigure.error().message().c_str());
+        return -oldConfigure.error().code();
     }
     Status res;
     BpfConfig newConfiguration;
-    uint8_t match;
+    uint32_t match;
     switch (chain) {
         case DOZABLE:
             match = DOZABLE_MATCH;
@@ -479,11 +506,20 @@ int TrafficController::toggleUidOwnerMap(ChildChain chain, bool enable) {
         case LOW_POWER_STANDBY:
             match = LOW_POWER_STANDBY_MATCH;
             break;
+        case OEM_DENY_1:
+            match = OEM_DENY_1_MATCH;
+            break;
+        case OEM_DENY_2:
+            match = OEM_DENY_2_MATCH;
+            break;
+        case OEM_DENY_3:
+            match = OEM_DENY_3_MATCH;
+            break;
         default:
             return -EINVAL;
     }
     newConfiguration =
-            enable ? (oldConfiguration.value() | match) : (oldConfiguration.value() & (~match));
+            enable ? (oldConfigure.value() | match) : (oldConfigure.value() & (~match));
     res = mConfigurationMap.writeValue(key, newConfiguration, BPF_EXIST);
     if (!isOk(res)) {
         ALOGE("Failed to toggleUidOwnerMap(%d): %s", chain, res.msg().c_str());
@@ -495,17 +531,17 @@ Status TrafficController::swapActiveStatsMap() {
     std::lock_guard guard(mMutex);
 
     uint32_t key = CURRENT_STATS_MAP_CONFIGURATION_KEY;
-    auto oldConfiguration = mConfigurationMap.readValue(key);
-    if (!oldConfiguration.ok()) {
+    auto oldConfigure = mConfigurationMap.readValue(key);
+    if (!oldConfigure.ok()) {
         ALOGE("Cannot read the old configuration from map: %s",
-              oldConfiguration.error().message().c_str());
-        return Status(oldConfiguration.error().code(), oldConfiguration.error().message());
+              oldConfigure.error().message().c_str());
+        return Status(oldConfigure.error().code(), oldConfigure.error().message());
     }
 
     // Write to the configuration map to inform the kernel eBPF program to switch
     // from using one map to the other. Use flag BPF_EXIST here since the map should
     // be already populated in initMaps.
-    uint8_t newConfigure = (oldConfiguration.value() == SELECT_MAP_A) ? SELECT_MAP_B : SELECT_MAP_A;
+    uint32_t newConfigure = (oldConfigure.value() == SELECT_MAP_A) ? SELECT_MAP_B : SELECT_MAP_A;
     auto res = mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY, newConfigure,
                                             BPF_EXIST);
     if (!res.ok()) {
