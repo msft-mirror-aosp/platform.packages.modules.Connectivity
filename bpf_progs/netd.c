@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-// The resulting .o needs to load on the Android T Beta 3 bpfloader v0.13+
-#define BPFLOADER_MIN_VER 13u
+// The resulting .o needs to load on the Android T Beta 3 bpfloader
+#define BPFLOADER_MIN_VER BPFLOADER_T_BETA3_VERSION
 
 #include <bpf_helpers.h>
 #include <linux/bpf.h>
@@ -62,7 +62,7 @@ DEFINE_BPF_MAP_GRW(stats_map_A, HASH, StatsKey, StatsValue, STATS_MAP_SIZE, AID_
 DEFINE_BPF_MAP_GRW(stats_map_B, HASH, StatsKey, StatsValue, STATS_MAP_SIZE, AID_NET_BW_ACCT)
 DEFINE_BPF_MAP_GRW(iface_stats_map, HASH, uint32_t, StatsValue, IFACE_STATS_MAP_SIZE,
                    AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(configuration_map, HASH, uint32_t, uint8_t, CONFIGURATION_MAP_SIZE,
+DEFINE_BPF_MAP_GRW(configuration_map, HASH, uint32_t, uint32_t, CONFIGURATION_MAP_SIZE,
                    AID_NET_BW_ACCT)
 DEFINE_BPF_MAP_GRW(uid_owner_map, HASH, uint32_t, UidOwnerValue, UID_OWNER_MAP_SIZE,
                    AID_NET_BW_ACCT)
@@ -189,6 +189,11 @@ static __always_inline BpfConfig getConfig(uint32_t configKey) {
     return *config;
 }
 
+// DROP_IF_SET is set of rules that BPF_DROP if rule is globally enabled, and per-uid bit is set
+#define DROP_IF_SET (STANDBY_MATCH | OEM_DENY_1_MATCH | OEM_DENY_2_MATCH | OEM_DENY_3_MATCH)
+// DROP_IF_UNSET is set of rules that should DROP if globally enabled, and per-uid bit is NOT set
+#define DROP_IF_UNSET (DOZABLE_MATCH | POWERSAVE_MATCH | RESTRICTED_MATCH | LOW_POWER_STANDBY_MATCH)
+
 static inline int bpf_owner_match(struct __sk_buff* skb, uint32_t uid, int direction) {
     if (skip_owner_match(skb)) return BPF_PASS;
 
@@ -200,23 +205,13 @@ static inline int bpf_owner_match(struct __sk_buff* skb, uint32_t uid, int direc
     uint32_t uidRules = uidEntry ? uidEntry->rule : 0;
     uint32_t allowed_iif = uidEntry ? uidEntry->iif : 0;
 
-    if (enabledRules) {
-        if ((enabledRules & DOZABLE_MATCH) && !(uidRules & DOZABLE_MATCH)) {
-            return BPF_DROP;
-        }
-        if ((enabledRules & STANDBY_MATCH) && (uidRules & STANDBY_MATCH)) {
-            return BPF_DROP;
-        }
-        if ((enabledRules & POWERSAVE_MATCH) && !(uidRules & POWERSAVE_MATCH)) {
-            return BPF_DROP;
-        }
-        if ((enabledRules & RESTRICTED_MATCH) && !(uidRules & RESTRICTED_MATCH)) {
-            return BPF_DROP;
-        }
-        if ((enabledRules & LOW_POWER_STANDBY_MATCH) && !(uidRules & LOW_POWER_STANDBY_MATCH)) {
-            return BPF_DROP;
-        }
-    }
+    // Warning: funky bit-wise arithmetic: in parallel, for all DROP_IF_SET/UNSET rules
+    // check whether the rules are globally enabled, and if so whether the rules are
+    // set/unset for the specific uid.  BPF_DROP if that is the case for ANY of the rules.
+    // We achieve this by masking out only the bits/rules we're interested in checking,
+    // and negating (via bit-wise xor) the bits/rules that should drop if unset.
+    if (enabledRules & (DROP_IF_SET | DROP_IF_UNSET) & (uidRules ^ DROP_IF_UNSET)) return BPF_DROP;
+
     if (direction == BPF_INGRESS && skb->ifindex != 1) {
         if (uidRules & IIF_MATCH) {
             if (allowed_iif && skb->ifindex != allowed_iif) {
@@ -234,7 +229,7 @@ static inline int bpf_owner_match(struct __sk_buff* skb, uint32_t uid, int direc
 }
 
 static __always_inline inline void update_stats_with_config(struct __sk_buff* skb, int direction,
-                                                            StatsKey* key, uint8_t selectedMap) {
+                                                            StatsKey* key, uint32_t selectedMap) {
     if (selectedMap == SELECT_MAP_A) {
         update_stats_map_A(skb, direction, key);
     } else if (selectedMap == SELECT_MAP_B) {
@@ -286,7 +281,7 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, int
     if (counterSet) key.counterSet = (uint32_t)*counterSet;
 
     uint32_t mapSettingKey = CURRENT_STATS_MAP_CONFIGURATION_KEY;
-    uint8_t* selectedMap = bpf_configuration_map_lookup_elem(&mapSettingKey);
+    uint32_t* selectedMap = bpf_configuration_map_lookup_elem(&mapSettingKey);
 
     // Use asm("%0 &= 1" : "+r"(match)) before return match,
     // to help kernel's bpf verifier, so that it can be 100% certain
