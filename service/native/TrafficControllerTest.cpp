@@ -38,7 +38,7 @@
 
 #include <netdutils/MockSyscalls.h>
 
-#define TEST_BPF_MAP
+#define BPF_MAP_MAKE_VISIBLE_FOR_TESTING
 #include "TrafficController.h"
 #include "bpf/BpfUtils.h"
 #include "NetdUpdatablePublic.h"
@@ -260,37 +260,6 @@ class TrafficControllerTest : public ::testing::Test {
     void expectPrivilegedUserSetEmpty() {
         std::lock_guard guard(mTc.mMutex);
         EXPECT_TRUE(mTc.mPrivilegedUser.empty());
-    }
-
-    void addPrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_UPDATE_DEVICE_STATS, privilegedUid);
-    }
-
-    void removePrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_NONE, privilegedUid);
-    }
-
-    void expectFakeStatsUnchanged(uint64_t cookie, uint32_t tag, uint32_t uid,
-                                  StatsKey tagStatsMapKey) {
-        Result<UidTagValue> cookieMapResult = mFakeCookieTagMap.readValue(cookie);
-        EXPECT_RESULT_OK(cookieMapResult);
-        EXPECT_EQ(uid, cookieMapResult.value().uid);
-        EXPECT_EQ(tag, cookieMapResult.value().tag);
-        Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        tagStatsMapKey.tag = 0;
-        statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        auto appStatsResult = mFakeAppUidStatsMap.readValue(uid);
-        EXPECT_RESULT_OK(appStatsResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, appStatsResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, appStatsResult.value().rxBytes);
     }
 
     Status updateUidOwnerMaps(const std::vector<uint32_t>& appUids,
