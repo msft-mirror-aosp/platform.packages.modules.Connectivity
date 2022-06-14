@@ -68,6 +68,7 @@ constexpr int TXPACKETS = 0;
 constexpr int TXBYTES = 0;
 
 #define ASSERT_VALID(x) ASSERT_TRUE((x).isValid())
+#define ASSERT_INVALID(x) ASSERT_FALSE((x).isValid())
 
 class TrafficControllerTest : public ::testing::Test {
   protected:
@@ -76,6 +77,8 @@ class TrafficControllerTest : public ::testing::Test {
     BpfMap<uint64_t, UidTagValue> mFakeCookieTagMap;
     BpfMap<uint32_t, StatsValue> mFakeAppUidStatsMap;
     BpfMap<StatsKey, StatsValue> mFakeStatsMapA;
+    BpfMap<StatsKey, StatsValue> mFakeStatsMapB;  // makeTrafficControllerMapsInvalid only
+    BpfMap<uint32_t, StatsValue> mFakeIfaceStatsMap; ;  // makeTrafficControllerMapsInvalid only
     BpfMap<uint32_t, uint32_t> mFakeConfigurationMap;
     BpfMap<uint32_t, UidOwnerValue> mFakeUidOwnerMap;
     BpfMap<uint32_t, uint8_t> mFakeUidPermissionMap;
@@ -259,37 +262,6 @@ class TrafficControllerTest : public ::testing::Test {
         EXPECT_TRUE(mTc.mPrivilegedUser.empty());
     }
 
-    void addPrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_UPDATE_DEVICE_STATS, privilegedUid);
-    }
-
-    void removePrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_NONE, privilegedUid);
-    }
-
-    void expectFakeStatsUnchanged(uint64_t cookie, uint32_t tag, uint32_t uid,
-                                  StatsKey tagStatsMapKey) {
-        Result<UidTagValue> cookieMapResult = mFakeCookieTagMap.readValue(cookie);
-        EXPECT_RESULT_OK(cookieMapResult);
-        EXPECT_EQ(uid, cookieMapResult.value().uid);
-        EXPECT_EQ(tag, cookieMapResult.value().tag);
-        Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        tagStatsMapKey.tag = 0;
-        statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        auto appStatsResult = mFakeAppUidStatsMap.readValue(uid);
-        EXPECT_RESULT_OK(appStatsResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, appStatsResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, appStatsResult.value().rxBytes);
-    }
-
     Status updateUidOwnerMaps(const std::vector<uint32_t>& appUids,
                               UidOwnerMatchType matchType, TrafficController::IptOp op) {
         Status ret(0);
@@ -355,6 +327,52 @@ class TrafficControllerTest : public ::testing::Test {
             return false;
         }
         return true;
+    }
+
+    // Once called, the maps of TrafficController can't recover to valid maps which initialized
+    // in SetUp().
+    void makeTrafficControllerMapsInvalid() {
+        constexpr char INVALID_PATH[] = "invalid";
+
+        mFakeCookieTagMap.init(INVALID_PATH);
+        mTc.mCookieTagMap = mFakeCookieTagMap;
+        ASSERT_INVALID(mTc.mCookieTagMap);
+
+        mFakeAppUidStatsMap.init(INVALID_PATH);
+        mTc.mAppUidStatsMap = mFakeAppUidStatsMap;
+        ASSERT_INVALID(mTc.mAppUidStatsMap);
+
+        mFakeStatsMapA.init(INVALID_PATH);
+        mTc.mStatsMapA = mFakeStatsMapA;
+        ASSERT_INVALID(mTc.mStatsMapA);
+
+        mFakeStatsMapB.init(INVALID_PATH);
+        mTc.mStatsMapB = mFakeStatsMapB;
+        ASSERT_INVALID(mTc.mStatsMapB);
+
+        mFakeIfaceStatsMap.init(INVALID_PATH);
+        mTc.mIfaceStatsMap = mFakeIfaceStatsMap;
+        ASSERT_INVALID(mTc.mIfaceStatsMap);
+
+        mFakeConfigurationMap.init(INVALID_PATH);
+        mTc.mConfigurationMap = mFakeConfigurationMap;
+        ASSERT_INVALID(mTc.mConfigurationMap);
+
+        mFakeUidOwnerMap.init(INVALID_PATH);
+        mTc.mUidOwnerMap = mFakeUidOwnerMap;
+        ASSERT_INVALID(mTc.mUidOwnerMap);
+
+        mFakeUidPermissionMap.init(INVALID_PATH);
+        mTc.mUidPermissionMap = mFakeUidPermissionMap;
+        ASSERT_INVALID(mTc.mUidPermissionMap);
+
+        mFakeUidCounterSetMap.init(INVALID_PATH);
+        mTc.mUidCounterSetMap = mFakeUidCounterSetMap;
+        ASSERT_INVALID(mTc.mUidCounterSetMap);
+
+        mFakeIfaceIndexNameMap.init(INVALID_PATH);
+        mTc.mIfaceIndexNameMap = mFakeIfaceIndexNameMap;
+        ASSERT_INVALID(mTc.mIfaceIndexNameMap);
     }
 };
 
@@ -790,6 +808,71 @@ TEST_F(TrafficControllerTest, TestDumpsys) {
     EXPECT_TRUE(expectDumpsysContains(expectedLines));
 }
 
+TEST_F(TrafficControllerTest, dumpsysInvalidMaps) {
+    makeTrafficControllerMapsInvalid();
+
+    const std::string kErrIterate = "print end with error: Get firstKey map -1 failed: "
+            "Bad file descriptor";
+    const std::string kErrReadRulesConfig = "read ownerMatch configure failed with error: "
+            "Read value of map -1 failed: Bad file descriptor";
+    const std::string kErrReadStatsMapConfig = "read stats map configure failed with error: "
+            "Read value of map -1 failed: Bad file descriptor";
+
+    std::vector<std::string> expectedLines = {
+        fmt::format("mCookieTagMap {}", kErrIterate),
+        fmt::format("mUidCounterSetMap {}", kErrIterate),
+        fmt::format("mAppUidStatsMap {}", kErrIterate),
+        fmt::format("mStatsMapA {}", kErrIterate),
+        fmt::format("mStatsMapB {}", kErrIterate),
+        fmt::format("mIfaceIndexNameMap {}", kErrIterate),
+        fmt::format("mIfaceStatsMap {}", kErrIterate),
+        fmt::format("mConfigurationMap {}", kErrReadRulesConfig),
+        fmt::format("mConfigurationMap {}", kErrReadStatsMapConfig),
+        fmt::format("mUidOwnerMap {}", kErrIterate),
+        fmt::format("mUidPermissionMap {}", kErrIterate)};
+    EXPECT_TRUE(expectDumpsysContains(expectedLines));
+}
+
+TEST_F(TrafficControllerTest, uidMatchTypeToString) {
+    // NO_MATCH(0) can't be verified because match type flag is added by OR operator.
+    // See TrafficController::addRule()
+    static const struct TestConfig {
+        UidOwnerMatchType uidOwnerMatchType;
+        std::string expected;
+    } testConfigs[] = {
+            // clang-format off
+            {HAPPY_BOX_MATCH, "HAPPY_BOX_MATCH"},
+            {DOZABLE_MATCH, "DOZABLE_MATCH"},
+            {STANDBY_MATCH, "STANDBY_MATCH"},
+            {POWERSAVE_MATCH, "POWERSAVE_MATCH"},
+            {HAPPY_BOX_MATCH, "HAPPY_BOX_MATCH"},
+            {RESTRICTED_MATCH, "RESTRICTED_MATCH"},
+            {LOW_POWER_STANDBY_MATCH, "LOW_POWER_STANDBY_MATCH"},
+            {IIF_MATCH, "IIF_MATCH"},
+            {LOCKDOWN_VPN_MATCH, "LOCKDOWN_VPN_MATCH"},
+            {OEM_DENY_1_MATCH, "OEM_DENY_1_MATCH"},
+            {OEM_DENY_2_MATCH, "OEM_DENY_2_MATCH"},
+            {OEM_DENY_3_MATCH, "OEM_DENY_3_MATCH"},
+            // clang-format on
+    };
+
+    for (const auto& config : testConfigs) {
+        SCOPED_TRACE(fmt::format("testConfig: [{}, {}]", config.uidOwnerMatchType,
+                     config.expected));
+
+        // Test private function uidMatchTypeToString() via dumpsys.
+        ASSERT_TRUE(isOk(updateUidOwnerMaps({TEST_UID}, config.uidOwnerMatchType,
+                                            TrafficController::IptOpInsert)));
+        std::vector<std::string> expectedLines;
+        expectedLines.emplace_back(fmt::format("{}  {}", TEST_UID, config.expected));
+        EXPECT_TRUE(expectDumpsysContains(expectedLines));
+
+        // Clean up the stubs.
+        ASSERT_TRUE(isOk(updateUidOwnerMaps({TEST_UID}, config.uidOwnerMatchType,
+                                            TrafficController::IptOpDelete)));
+    }
+}
+
 TEST_F(TrafficControllerTest, getFirewallType) {
     static const struct TestConfig {
         ChildChain childChain;
@@ -805,6 +888,7 @@ TEST_F(TrafficControllerTest, getFirewallType) {
             {LOCKDOWN, DENYLIST},
             {OEM_DENY_1, DENYLIST},
             {OEM_DENY_2, DENYLIST},
+            {OEM_DENY_3, DENYLIST},
             {INVALID_CHAIN, DENYLIST},
             // clang-format on
     };
