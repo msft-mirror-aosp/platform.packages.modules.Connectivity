@@ -262,37 +262,6 @@ class TrafficControllerTest : public ::testing::Test {
         EXPECT_TRUE(mTc.mPrivilegedUser.empty());
     }
 
-    void addPrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_UPDATE_DEVICE_STATS, privilegedUid);
-    }
-
-    void removePrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_NONE, privilegedUid);
-    }
-
-    void expectFakeStatsUnchanged(uint64_t cookie, uint32_t tag, uint32_t uid,
-                                  StatsKey tagStatsMapKey) {
-        Result<UidTagValue> cookieMapResult = mFakeCookieTagMap.readValue(cookie);
-        EXPECT_RESULT_OK(cookieMapResult);
-        EXPECT_EQ(uid, cookieMapResult.value().uid);
-        EXPECT_EQ(tag, cookieMapResult.value().tag);
-        Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        tagStatsMapKey.tag = 0;
-        statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        auto appStatsResult = mFakeAppUidStatsMap.readValue(uid);
-        EXPECT_RESULT_OK(appStatsResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, appStatsResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, appStatsResult.value().rxBytes);
-    }
-
     Status updateUidOwnerMaps(const std::vector<uint32_t>& appUids,
                               UidOwnerMatchType matchType, TrafficController::IptOp op) {
         Status ret(0);
@@ -842,20 +811,25 @@ TEST_F(TrafficControllerTest, TestDumpsys) {
 TEST_F(TrafficControllerTest, dumpsysInvalidMaps) {
     makeTrafficControllerMapsInvalid();
 
+    const std::string kErrIterate = "print end with error: Get firstKey map -1 failed: "
+            "Bad file descriptor";
+    const std::string kErrReadRulesConfig = "read ownerMatch configure failed with error: "
+            "Read value of map -1 failed: Bad file descriptor";
+    const std::string kErrReadStatsMapConfig = "read stats map configure failed with error: "
+            "Read value of map -1 failed: Bad file descriptor";
+
     std::vector<std::string> expectedLines = {
-        "mCookieTagMap print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mUidCounterSetMap print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mAppUidStatsMap print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mStatsMapA print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mStatsMapB print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mIfaceIndexNameMap print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mIfaceStatsMap print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mConfigurationMap read ownerMatch configure failed with error: "
-                "Read value of map -1 failed: Bad file descriptor",
-        "mConfigurationMap read stats map configure failed with error: "
-                "Read value of map -1 failed: Bad file descriptor",
-        "mUidOwnerMap print end with error: Get firstKey map -1 failed: Bad file descriptor",
-        "mUidPermissionMap print end with error: Get firstKey map -1 failed: Bad file descriptor"};
+        fmt::format("mCookieTagMap {}", kErrIterate),
+        fmt::format("mUidCounterSetMap {}", kErrIterate),
+        fmt::format("mAppUidStatsMap {}", kErrIterate),
+        fmt::format("mStatsMapA {}", kErrIterate),
+        fmt::format("mStatsMapB {}", kErrIterate),
+        fmt::format("mIfaceIndexNameMap {}", kErrIterate),
+        fmt::format("mIfaceStatsMap {}", kErrIterate),
+        fmt::format("mConfigurationMap {}", kErrReadRulesConfig),
+        fmt::format("mConfigurationMap {}", kErrReadStatsMapConfig),
+        fmt::format("mUidOwnerMap {}", kErrIterate),
+        fmt::format("mUidPermissionMap {}", kErrIterate)};
     EXPECT_TRUE(expectDumpsysContains(expectedLines));
 }
 
