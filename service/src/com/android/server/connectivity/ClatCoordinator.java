@@ -36,7 +36,6 @@ import android.system.ErrnoException;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.IBpfMap;
@@ -498,31 +497,6 @@ public class ClatCoordinator {
         }
     }
 
-    private void maybeCleanUp(ParcelFileDescriptor tunFd, ParcelFileDescriptor readSock6,
-            ParcelFileDescriptor writeSock6) {
-        if (tunFd != null) {
-            try {
-                tunFd.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Fail to close tun file descriptor " + e);
-            }
-        }
-        if (readSock6 != null) {
-            try {
-                readSock6.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Fail to close read socket " + e);
-            }
-        }
-        if (writeSock6 != null) {
-            try {
-                writeSock6.close();
-            } catch (IOException e) {
-                Log.e(TAG, "Fail to close write socket " + e);
-            }
-        }
-    }
-
     /**
      * Start clatd for a given interface and NAT64 prefix.
      */
@@ -571,15 +545,8 @@ public class ClatCoordinator {
 
         // [3] Open, configure and bring up the tun interface.
         // Create the v4-... tun interface.
-
-        // Initialize all required file descriptors with null pointer. This makes the following
-        // error handling easier. Simply always call #maybeCleanUp for closing file descriptors,
-        // if any valid ones, in error handling.
-        ParcelFileDescriptor tunFd = null;
-        ParcelFileDescriptor readSock6 = null;
-        ParcelFileDescriptor writeSock6 = null;
-
         final String tunIface = CLAT_PREFIX + iface;
+        final ParcelFileDescriptor tunFd;
         try {
             tunFd = mDeps.adoptFd(mDeps.createTunInterface(tunIface));
         } catch (IOException e) {
@@ -588,7 +555,7 @@ public class ClatCoordinator {
 
         final int tunIfIndex = mDeps.getInterfaceIndex(tunIface);
         if (tunIfIndex == INVALID_IFINDEX) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
             throw new IOException("Fail to get interface index for interface " + tunIface);
         }
 
@@ -596,27 +563,24 @@ public class ClatCoordinator {
         try {
             mNetd.interfaceSetEnableIPv6(tunIface, false /* enabled */);
         } catch (RemoteException | ServiceSpecificException e) {
+            tunFd.close();
             Log.e(TAG, "Disable IPv6 on " + tunIface + " failed: " + e);
         }
 
         // Detect ipv4 mtu.
         final Integer fwmark = getFwmark(netId);
-        final int detectedMtu;
-        try {
-            detectedMtu = mDeps.detectMtu(pfx96Str,
+        final int detectedMtu = mDeps.detectMtu(pfx96Str,
                 ByteBuffer.wrap(GOOGLE_DNS_4.getAddress()).getInt(), fwmark);
-        } catch (IOException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
-            throw new IOException("Detect MTU on " + tunIface + " failed: " + e);
-        }
         final int mtu = adjustMtu(detectedMtu);
         Log.i(TAG, "ipv4 mtu is " + mtu);
+
+        // TODO: add setIptablesDropRule
 
         // Config tun interface mtu, address and bring up.
         try {
             mNetd.interfaceSetMtu(tunIface, mtu);
         } catch (RemoteException | ServiceSpecificException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
             throw new IOException("Set MTU " + mtu + " on " + tunIface + " failed: " + e);
         }
         final InterfaceConfigurationParcel ifConfig = new InterfaceConfigurationParcel();
@@ -628,13 +592,14 @@ public class ClatCoordinator {
         try {
             mNetd.interfaceSetCfg(ifConfig);
         } catch (RemoteException | ServiceSpecificException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
             throw new IOException("Setting IPv4 address to " + ifConfig.ipv4Addr + "/"
                     + ifConfig.prefixLength + " failed on " + ifConfig.ifName + ": " + e);
         }
 
         // [4] Open and configure local 464xlat read/write sockets.
         // Opens a packet socket to receive IPv6 packets in clatd.
+        final ParcelFileDescriptor readSock6;
         try {
             // Use a JNI call to get native file descriptor instead of Os.socket() because we would
             // like to use ParcelFileDescriptor to manage file descriptor. But ctor
@@ -642,23 +607,27 @@ public class ClatCoordinator {
             // descriptor to initialize ParcelFileDescriptor object instead.
             readSock6 = mDeps.adoptFd(mDeps.openPacketSocket());
         } catch (IOException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
             throw new IOException("Open packet socket failed: " + e);
         }
 
         // Opens a raw socket with a given fwmark to send IPv6 packets in clatd.
+        final ParcelFileDescriptor writeSock6;
         try {
             // Use a JNI call to get native file descriptor instead of Os.socket(). See above
             // reason why we use jniOpenPacketSocket6().
             writeSock6 = mDeps.adoptFd(mDeps.openRawSocket6(fwmark));
         } catch (IOException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
+            readSock6.close();
             throw new IOException("Open raw socket failed: " + e);
         }
 
         final int ifIndex = mDeps.getInterfaceIndex(iface);
         if (ifIndex == INVALID_IFINDEX) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
             throw new IOException("Fail to get interface index for interface " + iface);
         }
 
@@ -666,7 +635,9 @@ public class ClatCoordinator {
         try {
             mDeps.addAnycastSetsockopt(writeSock6.getFileDescriptor(), v6Str, ifIndex);
         } catch (IOException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
             throw new IOException("add anycast sockopt failed: " + e);
         }
 
@@ -675,7 +646,9 @@ public class ClatCoordinator {
         try {
             cookie = mDeps.tagSocketAsClat(writeSock6.getFileDescriptor());
         } catch (IOException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
             throw new IOException("tag raw socket failed: " + e);
         }
 
@@ -683,7 +656,9 @@ public class ClatCoordinator {
         try {
             mDeps.configurePacketSocket(readSock6.getFileDescriptor(), v6Str, ifIndex);
         } catch (IOException e) {
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
             throw new IOException("configure packet socket failed: " + e);
         }
 
@@ -697,9 +672,9 @@ public class ClatCoordinator {
             mDeps.untagSocket(cookie);
             throw new IOException("Error start clatd on " + iface + ": " + e);
         } finally {
-            // The file descriptors have been duplicated (dup2) to clatd in native_startClatd().
-            // Close these file descriptor stubs which are unused anymore.
-            maybeCleanUp(tunFd, readSock6, writeSock6);
+            tunFd.close();
+            readSock6.close();
+            writeSock6.close();
         }
 
         // [6] Initialize and store clatd tracker object.
@@ -765,69 +740,6 @@ public class ClatCoordinator {
 
         Log.i(TAG, "clatd on " + mClatdTracker.iface + " stopped");
         mClatdTracker = null;
-    }
-
-    private void dumpBpfIngress(@NonNull IndentingPrintWriter pw) {
-        if (mIngressMap == null) {
-            pw.println("No BPF ingress6 map");
-            return;
-        }
-
-        try {
-            if (mIngressMap.isEmpty()) {
-                pw.println("<empty>");
-            }
-            pw.println("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif");
-            pw.increaseIndent();
-            mIngressMap.forEach((k, v) -> {
-                // TODO: print interface name
-                pw.println(String.format("%d %s/96 %s -> %s %d", k.iif, k.pfx96, k.local6,
-                        v.local4, v.oif));
-            });
-            pw.decreaseIndent();
-        } catch (ErrnoException e) {
-            pw.println("Error dumping BPF ingress6 map: " + e);
-        }
-    }
-
-    private void dumpBpfEgress(@NonNull IndentingPrintWriter pw) {
-        if (mEgressMap == null) {
-            pw.println("No BPF egress4 map");
-            return;
-        }
-
-        try {
-            if (mEgressMap.isEmpty()) {
-                pw.println("<empty>");
-            }
-            pw.println("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif");
-            pw.increaseIndent();
-            mEgressMap.forEach((k, v) -> {
-                // TODO: print interface name
-                pw.println(String.format("%d %s -> %s %s/96 %d %s", k.iif, k.local4, v.local6,
-                        v.pfx96, v.oif, v.oifIsEthernet != 0 ? "ether" : "rawip"));
-            });
-            pw.decreaseIndent();
-        } catch (ErrnoException e) {
-            pw.println("Error dumping BPF egress4 map: " + e);
-        }
-    }
-
-    /**
-     * Dump the cordinator information.
-     *
-     * @param pw print writer.
-     */
-    public void dump(@NonNull IndentingPrintWriter pw) {
-        // TODO: dump ClatdTracker
-        // TODO: move map dump to a global place to avoid duplicate dump while there are two or
-        // more IPv6 only networks.
-        pw.println("Forwarding rules:");
-        pw.increaseIndent();
-        dumpBpfIngress(pw);
-        dumpBpfEgress(pw);
-        pw.decreaseIndent();
-        pw.println();
     }
 
     /**

@@ -938,7 +938,7 @@ public abstract class NetworkAgent {
      * @param underlyingNetworks the new list of underlying networks.
      * @see {@link VpnService.Builder#setUnderlyingNetworks(Network[])}
      */
-    public void setUnderlyingNetworks(
+    public final void setUnderlyingNetworks(
             @SuppressLint("NullableCollection") @Nullable List<Network> underlyingNetworks) {
         final ArrayList<Network> underlyingArray = (underlyingNetworks != null)
                 ? new ArrayList<>(underlyingNetworks) : null;
@@ -1076,12 +1076,11 @@ public abstract class NetworkAgent {
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public final void sendNetworkInfo(NetworkInfo networkInfo) {
-        queueOrSendNetworkInfo(networkInfo);
+        queueOrSendNetworkInfo(new NetworkInfo(networkInfo));
     }
 
     private void queueOrSendNetworkInfo(NetworkInfo networkInfo) {
-        final NetworkInfo ni = new NetworkInfo(networkInfo);
-        queueOrSendMessage(reg -> reg.sendNetworkInfo(ni));
+        queueOrSendMessage(reg -> reg.sendNetworkInfo(networkInfo));
     }
 
     /**

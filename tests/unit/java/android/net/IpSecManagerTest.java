@@ -52,7 +52,7 @@ import java.net.UnknownHostException;
 /** Unit tests for {@link IpSecManager}. */
 @SmallTest
 @RunWith(DevSdkIgnoreRunner.class)
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecManagerTest {
 
     private static final int TEST_UDP_ENCAP_PORT = 34567;

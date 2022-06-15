@@ -22,11 +22,11 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.net.EthernetNetworkUpdateRequest;
 import android.net.IEthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.INetworkInterfaceOutcomeReceiver;
 import android.net.ITetheredInterfaceCallback;
+import android.net.EthernetNetworkUpdateRequest;
 import android.net.IpConfiguration;
 import android.net.NetworkCapabilities;
 import android.os.Binder;
@@ -260,27 +260,27 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     }
 
     @Override
-    public void enableInterface(@NonNull final String iface,
+    public void connectNetwork(@NonNull final String iface,
             @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        Log.i(TAG, "enableInterface called with: iface=" + iface + ", listener=" + listener);
+        Log.i(TAG, "connectNetwork called with: iface=" + iface + ", listener=" + listener);
         Objects.requireNonNull(iface);
         throwIfEthernetNotStarted();
 
-        enforceAdminPermission(iface, false, "enableInterface()");
+        enforceAdminPermission(iface, true, "connectNetwork()");
 
-        mTracker.enableInterface(iface, listener);
+        mTracker.connectNetwork(iface, listener);
     }
 
     @Override
-    public void disableInterface(@NonNull final String iface,
+    public void disconnectNetwork(@NonNull final String iface,
             @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        Log.i(TAG, "disableInterface called with: iface=" + iface + ", listener=" + listener);
+        Log.i(TAG, "disconnectNetwork called with: iface=" + iface + ", listener=" + listener);
         Objects.requireNonNull(iface);
         throwIfEthernetNotStarted();
 
-        enforceAdminPermission(iface, false, "disableInterface()");
+        enforceAdminPermission(iface, true, "connectNetwork()");
 
-        mTracker.disableInterface(iface, listener);
+        mTracker.disconnectNetwork(iface, listener);
     }
 
     @Override

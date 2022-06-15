@@ -39,6 +39,9 @@ cc_library_headers {
         "com.android.tethering",
         ],
     visibility: [
+        // TODO: remove it when NetworkStatsService is moved into the mainline module and no more
+        // calls to JNI in libservices.core.
+        "//frameworks/base/services/core/jni",
         "//packages/modules/Connectivity/netd",
         "//packages/modules/Connectivity/service",
         "//packages/modules/Connectivity/service/native/libs/libclat",
@@ -58,7 +61,6 @@ cc_library_headers {
 bpf {
     name: "block.o",
     srcs: ["block.c"],
-    btf: true,
     cflags: [
         "-Wall",
         "-Werror",
@@ -69,7 +71,6 @@ bpf {
 bpf {
     name: "dscp_policy.o",
     srcs: ["dscp_policy.c"],
-    btf: true,
     cflags: [
         "-Wall",
         "-Werror",
@@ -96,9 +97,8 @@ bpf {
 }
 
 bpf {
-    name: "clatd.o",
+    name: "clatd.o_mainline",
     srcs: ["clatd.c"],
-    btf: true,
     cflags: [
         "-Wall",
         "-Werror",
@@ -110,9 +110,8 @@ bpf {
 }
 
 bpf {
-    name: "netd.o",
+    name: "netd.o_mainline",
     srcs: ["netd.c"],
-    btf: true,
     cflags: [
         "-Wall",
         "-Werror",
@@ -120,5 +119,5 @@ bpf {
     include_dirs: [
         "frameworks/libs/net/common/netd/libnetdutils/include",
     ],
-    sub_dir: "netd_shared",
+    sub_dir: "net_shared",
 }

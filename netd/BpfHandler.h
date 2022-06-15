@@ -23,7 +23,6 @@
 #include "bpf_shared.h"
 
 using android::bpf::BpfMap;
-using android::bpf::BpfMapRO;
 
 namespace android {
 namespace net {
@@ -62,8 +61,8 @@ class BpfHandler {
 
     BpfMap<uint64_t, UidTagValue> mCookieTagMap;
     BpfMap<StatsKey, StatsValue> mStatsMapA;
-    BpfMapRO<StatsKey, StatsValue> mStatsMapB;
-    BpfMap<uint32_t, uint32_t> mConfigurationMap;
+    BpfMap<StatsKey, StatsValue> mStatsMapB;
+    BpfMap<uint32_t, uint8_t> mConfigurationMap;
     BpfMap<uint32_t, uint8_t> mUidPermissionMap;
 
     std::mutex mMutex;

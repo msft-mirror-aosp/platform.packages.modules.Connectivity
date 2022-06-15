@@ -165,28 +165,25 @@ public final class QosSocketInfo implements Parcelable {
     /* Parcelable methods */
     private QosSocketInfo(final Parcel in) {
         mNetwork = Objects.requireNonNull(Network.CREATOR.createFromParcel(in));
-        final boolean withFd = in.readBoolean();
-        if (withFd) {
-            mParcelFileDescriptor = ParcelFileDescriptor.CREATOR.createFromParcel(in);
-        } else {
-            mParcelFileDescriptor = null;
-        }
+        mParcelFileDescriptor = ParcelFileDescriptor.CREATOR.createFromParcel(in);
 
-        mLocalSocketAddress = readSocketAddress(in);
-        mRemoteSocketAddress = readSocketAddress(in);
+        final int localAddressLength = in.readInt();
+        mLocalSocketAddress = readSocketAddress(in, localAddressLength);
+
+        final int remoteAddressLength = in.readInt();
+        mRemoteSocketAddress = remoteAddressLength == 0 ? null
+                : readSocketAddress(in, remoteAddressLength);
 
         mSocketType = in.readInt();
     }
 
-    private InetSocketAddress readSocketAddress(final Parcel in) {
-        final byte[] addrBytes = in.createByteArray();
-        if (addrBytes == null) {
-            return null;
-        }
+    private @NonNull InetSocketAddress readSocketAddress(final Parcel in, final int addressLength) {
+        final byte[] address = new byte[addressLength];
+        in.readByteArray(address);
         final int port = in.readInt();
 
         try {
-            return new InetSocketAddress(InetAddress.getByAddress(addrBytes), port);
+            return new InetSocketAddress(InetAddress.getByAddress(address), port);
         } catch (final UnknownHostException e) {
             /* This can never happen. UnknownHostException will never be thrown
                since the address provided is numeric and non-null. */
@@ -201,35 +198,20 @@ public final class QosSocketInfo implements Parcelable {
 
     @Override
     public void writeToParcel(@NonNull final Parcel dest, final int flags) {
-        writeToParcelInternal(dest, flags, /*includeFd=*/ true);
-    }
-
-    /**
-     * Used when sending QosSocketInfo to telephony, which does not need access to the socket FD.
-     * @hide
-     */
-    public void writeToParcelWithoutFd(@NonNull final Parcel dest, final int flags) {
-        writeToParcelInternal(dest, flags, /*includeFd=*/ false);
-    }
-
-    private void writeToParcelInternal(
-            @NonNull final Parcel dest, final int flags, boolean includeFd) {
         mNetwork.writeToParcel(dest, 0);
+        mParcelFileDescriptor.writeToParcel(dest, 0);
 
-        if (includeFd) {
-            dest.writeBoolean(true);
-            mParcelFileDescriptor.writeToParcel(dest, 0);
-        } else {
-            dest.writeBoolean(false);
-        }
-
-        dest.writeByteArray(mLocalSocketAddress.getAddress().getAddress());
+        final byte[] localAddress = mLocalSocketAddress.getAddress().getAddress();
+        dest.writeInt(localAddress.length);
+        dest.writeByteArray(localAddress);
         dest.writeInt(mLocalSocketAddress.getPort());
 
         if (mRemoteSocketAddress == null) {
-            dest.writeByteArray(null);
+            dest.writeInt(0);
         } else {
-            dest.writeByteArray(mRemoteSocketAddress.getAddress().getAddress());
+            final byte[] remoteAddress = mRemoteSocketAddress.getAddress().getAddress();
+            dest.writeInt(remoteAddress.length);
+            dest.writeByteArray(remoteAddress);
             dest.writeInt(mRemoteSocketAddress.getPort());
         }
         dest.writeInt(mSocketType);

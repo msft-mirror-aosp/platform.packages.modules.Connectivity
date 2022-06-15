@@ -54,7 +54,7 @@ import org.mockito.invocation.InvocationOnMock;
 
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsManagerTest {
     private static final String TEST_SUBSCRIBER_ID = "subid";
 

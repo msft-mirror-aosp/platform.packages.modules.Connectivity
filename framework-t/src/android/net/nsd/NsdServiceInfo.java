@@ -53,8 +53,6 @@ public final class NsdServiceInfo implements Parcelable {
     @Nullable
     private Network mNetwork;
 
-    private int mInterfaceIndex;
-
     public NsdServiceInfo() {
     }
 
@@ -314,11 +312,8 @@ public final class NsdServiceInfo implements Parcelable {
     /**
      * Get the network where the service can be found.
      *
-     * This is set if this {@link NsdServiceInfo} was obtained from
-     * {@link NsdManager#discoverServices} or {@link NsdManager#resolveService}, unless the service
-     * was found on a network interface that does not have a {@link Network} (such as a tethering
-     * downstream, where services are advertised from devices connected to this device via
-     * tethering).
+     * This is never null if this {@link NsdServiceInfo} was obtained from
+     * {@link NsdManager#discoverServices} or {@link NsdManager#resolveService}.
      */
     @Nullable
     public Network getNetwork() {
@@ -332,26 +327,6 @@ public final class NsdServiceInfo implements Parcelable {
      */
     public void setNetwork(@Nullable Network network) {
         mNetwork = network;
-    }
-
-    /**
-     * Get the index of the network interface where the service was found.
-     *
-     * This is only set when the service was found on an interface that does not have a usable
-     * Network, in which case {@link #getNetwork()} returns null.
-     * @return The interface index as per {@link java.net.NetworkInterface#getIndex}, or 0 if unset.
-     * @hide
-     */
-    public int getInterfaceIndex() {
-        return mInterfaceIndex;
-    }
-
-    /**
-     * Set the index of the network interface where the service was found.
-     * @hide
-     */
-    public void setInterfaceIndex(int interfaceIndex) {
-        mInterfaceIndex = interfaceIndex;
     }
 
     @Override
@@ -400,7 +375,6 @@ public final class NsdServiceInfo implements Parcelable {
         }
 
         dest.writeParcelable(mNetwork, 0);
-        dest.writeInt(mInterfaceIndex);
     }
 
     /** Implement the Parcelable interface */
@@ -431,7 +405,6 @@ public final class NsdServiceInfo implements Parcelable {
                     info.mTxtRecord.put(in.readString(), valueArray);
                 }
                 info.mNetwork = in.readParcelable(null, Network.class);
-                info.mInterfaceIndex = in.readInt();
                 return info;
             }
 

@@ -70,29 +70,19 @@ public class ProfileNetworkPreferenceList {
     /**
      * Returns a new object consisting of this object plus the passed preference.
      *
-     * It is not expected that unwanted preference already exists for the same user.
-     * All preferences for the user that were previously configured should be cleared before
-     * adding a new preference.
-     * Passing a Preference object containing a null capabilities object is equivalent
-     * to removing the preference for this user.
+     * If a preference already exists for the same user, it will be replaced by the passed
+     * preference. Passing a Preference object containing a null capabilities object is equivalent
+     * to (and indeed, implemented as) removing the preference for this user.
      */
     public ProfileNetworkPreferenceList plus(@NonNull final Preference pref) {
-        final ArrayList<Preference> newPrefs = new ArrayList<>(preferences);
-        if (null != pref.capabilities) {
-            newPrefs.add(pref);
-        }
-        return new ProfileNetworkPreferenceList(newPrefs);
-    }
-
-    /**
-     * Remove all preferences corresponding to a user.
-     */
-    public ProfileNetworkPreferenceList withoutUser(UserHandle user) {
         final ArrayList<Preference> newPrefs = new ArrayList<>();
         for (final Preference existingPref : preferences) {
-            if (!existingPref.user.equals(user)) {
+            if (!existingPref.user.equals(pref.user)) {
                 newPrefs.add(existingPref);
             }
+        }
+        if (null != pref.capabilities) {
+            newPrefs.add(pref);
         }
         return new ProfileNetworkPreferenceList(newPrefs);
     }

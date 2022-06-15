@@ -33,7 +33,6 @@
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
 
-#define BPF_MAP_MAKE_VISIBLE_FOR_TESTING
 #include "bpf/BpfMap.h"
 #include "bpf/BpfUtils.h"
 #include "netdbpf/BpfNetworkStats.h"
@@ -81,19 +80,19 @@ class BpfNetworkStatsHelperTest : public testing::Test {
         ASSERT_EQ(0, setrlimitForTest());
 
         mFakeCookieTagMap = BpfMap<uint64_t, UidTagValue>(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE, 0);
-        ASSERT_TRUE(mFakeCookieTagMap.isValid());
+        ASSERT_LE(0, mFakeCookieTagMap.getMap());
 
         mFakeAppUidStatsMap = BpfMap<uint32_t, StatsValue>(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE, 0);
-        ASSERT_TRUE(mFakeAppUidStatsMap.isValid());
+        ASSERT_LE(0, mFakeAppUidStatsMap.getMap());
 
         mFakeStatsMap = BpfMap<StatsKey, StatsValue>(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE, 0);
-        ASSERT_TRUE(mFakeStatsMap.isValid());
+        ASSERT_LE(0, mFakeStatsMap.getMap());
 
         mFakeIfaceIndexNameMap = BpfMap<uint32_t, IfaceValue>(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE, 0);
-        ASSERT_TRUE(mFakeIfaceIndexNameMap.isValid());
+        ASSERT_LE(0, mFakeIfaceIndexNameMap.getMap());
 
         mFakeIfaceStatsMap = BpfMap<uint32_t, StatsValue>(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE, 0);
-        ASSERT_TRUE(mFakeIfaceStatsMap.isValid());
+        ASSERT_LE(0, mFakeIfaceStatsMap.getMap());
     }
 
     void expectUidTag(uint64_t cookie, uid_t uid, uint32_t tag) {

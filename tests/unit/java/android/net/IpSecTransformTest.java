@@ -32,7 +32,7 @@ import org.junit.runner.RunWith;
 /** Unit tests for {@link IpSecTransform}. */
 @SmallTest
 @RunWith(DevSdkIgnoreRunner.class)
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class IpSecTransformTest {
 
     @Test

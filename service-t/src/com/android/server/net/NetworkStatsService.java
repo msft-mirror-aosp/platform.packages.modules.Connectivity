@@ -25,7 +25,6 @@ import static android.content.Intent.ACTION_UID_REMOVED;
 import static android.content.Intent.ACTION_USER_REMOVED;
 import static android.content.Intent.EXTRA_UID;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
-import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
 import static android.net.NetworkStats.IFACE_ALL;
@@ -68,7 +67,6 @@ import android.annotation.TargetApi;
 import android.app.AlarmManager;
 import android.app.PendingIntent;
 import android.app.usage.NetworkStatsManager;
-import android.content.ApexEnvironment;
 import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
@@ -77,7 +75,6 @@ import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.database.ContentObserver;
-import android.net.ConnectivityManager;
 import android.net.DataUsageRequest;
 import android.net.INetd;
 import android.net.INetworkStatsService;
@@ -103,7 +100,6 @@ import android.net.TrafficStats;
 import android.net.UnderlyingNetworkInfo;
 import android.net.Uri;
 import android.net.netstats.IUsageCallback;
-import android.net.netstats.NetworkStatsDataMigrationUtils;
 import android.net.netstats.provider.INetworkStatsProvider;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
 import android.net.netstats.provider.NetworkStatsProvider;
@@ -122,7 +118,6 @@ import android.os.ServiceSpecificException;
 import android.os.SystemClock;
 import android.os.Trace;
 import android.os.UserHandle;
-import android.provider.DeviceConfig;
 import android.provider.Settings;
 import android.provider.Settings.Global;
 import android.service.NetworkInterfaceProto;
@@ -148,7 +143,6 @@ import com.android.net.module.util.BestClock;
 import com.android.net.module.util.BinderUtils;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.CollectionUtils;
-import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.NetworkStatsUtils;
@@ -161,19 +155,13 @@ import java.io.FileDescriptor;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.nio.file.Path;
 import java.time.Clock;
-import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Semaphore;
@@ -231,32 +219,15 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             "netstats_combine_subtype_enabled";
 
     private static final String UID_COUNTERSET_MAP_PATH =
-            "/sys/fs/bpf/netd_shared/map_netd_uid_counterset_map";
+            "/sys/fs/bpf/net_shared/map_netd_uid_counterset_map";
     private static final String COOKIE_TAG_MAP_PATH =
-            "/sys/fs/bpf/netd_shared/map_netd_cookie_tag_map";
+            "/sys/fs/bpf/net_shared/map_netd_cookie_tag_map";
     private static final String APP_UID_STATS_MAP_PATH =
-            "/sys/fs/bpf/netd_shared/map_netd_app_uid_stats_map";
+            "/sys/fs/bpf/net_shared/map_netd_app_uid_stats_map";
     private static final String STATS_MAP_A_PATH =
-            "/sys/fs/bpf/netd_shared/map_netd_stats_map_A";
+            "/sys/fs/bpf/net_shared/map_netd_stats_map_A";
     private static final String STATS_MAP_B_PATH =
-            "/sys/fs/bpf/netd_shared/map_netd_stats_map_B";
-
-    /**
-     * DeviceConfig flag used to indicate whether the files should be stored in the apex data
-     * directory.
-     */
-    static final String NETSTATS_STORE_FILES_IN_APEXDATA = "netstats_store_files_in_apexdata";
-    /**
-     * DeviceConfig flag is used to indicate whether the legacy files need to be imported, and
-     * retry count before giving up. Only valid when {@link #NETSTATS_STORE_FILES_IN_APEXDATA}
-     * set to true. Note that the value gets rollback when the mainline module gets rollback.
-     */
-    static final String NETSTATS_IMPORT_LEGACY_TARGET_ATTEMPTS =
-            "netstats_import_legacy_target_attempts";
-    static final int DEFAULT_NETSTATS_IMPORT_LEGACY_TARGET_ATTEMPTS = 1;
-    static final String NETSTATS_IMPORT_ATTEMPTS_COUNTER_NAME = "import.attempts";
-    static final String NETSTATS_IMPORT_SUCCESSES_COUNTER_NAME = "import.successes";
-    static final String NETSTATS_IMPORT_FALLBACKS_COUNTER_NAME = "import.fallbacks";
+            "/sys/fs/bpf/net_shared/map_netd_stats_map_B";
 
     private final Context mContext;
     private final NetworkStatsFactory mStatsFactory;
@@ -265,7 +236,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private final NetworkStatsSettings mSettings;
     private final NetworkStatsObservers mStatsObservers;
 
-    private final File mStatsDir;
+    private final File mSystemDir;
+    private final File mBaseDir;
 
     private final PowerManager.WakeLock mWakeLock;
 
@@ -274,13 +246,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     protected INetd mNetd;
     private final AlertObserver mAlertObserver = new AlertObserver();
-
-    // Persistent counters that backed by AtomicFile which stored in the data directory as a file,
-    // to track attempts/successes/fallbacks count across reboot. Note that these counter values
-    // will be rollback as the module rollbacks.
-    private PersistentInt mImportLegacyAttemptsCounter = null;
-    private PersistentInt mImportLegacySuccessesCounter = null;
-    private PersistentInt mImportLegacyFallbacksCounter = null;
 
     @VisibleForTesting
     public static final String ACTION_NETWORK_STATS_POLL =
@@ -345,16 +310,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @GuardedBy("mStatsLock")
     private String mActiveIface;
 
-    /** Set of all ifaces currently associated with mobile networks. */
+    /** Set of any ifaces associated with mobile networks since boot. */
     private volatile String[] mMobileIfaces = new String[0];
 
-    /* A set of all interfaces that have ever been associated with mobile networks since boot. */
-    @GuardedBy("mStatsLock")
-    private final Set<String> mAllMobileIfacesSinceBoot = new ArraySet<>();
-
-    /* A set of all interfaces that have ever been associated with wifi networks since boot. */
-    @GuardedBy("mStatsLock")
-    private final Set<String> mAllWifiIfacesSinceBoot = new ArraySet<>();
+    /** Set of any ifaces associated with wifi networks since boot. */
+    private volatile String[] mWifiIfaces = new String[0];
 
     /** Set of all ifaces currently used by traffic that does not explicitly specify a Network. */
     @GuardedBy("mStatsLock")
@@ -414,19 +374,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private long mLastStatsSessionPoll;
 
-    private final Object mOpenSessionCallsLock = new Object();
-    /**
-     * Map from UID to number of opened sessions. This is used for rate-limt an app to open
-     * session frequently
-     */
-    @GuardedBy("mOpenSessionCallsLock")
+    /** Map from UID to number of opened sessions */
+    @GuardedBy("mOpenSessionCallsPerUid")
     private final SparseIntArray mOpenSessionCallsPerUid = new SparseIntArray();
-    /**
-     * Map from key {@code OpenSessionKey} to count of opened sessions. This is for recording
-     * the caller of open session and it is only for debugging.
-     */
-    @GuardedBy("mOpenSessionCallsLock")
-    private final HashMap<OpenSessionKey, Integer> mOpenSessionCallsPerCaller = new HashMap<>();
 
     private final static int DUMP_STATS_SESSION_COUNT = 20;
 
@@ -442,47 +392,19 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @NonNull
     private final BpfInterfaceMapUpdater mInterfaceMapUpdater;
 
+    private static @NonNull File getDefaultSystemDir() {
+        return new File(Environment.getDataDirectory(), "system");
+    }
+
+    private static @NonNull File getDefaultBaseDir() {
+        File baseDir = new File(getDefaultSystemDir(), "netstats");
+        baseDir.mkdirs();
+        return baseDir;
+    }
+
     private static @NonNull Clock getDefaultClock() {
         return new BestClock(ZoneOffset.UTC, SystemClock.currentNetworkTimeClock(),
                 Clock.systemUTC());
-    }
-
-    /**
-     * This class is a key that used in {@code mOpenSessionCallsPerCaller} to identify the count of
-     * the caller.
-     */
-    private static class OpenSessionKey {
-        public final int uid;
-        public final String packageName;
-
-        OpenSessionKey(int uid, @NonNull String packageName) {
-            this.uid = uid;
-            this.packageName = packageName;
-        }
-
-        @Override
-        public String toString() {
-            final StringBuilder sb = new StringBuilder();
-            sb.append("{");
-            sb.append("uid=").append(uid).append(",");
-            sb.append("package=").append(packageName);
-            sb.append("}");
-            return sb.toString();
-        }
-
-        @Override
-        public boolean equals(@NonNull Object o) {
-            if (this == o) return true;
-            if (o.getClass() != getClass()) return false;
-
-            final OpenSessionKey key = (OpenSessionKey) o;
-            return this.uid == key.uid && TextUtils.equals(this.packageName, key.packageName);
-        }
-
-        @Override
-        public int hashCode() {
-            return Objects.hash(uid, packageName);
-        }
     }
 
     private final class NetworkStatsHandler extends Handler {
@@ -533,7 +455,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 INetd.Stub.asInterface((IBinder) context.getSystemService(Context.NETD_SERVICE)),
                 alarmManager, wakeLock, getDefaultClock(),
                 new DefaultNetworkStatsSettings(), new NetworkStatsFactory(context),
-                new NetworkStatsObservers(), new Dependencies());
+                new NetworkStatsObservers(), getDefaultSystemDir(), getDefaultBaseDir(),
+                new Dependencies());
 
         return service;
     }
@@ -543,8 +466,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @VisibleForTesting
     NetworkStatsService(Context context, INetd netd, AlarmManager alarmManager,
             PowerManager.WakeLock wakeLock, Clock clock, NetworkStatsSettings settings,
-            NetworkStatsFactory factory, NetworkStatsObservers statsObservers,
-            @NonNull Dependencies deps) {
+            NetworkStatsFactory factory, NetworkStatsObservers statsObservers, File systemDir,
+            File baseDir, @NonNull Dependencies deps) {
         mContext = Objects.requireNonNull(context, "missing Context");
         mNetd = Objects.requireNonNull(netd, "missing Netd");
         mAlarmManager = Objects.requireNonNull(alarmManager, "missing AlarmManager");
@@ -553,11 +476,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mWakeLock = Objects.requireNonNull(wakeLock, "missing WakeLock");
         mStatsFactory = Objects.requireNonNull(factory, "missing factory");
         mStatsObservers = Objects.requireNonNull(statsObservers, "missing NetworkStatsObservers");
+        mSystemDir = Objects.requireNonNull(systemDir, "missing systemDir");
+        mBaseDir = Objects.requireNonNull(baseDir, "missing baseDir");
         mDeps = Objects.requireNonNull(deps, "missing Dependencies");
-        mStatsDir = mDeps.getOrCreateStatsDir();
-        if (!mStatsDir.exists()) {
-            throw new IllegalStateException("Persist data directory does not exist: " + mStatsDir);
-        }
 
         final HandlerThread handlerThread = mDeps.makeHandlerThread();
         handlerThread.start();
@@ -583,80 +504,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     // TODO: Move more stuff into dependencies object.
     @VisibleForTesting
     public static class Dependencies {
-        /**
-         * Get legacy platform stats directory.
-         */
-        @NonNull
-        public File getLegacyStatsDir() {
-            final File systemDataDir = new File(Environment.getDataDirectory(), "system");
-            return new File(systemDataDir, "netstats");
-        }
-
-        /**
-         * Get or create the directory that stores the persisted data usage.
-         */
-        @NonNull
-        public File getOrCreateStatsDir() {
-            final boolean storeInApexDataDir = getStoreFilesInApexData();
-
-            final File statsDataDir;
-            if (storeInApexDataDir) {
-                final File apexDataDir = ApexEnvironment
-                        .getApexEnvironment(DeviceConfigUtils.TETHERING_MODULE_NAME)
-                        .getDeviceProtectedDataDir();
-                statsDataDir = new File(apexDataDir, "netstats");
-
-            } else {
-                statsDataDir = getLegacyStatsDir();
-            }
-
-            if (statsDataDir.exists() || statsDataDir.mkdirs()) {
-                return statsDataDir;
-            }
-            throw new IllegalStateException("Cannot write into stats data directory: "
-                    + statsDataDir);
-        }
-
-        /**
-         * Get the count of import legacy target attempts.
-         */
-        public int getImportLegacyTargetAttempts() {
-            return DeviceConfigUtils.getDeviceConfigPropertyInt(
-                    DeviceConfig.NAMESPACE_TETHERING,
-                    NETSTATS_IMPORT_LEGACY_TARGET_ATTEMPTS,
-                    DEFAULT_NETSTATS_IMPORT_LEGACY_TARGET_ATTEMPTS);
-        }
-
-        /**
-         * Create a persistent counter for given directory and name.
-         */
-        public PersistentInt createPersistentCounter(@NonNull Path dir, @NonNull String name)
-                throws IOException {
-            // TODO: Modify PersistentInt to call setStartTime every time a write is made.
-            //  Create and pass a real logger here.
-            final String path = dir.resolve(name).toString();
-            return new PersistentInt(path, null /* logger */);
-        }
-
-        /**
-         * Get the flag of storing files in the apex data directory.
-         * @return whether to store files in the apex data directory.
-         */
-        public boolean getStoreFilesInApexData() {
-            return DeviceConfigUtils.getDeviceConfigPropertyBoolean(
-                    DeviceConfig.NAMESPACE_TETHERING,
-                    NETSTATS_STORE_FILES_IN_APEXDATA, true);
-        }
-
-        /**
-         * Read legacy persisted network stats from disk.
-         */
-        @NonNull
-        public NetworkStatsCollection readPlatformCollection(
-                @NonNull String prefix, long bucketDuration) throws IOException {
-            return NetworkStatsDataMigrationUtils.readPlatformCollection(prefix, bucketDuration);
-        }
-
         /**
          * Create a HandlerThread to use in NetworkStatsService.
          */
@@ -792,15 +639,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             mSystemReady = true;
 
             // create data recorders along with historical rotators
-            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir);
-            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir);
-            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir);
-            mUidTagRecorder = buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true,
-                    mStatsDir);
+            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false);
+            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false);
+            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false);
+            mUidTagRecorder = buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true);
 
             updatePersistThresholdsLocked();
 
-            // upgrade any legacy stats
+            // upgrade any legacy stats, migrating them to rotated files
             maybeUpgradeLegacyStatsLocked();
 
             // read historical network stats from disk, since policy service
@@ -860,12 +706,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     }
 
     private NetworkStatsRecorder buildRecorder(
-            String prefix, NetworkStatsSettings.Config config, boolean includeTags,
-            File baseDir) {
+            String prefix, NetworkStatsSettings.Config config, boolean includeTags) {
         final DropBoxManager dropBox = (DropBoxManager) mContext.getSystemService(
                 Context.DROPBOX_SERVICE);
         return new NetworkStatsRecorder(new FileRotator(
-                baseDir, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
+                mBaseDir, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
                 mNonMonotonicObserver, dropBox, prefix, config.bucketDuration, includeTags);
     }
 
@@ -895,316 +740,32 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mSystemReady = false;
     }
 
-    private static class MigrationInfo {
-        public final NetworkStatsRecorder recorder;
-        public NetworkStatsCollection collection;
-        public boolean imported;
-        MigrationInfo(@NonNull final NetworkStatsRecorder recorder) {
-            this.recorder = recorder;
-            collection = null;
-            imported = false;
-        }
-    }
-
     @GuardedBy("mStatsLock")
     private void maybeUpgradeLegacyStatsLocked() {
-        final boolean storeFilesInApexData = mDeps.getStoreFilesInApexData();
-        if (!storeFilesInApexData) {
-            return;
-        }
+        File file;
         try {
-            mImportLegacyAttemptsCounter = mDeps.createPersistentCounter(mStatsDir.toPath(),
-                    NETSTATS_IMPORT_ATTEMPTS_COUNTER_NAME);
-            mImportLegacySuccessesCounter = mDeps.createPersistentCounter(mStatsDir.toPath(),
-                    NETSTATS_IMPORT_SUCCESSES_COUNTER_NAME);
-            mImportLegacyFallbacksCounter = mDeps.createPersistentCounter(mStatsDir.toPath(),
-                    NETSTATS_IMPORT_FALLBACKS_COUNTER_NAME);
-        } catch (IOException e) {
-            Log.wtf(TAG, "Failed to create persistent counters, skip.", e);
-            return;
-        }
-
-        final int targetAttempts = mDeps.getImportLegacyTargetAttempts();
-        final int attempts;
-        final int fallbacks;
-        try {
-            attempts = mImportLegacyAttemptsCounter.get();
-            fallbacks = mImportLegacyFallbacksCounter.get();
-        } catch (IOException e) {
-            Log.wtf(TAG, "Failed to read counters, skip.", e);
-            return;
-        }
-        // If fallbacks is not zero, proceed with reading only to give signals from dogfooders.
-        // TODO(b/233752318): Remove fallbacks counter check before T formal release.
-        if (attempts >= targetAttempts && fallbacks == 0) return;
-
-        final boolean dryRunImportOnly = (attempts >= targetAttempts);
-        if (dryRunImportOnly) {
-            Log.i(TAG, "Starting import : only perform read");
-        } else {
-            Log.i(TAG, "Starting import : attempts " + attempts + "/" + targetAttempts);
-        }
-
-        final MigrationInfo[] migrations = new MigrationInfo[]{
-                new MigrationInfo(mDevRecorder), new MigrationInfo(mXtRecorder),
-                new MigrationInfo(mUidRecorder), new MigrationInfo(mUidTagRecorder)
-        };
-
-        // Legacy directories will be created by recorders if they do not exist
-        final File legacyBaseDir = mDeps.getLegacyStatsDir();
-        final NetworkStatsRecorder[] legacyRecorders = new NetworkStatsRecorder[]{
-                buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir),
-                buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir),
-                buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir),
-                buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true, legacyBaseDir)
-        };
-
-        long migrationEndTime = Long.MIN_VALUE;
-        boolean endedWithFallback = false;
-        try {
-            // First, read all legacy collections. This is OEM code and it can throw. Don't
-            // commit any data to disk until all are read.
-            for (int i = 0; i < migrations.length; i++) {
-                String errMsg = null;
-                Throwable exception = null;
-                final MigrationInfo migration = migrations[i];
-
-                // Read the collection from platform code, and using fallback method if throws.
-                try {
-                    migration.collection = readPlatformCollectionForRecorder(migration.recorder);
-                } catch (Throwable e) {
-                    errMsg = "Failed to read stats from platform";
-                    exception = e;
-                }
-
-                // Also read the collection with legacy method
-                final NetworkStatsRecorder legacyRecorder = legacyRecorders[i];
-
-                final NetworkStatsCollection legacyStats;
-                try {
-                    legacyStats = legacyRecorder.getOrLoadCompleteLocked();
-                } catch (Throwable e) {
-                    Log.wtf(TAG, "Failed to read stats with legacy method for recorder " + i, e);
-                    if (exception != null) {
-                        throw exception;
-                    } else {
-                        // Use newer stats, since that's all that is available
-                        continue;
-                    }
-                }
-
-                if (errMsg == null) {
-                    try {
-                        errMsg = compareStats(migration.collection, legacyStats);
-                    } catch (Throwable e) {
-                        errMsg = "Failed to compare migrated stats with all stats";
-                        exception = e;
-                    }
-                }
-
-                if (errMsg != null) {
-                    Log.wtf(TAG, "NetworkStats import for migration " + i
-                            + " returned invalid data: " + errMsg, exception);
-                    // Fall back to legacy stats for this boot. The stats for old data will be
-                    // re-imported again on next boot until they succeed the import. This is fine
-                    // since every import clears the previous stats for the imported timespan.
-                    migration.collection = legacyStats;
-                    endedWithFallback = true;
-                }
+            file = new File(mSystemDir, "netstats.bin");
+            if (file.exists()) {
+                mDevRecorder.importLegacyNetworkLocked(file);
+                file.delete();
             }
 
-            // For cases where the fallbacks is not zero but target attempts counts reached,
-            // only perform reads above and return here.
-            if (dryRunImportOnly) return;
-
-            // Find the latest end time.
-            for (final MigrationInfo migration : migrations) {
-                final long migrationEnd = migration.collection.getEndMillis();
-                if (migrationEnd > migrationEndTime) migrationEndTime = migrationEnd;
+            file = new File(mSystemDir, "netstats_xt.bin");
+            if (file.exists()) {
+                file.delete();
             }
 
-            // Reading all collections from legacy data has succeeded. At this point it is
-            // safe to start overwriting the files on disk. The next step is to remove all
-            // data in the new location that overlaps with imported data. This ensures that
-            // any data in the new location that was created by a previous failed import is
-            // ignored. After that, write the imported data into the recorder. The code
-            // below can still possibly throw (disk error or OutOfMemory for example), but
-            // does not depend on code from non-mainline code.
-            Log.i(TAG, "Rewriting data with imported collections with cutoff "
-                    + Instant.ofEpochMilli(migrationEndTime));
-            for (final MigrationInfo migration : migrations) {
-                migration.imported = true;
-                migration.recorder.removeDataBefore(migrationEndTime);
-                if (migration.collection.isEmpty()) continue;
-                migration.recorder.importCollectionLocked(migration.collection);
-            }
-
-            // Success normally or uses fallback method.
-        } catch (Throwable e) {
-            // The code above calls OEM code that may behave differently across devices.
-            // It can throw any exception including RuntimeExceptions and
-            // OutOfMemoryErrors. Try to recover anyway.
-            Log.wtf(TAG, "Platform data import failed. Remaining tries "
-                    + (targetAttempts - attempts), e);
-
-            // Failed this time around : try again next time unless we're out of tries.
-            try {
-                mImportLegacyAttemptsCounter.set(attempts + 1);
-            } catch (IOException ex) {
-                Log.wtf(TAG, "Failed to update attempts counter.", ex);
-            }
-
-            // Try to remove any data from the failed import.
-            if (migrationEndTime > Long.MIN_VALUE) {
-                try {
-                    for (final MigrationInfo migration : migrations) {
-                        if (migration.imported) {
-                            migration.recorder.removeDataBefore(migrationEndTime);
-                        }
-                    }
-                } catch (Throwable f) {
-                    // If rollback still throws, there isn't much left to do. Try nuking
-                    // all data, since that's the last stop. If nuking still throws, the
-                    // framework will reboot, and if there are remaining tries, the migration
-                    // process will retry, which is fine because it's idempotent.
-                    for (final MigrationInfo migration : migrations) {
-                        migration.recorder.recoverAndDeleteData();
-                    }
-                }
-            }
-
-            return;
-        }
-
-        // Success ! No need to import again next time.
-        try {
-            mImportLegacyAttemptsCounter.set(targetAttempts);
-            if (endedWithFallback) {
-                Log.wtf(TAG, "Imported platform collections with legacy fallback");
-                final int fallbacksCount = mImportLegacyFallbacksCounter.get();
-                mImportLegacyFallbacksCounter.set(fallbacksCount + 1);
-            } else {
-                Log.i(TAG, "Successfully imported platform collections");
-                // The successes counter is only for debugging. Hence, the synchronization
-                // between successes counter and attempts counter are not very critical.
-                final int successCount = mImportLegacySuccessesCounter.get();
-                mImportLegacySuccessesCounter.set(successCount + 1);
+            file = new File(mSystemDir, "netstats_uid.bin");
+            if (file.exists()) {
+                mUidRecorder.importLegacyUidLocked(file);
+                mUidTagRecorder.importLegacyUidLocked(file);
+                file.delete();
             }
         } catch (IOException e) {
-            Log.wtf(TAG, "Succeed but failed to update counters.", e);
+            Log.wtf(TAG, "problem during legacy upgrade", e);
+        } catch (OutOfMemoryError e) {
+            Log.wtf(TAG, "problem during legacy upgrade", e);
         }
-    }
-
-    private static String str(NetworkStatsCollection.Key key) {
-        StringBuilder sb = new StringBuilder()
-                .append(key.ident.toString())
-                .append(" uid=").append(key.uid);
-        if (key.set != SET_FOREGROUND) {
-            sb.append(" set=").append(key.set);
-        }
-        if (key.tag != 0) {
-            sb.append(" tag=").append(key.tag);
-        }
-        return sb.toString();
-    }
-
-    // The importer will modify some keys when importing them.
-    // In order to keep the comparison code simple, add such special cases here and simply
-    // ignore them. This should not impact fidelity much because the start/end checks and the total
-    // bytes check still need to pass.
-    private static boolean couldKeyChangeOnImport(NetworkStatsCollection.Key key) {
-        if (key.ident.isEmpty()) return false;
-        final NetworkIdentity firstIdent = key.ident.iterator().next();
-
-        // Non-mobile network with non-empty RAT type.
-        // This combination is invalid and the NetworkIdentity.Builder will throw if it is passed
-        // in, but it looks like it was previously possible to persist it to disk. The importer sets
-        // the RAT type to NETWORK_TYPE_ALL.
-        if (firstIdent.getType() != ConnectivityManager.TYPE_MOBILE
-                && firstIdent.getRatType() != NetworkTemplate.NETWORK_TYPE_ALL) {
-            return true;
-        }
-
-        return false;
-    }
-
-    @Nullable
-    private static String compareStats(
-            NetworkStatsCollection migrated, NetworkStatsCollection legacy) {
-        final Map<NetworkStatsCollection.Key, NetworkStatsHistory> migEntries =
-                migrated.getEntries();
-        final Map<NetworkStatsCollection.Key, NetworkStatsHistory> legEntries = legacy.getEntries();
-
-        final ArraySet<NetworkStatsCollection.Key> unmatchedLegKeys =
-                new ArraySet<>(legEntries.keySet());
-
-        for (NetworkStatsCollection.Key legKey : legEntries.keySet()) {
-            final NetworkStatsHistory legHistory = legEntries.get(legKey);
-            final NetworkStatsHistory migHistory = migEntries.get(legKey);
-
-            if (migHistory == null && couldKeyChangeOnImport(legKey)) {
-                unmatchedLegKeys.remove(legKey);
-                continue;
-            }
-
-            if (migHistory == null) {
-                return "Missing migrated history for legacy key " + str(legKey)
-                        + ", legacy history was " + legHistory;
-            }
-            if (!migHistory.isSameAs(legHistory)) {
-                return "Difference in history for key " + legKey + "; legacy history " + legHistory
-                        + ", migrated history " + migHistory;
-            }
-            unmatchedLegKeys.remove(legKey);
-        }
-
-        if (!unmatchedLegKeys.isEmpty()) {
-            final NetworkStatsHistory first = legEntries.get(unmatchedLegKeys.valueAt(0));
-            return "Found unmatched legacy keys: count=" + unmatchedLegKeys.size()
-                    + ", first unmatched collection " + first;
-        }
-
-        if (migrated.getStartMillis() != legacy.getStartMillis()
-                || migrated.getEndMillis() != legacy.getEndMillis()) {
-            return "Start / end of the collections "
-                    + migrated.getStartMillis() + "/" + legacy.getStartMillis() + " and "
-                    + migrated.getEndMillis() + "/" + legacy.getEndMillis()
-                    + " don't match";
-        }
-
-        if (migrated.getTotalBytes() != legacy.getTotalBytes()) {
-            return "Total bytes " + migrated.getTotalBytes() + " and " + legacy.getTotalBytes()
-                    + " don't match for collections with start/end "
-                    + migrated.getStartMillis()
-                    + "/" + legacy.getStartMillis();
-        }
-
-        return null;
-    }
-
-    @GuardedBy("mStatsLock")
-    @NonNull
-    private NetworkStatsCollection readPlatformCollectionForRecorder(
-            @NonNull final NetworkStatsRecorder rec) throws IOException {
-        final String prefix = rec.getCookie();
-        Log.i(TAG, "Importing platform collection for prefix " + prefix);
-        final NetworkStatsCollection collection = Objects.requireNonNull(
-                mDeps.readPlatformCollection(prefix, rec.getBucketDuration()),
-                "Imported platform collection for prefix " + prefix + " must not be null");
-
-        final long bootTimestamp = System.currentTimeMillis() - SystemClock.elapsedRealtime();
-        if (!collection.isEmpty() && bootTimestamp < collection.getStartMillis()) {
-            throw new IllegalArgumentException("Platform collection for prefix " + prefix
-                    + " contains data that could not possibly come from the previous boot "
-                    + "(start timestamp = " + Instant.ofEpochMilli(collection.getStartMillis())
-                    + ", last booted at " + Instant.ofEpochMilli(bootTimestamp));
-        }
-
-        Log.i(TAG, "Successfully read platform collection spanning from "
-                // Instant uses ISO-8601 for toString()
-                + Instant.ofEpochMilli(collection.getStartMillis()).toString() + " to "
-                + Instant.ofEpochMilli(collection.getEndMillis()).toString());
-        return collection;
     }
 
     /**
@@ -1233,27 +794,16 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return openSessionInternal(flags, callingPackage);
     }
 
-    private boolean isRateLimitedForPoll(@NonNull OpenSessionKey key) {
+    private boolean isRateLimitedForPoll(int callingUid) {
+        if (callingUid == android.os.Process.SYSTEM_UID) {
+            return false;
+        }
+
         final long lastCallTime;
         final long now = SystemClock.elapsedRealtime();
-
-        synchronized (mOpenSessionCallsLock) {
-            Integer callsPerCaller = mOpenSessionCallsPerCaller.get(key);
-            if (callsPerCaller == null) {
-                mOpenSessionCallsPerCaller.put((key), 1);
-            } else {
-                mOpenSessionCallsPerCaller.put(key, Integer.sum(callsPerCaller, 1));
-            }
-
-            int callsPerUid = mOpenSessionCallsPerUid.get(key.uid, 0);
-            mOpenSessionCallsPerUid.put(key.uid, callsPerUid + 1);
-
-            if (key.uid == android.os.Process.SYSTEM_UID) {
-                return false;
-            }
-
-            // To avoid a non-system user to be rate-limited after system users open sessions,
-            // so update mLastStatsSessionPoll after checked if the uid is SYSTEM_UID.
+        synchronized (mOpenSessionCallsPerUid) {
+            int calls = mOpenSessionCallsPerUid.get(callingUid, 0);
+            mOpenSessionCallsPerUid.put(callingUid, calls + 1);
             lastCallTime = mLastStatsSessionPoll;
             mLastStatsSessionPoll = now;
         }
@@ -1261,7 +811,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return now - lastCallTime < POLL_RATE_LIMIT_MS;
     }
 
-    private int restrictFlagsForCaller(int flags, @NonNull String callingPackage) {
+    private int restrictFlagsForCaller(int flags) {
         // All non-privileged callers are not allowed to turn off POLL_ON_OPEN.
         final boolean isPrivileged = PermissionUtils.checkAnyPermissionOf(mContext,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
@@ -1271,15 +821,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
         // Non-system uids are rate limited for POLL_ON_OPEN.
         final int callingUid = Binder.getCallingUid();
-        final OpenSessionKey key = new OpenSessionKey(callingUid, callingPackage);
-        flags = isRateLimitedForPoll(key)
+        flags = isRateLimitedForPoll(callingUid)
                 ? flags & (~NetworkStatsManager.FLAG_POLL_ON_OPEN)
                 : flags;
         return flags;
     }
 
     private INetworkStatsSession openSessionInternal(final int flags, final String callingPackage) {
-        final int restrictedFlags = restrictFlagsForCaller(flags, callingPackage);
+        final int restrictedFlags = restrictFlagsForCaller(flags);
         if ((restrictedFlags & (NetworkStatsManager.FLAG_POLL_ON_OPEN
                 | NetworkStatsManager.FLAG_POLL_FORCE)) != 0) {
             final long ident = Binder.clearCallingIdentity();
@@ -1488,9 +1037,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         // We've been using pure XT stats long enough that we no longer need to
         // splice DEV and XT together.
         final NetworkStatsHistory history = internalGetHistoryForNetwork(template, flags, FIELD_ALL,
-                accessLevel, callingUid, Long.MIN_VALUE, Long.MAX_VALUE);
+                accessLevel, callingUid, start, end);
 
-        final long now = mClock.millis();
+        final long now = System.currentTimeMillis();
         final NetworkStatsHistory.Entry entry = history.getValues(start, end, now, null);
 
         final NetworkStats stats = new NetworkStats(end - start, 1);
@@ -1571,37 +1120,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return dataLayer;
     }
 
-    private String[] getAllIfacesSinceBoot(int transport) {
-        synchronized (mStatsLock) {
-            final Set<String> ifaceSet;
-            if (transport == TRANSPORT_WIFI) {
-                ifaceSet = mAllWifiIfacesSinceBoot;
-            } else if (transport == TRANSPORT_CELLULAR) {
-                ifaceSet = mAllMobileIfacesSinceBoot;
-            } else {
-                throw new IllegalArgumentException("Invalid transport " + transport);
-            }
-
-            return ifaceSet.toArray(new String[0]);
-        }
-    }
-
     @Override
     public NetworkStats getUidStatsForTransport(int transport) {
         PermissionUtils.enforceNetworkStackPermission(mContext);
         try {
-            final String[] ifaceArray = getAllIfacesSinceBoot(transport);
+            final String[] relevantIfaces =
+                    transport == TRANSPORT_WIFI ? mWifiIfaces : mMobileIfaces;
             // TODO(b/215633405) : mMobileIfaces and mWifiIfaces already contain the stacked
             // interfaces, so this is not useful, remove it.
             final String[] ifacesToQuery =
-                    mStatsFactory.augmentWithStackedInterfaces(ifaceArray);
-            final NetworkStats stats = getNetworkStatsUidDetail(ifacesToQuery);
-            // Clear the interfaces of the stats before returning, so callers won't get this
-            // information. This is because no caller needs this information for now, and it
-            // makes it easier to change the implementation later by using the histories in the
-            // recorder.
-            stats.clearInterfaces();
-            return stats;
+                    mStatsFactory.augmentWithStackedInterfaces(relevantIfaces);
+            return getNetworkStatsUidDetail(ifacesToQuery);
         } catch (RemoteException e) {
             Log.wtf(TAG, "Error compiling UID stats", e);
             return new NetworkStats(0L, 0);
@@ -1610,6 +1139,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     @Override
     public String[] getMobileIfaces() {
+        // TODO (b/192758557): Remove debug log.
+        if (CollectionUtils.contains(mMobileIfaces, null)) {
+            throw new NullPointerException(
+                    "null element in mMobileIfaces: " + Arrays.toString(mMobileIfaces));
+        }
         return mMobileIfaces.clone();
     }
 
@@ -1745,14 +1279,13 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         Objects.requireNonNull(request.template, "NetworkTemplate is null");
         Objects.requireNonNull(callback, "callback is null");
 
-        final int callingPid = Binder.getCallingPid();
-        final int callingUid = Binder.getCallingUid();
+        int callingUid = Binder.getCallingUid();
         @NetworkStatsAccess.Level int accessLevel = checkAccessLevel(callingPackage);
         DataUsageRequest normalizedRequest;
         final long token = Binder.clearCallingIdentity();
         try {
             normalizedRequest = mStatsObservers.register(mContext,
-                    request, callback, callingPid, callingUid, callingPackage, accessLevel);
+                    request, callback, callingUid, accessLevel);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
@@ -1977,6 +1510,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
         final boolean combineSubtypeEnabled = mSettings.getCombineSubtypeEnabled();
         final ArraySet<String> mobileIfaces = new ArraySet<>();
+        final ArraySet<String> wifiIfaces = new ArraySet<>();
         for (NetworkStateSnapshot snapshot : snapshots) {
             final int displayTransport =
                     getDisplayTransport(snapshot.getNetworkCapabilities().getTransportTypes());
@@ -2021,12 +1555,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
                 if (isMobile) {
                     mobileIfaces.add(baseIface);
-                    // If the interface name was present in the wifi set, the interface won't
-                    // be removed from it to prevent stats from getting rollback.
-                    mAllMobileIfacesSinceBoot.add(baseIface);
                 }
                 if (isWifi) {
-                    mAllWifiIfacesSinceBoot.add(baseIface);
+                    wifiIfaces.add(baseIface);
                 }
             }
 
@@ -2068,10 +1599,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                     findOrCreateNetworkIdentitySet(mActiveUidIfaces, iface).add(ident);
                     if (isMobile) {
                         mobileIfaces.add(iface);
-                        mAllMobileIfacesSinceBoot.add(iface);
                     }
                     if (isWifi) {
-                        mAllWifiIfacesSinceBoot.add(iface);
+                        wifiIfaces.add(iface);
                     }
 
                     mStatsFactory.noteStackedIface(iface, baseIface);
@@ -2080,6 +1610,16 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
 
         mMobileIfaces = mobileIfaces.toArray(new String[0]);
+        mWifiIfaces = wifiIfaces.toArray(new String[0]);
+        // TODO (b/192758557): Remove debug log.
+        if (CollectionUtils.contains(mMobileIfaces, null)) {
+            throw new NullPointerException(
+                    "null element in mMobileIfaces: " + Arrays.toString(mMobileIfaces));
+        }
+        if (CollectionUtils.contains(mWifiIfaces, null)) {
+            throw new NullPointerException(
+                    "null element in mWifiIfaces: " + Arrays.toString(mWifiIfaces));
+        }
     }
 
     private static int getSubIdForMobile(@NonNull NetworkStateSnapshot state) {
@@ -2397,9 +1937,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         for (int uid : uids) {
             deleteKernelTagData(uid);
         }
-
-       // TODO: Remove the UID's entries from mOpenSessionCallsPerUid and
-       // mOpenSessionCallsPerCaller
     }
 
     /**
@@ -2498,35 +2035,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 return;
             }
 
-            pw.println("Directory:");
-            pw.increaseIndent();
-            pw.println(mStatsDir);
-            pw.decreaseIndent();
-
             pw.println("Configs:");
             pw.increaseIndent();
             pw.print(NETSTATS_COMBINE_SUBTYPE_ENABLED, mSettings.getCombineSubtypeEnabled());
             pw.println();
-            pw.print(NETSTATS_STORE_FILES_IN_APEXDATA, mDeps.getStoreFilesInApexData());
-            pw.println();
-            pw.print(NETSTATS_IMPORT_LEGACY_TARGET_ATTEMPTS, mDeps.getImportLegacyTargetAttempts());
-            pw.println();
-            if (mDeps.getStoreFilesInApexData()) {
-                try {
-                    pw.print("platform legacy stats import attempts count",
-                            mImportLegacyAttemptsCounter.get());
-                    pw.println();
-                    pw.print("platform legacy stats import successes count",
-                            mImportLegacySuccessesCounter.get());
-                    pw.println();
-                    pw.print("platform legacy stats import fallbacks count",
-                            mImportLegacyFallbacksCounter.get());
-                    pw.println();
-                } catch (IOException e) {
-                    pw.println("(failed to dump platform legacy stats import counters)");
-                }
-            }
-
             pw.decreaseIndent();
 
             pw.println("Active interfaces:");
@@ -2547,38 +2059,26 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             }
             pw.decreaseIndent();
 
-            pw.println("All wifi interfaces:");
-            pw.increaseIndent();
-            for (String iface : mAllWifiIfacesSinceBoot) {
-                pw.print(iface + " ");
-            }
-            pw.println();
-            pw.decreaseIndent();
-
-            pw.println("All mobile interfaces:");
-            pw.increaseIndent();
-            for (String iface : mAllMobileIfacesSinceBoot) {
-                pw.print(iface + " ");
-            }
-            pw.println();
-            pw.decreaseIndent();
-
             // Get the top openSession callers
-            final HashMap calls;
-            synchronized (mOpenSessionCallsLock) {
-                calls = new HashMap<>(mOpenSessionCallsPerCaller);
+            final SparseIntArray calls;
+            synchronized (mOpenSessionCallsPerUid) {
+                calls = mOpenSessionCallsPerUid.clone();
             }
-            final List<Map.Entry<OpenSessionKey, Integer>> list = new ArrayList<>(calls.entrySet());
-            Collections.sort(list,
-                    (left, right) -> Integer.compare(left.getValue(), right.getValue()));
-            final int num = list.size();
-            final int end = Math.max(0, num - DUMP_STATS_SESSION_COUNT);
-            pw.println("Top openSession callers:");
-            pw.increaseIndent();
-            for (int j = num - 1; j >= end; j--) {
-                final Map.Entry<OpenSessionKey, Integer> entry = list.get(j);
-                pw.print(entry.getKey()); pw.print("="); pw.println(entry.getValue());
 
+            final int N = calls.size();
+            final long[] values = new long[N];
+            for (int j = 0; j < N; j++) {
+                values[j] = ((long) calls.valueAt(j) << 32) | calls.keyAt(j);
+            }
+            Arrays.sort(values);
+
+            pw.println("Top openSession callers (uid=count):");
+            pw.increaseIndent();
+            final int end = Math.max(0, N - DUMP_STATS_SESSION_COUNT);
+            for (int j = N - 1; j >= end; j--) {
+                final int uid = (int) (values[j] & 0xffffffff);
+                final int count = (int) (values[j] >> 32);
+                pw.print(uid); pw.print("="); pw.println(count);
             }
             pw.decreaseIndent();
             pw.println();
@@ -2598,13 +2098,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 }
             });
             pw.decreaseIndent();
-            pw.println();
-
-            pw.println("Stats Observers:");
-            pw.increaseIndent();
-            mStatsObservers.dump(pw);
-            pw.decreaseIndent();
-            pw.println();
 
             pw.println("Dev stats:");
             pw.increaseIndent();

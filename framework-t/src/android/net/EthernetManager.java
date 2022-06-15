@@ -22,21 +22,23 @@ import android.annotation.CallbackExecutor;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresFeature;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.OutcomeReceiver;
 import android.os.RemoteException;
-import android.util.ArrayMap;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.modules.utils.BackgroundThread;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executor;
@@ -54,12 +56,37 @@ public class EthernetManager {
 
     private final IEthernetManager mService;
     @GuardedBy("mListenerLock")
-    private final ArrayMap<InterfaceStateListener, IEthernetServiceListener>
-            mIfaceServiceListeners = new ArrayMap<>();
+    private final ArrayList<ListenerInfo<InterfaceStateListener>> mIfaceListeners =
+            new ArrayList<>();
     @GuardedBy("mListenerLock")
-    private final ArrayMap<IntConsumer, IEthernetServiceListener> mStateServiceListeners =
-            new ArrayMap<>();
+    private final ArrayList<ListenerInfo<IntConsumer>> mEthernetStateListeners =
+            new ArrayList<>();
     final Object mListenerLock = new Object();
+    private final IEthernetServiceListener.Stub mServiceListener =
+            new IEthernetServiceListener.Stub() {
+                @Override
+                public void onEthernetStateChanged(int state) {
+                    synchronized (mListenerLock) {
+                        for (ListenerInfo<IntConsumer> li : mEthernetStateListeners) {
+                            li.executor.execute(() -> {
+                                li.listener.accept(state);
+                            });
+                        }
+                    }
+                }
+
+                @Override
+                public void onInterfaceStateChanged(String iface, int state, int role,
+                        IpConfiguration configuration) {
+                    synchronized (mListenerLock) {
+                        for (ListenerInfo<InterfaceStateListener> li : mIfaceListeners) {
+                            li.executor.execute(() ->
+                                    li.listener.onInterfaceStateChanged(iface, state, role,
+                                            configuration));
+                        }
+                    }
+                }
+            };
 
     /**
      * Indicates that Ethernet is disabled.
@@ -76,6 +103,18 @@ public class EthernetManager {
      */
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int ETHERNET_STATE_ENABLED  = 1;
+
+    private static class ListenerInfo<T> {
+        @NonNull
+        public final Executor executor;
+        @NonNull
+        public final T listener;
+
+        private ListenerInfo(@NonNull Executor executor, @NonNull T listener) {
+            this.executor = executor;
+            this.listener = listener;
+        }
+    }
 
     /**
      * The interface is absent.
@@ -284,28 +323,18 @@ public class EthernetManager {
         if (listener == null || executor == null) {
             throw new NullPointerException("listener and executor must not be null");
         }
-
-        final IEthernetServiceListener.Stub serviceListener = new IEthernetServiceListener.Stub() {
-            @Override
-            public void onEthernetStateChanged(int state) {}
-
-            @Override
-            public void onInterfaceStateChanged(String iface, int state, int role,
-                    IpConfiguration configuration) {
-                executor.execute(() ->
-                        listener.onInterfaceStateChanged(iface, state, role, configuration));
-            }
-        };
         synchronized (mListenerLock) {
-            addServiceListener(serviceListener);
-            mIfaceServiceListeners.put(listener, serviceListener);
+            maybeAddServiceListener();
+            mIfaceListeners.add(new ListenerInfo<InterfaceStateListener>(executor, listener));
         }
     }
 
     @GuardedBy("mListenerLock")
-    private void addServiceListener(@NonNull final IEthernetServiceListener listener) {
+    private void maybeAddServiceListener() {
+        if (!mIfaceListeners.isEmpty() || !mEthernetStateListeners.isEmpty()) return;
+
         try {
-            mService.addListener(listener);
+            mService.addListener(mServiceListener);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -335,16 +364,17 @@ public class EthernetManager {
     public void removeInterfaceStateListener(@NonNull InterfaceStateListener listener) {
         Objects.requireNonNull(listener);
         synchronized (mListenerLock) {
-            maybeRemoveServiceListener(mIfaceServiceListeners.remove(listener));
+            mIfaceListeners.removeIf(l -> l.listener == listener);
+            maybeRemoveServiceListener();
         }
     }
 
     @GuardedBy("mListenerLock")
-    private void maybeRemoveServiceListener(@Nullable final IEthernetServiceListener listener) {
-        if (listener == null) return;
+    private void maybeRemoveServiceListener() {
+        if (!mIfaceListeners.isEmpty() || !mEthernetStateListeners.isEmpty()) return;
 
         try {
-            mService.removeListener(listener);
+            mService.removeListener(mServiceListener);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -571,6 +601,7 @@ public class EthernetManager {
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
             android.Manifest.permission.NETWORK_STACK,
             android.Manifest.permission.MANAGE_ETHERNET_NETWORKS})
+    @RequiresFeature(PackageManager.FEATURE_AUTOMOTIVE)
     public void enableInterface(
             @NonNull String iface,
             @Nullable @CallbackExecutor Executor executor,
@@ -579,7 +610,7 @@ public class EthernetManager {
         final NetworkInterfaceOutcomeReceiver proxy = makeNetworkInterfaceOutcomeReceiver(
                 executor, callback);
         try {
-            mService.enableInterface(iface, proxy);
+            mService.connectNetwork(iface, proxy);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -607,6 +638,7 @@ public class EthernetManager {
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
             android.Manifest.permission.NETWORK_STACK,
             android.Manifest.permission.MANAGE_ETHERNET_NETWORKS})
+    @RequiresFeature(PackageManager.FEATURE_AUTOMOTIVE)
     public void disableInterface(
             @NonNull String iface,
             @Nullable @CallbackExecutor Executor executor,
@@ -615,7 +647,7 @@ public class EthernetManager {
         final NetworkInterfaceOutcomeReceiver proxy = makeNetworkInterfaceOutcomeReceiver(
                 executor, callback);
         try {
-            mService.disableInterface(iface, proxy);
+            mService.disconnectNetwork(iface, proxy);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -655,19 +687,9 @@ public class EthernetManager {
             @NonNull IntConsumer listener) {
         Objects.requireNonNull(executor);
         Objects.requireNonNull(listener);
-        final IEthernetServiceListener.Stub serviceListener = new IEthernetServiceListener.Stub() {
-            @Override
-            public void onEthernetStateChanged(int state) {
-                executor.execute(() -> listener.accept(state));
-            }
-
-            @Override
-            public void onInterfaceStateChanged(String iface, int state, int role,
-                    IpConfiguration configuration) {}
-        };
         synchronized (mListenerLock) {
-            addServiceListener(serviceListener);
-            mStateServiceListeners.put(listener, serviceListener);
+            maybeAddServiceListener();
+            mEthernetStateListeners.add(new ListenerInfo<IntConsumer>(executor, listener));
         }
     }
 
@@ -683,7 +705,8 @@ public class EthernetManager {
     public void removeEthernetStateListener(@NonNull IntConsumer listener) {
         Objects.requireNonNull(listener);
         synchronized (mListenerLock) {
-            maybeRemoveServiceListener(mStateServiceListeners.remove(listener));
+            mEthernetStateListeners.removeIf(l -> l.listener == listener);
+            maybeRemoveServiceListener();
         }
     }
 

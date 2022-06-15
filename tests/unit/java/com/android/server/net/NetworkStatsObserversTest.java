@@ -32,7 +32,6 @@ import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
@@ -65,7 +64,6 @@ import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
-import java.util.ArrayList;
 import java.util.Objects;
 
 /**
@@ -88,18 +86,10 @@ public class NetworkStatsObserversTest {
     private static NetworkTemplate sTemplateImsi1 = buildTemplateMobileAll(IMSI_1);
     private static NetworkTemplate sTemplateImsi2 = buildTemplateMobileAll(IMSI_2);
 
-    private static final int PID_SYSTEM = 1234;
-    private static final int PID_RED = 1235;
-    private static final int PID_BLUE = 1236;
-
     private static final int UID_RED = UserHandle.PER_USER_RANGE + 1;
     private static final int UID_BLUE = UserHandle.PER_USER_RANGE + 2;
     private static final int UID_GREEN = UserHandle.PER_USER_RANGE + 3;
     private static final int UID_ANOTHER_USER = 2 * UserHandle.PER_USER_RANGE + 4;
-
-    private static final String PACKAGE_SYSTEM = "android";
-    private static final String PACKAGE_RED = "RED";
-    private static final String PACKAGE_BLUE = "BLUE";
 
     private static final long WAIT_TIMEOUT_MS = 500;
     private static final long THRESHOLD_BYTES = 2 * MB_IN_BYTES;
@@ -141,15 +131,14 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, thresholdTooLowBytes);
 
         final DataUsageRequest requestByApp = mStatsObservers.register(mContext, inputRequest,
-                mUsageCallback, PID_RED , UID_RED, PACKAGE_RED, NetworkStatsAccess.Level.DEVICE);
+                mUsageCallback, UID_RED, NetworkStatsAccess.Level.DEVICE);
         assertTrue(requestByApp.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, requestByApp.template));
         assertEquals(thresholdTooLowBytes, requestByApp.thresholdInBytes);
 
         // Verify the threshold requested by system uid won't be overridden.
         final DataUsageRequest requestBySystem = mStatsObservers.register(mContext, inputRequest,
-                mUsageCallback, PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM,
-                NetworkStatsAccess.Level.DEVICE);
+                mUsageCallback, Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(requestBySystem.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, requestBySystem.template));
         assertEquals(1, requestBySystem.thresholdInBytes);
@@ -162,7 +151,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, highThresholdBytes);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM, NetworkStatsAccess.Level.DEVICE);
+                Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, request.template));
         assertEquals(highThresholdBytes, request.thresholdInBytes);
@@ -174,61 +163,16 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, THRESHOLD_BYTES);
 
         DataUsageRequest request1 = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM, NetworkStatsAccess.Level.DEVICE);
+                Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request1.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, request1.template));
         assertEquals(THRESHOLD_BYTES, request1.thresholdInBytes);
 
         DataUsageRequest request2 = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM, NetworkStatsAccess.Level.DEVICE);
+                Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request2.requestId > request1.requestId);
         assertTrue(Objects.equals(sTemplateWifi, request2.template));
         assertEquals(THRESHOLD_BYTES, request2.thresholdInBytes);
-    }
-
-    @Test
-    public void testRegister_limit() throws Exception {
-        final DataUsageRequest inputRequest = new DataUsageRequest(
-                DataUsageRequest.REQUEST_ID_UNSET, sTemplateWifi, THRESHOLD_BYTES);
-
-        // Register maximum requests for red.
-        final ArrayList<DataUsageRequest> redRequests = new ArrayList<>();
-        for (int i = 0; i < NetworkStatsObservers.MAX_REQUESTS_PER_UID; i++) {
-            final DataUsageRequest returnedRequest =
-                    mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                            PID_RED, UID_RED, PACKAGE_RED, NetworkStatsAccess.Level.DEVICE);
-            redRequests.add(returnedRequest);
-            assertTrue(returnedRequest.requestId > 0);
-        }
-
-        // Verify request exceeds the limit throws.
-        assertThrows(IllegalStateException.class, () ->
-                mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                    PID_RED, UID_RED, PACKAGE_RED, NetworkStatsAccess.Level.DEVICE));
-
-        // Verify another uid is not affected.
-        final ArrayList<DataUsageRequest> blueRequests = new ArrayList<>();
-        for (int i = 0; i < NetworkStatsObservers.MAX_REQUESTS_PER_UID; i++) {
-            final DataUsageRequest returnedRequest =
-                    mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                            PID_BLUE, UID_BLUE, PACKAGE_BLUE, NetworkStatsAccess.Level.DEVICE);
-            blueRequests.add(returnedRequest);
-            assertTrue(returnedRequest.requestId > 0);
-        }
-
-        // Again, verify request exceeds the limit throws for the 2nd uid.
-        assertThrows(IllegalStateException.class, () ->
-                mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                        PID_RED, UID_RED, PACKAGE_RED, NetworkStatsAccess.Level.DEVICE));
-
-        // Unregister all registered requests. Note that exceptions cannot be tested since
-        // unregister is handled in the handler thread.
-        for (final DataUsageRequest request : redRequests) {
-            mStatsObservers.unregister(request, UID_RED);
-        }
-        for (final DataUsageRequest request : blueRequests) {
-            mStatsObservers.unregister(request, UID_BLUE);
-        }
     }
 
     @Test
@@ -245,7 +189,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM, NetworkStatsAccess.Level.DEVICE);
+                Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -265,7 +209,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_RED, UID_RED, PACKAGE_RED, NetworkStatsAccess.Level.DEVICE);
+                UID_RED, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -274,12 +218,8 @@ public class NetworkStatsObserversTest {
 
         mStatsObservers.unregister(request, UID_BLUE);
         waitForObserverToIdle();
-        Mockito.verifyZeroInteractions(mUsageCallbackBinder);
 
-        // Verify that system uid can unregister for other uids.
-        mStatsObservers.unregister(request, Process.SYSTEM_UID);
-        waitForObserverToIdle();
-        mUsageCallback.expectOnCallbackReleased(request);
+        Mockito.verifyZeroInteractions(mUsageCallbackBinder);
     }
 
     private NetworkIdentitySet makeTestIdentSet() {
@@ -297,7 +237,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM, NetworkStatsAccess.Level.DEVICE);
+                Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -321,7 +261,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM, NetworkStatsAccess.Level.DEVICE);
+                Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -351,7 +291,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_SYSTEM, Process.SYSTEM_UID, PACKAGE_SYSTEM, NetworkStatsAccess.Level.DEVICE);
+                Process.SYSTEM_UID, NetworkStatsAccess.Level.DEVICE);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -382,7 +322,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_RED, UID_RED, PACKAGE_SYSTEM , NetworkStatsAccess.Level.DEFAULT);
+                UID_RED, NetworkStatsAccess.Level.DEFAULT);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -415,7 +355,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_BLUE, UID_BLUE, PACKAGE_BLUE, NetworkStatsAccess.Level.DEFAULT);
+                UID_BLUE, NetworkStatsAccess.Level.DEFAULT);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -447,7 +387,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_BLUE, UID_BLUE, PACKAGE_BLUE, NetworkStatsAccess.Level.USER);
+                UID_BLUE, NetworkStatsAccess.Level.USER);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);
@@ -480,7 +420,7 @@ public class NetworkStatsObserversTest {
                 DataUsageRequest.REQUEST_ID_UNSET, sTemplateImsi1, THRESHOLD_BYTES);
 
         DataUsageRequest request = mStatsObservers.register(mContext, inputRequest, mUsageCallback,
-                PID_RED, UID_RED, PACKAGE_RED, NetworkStatsAccess.Level.USER);
+                UID_RED, NetworkStatsAccess.Level.USER);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateImsi1, request.template));
         assertEquals(THRESHOLD_BYTES, request.thresholdInBytes);

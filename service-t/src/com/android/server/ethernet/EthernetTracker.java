@@ -91,7 +91,6 @@ public class EthernetTracker {
      * if setIncludeTestInterfaces is true, any test interfaces.
      */
     private volatile String mIfaceMatch;
-
     /**
      * Track test interfaces if true, don't track otherwise.
      */
@@ -229,7 +228,7 @@ public class EthernetTracker {
      */
     protected void broadcastInterfaceStateChange(@NonNull String iface) {
         ensureRunningOnEthernetServiceThread();
-        final int state = getInterfaceState(iface);
+        final int state = mFactory.getInterfaceState(iface);
         final int role = getInterfaceRole(iface);
         final IpConfiguration config = getIpConfigurationForCallback(iface, state);
         final int n = mListeners.beginBroadcast();
@@ -286,13 +285,13 @@ public class EthernetTracker {
     }
 
     @VisibleForTesting(visibility = PACKAGE)
-    protected void enableInterface(@NonNull final String iface,
+    protected void connectNetwork(@NonNull final String iface,
             @Nullable final INetworkInterfaceOutcomeReceiver listener) {
         mHandler.post(() -> updateInterfaceState(iface, true, listener));
     }
 
     @VisibleForTesting(visibility = PACKAGE)
-    protected void disableInterface(@NonNull final String iface,
+    protected void disconnectNetwork(@NonNull final String iface,
             @Nullable final INetworkInterfaceOutcomeReceiver listener) {
         mHandler.post(() -> updateInterfaceState(iface, false, listener));
     }
@@ -436,34 +435,15 @@ public class EthernetTracker {
         if (mDefaultInterface != null) {
             removeInterface(mDefaultInterface);
             addInterface(mDefaultInterface);
-            // when this broadcast is sent, any calls to notifyTetheredInterfaceAvailable or
-            // notifyTetheredInterfaceUnavailable have already happened
-            broadcastInterfaceStateChange(mDefaultInterface);
         }
-    }
-
-    private int getInterfaceState(final String iface) {
-        if (mFactory.hasInterface(iface)) {
-            return mFactory.getInterfaceState(iface);
-        }
-        if (getInterfaceMode(iface) == INTERFACE_MODE_SERVER) {
-            // server mode interfaces are not tracked by the factory.
-            // TODO(b/234743836): interface state for server mode interfaces is not tracked
-            // properly; just return link up.
-            return EthernetManager.STATE_LINK_UP;
-        }
-        return EthernetManager.STATE_ABSENT;
     }
 
     private int getInterfaceRole(final String iface) {
-        if (mFactory.hasInterface(iface)) {
-            // only client mode interfaces are tracked by the factory.
-            return EthernetManager.ROLE_CLIENT;
-        }
-        if (getInterfaceMode(iface) == INTERFACE_MODE_SERVER) {
-            return EthernetManager.ROLE_SERVER;
-        }
-        return EthernetManager.ROLE_NONE;
+        if (!mFactory.hasInterface(iface)) return EthernetManager.ROLE_NONE;
+        final int mode = getInterfaceMode(iface);
+        return (mode == INTERFACE_MODE_CLIENT)
+                ? EthernetManager.ROLE_CLIENT
+                : EthernetManager.ROLE_SERVER;
     }
 
     private int getInterfaceMode(final String iface) {
@@ -606,18 +586,14 @@ public class EthernetTracker {
         }
     }
 
-    @VisibleForTesting
-    class InterfaceObserver extends BaseNetdUnsolicitedEventListener {
+    private class InterfaceObserver extends BaseNetdUnsolicitedEventListener {
 
         @Override
         public void onInterfaceLinkStateChanged(String iface, boolean up) {
             if (DBG) {
                 Log.i(TAG, "interfaceLinkStateChanged, iface: " + iface + ", up: " + up);
             }
-            mHandler.post(() -> {
-                if (mEthernetState == ETHERNET_STATE_DISABLED) return;
-                updateInterfaceState(iface, up);
-            });
+            mHandler.post(() -> updateInterfaceState(iface, up));
         }
 
         @Override
@@ -625,10 +601,7 @@ public class EthernetTracker {
             if (DBG) {
                 Log.i(TAG, "onInterfaceAdded, iface: " + iface);
             }
-            mHandler.post(() -> {
-                if (mEthernetState == ETHERNET_STATE_DISABLED) return;
-                maybeTrackInterface(iface);
-            });
+            mHandler.post(() -> maybeTrackInterface(iface));
         }
 
         @Override
@@ -636,10 +609,7 @@ public class EthernetTracker {
             if (DBG) {
                 Log.i(TAG, "onInterfaceRemoved, iface: " + iface);
             }
-            mHandler.post(() -> {
-                if (mEthernetState == ETHERNET_STATE_DISABLED) return;
-                stopTrackingInterface(iface);
-            });
+            mHandler.post(() -> stopTrackingInterface(iface));
         }
     }
 
@@ -918,8 +888,6 @@ public class EthernetTracker {
     void dump(FileDescriptor fd, IndentingPrintWriter pw, String[] args) {
         postAndWaitForRunnable(() -> {
             pw.println(getClass().getSimpleName());
-            pw.println("Ethernet State: "
-                    + (mEthernetState == ETHERNET_STATE_ENABLED ? "enabled" : "disabled"));
             pw.println("Ethernet interface name filter: " + mIfaceMatch);
             pw.println("Default interface: " + mDefaultInterface);
             pw.println("Default interface mode: " + mDefaultInterfaceMode);

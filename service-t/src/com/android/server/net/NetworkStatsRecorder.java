@@ -21,7 +21,6 @@ import static android.net.TrafficStats.KB_IN_BYTES;
 import static android.net.TrafficStats.MB_IN_BYTES;
 import static android.text.format.DateUtils.YEAR_IN_MILLIS;
 
-import android.annotation.NonNull;
 import android.net.NetworkIdentitySet;
 import android.net.NetworkStats;
 import android.net.NetworkStats.NonMonotonicObserver;
@@ -43,6 +42,7 @@ import com.android.net.module.util.NetworkStatsUtils;
 import libcore.io.IoUtils;
 
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -68,7 +68,7 @@ public class NetworkStatsRecorder {
 
     private static final String TAG_NETSTATS_DUMP = "netstats_dump";
 
-    /** Dump before deleting in {@link #recoverAndDeleteData()}. */
+    /** Dump before deleting in {@link #recoverFromWtf()}. */
     private static final boolean DUMP_BEFORE_DELETE = true;
 
     private final FileRotator mRotator;
@@ -156,15 +156,6 @@ public class NetworkStatsRecorder {
         return mSinceBoot;
     }
 
-    public long getBucketDuration() {
-        return mBucketDuration;
-    }
-
-    @NonNull
-    public String getCookie() {
-        return mCookie;
-    }
-
     /**
      * Load complete history represented by {@link FileRotator}. Caches
      * internally as a {@link WeakReference}, and updated with future
@@ -198,10 +189,10 @@ public class NetworkStatsRecorder {
             res.recordCollection(mPending);
         } catch (IOException e) {
             Log.wtf(TAG, "problem completely reading network stats", e);
-            recoverAndDeleteData();
+            recoverFromWtf();
         } catch (OutOfMemoryError e) {
             Log.wtf(TAG, "problem completely reading network stats", e);
-            recoverAndDeleteData();
+            recoverFromWtf();
         }
         return res;
     }
@@ -309,10 +300,10 @@ public class NetworkStatsRecorder {
                 mPending.reset();
             } catch (IOException e) {
                 Log.wtf(TAG, "problem persisting pending stats", e);
-                recoverAndDeleteData();
+                recoverFromWtf();
             } catch (OutOfMemoryError e) {
                 Log.wtf(TAG, "problem persisting pending stats", e);
-                recoverAndDeleteData();
+                recoverFromWtf();
             }
         }
     }
@@ -328,10 +319,10 @@ public class NetworkStatsRecorder {
                 mRotator.rewriteAll(new RemoveUidRewriter(mBucketDuration, uids));
             } catch (IOException e) {
                 Log.wtf(TAG, "problem removing UIDs " + Arrays.toString(uids), e);
-                recoverAndDeleteData();
+                recoverFromWtf();
             } catch (OutOfMemoryError e) {
                 Log.wtf(TAG, "problem removing UIDs " + Arrays.toString(uids), e);
-                recoverAndDeleteData();
+                recoverFromWtf();
             }
         }
 
@@ -356,7 +347,8 @@ public class NetworkStatsRecorder {
 
     /**
      * Rewriter that will combine current {@link NetworkStatsCollection} values
-     * with anything read from disk, and write combined set to disk.
+     * with anything read from disk, and write combined set to disk. Clears the
+     * original {@link NetworkStatsCollection} when finished writing.
      */
     private static class CombiningRewriter implements FileRotator.Rewriter {
         private final NetworkStatsCollection mCollection;
@@ -383,6 +375,7 @@ public class NetworkStatsRecorder {
         @Override
         public void write(OutputStream out) throws IOException {
             mCollection.write(out);
+            mCollection.reset();
         }
     }
 
@@ -422,87 +415,43 @@ public class NetworkStatsRecorder {
         }
     }
 
-    /**
-     * Import a specified {@link NetworkStatsCollection} instance into this recorder,
-     * and write it into a standalone file.
-     * @param collection The target {@link NetworkStatsCollection} instance to be imported.
-     */
-    public void importCollectionLocked(@NonNull NetworkStatsCollection collection)
-            throws IOException {
-        if (mRotator != null) {
-            mRotator.rewriteSingle(new CombiningRewriter(collection), collection.getStartMillis(),
-                    collection.getEndMillis());
-        }
+    public void importLegacyNetworkLocked(File file) throws IOException {
+        Objects.requireNonNull(mRotator, "missing FileRotator");
 
-        if (mComplete != null) {
-            throw new IllegalStateException("cannot import data when data already loaded");
-        }
-    }
+        // legacy file still exists; start empty to avoid double importing
+        mRotator.deleteAll();
 
-    /**
-     * Rewriter that will remove any histories or persisted data points before the
-     * specified cutoff time, only writing data back when modified.
-     */
-    public static class RemoveDataBeforeRewriter implements FileRotator.Rewriter {
-        private final NetworkStatsCollection mTemp;
-        private final long mCutoffMills;
+        final NetworkStatsCollection collection = new NetworkStatsCollection(mBucketDuration);
+        collection.readLegacyNetwork(file);
 
-        public RemoveDataBeforeRewriter(long bucketDuration, long cutoffMills) {
-            mTemp = new NetworkStatsCollection(bucketDuration);
-            mCutoffMills = cutoffMills;
-        }
+        final long startMillis = collection.getStartMillis();
+        final long endMillis = collection.getEndMillis();
 
-        @Override
-        public void reset() {
-            mTemp.reset();
-        }
-
-        @Override
-        public void read(InputStream in) throws IOException {
-            mTemp.read(in);
-            mTemp.clearDirty();
-            mTemp.removeHistoryBefore(mCutoffMills);
-        }
-
-        @Override
-        public boolean shouldWrite() {
-            return mTemp.isDirty();
-        }
-
-        @Override
-        public void write(OutputStream out) throws IOException {
-            mTemp.write(out);
+        if (!collection.isEmpty()) {
+            // process legacy data, creating active file at starting time, then
+            // using end time to possibly trigger rotation.
+            mRotator.rewriteActive(new CombiningRewriter(collection), startMillis);
+            mRotator.maybeRotate(endMillis);
         }
     }
 
-    /**
-     * Remove persisted data which contains or is before the cutoff timestamp.
-     */
-    public void removeDataBefore(long cutoffMillis) throws IOException {
-        if (mRotator != null) {
-            try {
-                mRotator.rewriteAll(new RemoveDataBeforeRewriter(
-                        mBucketDuration, cutoffMillis));
-            } catch (IOException e) {
-                Log.wtf(TAG, "problem importing netstats", e);
-                recoverAndDeleteData();
-            } catch (OutOfMemoryError e) {
-                Log.wtf(TAG, "problem importing netstats", e);
-                recoverAndDeleteData();
-            }
-        }
+    public void importLegacyUidLocked(File file) throws IOException {
+        Objects.requireNonNull(mRotator, "missing FileRotator");
 
-        // Clean up any pending stats
-        if (mPending != null) {
-            mPending.removeHistoryBefore(cutoffMillis);
-        }
-        if (mSinceBoot != null) {
-            mSinceBoot.removeHistoryBefore(cutoffMillis);
-        }
+        // legacy file still exists; start empty to avoid double importing
+        mRotator.deleteAll();
 
-        final NetworkStatsCollection complete = mComplete != null ? mComplete.get() : null;
-        if (complete != null) {
-            complete.removeHistoryBefore(cutoffMillis);
+        final NetworkStatsCollection collection = new NetworkStatsCollection(mBucketDuration);
+        collection.readLegacyUid(file, mOnlyTags);
+
+        final long startMillis = collection.getStartMillis();
+        final long endMillis = collection.getEndMillis();
+
+        if (!collection.isEmpty()) {
+            // process legacy data, creating active file at starting time, then
+            // using end time to possibly trigger rotation.
+            mRotator.rewriteActive(new CombiningRewriter(collection), startMillis);
+            mRotator.maybeRotate(endMillis);
         }
     }
 
@@ -539,7 +488,7 @@ public class NetworkStatsRecorder {
      * Recover from {@link FileRotator} failure by dumping state to
      * {@link DropBoxManager} and deleting contents.
      */
-    void recoverAndDeleteData() {
+    private void recoverFromWtf() {
         if (DUMP_BEFORE_DELETE) {
             final ByteArrayOutputStream os = new ByteArrayOutputStream();
             try {

@@ -61,7 +61,7 @@ import java.util.Iterator;
 
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class NetworkStatsTest {
 
     private static final String TEST_IFACE = "test0";

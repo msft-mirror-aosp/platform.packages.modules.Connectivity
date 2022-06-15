@@ -23,7 +23,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
-import android.net.INetd;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.mdns.aidl.DiscoveryInfo;
@@ -101,6 +100,7 @@ public class NsdService extends INsdManager.Stub {
     private class NsdStateMachine extends StateMachine {
 
         private final DefaultState mDefaultState = new DefaultState();
+        private final DisabledState mDisabledState = new DisabledState();
         private final EnabledState mEnabledState = new EnabledState();
 
         @Override
@@ -151,6 +151,7 @@ public class NsdService extends INsdManager.Stub {
         NsdStateMachine(String name, Handler handler) {
             super(name, handler);
             addState(mDefaultState);
+                addState(mDisabledState, mDefaultState);
                 addState(mEnabledState, mDefaultState);
             State initialState = mEnabledState;
             setInitialState(initialState);
@@ -248,6 +249,25 @@ public class NsdService extends INsdManager.Stub {
             }
         }
 
+        class DisabledState extends State {
+            @Override
+            public void enter() {
+                sendNsdStateChangeBroadcast(false);
+            }
+
+            @Override
+            public boolean processMessage(Message msg) {
+                switch (msg.what) {
+                    case NsdManager.ENABLE:
+                        transitionTo(mEnabledState);
+                        break;
+                    default:
+                        return NOT_HANDLED;
+                }
+                return HANDLED;
+            }
+        }
+
         class EnabledState extends State {
             @Override
             public void enter() {
@@ -291,6 +311,10 @@ public class NsdService extends INsdManager.Stub {
                 final int clientId = msg.arg2;
                 final ListenerArgs args;
                 switch (msg.what) {
+                    case NsdManager.DISABLE:
+                        //TODO: cleanup clients
+                        transitionTo(mDisabledState);
+                        break;
                     case NsdManager.DISCOVER_SERVICES:
                         if (DBG) Log.d(TAG, "Discover services");
                         args = (ListenerArgs) msg.obj;
@@ -442,7 +466,7 @@ public class NsdService extends INsdManager.Stub {
                             // interfaces that do not have an associated Network.
                             break;
                         }
-                        setServiceNetworkForCallback(servInfo, info.netId, info.interfaceIdx);
+                        servInfo.setNetwork(new Network(foundNetId));
                         clientInfo.onServiceFound(clientId, servInfo);
                         break;
                     }
@@ -452,11 +476,10 @@ public class NsdService extends INsdManager.Stub {
                         final String type = info.registrationType;
                         final int lostNetId = info.netId;
                         servInfo = new NsdServiceInfo(name, type);
-                        // The network could be set to null (netId 0) if it was torn down when the
-                        // service is lost
-                        // TODO: avoid returning null in that case, possibly by remembering
-                        // found services on the same interface index and their network at the time
-                        setServiceNetworkForCallback(servInfo, lostNetId, info.interfaceIdx);
+                        // The network could be null if it was torn down when the service is lost
+                        // TODO: avoid returning null in that case, possibly by remembering found
+                        // services on the same interface index and their network at the time
+                        servInfo.setNetwork(lostNetId == 0 ? null : new Network(lostNetId));
                         clientInfo.onServiceLost(clientId, servInfo);
                         break;
                     }
@@ -490,7 +513,7 @@ public class NsdService extends INsdManager.Stub {
                             break;
                         }
 
-                        String name = unescape(fullName.substring(0, index));
+                        String name = fullName.substring(0, index);
                         String rest = fullName.substring(index);
                         String type = rest.replace(".local.", "");
 
@@ -534,6 +557,7 @@ public class NsdService extends INsdManager.Stub {
                         final GetAddressInfo info = (GetAddressInfo) obj;
                         final String address = info.address;
                         final int netId = info.netId;
+                        final Network network = netId == NETID_UNSET ? null : new Network(netId);
                         InetAddress serviceHost = null;
                         try {
                             serviceHost = InetAddress.getByName(address);
@@ -544,10 +568,9 @@ public class NsdService extends INsdManager.Stub {
                         // If the resolved service is on an interface without a network, consider it
                         // as a failure: it would not be usable by apps as they would need
                         // privileged permissions.
-                        if (netId != NETID_UNSET && serviceHost != null) {
+                        if (network != null && serviceHost != null) {
                             clientInfo.mResolvedService.setHost(serviceHost);
-                            setServiceNetworkForCallback(clientInfo.mResolvedService,
-                                    netId, info.interfaceIdx);
+                            clientInfo.mResolvedService.setNetwork(network);
                             clientInfo.onResolveServiceSucceeded(
                                     clientId, clientInfo.mResolvedService);
                         } else {
@@ -565,55 +588,6 @@ public class NsdService extends INsdManager.Stub {
                 return true;
             }
        }
-    }
-
-    private static void setServiceNetworkForCallback(NsdServiceInfo info, int netId, int ifaceIdx) {
-        switch (netId) {
-            case NETID_UNSET:
-                info.setNetwork(null);
-                break;
-            case INetd.LOCAL_NET_ID:
-                // Special case for LOCAL_NET_ID: Networks on netId 99 are not generally
-                // visible / usable for apps, so do not return it. Store the interface
-                // index instead, so at least if the client tries to resolve the service
-                // with that NsdServiceInfo, it will be done on the same interface.
-                // If they recreate the NsdServiceInfo themselves, resolution would be
-                // done on all interfaces as before T, which should also work.
-                info.setNetwork(null);
-                info.setInterfaceIndex(ifaceIdx);
-                break;
-            default:
-                info.setNetwork(new Network(netId));
-        }
-    }
-
-    // The full service name is escaped from standard DNS rules on mdnsresponder, making it suitable
-    // for passing to standard system DNS APIs such as res_query() . Thus, make the service name
-    // unescape for getting right service address. See "Notes on DNS Name Escaping" on
-    // external/mdnsresponder/mDNSShared/dns_sd.h for more details.
-    private String unescape(String s) {
-        StringBuilder sb = new StringBuilder(s.length());
-        for (int i = 0; i < s.length(); ++i) {
-            char c = s.charAt(i);
-            if (c == '\\') {
-                if (++i >= s.length()) {
-                    Log.e(TAG, "Unexpected end of escape sequence in: " + s);
-                    break;
-                }
-                c = s.charAt(i);
-                if (c != '.' && c != '\\') {
-                    if (i + 2 >= s.length()) {
-                        Log.e(TAG, "Unexpected end of escape sequence in: " + s);
-                        break;
-                    }
-                    c = (char) ((c - '0') * 100 + (s.charAt(i + 1) - '0') * 10
-                            + (s.charAt(i + 2) - '0'));
-                    i += 2;
-                }
-            }
-            sb.append(c);
-        }
-        return sb.toString();
     }
 
     @VisibleForTesting
@@ -764,12 +738,7 @@ public class NsdService extends INsdManager.Stub {
         String type = service.getServiceType();
         int port = service.getPort();
         byte[] textRecord = service.getTxtRecord();
-        final int registerInterface = getNetworkInterfaceIndex(service);
-        if (service.getNetwork() != null && registerInterface == IFACE_IDX_ANY) {
-            Log.e(TAG, "Interface to register service on not found");
-            return false;
-        }
-        return mMDnsManager.registerService(regId, name, type, port, textRecord, registerInterface);
+        return mMDnsManager.registerService(regId, name, type, port, textRecord, IFACE_IDX_ANY);
     }
 
     private boolean unregisterService(int regId) {
@@ -777,9 +746,10 @@ public class NsdService extends INsdManager.Stub {
     }
 
     private boolean discoverServices(int discoveryId, NsdServiceInfo serviceInfo) {
+        final Network network = serviceInfo.getNetwork();
         final String type = serviceInfo.getServiceType();
-        final int discoverInterface = getNetworkInterfaceIndex(serviceInfo);
-        if (serviceInfo.getNetwork() != null && discoverInterface == IFACE_IDX_ANY) {
+        final int discoverInterface = getNetworkInterfaceIndex(network);
+        if (network != null && discoverInterface == IFACE_IDX_ANY) {
             Log.e(TAG, "Interface to discover service on not found");
             return false;
         }
@@ -793,8 +763,9 @@ public class NsdService extends INsdManager.Stub {
     private boolean resolveService(int resolveId, NsdServiceInfo service) {
         final String name = service.getServiceName();
         final String type = service.getServiceType();
-        final int resolveInterface = getNetworkInterfaceIndex(service);
-        if (service.getNetwork() != null && resolveInterface == IFACE_IDX_ANY) {
+        final Network network = service.getNetwork();
+        final int resolveInterface = getNetworkInterfaceIndex(network);
+        if (network != null && resolveInterface == IFACE_IDX_ANY) {
             Log.e(TAG, "Interface to resolve service on not found");
             return false;
         }
@@ -810,17 +781,8 @@ public class NsdService extends INsdManager.Stub {
      * this is to support the legacy mdnsresponder implementation, which historically resolved
      * services on an unspecified network.
      */
-    private int getNetworkInterfaceIndex(NsdServiceInfo serviceInfo) {
-        final Network network = serviceInfo.getNetwork();
-        if (network == null) {
-            // Fallback to getInterfaceIndex if present (typically if the NsdServiceInfo was
-            // provided by NsdService from discovery results, and the service was found on an
-            // interface that has no app-usable Network).
-            if (serviceInfo.getInterfaceIndex() != 0) {
-                return serviceInfo.getInterfaceIndex();
-            }
-            return IFACE_IDX_ANY;
-        }
+    private int getNetworkInterfaceIndex(Network network) {
+        if (network == null) return IFACE_IDX_ANY;
 
         final ConnectivityManager cm = mContext.getSystemService(ConnectivityManager.class);
         if (cm == null) {

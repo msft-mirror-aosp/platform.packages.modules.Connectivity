@@ -17,7 +17,6 @@
 package com.android.server.connectivity;
 
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
-import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 
 import static com.android.net.module.util.CollectionUtils.contains;
 
@@ -37,7 +36,6 @@ import android.os.ServiceSpecificException;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.NetworkStackConstants;
 import com.android.server.ConnectivityService;
@@ -128,11 +126,6 @@ public class Nat464Xlat {
         final boolean supported = contains(NETWORK_TYPES, nai.networkInfo.getType());
         final boolean connected = contains(NETWORK_STATES, nai.networkInfo.getState());
 
-        // Allow to run clat on test network.
-        // TODO: merge to boolean "supported" once boolean "supported" is migrated to
-        // NetworkCapabilities.TRANSPORT_*.
-        final boolean isTestNetwork = nai.networkCapabilities.hasTransport(TRANSPORT_TEST);
-
         // Only run clat on networks that have a global IPv6 address and don't have a native IPv4
         // address.
         LinkProperties lp = nai.linkProperties;
@@ -143,8 +136,8 @@ public class Nat464Xlat {
         final boolean skip464xlat = (nai.netAgentConfig() != null)
                 && nai.netAgentConfig().skip464xlat;
 
-        return (supported || isTestNetwork) && connected && isIpv6OnlyNetwork && !skip464xlat
-                && !nai.destroyed && (nai.networkCapabilities.hasTransport(TRANSPORT_CELLULAR)
+        return supported && connected && isIpv6OnlyNetwork && !skip464xlat && !nai.destroyed
+                && (nai.networkCapabilities.hasTransport(TRANSPORT_CELLULAR)
                 ? isCellular464XlatEnabled() : true);
     }
 
@@ -531,24 +524,6 @@ public class Nat464Xlat {
 
     public void interfaceRemoved(String iface) {
         mNetwork.handler().post(() -> handleInterfaceRemoved(iface));
-    }
-
-    /**
-     * Dump the NAT64 xlat information.
-     *
-     * @param pw print writer.
-     */
-    public void dump(IndentingPrintWriter pw) {
-        if (SdkLevel.isAtLeastT()) {
-            if (isStarted()) {
-                pw.println("ClatCoordinator:");
-                pw.increaseIndent();
-                mClatCoordinator.dump(pw);
-                pw.decreaseIndent();
-            } else {
-                pw.println("<not started>");
-            }
-        }
     }
 
     @Override

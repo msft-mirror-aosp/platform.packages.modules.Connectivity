@@ -51,8 +51,5 @@ android_test {
         "cts",
         "general-tests",
     ],
-    data: [
-        ":CtsNetTestAppForApi23",
-    ],
-    per_testcase_directory: true,
+
 }

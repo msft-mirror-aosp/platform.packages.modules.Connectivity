@@ -314,8 +314,7 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
     }
 
     // TODO: use android::base::ScopeGuard.
-    if (int ret = posix_spawnattr_setflags(&attr, POSIX_SPAWN_USEVFORK
-                                           | POSIX_SPAWN_CLOEXEC_DEFAULT)) {
+    if (int ret = posix_spawnattr_setflags(&attr, POSIX_SPAWN_USEVFORK)) {
         posix_spawnattr_destroy(&attr);
         throwIOException(env, "posix_spawnattr_setflags failed", ret);
         return -1;

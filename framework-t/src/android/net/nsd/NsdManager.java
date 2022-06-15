@@ -175,7 +175,6 @@ public final class NsdManager {
      *
      * @see #ACTION_NSD_STATE_CHANGED
      */
-    // TODO: Deprecate this since NSD service is never disabled.
     public static final int NSD_STATE_DISABLED = 1;
 
     /**
@@ -231,12 +230,17 @@ public final class NsdManager {
     public static final int DAEMON_STARTUP                          = 19;
 
     /** @hide */
-    public static final int MDNS_SERVICE_EVENT                      = 20;
+    public static final int ENABLE                                  = 20;
+    /** @hide */
+    public static final int DISABLE                                 = 21;
 
     /** @hide */
-    public static final int REGISTER_CLIENT                         = 21;
+    public static final int MDNS_SERVICE_EVENT                      = 22;
+
     /** @hide */
-    public static final int UNREGISTER_CLIENT                       = 22;
+    public static final int REGISTER_CLIENT                         = 23;
+    /** @hide */
+    public static final int UNREGISTER_CLIENT                       = 24;
 
     /** Dns based service discovery protocol */
     public static final int PROTOCOL_DNS_SD = 0x0001;
@@ -262,6 +266,8 @@ public final class NsdManager {
         EVENT_NAMES.put(RESOLVE_SERVICE_SUCCEEDED, "RESOLVE_SERVICE_SUCCEEDED");
         EVENT_NAMES.put(DAEMON_CLEANUP, "DAEMON_CLEANUP");
         EVENT_NAMES.put(DAEMON_STARTUP, "DAEMON_STARTUP");
+        EVENT_NAMES.put(ENABLE, "ENABLE");
+        EVENT_NAMES.put(DISABLE, "DISABLE");
         EVENT_NAMES.put(MDNS_SERVICE_EVENT, "MDNS_SERVICE_EVENT");
     }
 
@@ -306,12 +312,9 @@ public final class NsdManager {
             @Override
             public void onAvailable(@NonNull Network network) {
                 final DelegatingDiscoveryListener wrappedListener = new DelegatingDiscoveryListener(
-                        network, mBaseListener, mBaseExecutor);
+                        network, mBaseListener);
                 mPerNetworkListeners.put(network, wrappedListener);
-                // Run discovery callbacks inline on the service handler thread, which is the
-                // same thread used by this NetworkCallback, but DelegatingDiscoveryListener will
-                // use the base executor to run the wrapped callbacks.
-                discoverServices(mServiceType, mProtocolType, network, Runnable::run,
+                discoverServices(mServiceType, mProtocolType, network, mBaseExecutor,
                         wrappedListener);
             }
 
@@ -331,8 +334,7 @@ public final class NsdManager {
         public void start(@NonNull NetworkRequest request) {
             final ConnectivityManager cm = mContext.getSystemService(ConnectivityManager.class);
             cm.registerNetworkCallback(request, mNetworkCb, mHandler);
-            mHandler.post(() -> mBaseExecutor.execute(() ->
-                    mBaseListener.onDiscoveryStarted(mServiceType)));
+            mHandler.post(() -> mBaseListener.onDiscoveryStarted(mServiceType));
         }
 
         /**
@@ -349,7 +351,7 @@ public final class NsdManager {
                 final ConnectivityManager cm = mContext.getSystemService(ConnectivityManager.class);
                 cm.unregisterNetworkCallback(mNetworkCb);
                 if (mPerNetworkListeners.size() == 0) {
-                    mBaseExecutor.execute(() -> mBaseListener.onDiscoveryStopped(mServiceType));
+                    mBaseListener.onDiscoveryStopped(mServiceType);
                     return;
                 }
                 for (int i = 0; i < mPerNetworkListeners.size(); i++) {
@@ -397,23 +399,14 @@ public final class NsdManager {
             }
         }
 
-        /**
-         * A listener wrapping calls to an app-provided listener, while keeping track of found
-         * services, so they can all be reported lost when the underlying network is lost.
-         *
-         * This should be registered to run on the service handler.
-         */
         private class DelegatingDiscoveryListener implements DiscoveryListener {
             private final Network mNetwork;
             private final DiscoveryListener mWrapped;
-            private final Executor mWrappedExecutor;
             private final ArraySet<TrackedNsdInfo> mFoundInfo = new ArraySet<>();
 
-            private DelegatingDiscoveryListener(Network network, DiscoveryListener listener,
-                    Executor executor) {
+            private DelegatingDiscoveryListener(Network network, DiscoveryListener listener) {
                 mNetwork = network;
                 mWrapped = listener;
-                mWrappedExecutor = executor;
             }
 
             void notifyAllServicesLost() {
@@ -422,7 +415,7 @@ public final class NsdManager {
                     final NsdServiceInfo serviceInfo = new NsdServiceInfo(
                             trackedInfo.mServiceName, trackedInfo.mServiceType);
                     serviceInfo.setNetwork(mNetwork);
-                    mWrappedExecutor.execute(() -> mWrapped.onServiceLost(serviceInfo));
+                    mWrapped.onServiceLost(serviceInfo);
                 }
             }
 
@@ -451,7 +444,7 @@ public final class NsdManager {
                     // Do not report onStopDiscoveryFailed when some underlying listeners failed:
                     // this does not mean that all listeners did, and onStopDiscoveryFailed is not
                     // actionable anyway. Just report that discovery stopped.
-                    mWrappedExecutor.execute(() -> mWrapped.onDiscoveryStopped(serviceType));
+                    mWrapped.onDiscoveryStopped(serviceType);
                 }
             }
 
@@ -459,20 +452,20 @@ public final class NsdManager {
             public void onDiscoveryStopped(String serviceType) {
                 mPerNetworkListeners.remove(mNetwork);
                 if (mStopRequested && mPerNetworkListeners.size() == 0) {
-                    mWrappedExecutor.execute(() -> mWrapped.onDiscoveryStopped(serviceType));
+                    mWrapped.onDiscoveryStopped(serviceType);
                 }
             }
 
             @Override
             public void onServiceFound(NsdServiceInfo serviceInfo) {
                 mFoundInfo.add(new TrackedNsdInfo(serviceInfo));
-                mWrappedExecutor.execute(() -> mWrapped.onServiceFound(serviceInfo));
+                mWrapped.onServiceFound(serviceInfo);
             }
 
             @Override
             public void onServiceLost(NsdServiceInfo serviceInfo) {
                 mFoundInfo.remove(new TrackedNsdInfo(serviceInfo));
-                mWrappedExecutor.execute(() -> mWrapped.onServiceLost(serviceInfo));
+                mWrapped.onServiceLost(serviceInfo);
             }
         }
     }
@@ -655,12 +648,8 @@ public final class NsdManager {
 
         @Override
         public void handleMessage(Message message) {
-            // Do not use message in the executor lambdas, as it will be recycled once this method
-            // returns. Keep references to its content instead.
             final int what = message.what;
-            final int errorCode = message.arg1;
             final int key = message.arg2;
-            final Object obj = message.obj;
             final Object listener;
             final NsdServiceInfo ns;
             final Executor executor;
@@ -670,7 +659,7 @@ public final class NsdManager {
                 executor = mExecutorMap.get(key);
             }
             if (listener == null) {
-                Log.d(TAG, "Stale key " + key);
+                Log.d(TAG, "Stale key " + message.arg2);
                 return;
             }
             if (DBG) {
@@ -678,28 +667,28 @@ public final class NsdManager {
             }
             switch (what) {
                 case DISCOVER_SERVICES_STARTED:
-                    final String s = getNsdServiceInfoType((NsdServiceInfo) obj);
+                    final String s = getNsdServiceInfoType((NsdServiceInfo) message.obj);
                     executor.execute(() -> ((DiscoveryListener) listener).onDiscoveryStarted(s));
                     break;
                 case DISCOVER_SERVICES_FAILED:
                     removeListener(key);
                     executor.execute(() -> ((DiscoveryListener) listener).onStartDiscoveryFailed(
-                            getNsdServiceInfoType(ns), errorCode));
+                            getNsdServiceInfoType(ns), message.arg1));
                     break;
                 case SERVICE_FOUND:
                     executor.execute(() -> ((DiscoveryListener) listener).onServiceFound(
-                            (NsdServiceInfo) obj));
+                            (NsdServiceInfo) message.obj));
                     break;
                 case SERVICE_LOST:
                     executor.execute(() -> ((DiscoveryListener) listener).onServiceLost(
-                            (NsdServiceInfo) obj));
+                            (NsdServiceInfo) message.obj));
                     break;
                 case STOP_DISCOVERY_FAILED:
                     // TODO: failure to stop discovery should be internal and retried internally, as
                     // the effect for the client is indistinguishable from STOP_DISCOVERY_SUCCEEDED
                     removeListener(key);
                     executor.execute(() -> ((DiscoveryListener) listener).onStopDiscoveryFailed(
-                            getNsdServiceInfoType(ns), errorCode));
+                            getNsdServiceInfoType(ns), message.arg1));
                     break;
                 case STOP_DISCOVERY_SUCCEEDED:
                     removeListener(key);
@@ -709,33 +698,33 @@ public final class NsdManager {
                 case REGISTER_SERVICE_FAILED:
                     removeListener(key);
                     executor.execute(() -> ((RegistrationListener) listener).onRegistrationFailed(
-                            ns, errorCode));
+                            ns, message.arg1));
                     break;
                 case REGISTER_SERVICE_SUCCEEDED:
                     executor.execute(() -> ((RegistrationListener) listener).onServiceRegistered(
-                            (NsdServiceInfo) obj));
+                            (NsdServiceInfo) message.obj));
                     break;
                 case UNREGISTER_SERVICE_FAILED:
                     removeListener(key);
                     executor.execute(() -> ((RegistrationListener) listener).onUnregistrationFailed(
-                            ns, errorCode));
+                            ns, message.arg1));
                     break;
                 case UNREGISTER_SERVICE_SUCCEEDED:
                     // TODO: do not unregister listener until service is unregistered, or provide
                     // alternative way for unregistering ?
-                    removeListener(key);
+                    removeListener(message.arg2);
                     executor.execute(() -> ((RegistrationListener) listener).onServiceUnregistered(
                             ns));
                     break;
                 case RESOLVE_SERVICE_FAILED:
                     removeListener(key);
                     executor.execute(() -> ((ResolveListener) listener).onResolveFailed(
-                            ns, errorCode));
+                            ns, message.arg1));
                     break;
                 case RESOLVE_SERVICE_SUCCEEDED:
                     removeListener(key);
                     executor.execute(() -> ((ResolveListener) listener).onServiceResolved(
-                            (NsdServiceInfo) obj));
+                            (NsdServiceInfo) message.obj));
                     break;
                 default:
                     Log.d(TAG, "Ignored " + message);
