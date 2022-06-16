@@ -53,7 +53,6 @@ import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_INFO;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_TYPE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
-import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOCKDOWN_VPN;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2;
@@ -153,6 +152,8 @@ import static com.android.server.ConnectivityService.PREFERENCE_ORDER_OEM;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_PROFILE;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_VPN;
 import static com.android.server.ConnectivityServiceTestUtils.transportToLegacyType;
+import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackRegister;
+import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister;
 import static com.android.testutils.ConcurrentUtils.await;
 import static com.android.testutils.ConcurrentUtils.durationOf;
 import static com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
@@ -9516,40 +9517,30 @@ public class ConnectivityServiceTest {
         b2.expectBroadcast();
     }
 
-    @Test
+    @Test @IgnoreUpTo(Build.VERSION_CODES.S_V2)
     public void testLockdownSetFirewallUidRule() throws Exception {
-        // For ConnectivityService#setAlwaysOnVpnPackage.
-        mServiceContext.setPermission(
-                Manifest.permission.CONTROL_ALWAYS_ON_VPN, PERMISSION_GRANTED);
-        // Needed to call Vpn#setAlwaysOnPackage.
-        mServiceContext.setPermission(Manifest.permission.CONTROL_VPN, PERMISSION_GRANTED);
-        // Needed to call Vpn#isAlwaysOnPackageSupported.
-        mServiceContext.setPermission(NETWORK_SETTINGS, PERMISSION_GRANTED);
-
+        final Set<Range<Integer>> lockdownRange = UidRange.toIntRanges(Set.of(PRIMARY_UIDRANGE));
         // Enable Lockdown
-        final ArrayList<String> allowList = new ArrayList<>();
-        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, ALWAYS_ON_PACKAGE,
-                true /* lockdown */, allowList);
+        mCm.setRequireVpnForUids(true /* requireVpn */, lockdownRange);
         waitForIdle();
 
         // Lockdown rule is set to apps uids
-        verify(mBpfNetMaps).setUidRule(
-                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP1_UID), eq(FIREWALL_RULE_DENY));
-        verify(mBpfNetMaps).setUidRule(
-                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP2_UID), eq(FIREWALL_RULE_DENY));
+        verify(mBpfNetMaps, times(3)).updateUidLockdownRule(anyInt(), eq(true) /* add */);
+        verify(mBpfNetMaps).updateUidLockdownRule(APP1_UID, true /* add */);
+        verify(mBpfNetMaps).updateUidLockdownRule(APP2_UID, true /* add */);
+        verify(mBpfNetMaps).updateUidLockdownRule(VPN_UID, true /* add */);
 
         reset(mBpfNetMaps);
 
         // Disable lockdown
-        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, null, false /* lockdown */,
-                allowList);
+        mCm.setRequireVpnForUids(false /* requireVPN */, lockdownRange);
         waitForIdle();
 
         // Lockdown rule is removed from apps uids
-        verify(mBpfNetMaps).setUidRule(
-                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP1_UID), eq(FIREWALL_RULE_ALLOW));
-        verify(mBpfNetMaps).setUidRule(
-                eq(FIREWALL_CHAIN_LOCKDOWN_VPN), eq(APP2_UID), eq(FIREWALL_RULE_ALLOW));
+        verify(mBpfNetMaps, times(3)).updateUidLockdownRule(anyInt(), eq(false) /* add */);
+        verify(mBpfNetMaps).updateUidLockdownRule(APP1_UID, false /* add */);
+        verify(mBpfNetMaps).updateUidLockdownRule(APP2_UID, false /* add */);
+        verify(mBpfNetMaps).updateUidLockdownRule(VPN_UID, false /* add */);
 
         // Interface rules are not changed by Lockdown mode enable/disable
         verify(mBpfNetMaps, never()).addUidInterfaceRules(any(), any());
@@ -10530,69 +10521,67 @@ public class ConnectivityServiceTest {
         assertNull(mService.mPermissionMonitor.getVpnInterfaceUidRanges("tun0"));
     }
 
+    private void checkInterfaceFilteringRuleWithNullInterface(final LinkProperties lp,
+            final int uid) throws Exception {
+        // The uid range needs to cover the test app so the network is visible to it.
+        final Set<UidRange> vpnRange = Collections.singleton(PRIMARY_UIDRANGE);
+        mMockVpn.establish(lp, uid, vpnRange);
+        assertVpnUidRangesUpdated(true, vpnRange, uid);
+
+        if (SdkLevel.isAtLeastT()) {
+            // On T and above, VPN should have rules for null interface. Null Interface is a
+            // wildcard and this accepts traffic from all the interfaces.
+            // There are two expected invocations, one during the VPN initial
+            // connection, one during the VPN LinkProperties update.
+            ArgumentCaptor<int[]> uidCaptor = ArgumentCaptor.forClass(int[].class);
+            verify(mBpfNetMaps, times(2)).addUidInterfaceRules(
+                    eq(null) /* iface */, uidCaptor.capture());
+            if (uid == VPN_UID) {
+                assertContainsExactly(uidCaptor.getAllValues().get(0), APP1_UID, APP2_UID);
+                assertContainsExactly(uidCaptor.getAllValues().get(1), APP1_UID, APP2_UID);
+            } else {
+                assertContainsExactly(uidCaptor.getAllValues().get(0), APP1_UID, APP2_UID, VPN_UID);
+                assertContainsExactly(uidCaptor.getAllValues().get(1), APP1_UID, APP2_UID, VPN_UID);
+            }
+            assertEquals(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */),
+                    vpnRange);
+
+            mMockVpn.disconnect();
+            waitForIdle();
+
+            // Disconnected VPN should have interface rules removed
+            verify(mBpfNetMaps).removeUidInterfaceRules(uidCaptor.capture());
+            if (uid == VPN_UID) {
+                assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID);
+            } else {
+                assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID, VPN_UID);
+            }
+            assertNull(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */));
+        } else {
+            // Before T, rules are not configured for null interface.
+            verify(mBpfNetMaps, never()).addUidInterfaceRules(any(), any());
+        }
+    }
+
     @Test
-    public void testLegacyVpnSetInterfaceFilteringRuleWithWildcard() throws Exception {
+    public void testLegacyVpnInterfaceFilteringRule() throws Exception {
         LinkProperties lp = new LinkProperties();
         lp.setInterfaceName("tun0");
         lp.addRoute(new RouteInfo(new IpPrefix(Inet6Address.ANY, 0), null));
         lp.addRoute(new RouteInfo(new IpPrefix(Inet4Address.ANY, 0), null));
-        // The uid range needs to cover the test app so the network is visible to it.
-        final Set<UidRange> vpnRange = Collections.singleton(PRIMARY_UIDRANGE);
-        mMockVpn.establish(lp, Process.SYSTEM_UID, vpnRange);
-        assertVpnUidRangesUpdated(true, vpnRange, Process.SYSTEM_UID);
-
-        // A connected Legacy VPN should have interface rules with null interface.
-        // Null Interface is a wildcard and this accepts traffic from all the interfaces.
-        // There are two expected invocations, one during the VPN initial connection,
-        // one during the VPN LinkProperties update.
-        ArgumentCaptor<int[]> uidCaptor = ArgumentCaptor.forClass(int[].class);
-        verify(mBpfNetMaps, times(2)).addUidInterfaceRules(
-                eq(null) /* iface */, uidCaptor.capture());
-        assertContainsExactly(uidCaptor.getAllValues().get(0), APP1_UID, APP2_UID, VPN_UID);
-        assertContainsExactly(uidCaptor.getAllValues().get(1), APP1_UID, APP2_UID, VPN_UID);
-        assertEquals(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */),
-                vpnRange);
-
-        mMockVpn.disconnect();
-        waitForIdle();
-
-        // Disconnected VPN should have interface rules removed
-        verify(mBpfNetMaps).removeUidInterfaceRules(uidCaptor.capture());
-        assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID, VPN_UID);
-        assertNull(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */));
+        // Legacy VPN should have interface filtering with null interface.
+        checkInterfaceFilteringRuleWithNullInterface(lp, Process.SYSTEM_UID);
     }
 
     @Test
-    public void testLocalIpv4OnlyVpnSetInterfaceFilteringRuleWithWildcard() throws Exception {
+    public void testLocalIpv4OnlyVpnInterfaceFilteringRule() throws Exception {
         LinkProperties lp = new LinkProperties();
         lp.setInterfaceName("tun0");
         lp.addRoute(new RouteInfo(new IpPrefix("192.0.2.0/24"), null, "tun0"));
         lp.addRoute(new RouteInfo(new IpPrefix(Inet6Address.ANY, 0), RTN_UNREACHABLE));
-        // The uid range needs to cover the test app so the network is visible to it.
-        final Set<UidRange> vpnRange = Collections.singleton(PRIMARY_UIDRANGE);
-        mMockVpn.establish(lp, Process.SYSTEM_UID, vpnRange);
-        assertVpnUidRangesUpdated(true, vpnRange, Process.SYSTEM_UID);
-
-        // IPv6 unreachable route should not be misinterpreted as a default route
-        // A connected VPN should have interface rules with null interface.
-        // Null Interface is a wildcard and this accepts traffic from all the interfaces.
-        // There are two expected invocations, one during the VPN initial connection,
-        // one during the VPN LinkProperties update.
-        ArgumentCaptor<int[]> uidCaptor = ArgumentCaptor.forClass(int[].class);
-        verify(mBpfNetMaps, times(2)).addUidInterfaceRules(
-                eq(null) /* iface */, uidCaptor.capture());
-        assertContainsExactly(uidCaptor.getAllValues().get(0), APP1_UID, APP2_UID, VPN_UID);
-        assertContainsExactly(uidCaptor.getAllValues().get(1), APP1_UID, APP2_UID, VPN_UID);
-        assertEquals(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */),
-                vpnRange);
-
-        mMockVpn.disconnect();
-        waitForIdle();
-
-        // Disconnected VPN should have interface rules removed
-        verify(mBpfNetMaps).removeUidInterfaceRules(uidCaptor.capture());
-        assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID, VPN_UID);
-        assertNull(mService.mPermissionMonitor.getVpnInterfaceUidRanges(null /* iface */));
+        // VPN that does not provide a default route should have interface filtering with null
+        // interface.
+        checkInterfaceFilteringRuleWithNullInterface(lp, VPN_UID);
     }
 
     @Test
@@ -11797,6 +11786,12 @@ public class ConnectivityServiceTest {
         mCm.unregisterNetworkCallback(networkCallback);
     }
 
+    private void verifyDump(String[] args) {
+        final StringWriter stringWriter = new StringWriter();
+        mService.dump(new FileDescriptor(), new PrintWriter(stringWriter), args);
+        assertFalse(stringWriter.toString().isEmpty());
+    }
+
     @Test
     public void testDumpDoesNotCrash() {
         mServiceContext.setPermission(DUMP, PERMISSION_GRANTED);
@@ -11809,11 +11804,26 @@ public class ConnectivityServiceTest {
                 .addTransportType(TRANSPORT_WIFI).build();
         mCm.registerNetworkCallback(genericRequest, genericNetworkCallback);
         mCm.registerNetworkCallback(wifiRequest, wifiNetworkCallback);
-        final StringWriter stringWriter = new StringWriter();
 
-        mService.dump(new FileDescriptor(), new PrintWriter(stringWriter), new String[0]);
+        verifyDump(new String[0]);
 
-        assertFalse(stringWriter.toString().isEmpty());
+        // Verify dump with arguments.
+        final String dumpPrio = "--dump-priority";
+        final String[] dumpArgs = {dumpPrio};
+        verifyDump(dumpArgs);
+
+        final String[] highDumpArgs = {dumpPrio, "HIGH"};
+        verifyDump(highDumpArgs);
+
+        final String[] normalDumpArgs = {dumpPrio, "NORMAL"};
+        verifyDump(normalDumpArgs);
+
+        // Invalid args should do dumpNormal w/o exception
+        final String[] unknownDumpArgs = {dumpPrio, "UNKNOWN"};
+        verifyDump(unknownDumpArgs);
+
+        final String[] invalidDumpArgs = {"UNKNOWN"};
+        verifyDump(invalidDumpArgs);
     }
 
     @Test
@@ -12157,16 +12167,14 @@ public class ConnectivityServiceTest {
         mQosCallbackMockHelper.registerQosCallback(
                 mQosCallbackMockHelper.mFilter, mQosCallbackMockHelper.mCallback);
 
-        final NetworkAgentWrapper.CallbackType.OnQosCallbackRegister cbRegister1 =
-                (NetworkAgentWrapper.CallbackType.OnQosCallbackRegister)
-                        wrapper.getCallbackHistory().poll(1000, x -> true);
+        final OnQosCallbackRegister cbRegister1 =
+                (OnQosCallbackRegister) wrapper.getCallbackHistory().poll(1000, x -> true);
         assertNotNull(cbRegister1);
 
         final int registerCallbackId = cbRegister1.mQosCallbackId;
         mService.unregisterQosCallback(mQosCallbackMockHelper.mCallback);
-        final NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister cbUnregister;
-        cbUnregister = (NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister)
-                wrapper.getCallbackHistory().poll(1000, x -> true);
+        final OnQosCallbackUnregister cbUnregister =
+                (OnQosCallbackUnregister) wrapper.getCallbackHistory().poll(1000, x -> true);
         assertNotNull(cbUnregister);
         assertEquals(registerCallbackId, cbUnregister.mQosCallbackId);
         assertNull(wrapper.getCallbackHistory().poll(200, x -> true));
@@ -12243,6 +12251,86 @@ public class ConnectivityServiceTest {
         verify(mQosCallbackMockHelper.mCallback).onQosSessionLost(argThat(session ->
                 session.getSessionId() == sessionId
                         && session.getSessionType() == QosSession.TYPE_NR_BEARER));
+    }
+
+    @Test @IgnoreUpTo(SC_V2)
+    public void testQosCallbackAvailableOnValidationError() throws Exception {
+        mQosCallbackMockHelper = new QosCallbackMockHelper();
+        final NetworkAgentWrapper wrapper = mQosCallbackMockHelper.mAgentWrapper;
+        final int sessionId = 10;
+        final int qosCallbackId = 1;
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_NONE)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+        mQosCallbackMockHelper.registerQosCallback(
+                mQosCallbackMockHelper.mFilter, mQosCallbackMockHelper.mCallback);
+        OnQosCallbackRegister cbRegister1 =
+                (OnQosCallbackRegister) wrapper.getCallbackHistory().poll(1000, x -> true);
+        assertNotNull(cbRegister1);
+        final int registerCallbackId = cbRegister1.mQosCallbackId;
+
+        waitForIdle();
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+        final EpsBearerQosSessionAttributes attributes = new EpsBearerQosSessionAttributes(
+                1, 2, 3, 4, 5, new ArrayList<>());
+        mQosCallbackMockHelper.mAgentWrapper.getNetworkAgent()
+                .sendQosSessionAvailable(qosCallbackId, sessionId, attributes);
+        waitForIdle();
+
+        final NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister cbUnregister;
+        cbUnregister = (NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister)
+                wrapper.getCallbackHistory().poll(1000, x -> true);
+        assertNotNull(cbUnregister);
+        assertEquals(registerCallbackId, cbUnregister.mQosCallbackId);
+        waitForIdle();
+        verify(mQosCallbackMockHelper.mCallback)
+                .onError(eq(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED));
+    }
+
+    @Test @IgnoreUpTo(SC_V2)
+    public void testQosCallbackLostOnValidationError() throws Exception {
+        mQosCallbackMockHelper = new QosCallbackMockHelper();
+        final int sessionId = 10;
+        final int qosCallbackId = 1;
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_NONE)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+        mQosCallbackMockHelper.registerQosCallback(
+                mQosCallbackMockHelper.mFilter, mQosCallbackMockHelper.mCallback);
+        waitForIdle();
+        EpsBearerQosSessionAttributes attributes =
+                sendQosSessionEvent(qosCallbackId, sessionId, true);
+        waitForIdle();
+
+        verify(mQosCallbackMockHelper.mCallback).onQosEpsBearerSessionAvailable(argThat(session ->
+                session.getSessionId() == sessionId
+                        && session.getSessionType() == QosSession.TYPE_EPS_BEARER), eq(attributes));
+
+        doReturn(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED)
+                .when(mQosCallbackMockHelper.mFilter).validate();
+
+        sendQosSessionEvent(qosCallbackId, sessionId, false);
+        waitForIdle();
+        verify(mQosCallbackMockHelper.mCallback)
+                .onError(eq(QosCallbackException.EX_TYPE_FILTER_SOCKET_REMOTE_ADDRESS_CHANGED));
+    }
+
+    private EpsBearerQosSessionAttributes sendQosSessionEvent(
+            int qosCallbackId, int sessionId, boolean available) {
+        if (available) {
+            final EpsBearerQosSessionAttributes attributes = new EpsBearerQosSessionAttributes(
+                    1, 2, 3, 4, 5, new ArrayList<>());
+            mQosCallbackMockHelper.mAgentWrapper.getNetworkAgent()
+                    .sendQosSessionAvailable(qosCallbackId, sessionId, attributes);
+            return attributes;
+        } else {
+            mQosCallbackMockHelper.mAgentWrapper.getNetworkAgent()
+                    .sendQosSessionLost(qosCallbackId, sessionId, QosSession.TYPE_EPS_BEARER);
+            return null;
+        }
+
     }
 
     @Test
