@@ -89,7 +89,7 @@ import java.util.Set;
 public class IpSecServiceParameterizedTest {
     @Rule
     public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule(
-            Build.VERSION_CODES.R /* ignoreClassUpTo */);
+            Build.VERSION_CODES.S_V2 /* ignoreClassUpTo */);
 
     private static final int TEST_SPI = 0xD1201D;
 
@@ -780,6 +780,23 @@ public class IpSecServiceParameterizedTest {
         final TunnelInterfaceRecord tunnelInterfaceInfo =
                 userRecord.mTunnelInterfaceRecords.getResourceOrThrow(tunnelIfaceResourceId);
         assertEquals(newFakeNetwork, tunnelInterfaceInfo.getUnderlyingNetwork());
+    }
+
+    @Test
+    public void testSetNetworkForTunnelInterfaceFailsForNullLp() throws Exception {
+        final IpSecTunnelInterfaceResponse createTunnelResp =
+                createAndValidateTunnel(mSourceAddr, mDestinationAddr, BLESSED_PACKAGE);
+        final Network newFakeNetwork = new Network(1000);
+        final int tunnelIfaceResourceId = createTunnelResp.resourceId;
+
+        try {
+            mIpSecService.setNetworkForTunnelInterface(
+                    tunnelIfaceResourceId, newFakeNetwork, BLESSED_PACKAGE);
+            fail(
+                    "Expected an IllegalArgumentException for underlying network with null"
+                            + " LinkProperties");
+        } catch (IllegalArgumentException expected) {
+        }
     }
 
     @Test
