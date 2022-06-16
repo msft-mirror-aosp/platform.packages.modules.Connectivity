@@ -53,6 +53,9 @@
       "name": "connectivity_native_test"
     },
     {
+      "name": "libclat_test"
+    },
+    {
       "name": "netd_updatable_unit_test"
     },
     {
@@ -80,14 +83,8 @@
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
     },
     {
-      "name": "libclat_test"
-    },
-    {
       "name": "traffic_controller_unit_test",
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
-    },
-    {
-      "name": "libnetworkstats_test"
     },
     {
       "name": "FrameworksNetDeflakeTest"

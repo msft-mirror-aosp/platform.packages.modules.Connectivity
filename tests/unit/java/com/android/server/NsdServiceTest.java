@@ -25,6 +25,7 @@ import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
@@ -83,9 +84,7 @@ import java.util.Queue;
 //  - test NSD_ON ENABLE/DISABLED listening
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-// TODO(b/234099453): re-enable once a newer prebuilt is available
-// @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.CUR_DEVELOPMENT)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 public class NsdServiceTest {
 
     static final int PROTOCOL = NsdManager.PROTOCOL_DNS_SD;
@@ -125,6 +124,10 @@ public class NsdServiceTest {
         doReturn(MDnsManager.MDNS_SERVICE).when(mContext)
                 .getSystemServiceName(MDnsManager.class);
         doReturn(mMockMDnsM).when(mContext).getSystemService(MDnsManager.MDNS_SERVICE);
+        if (mContext.getSystemService(MDnsManager.class) == null) {
+            // Test is using mockito-extended
+            doCallRealMethod().when(mContext).getSystemService(MDnsManager.class);
+        }
         doReturn(true).when(mMockMDnsM).registerService(
                 anyInt(), anyString(), anyString(), anyInt(), any(), anyInt());
         doReturn(true).when(mMockMDnsM).stopOperation(anyInt());
