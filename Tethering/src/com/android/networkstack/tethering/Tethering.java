@@ -140,6 +140,7 @@ import com.android.networkstack.apishim.common.BluetoothPanShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceCallbackShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceRequestShim;
 import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
+import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
 import com.android.networkstack.tethering.util.TetheringUtils;
@@ -254,6 +255,7 @@ public class Tethering {
     private final UserManager mUserManager;
     private final BpfCoordinator mBpfCoordinator;
     private final PrivateAddressCoordinator mPrivateAddressCoordinator;
+    private final TetheringMetrics mTetheringMetrics;
     private int mActiveDataSubId = INVALID_SUBSCRIPTION_ID;
 
     private volatile TetheringConfiguration mConfig;
@@ -292,6 +294,7 @@ public class Tethering {
         mNetd = mDeps.getINetd(mContext);
         mLooper = mDeps.getTetheringLooper();
         mNotificationUpdater = mDeps.getNotificationUpdater(mContext, mLooper);
+        mTetheringMetrics = mDeps.getTetheringMetrics();
 
         // This is intended to ensrure that if something calls startTethering(bluetooth) just after
         // bluetooth is enabled. Before onServiceConnected is called, store the calls into this
@@ -445,8 +448,22 @@ public class Tethering {
                 mStateReceiver, noUpstreamFilter, PERMISSION_MAINLINE_NETWORK_STACK, mHandler);
 
         final WifiManager wifiManager = getWifiManager();
+        TetheringSoftApCallback softApCallback = new TetheringSoftApCallback();
         if (wifiManager != null) {
-            wifiManager.registerSoftApCallback(mExecutor, new TetheringSoftApCallback());
+            wifiManager.registerSoftApCallback(mExecutor, softApCallback);
+        }
+        if (SdkLevel.isAtLeastT() && wifiManager != null) {
+            try {
+                // Although WifiManager#registerLocalOnlyHotspotSoftApCallback document that it need
+                // NEARBY_WIFI_DEVICES permission, but actually a caller who have NETWORK_STACK
+                // or MAINLINE_NETWORK_STACK permission would also able to use this API.
+                wifiManager.registerLocalOnlyHotspotSoftApCallback(mExecutor, softApCallback);
+            } catch (UnsupportedOperationException e) {
+                // Since wifi module development in internal branch,
+                // #registerLocalOnlyHotspotSoftApCallback currently doesn't supported in AOSP
+                // before AOSP switch to Android T + 1.
+                Log.wtf(TAG, "registerLocalOnlyHotspotSoftApCallback API is not supported");
+            }
         }
 
         startTrackDefaultNetwork();
@@ -542,6 +559,13 @@ public class Tethering {
         }
 
         // Called by wifi when the number of soft AP clients changed.
+        // Currently multiple softAp would not behave well in PrivateAddressCoordinator
+        // (where it gets the address from cache), it ensure tethering only support one ipServer for
+        // TETHERING_WIFI. Once tethering support multiple softAp enabled simultaneously,
+        // onConnectedClientsChanged should also be updated to support tracking different softAp's
+        // clients individually.
+        // TODO: Add wtf log and have check to reject request duplicated type with different
+        // interface.
         @Override
         public void onConnectedClientsChanged(final List<WifiClient> clients) {
             updateConnectedClients(clients);
@@ -616,7 +640,8 @@ public class Tethering {
         processInterfaceStateChange(iface, false /* enabled */);
     }
 
-    void startTethering(final TetheringRequestParcel request, final IIntResultListener listener) {
+    void startTethering(final TetheringRequestParcel request, final String callerPkg,
+            final IIntResultListener listener) {
         mHandler.post(() -> {
             final TetheringRequestParcel unfinishedRequest = mActiveTetheringRequests.get(
                     request.tetheringType);
@@ -636,6 +661,7 @@ public class Tethering {
                         request.showProvisioningUi);
             }
             enableTetheringInternal(request.tetheringType, true /* enabled */, listener);
+            mTetheringMetrics.createBuilder(request.tetheringType, callerPkg);
         });
     }
 
@@ -695,7 +721,11 @@ public class Tethering {
 
         // If changing tethering fail, remove corresponding request
         // no matter who trigger the start/stop.
-        if (result != TETHER_ERROR_NO_ERROR) mActiveTetheringRequests.remove(type);
+        if (result != TETHER_ERROR_NO_ERROR) {
+            mActiveTetheringRequests.remove(type);
+            mTetheringMetrics.updateErrorCode(type, result);
+            mTetheringMetrics.sendReport(type);
+        }
     }
 
     private int setWifiTethering(final boolean enable) {
@@ -2779,7 +2809,7 @@ public class Tethering {
         final TetherState tetherState = new TetherState(
                 new IpServer(iface, mLooper, interfaceType, mLog, mNetd, mBpfCoordinator,
                              makeControlCallback(), mConfig, mPrivateAddressCoordinator,
-                             mDeps.getIpServerDependencies()), isNcm);
+                             mTetheringMetrics, mDeps.getIpServerDependencies()), isNcm);
         mTetherStates.put(iface, tetherState);
         tetherState.ipServer.start();
     }
