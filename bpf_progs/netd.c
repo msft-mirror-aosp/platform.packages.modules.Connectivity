@@ -17,6 +17,8 @@
 // The resulting .o needs to load on the Android T Beta 3 bpfloader
 #define BPFLOADER_MIN_VER BPFLOADER_T_BETA3_VERSION
 
+#define V18
+
 #include <bpf_helpers.h>
 #include <linux/bpf.h>
 #include <linux/if.h>
@@ -28,7 +30,6 @@
 #include <linux/ipv6.h>
 #include <linux/pkt_cls.h>
 #include <linux/tcp.h>
-#include <netdutils/UidConstants.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include "bpf_net_helpers.h"
@@ -52,28 +53,40 @@
 #define TCP_FLAG_OFF 13
 #define RST_OFFSET 2
 
-DEFINE_BPF_MAP_GRW(cookie_tag_map, HASH, uint64_t, UidTagValue, COOKIE_UID_MAP_SIZE,
-                   AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(uid_counterset_map, HASH, uint32_t, uint8_t, UID_COUNTERSET_MAP_SIZE,
-                   AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(app_uid_stats_map, HASH, uint32_t, StatsValue, APP_STATS_MAP_SIZE,
-                   AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(stats_map_A, HASH, StatsKey, StatsValue, STATS_MAP_SIZE, AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(stats_map_B, HASH, StatsKey, StatsValue, STATS_MAP_SIZE, AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(iface_stats_map, HASH, uint32_t, StatsValue, IFACE_STATS_MAP_SIZE,
-                   AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(configuration_map, HASH, uint32_t, uint32_t, CONFIGURATION_MAP_SIZE,
-                   AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(uid_owner_map, HASH, uint32_t, UidOwnerValue, UID_OWNER_MAP_SIZE,
-                   AID_NET_BW_ACCT)
-DEFINE_BPF_MAP_GRW(uid_permission_map, HASH, uint32_t, uint8_t, UID_OWNER_MAP_SIZE, AID_NET_BW_ACCT)
+// For maps netd does not need to access
+#define DEFINE_BPF_MAP_NO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
+    DEFINE_BPF_MAP_UGM(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, AID_ROOT, AID_NET_BW_ACCT, 0060)
+
+// For maps netd only needs read only access to
+#define DEFINE_BPF_MAP_RO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
+    DEFINE_BPF_MAP_UGM(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, AID_ROOT, AID_NET_BW_ACCT, 0460)
+
+// For maps netd needs to be able to read and write
+#define DEFINE_BPF_MAP_RW_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
+    DEFINE_BPF_MAP_UGM(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, AID_ROOT, AID_NET_BW_ACCT, 0660)
+
+// Bpf map arrays on creation are preinitialized to 0 and do not support deletion of a key,
+// see: kernel/bpf/arraymap.c array_map_delete_elem() returns -EINVAL (from both syscall and ebpf)
+// Additionally on newer kernels the bpf jit can optimize out the lookups.
+// only valid indexes are [0..CONFIGURATION_MAP_SIZE-1]
+DEFINE_BPF_MAP_RO_NETD(configuration_map, ARRAY, uint32_t, uint32_t, CONFIGURATION_MAP_SIZE)
+
+DEFINE_BPF_MAP_RW_NETD(cookie_tag_map, HASH, uint64_t, UidTagValue, COOKIE_UID_MAP_SIZE)
+DEFINE_BPF_MAP_NO_NETD(uid_counterset_map, HASH, uint32_t, uint8_t, UID_COUNTERSET_MAP_SIZE)
+DEFINE_BPF_MAP_NO_NETD(app_uid_stats_map, HASH, uint32_t, StatsValue, APP_STATS_MAP_SIZE)
+DEFINE_BPF_MAP_RW_NETD(stats_map_A, HASH, StatsKey, StatsValue, STATS_MAP_SIZE)
+DEFINE_BPF_MAP_RO_NETD(stats_map_B, HASH, StatsKey, StatsValue, STATS_MAP_SIZE)
+DEFINE_BPF_MAP_NO_NETD(iface_stats_map, HASH, uint32_t, StatsValue, IFACE_STATS_MAP_SIZE)
+DEFINE_BPF_MAP_NO_NETD(uid_owner_map, HASH, uint32_t, UidOwnerValue, UID_OWNER_MAP_SIZE)
+DEFINE_BPF_MAP_RW_NETD(uid_permission_map, HASH, uint32_t, uint8_t, UID_OWNER_MAP_SIZE)
 
 /* never actually used from ebpf */
-DEFINE_BPF_MAP_GRW(iface_index_name_map, HASH, uint32_t, IfaceValue, IFACE_INDEX_NAME_MAP_SIZE,
-                   AID_NET_BW_ACCT)
+DEFINE_BPF_MAP_NO_NETD(iface_index_name_map, HASH, uint32_t, IfaceValue, IFACE_INDEX_NAME_MAP_SIZE)
 
 static __always_inline int is_system_uid(uint32_t uid) {
-    return (uid <= MAX_SYSTEM_UID) && (uid >= MIN_SYSTEM_UID);
+    // MIN_SYSTEM_UID is AID_ROOT == 0, so uint32_t is *always* >= 0
+    // MAX_SYSTEM_UID is AID_NOBODY == 9999, while AID_APP_START == 10000
+    return (uid < AID_APP_START);
 }
 
 /*
@@ -312,6 +325,7 @@ DEFINE_BPF_PROG("cgroupskb/egress/stats", AID_ROOT, AID_SYSTEM, bpf_cgroup_egres
     return bpf_traffic_account(skb, BPF_EGRESS);
 }
 
+// WARNING: Android T's non-updatable netd depends on the name of this program.
 DEFINE_BPF_PROG("skfilter/egress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_egress_prog)
 (struct __sk_buff* skb) {
     // Clat daemon does not generate new traffic, all its traffic is accounted for already
@@ -331,6 +345,7 @@ DEFINE_BPF_PROG("skfilter/egress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_egress_
     return BPF_MATCH;
 }
 
+// WARNING: Android T's non-updatable netd depends on the name of this program.
 DEFINE_BPF_PROG("skfilter/ingress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_ingress_prog)
 (struct __sk_buff* skb) {
     // Clat daemon traffic is not accounted by virtue of iptables raw prerouting drop rule
@@ -353,6 +368,7 @@ DEFINE_BPF_PROG("schedact/ingress/account", AID_ROOT, AID_NET_ADMIN, tc_bpf_ingr
     return TC_ACT_UNSPEC;
 }
 
+// WARNING: Android T's non-updatable netd depends on the name of this program.
 DEFINE_BPF_PROG("skfilter/allowlist/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_allowlist_prog)
 (struct __sk_buff* skb) {
     uint32_t sock_uid = bpf_get_socket_uid(skb);
@@ -370,6 +386,7 @@ DEFINE_BPF_PROG("skfilter/allowlist/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_allo
     return BPF_NOMATCH;
 }
 
+// WARNING: Android T's non-updatable netd depends on the name of this program.
 DEFINE_BPF_PROG("skfilter/denylist/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_denylist_prog)
 (struct __sk_buff* skb) {
     uint32_t sock_uid = bpf_get_socket_uid(skb);
@@ -387,7 +404,7 @@ DEFINE_BPF_PROG("cgroupsock/inet/create", AID_ROOT, AID_ROOT, inet_socket_create
      * user at install time so we only check the appId part of a request uid at
      * run time. See UserHandle#isSameApp for detail.
      */
-    uint32_t appId = (gid_uid & 0xffffffff) % PER_USER_RANGE;
+    uint32_t appId = (gid_uid & 0xffffffff) % AID_USER_OFFSET;  // == PER_USER_RANGE == 100000
     uint8_t* permissions = bpf_uid_permission_map_lookup_elem(&appId);
     if (!permissions) {
         // UID not in map. Default to just INTERNET permission.
