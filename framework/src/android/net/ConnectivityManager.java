@@ -983,20 +983,11 @@ public class ConnectivityManager {
     public static final int FIREWALL_CHAIN_LOW_POWER_STANDBY = 5;
 
     /**
-     * Firewall chain used for lockdown VPN.
-     * Denylist of apps that cannot receive incoming packets except on loopback because they are
-     * subject to an always-on VPN which is not currently connected.
-     *
-     * @see #BLOCKED_REASON_LOCKDOWN_VPN
-     * @hide
-     */
-    public static final int FIREWALL_CHAIN_LOCKDOWN_VPN = 6;
-
-    /**
      * Firewall chain used for OEM-specific application restrictions.
      * Denylist of apps that will not have network access due to OEM-specific restrictions.
      * @hide
      */
+    @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_OEM_DENY_1 = 7;
 
     /**
@@ -1004,6 +995,7 @@ public class ConnectivityManager {
      * Denylist of apps that will not have network access due to OEM-specific restrictions.
      * @hide
      */
+    @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_OEM_DENY_2 = 8;
 
     /**
@@ -1011,6 +1003,7 @@ public class ConnectivityManager {
      * Denylist of apps that will not have network access due to OEM-specific restrictions.
      * @hide
      */
+    @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_OEM_DENY_3 = 9;
 
     /** @hide */
@@ -1021,7 +1014,6 @@ public class ConnectivityManager {
         FIREWALL_CHAIN_POWERSAVE,
         FIREWALL_CHAIN_RESTRICTED,
         FIREWALL_CHAIN_LOW_POWER_STANDBY,
-        FIREWALL_CHAIN_LOCKDOWN_VPN,
         FIREWALL_CHAIN_OEM_DENY_1,
         FIREWALL_CHAIN_OEM_DENY_2,
         FIREWALL_CHAIN_OEM_DENY_3
