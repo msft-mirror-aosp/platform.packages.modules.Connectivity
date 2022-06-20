@@ -3872,7 +3872,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
 
             final boolean wasValidated = nai.lastValidated;
-            final boolean wasDefault = isDefaultNetwork(nai);
             final boolean wasPartial = nai.partialConnectivity;
             nai.partialConnectivity = ((testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
             final boolean partialConnectivityChanged =
@@ -7767,10 +7766,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // when the old rules are removed and the time when new rules are added. To fix this,
         // make eBPF support two allowlisted interfaces so here new rules can be added before the
         // old rules are being removed.
-
-        // Null iface given to onVpnUidRangesAdded/Removed is a wildcard to allow apps to receive
-        // packets on all interfaces. This is required to accept incoming traffic in Lockdown mode
-        // by overriding the Lockdown blocking rule.
         if (wasFiltering) {
             mPermissionMonitor.onVpnUidRangesRemoved(oldIface, ranges, vpnAppUid);
         }
@@ -8096,12 +8091,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * Returns whether we need to set interface filtering rule or not
      */
     private boolean requiresVpnAllowRule(NetworkAgentInfo nai, LinkProperties lp,
-            String filterIface) {
-        // Only filter if lp has an interface.
-        if (lp == null || lp.getInterfaceName() == null) return false;
-        // Before T, allow rules are only needed if VPN isolation is enabled.
-        // T and After T, allow rules are needed for all VPNs.
-        return filterIface != null || (nai.isVPN() && SdkLevel.isAtLeastT());
+            String isolationIface) {
+        // Allow rules are always needed if VPN isolation is enabled.
+        if (isolationIface != null) return true;
+
+        // On T and above, allow rules are needed for all VPNs. Allow rule with null iface is a
+        // wildcard to allow apps to receive packets on all interfaces. This is required to accept
+        // incoming traffic in Lockdown mode by overriding the Lockdown blocking rule.
+        return SdkLevel.isAtLeastT() && nai.isVPN() && lp != null && lp.getInterfaceName() != null;
     }
 
     private static UidRangeParcel[] toUidRangeStableParcels(final @NonNull Set<UidRange> ranges) {
@@ -8244,10 +8241,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // above, where the addition of new ranges happens before the removal of old ranges.
             // TODO Fix this window by computing an accurate diff on Set<UidRange>, so the old range
             // to be removed will never overlap with the new range to be added.
-
-            // Null iface given to onVpnUidRangesAdded/Removed is a wildcard to allow apps to
-            // receive packets on all interfaces. This is required to accept incoming traffic in
-            // Lockdown mode by overriding the Lockdown blocking rule.
             if (wasFiltering && !prevRanges.isEmpty()) {
                 mPermissionMonitor.onVpnUidRangesRemoved(oldIface, prevRanges,
                         prevNc.getOwnerUid());
@@ -8349,7 +8342,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mPendingIntentWakeLock.acquire();
         try {
             if (DBG) log("Sending " + pendingIntent);
-            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */);
+            final BroadcastOptions options = BroadcastOptions.makeBasic();
+            if (SdkLevel.isAtLeastT()) {
+                // Explicitly disallow the receiver from starting activities, to prevent apps from
+                // utilizing the PendingIntent as a backdoor to do this.
+                options.setPendingIntentBackgroundActivityLaunchAllowed(false);
+            }
+            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */,
+                    null /* requiredPermission */,
+                    SdkLevel.isAtLeastT() ? options.toBundle() : null);
         } catch (PendingIntent.CanceledException e) {
             if (DBG) log(pendingIntent + " was not sent, it had been canceled.");
             mPendingIntentWakeLock.release();
@@ -9258,7 +9259,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
             params.networkCapabilities = networkAgent.networkCapabilities;
             params.linkProperties = new LinkProperties(networkAgent.linkProperties,
                     true /* parcelSensitiveFields */);
-            networkAgent.networkMonitor().notifyNetworkConnected(params);
+            // isAtLeastT() is conservative here, as recent versions of NetworkStack support the
+            // newer callback even before T. However getInterfaceVersion is a synchronized binder
+            // call that would cause a Log.wtf to be emitted from the system_server process, and
+            // in the absence of a satisfactory, scalable solution which follows an easy/standard
+            // process to check the interface version, just use an SDK check. NetworkStack will
+            // always be new enough when running on T+.
+            if (SdkLevel.isAtLeastT()) {
+                networkAgent.networkMonitor().notifyNetworkConnected(params);
+            } else {
+                networkAgent.networkMonitor().notifyNetworkConnected(params.linkProperties,
+                        params.networkCapabilities);
+            }
             scheduleUnvalidatedPrompt(networkAgent);
 
             // Whether a particular NetworkRequest listen should cause signal strength thresholds to
@@ -11355,6 +11367,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final int defaultRule;
         switch (chain) {
             case ConnectivityManager.FIREWALL_CHAIN_STANDBY:
+            case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1:
+            case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2:
+            case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3:
                 defaultRule = FIREWALL_RULE_ALLOW;
                 break;
             case ConnectivityManager.FIREWALL_CHAIN_DOZABLE:
@@ -11403,6 +11418,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY:
                     mBpfNetMaps.replaceUidChain("fw_low_power_standby", true /* isAllowList */,
                             uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1:
+                    mBpfNetMaps.replaceUidChain("fw_oem_deny_1", false /* isAllowList */, uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2:
+                    mBpfNetMaps.replaceUidChain("fw_oem_deny_2", false /* isAllowList */, uids);
+                    break;
+                case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3:
+                    mBpfNetMaps.replaceUidChain("fw_oem_deny_3", false /* isAllowList */, uids);
                     break;
                 default:
                     throw new IllegalArgumentException("replaceFirewallChain with invalid chain: "
