@@ -226,7 +226,7 @@ public class EthernetNetworkFactory {
     protected boolean removeInterface(String interfaceName) {
         NetworkInterfaceState iface = mTrackingInterfaces.remove(interfaceName);
         if (iface != null) {
-            iface.destroy();
+            iface.unregisterNetworkOfferAndStop();
             return true;
         }
         // TODO(b/236892130): if an interface is currently in server mode, it may not be properly
@@ -462,7 +462,7 @@ public class EthernetNetworkFactory {
                     + "transport type.");
         }
 
-        private static NetworkScore getBestNetworkScore() {
+        private static NetworkScore getNetworkScore() {
             return new NetworkScore.Builder().build();
         }
 
@@ -635,7 +635,7 @@ public class EthernetNetworkFactory {
 
             if (!up) { // was up, goes down
                 // retract network offer and stop IpClient.
-                destroy();
+                unregisterNetworkOfferAndStop();
                 // If only setting the interface down, send a callback to signal completion.
                 EthernetNetworkFactory.maybeSendNetworkManagementCallback(listener, name, null);
             } else { // was down, goes up
@@ -665,12 +665,12 @@ public class EthernetNetworkFactory {
         }
 
         private void registerNetworkOffer() {
-            mNetworkProvider.registerNetworkOffer(getBestNetworkScore(),
+            mNetworkProvider.registerNetworkOffer(getNetworkScore(),
                     new NetworkCapabilities(mCapabilities), cmd -> mHandler.post(cmd),
                     mNetworkOfferCallback);
         }
 
-        public void destroy() {
+        public void unregisterNetworkOfferAndStop() {
             mNetworkProvider.unregisterNetworkOffer(mNetworkOfferCallback);
             stop();
             mRequests.clear();
