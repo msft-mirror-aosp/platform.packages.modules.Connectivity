@@ -38,7 +38,7 @@
 
 #include <netdutils/MockSyscalls.h>
 
-#define TEST_BPF_MAP
+#define BPF_MAP_MAKE_VISIBLE_FOR_TESTING
 #include "TrafficController.h"
 #include "bpf/BpfUtils.h"
 #include "NetdUpdatablePublic.h"
@@ -98,7 +98,7 @@ class TrafficControllerTest : public ::testing::Test {
         mFakeStatsMapA.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeStatsMapA);
 
-        mFakeConfigurationMap.resetMap(BPF_MAP_TYPE_HASH, 1);
+        mFakeConfigurationMap.resetMap(BPF_MAP_TYPE_ARRAY, CONFIGURATION_MAP_SIZE);
         ASSERT_VALID(mFakeConfigurationMap);
 
         mFakeUidOwnerMap.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
@@ -122,8 +122,8 @@ class TrafficControllerTest : public ::testing::Test {
         ASSERT_VALID(mTc.mConfigurationMap);
 
         // Always write to stats map A by default.
-        ASSERT_RESULT_OK(mTc.mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY,
-                                                          SELECT_MAP_A, BPF_ANY));
+        static_assert(SELECT_MAP_A == 0);
+
         mTc.mUidOwnerMap = mFakeUidOwnerMap;
         ASSERT_VALID(mTc.mUidOwnerMap);
         mTc.mUidPermissionMap = mFakeUidPermissionMap;
@@ -218,7 +218,7 @@ class TrafficControllerTest : public ::testing::Test {
         checkEachUidValue(uids, match);
     }
 
-    void expectUidOwnerMapValues(const std::vector<uint32_t>& appUids, uint8_t expectedRule,
+    void expectUidOwnerMapValues(const std::vector<uint32_t>& appUids, uint32_t expectedRule,
                                  uint32_t expectedIif) {
         for (uint32_t uid : appUids) {
             Result<UidOwnerValue> value = mFakeUidOwnerMap.readValue(uid);
@@ -260,37 +260,6 @@ class TrafficControllerTest : public ::testing::Test {
     void expectPrivilegedUserSetEmpty() {
         std::lock_guard guard(mTc.mMutex);
         EXPECT_TRUE(mTc.mPrivilegedUser.empty());
-    }
-
-    void addPrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_UPDATE_DEVICE_STATS, privilegedUid);
-    }
-
-    void removePrivilegedUid(uid_t uid) {
-        std::vector privilegedUid = {uid};
-        mTc.setPermissionForUids(INetd::PERMISSION_NONE, privilegedUid);
-    }
-
-    void expectFakeStatsUnchanged(uint64_t cookie, uint32_t tag, uint32_t uid,
-                                  StatsKey tagStatsMapKey) {
-        Result<UidTagValue> cookieMapResult = mFakeCookieTagMap.readValue(cookie);
-        EXPECT_RESULT_OK(cookieMapResult);
-        EXPECT_EQ(uid, cookieMapResult.value().uid);
-        EXPECT_EQ(tag, cookieMapResult.value().tag);
-        Result<StatsValue> statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        tagStatsMapKey.tag = 0;
-        statsMapResult = mFakeStatsMapA.readValue(tagStatsMapKey);
-        EXPECT_RESULT_OK(statsMapResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, statsMapResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, statsMapResult.value().rxBytes);
-        auto appStatsResult = mFakeAppUidStatsMap.readValue(uid);
-        EXPECT_RESULT_OK(appStatsResult);
-        EXPECT_EQ((uint64_t)RXPACKETS, appStatsResult.value().rxPackets);
-        EXPECT_EQ((uint64_t)RXBYTES, appStatsResult.value().rxBytes);
     }
 
     Status updateUidOwnerMaps(const std::vector<uint32_t>& appUids,
@@ -438,7 +407,6 @@ TEST_F(TrafficControllerTest, TestChangeUidOwnerRule) {
     checkUidOwnerRuleForChain(POWERSAVE, POWERSAVE_MATCH);
     checkUidOwnerRuleForChain(RESTRICTED, RESTRICTED_MATCH);
     checkUidOwnerRuleForChain(LOW_POWER_STANDBY, LOW_POWER_STANDBY_MATCH);
-    checkUidOwnerRuleForChain(LOCKDOWN, LOCKDOWN_VPN_MATCH);
     checkUidOwnerRuleForChain(OEM_DENY_1, OEM_DENY_1_MATCH);
     checkUidOwnerRuleForChain(OEM_DENY_2, OEM_DENY_2_MATCH);
     checkUidOwnerRuleForChain(OEM_DENY_3, OEM_DENY_3_MATCH);
@@ -567,6 +535,21 @@ TEST_F(TrafficControllerTest, TestRemoveUidInterfaceFilteringRules) {
 
     // Remove everything
     ASSERT_TRUE(isOk(mTc.removeUidInterfaceRules({1000})));
+    expectMapEmpty(mFakeUidOwnerMap);
+}
+
+TEST_F(TrafficControllerTest, TestUpdateUidLockdownRule) {
+    // Add Lockdown rules
+    ASSERT_TRUE(isOk(mTc.updateUidLockdownRule(1000, true /* add */)));
+    ASSERT_TRUE(isOk(mTc.updateUidLockdownRule(1001, true /* add */)));
+    expectUidOwnerMapValues({1000, 1001}, LOCKDOWN_VPN_MATCH, 0);
+
+    // Remove one of Lockdown rules
+    ASSERT_TRUE(isOk(mTc.updateUidLockdownRule(1000, false /* add */)));
+    expectUidOwnerMapValues({1001}, LOCKDOWN_VPN_MATCH, 0);
+
+    // Remove remaining Lockdown rule
+    ASSERT_TRUE(isOk(mTc.updateUidLockdownRule(1001, false /* add */)));
     expectMapEmpty(mFakeUidOwnerMap);
 }
 
@@ -916,7 +899,6 @@ TEST_F(TrafficControllerTest, getFirewallType) {
             {POWERSAVE, ALLOWLIST},
             {RESTRICTED, ALLOWLIST},
             {LOW_POWER_STANDBY, ALLOWLIST},
-            {LOCKDOWN, DENYLIST},
             {OEM_DENY_1, DENYLIST},
             {OEM_DENY_2, DENYLIST},
             {OEM_DENY_3, DENYLIST},

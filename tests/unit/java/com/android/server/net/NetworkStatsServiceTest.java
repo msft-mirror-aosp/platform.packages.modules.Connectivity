@@ -95,13 +95,16 @@ import android.annotation.NonNull;
 import android.app.AlarmManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Resources;
 import android.database.ContentObserver;
+import android.net.ConnectivityResources;
 import android.net.DataUsageRequest;
 import android.net.INetd;
 import android.net.INetworkStatsSession;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
+import android.net.NetworkIdentity;
 import android.net.NetworkStateSnapshot;
 import android.net.NetworkStats;
 import android.net.NetworkStatsCollection;
@@ -128,6 +131,7 @@ import androidx.annotation.Nullable;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
+import com.android.connectivity.resources.R;
 import com.android.internal.util.FileRotator;
 import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.net.module.util.IBpfMap;
@@ -165,6 +169,7 @@ import java.time.ZonedDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -247,6 +252,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private @Mock PersistentInt mImportLegacyAttemptsCounter;
     private @Mock PersistentInt mImportLegacySuccessesCounter;
     private @Mock PersistentInt mImportLegacyFallbacksCounter;
+    private @Mock Resources mResources;
+    private Boolean mIsDebuggable;
 
     private class MockContext extends BroadcastInterceptingContext {
         private final Context mBaseContext;
@@ -307,6 +314,12 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
+
+        // Setup mock resources.
+        final Context mockResContext = mock(Context.class);
+        doReturn(mResources).when(mockResContext).getResources();
+        ConnectivityResources.setResourcesContextForTest(mockResContext);
+
         final Context context = InstrumentationRegistry.getContext();
         mServiceContext = new MockContext(context);
         when(mLocationPermissionChecker.checkCallersLocationPermission(
@@ -461,6 +474,11 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
             @Override
             public IBpfMap<UidStatsMapKey, StatsMapValue> getAppUidStatsMap() {
                 return mAppUidStatsMap;
+            }
+
+            @Override
+            public boolean isDebuggable() {
+                return mIsDebuggable == Boolean.TRUE;
             }
         };
     }
@@ -1898,19 +1916,127 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         //  will decrease the retry counter by 1.
     }
 
+    @Test
+    public void testDataMigration_differentFromFallback() throws Exception {
+        assertStatsFilesExist(false);
+        expectDefaultSettings();
+
+        NetworkStateSnapshot[] states = new NetworkStateSnapshot[]{buildWifiState()};
+
+        mService.notifyNetworkStatus(NETWORKS_WIFI, states, getActiveIface(states),
+                new UnderlyingNetworkInfo[0]);
+
+        // modify some number on wifi, and trigger poll event
+        incrementCurrentTime(HOUR_IN_MILLIS);
+        expectNetworkStatsSummary(new NetworkStats(getElapsedRealtime(), 1)
+                .insertEntry(TEST_IFACE, 1024L, 8L, 2048L, 16L));
+        expectNetworkStatsUidDetail(new NetworkStats(getElapsedRealtime(), 1)
+                .insertEntry(TEST_IFACE, UID_BLUE, SET_DEFAULT, TAG_NONE, 128L, 1L, 128L, 1L, 0L));
+        forcePollAndWaitForIdle();
+        // Simulate shutdown to force persisting data
+        mServiceContext.sendBroadcast(new Intent(Intent.ACTION_SHUTDOWN));
+        assertStatsFilesExist(true);
+
+        // Move the files to the legacy directory to simulate an import from old data
+        for (File f : mStatsDir.listFiles()) {
+            Files.move(f.toPath(), mLegacyStatsDir.toPath().resolve(f.getName()));
+        }
+        assertStatsFilesExist(false);
+
+        // Prepare some unexpected data.
+        final NetworkIdentity testWifiIdent = new NetworkIdentity.Builder().setType(TYPE_WIFI)
+                .setWifiNetworkKey(TEST_WIFI_NETWORK_KEY).build();
+        final NetworkStatsCollection.Key unexpectedUidAllkey = new NetworkStatsCollection.Key(
+                Set.of(testWifiIdent), UID_ALL, SET_DEFAULT, 0);
+        final NetworkStatsCollection.Key unexpectedUidBluekey = new NetworkStatsCollection.Key(
+                Set.of(testWifiIdent), UID_BLUE, SET_DEFAULT, 0);
+        final NetworkStatsHistory unexpectedHistory = new NetworkStatsHistory
+                .Builder(965L /* bucketDuration */, 1)
+                .addEntry(new NetworkStatsHistory.Entry(TEST_START, 3L, 55L, 4L, 31L, 10L, 5L))
+                .build();
+
+        // Simulate the platform stats collection somehow is different from what is read from
+        // the fallback method. The service should read them as is. This usually happens when an
+        // OEM has changed the implementation of NetworkStatsDataMigrationUtils inside the platform.
+        final NetworkStatsCollection summaryCollection =
+                getLegacyCollection(PREFIX_XT, false /* includeTags */);
+        summaryCollection.recordHistory(unexpectedUidAllkey, unexpectedHistory);
+        final NetworkStatsCollection uidCollection =
+                getLegacyCollection(PREFIX_UID, false /* includeTags */);
+        uidCollection.recordHistory(unexpectedUidBluekey, unexpectedHistory);
+        mPlatformNetworkStatsCollection.put(PREFIX_DEV, summaryCollection);
+        mPlatformNetworkStatsCollection.put(PREFIX_XT, summaryCollection);
+        mPlatformNetworkStatsCollection.put(PREFIX_UID, uidCollection);
+        mPlatformNetworkStatsCollection.put(PREFIX_UID_TAG,
+                getLegacyCollection(PREFIX_UID_TAG, true /* includeTags */));
+
+        // Mock zero usage and boot through serviceReady(), verify there is no imported data.
+        expectDefaultSettings();
+        expectNetworkStatsUidDetail(buildEmptyStats());
+        expectSystemReady();
+        mService.systemReady();
+        assertStatsFilesExist(false);
+
+        // Set the flag and reboot, verify the imported data is not there until next boot.
+        mStoreFilesInApexData = true;
+        mImportLegacyTargetAttempts = 3;
+        mServiceContext.sendBroadcast(new Intent(Intent.ACTION_SHUTDOWN));
+        assertStatsFilesExist(false);
+
+        // Boot through systemReady() again.
+        expectDefaultSettings();
+        expectNetworkStatsUidDetail(buildEmptyStats());
+        expectSystemReady();
+        mService.systemReady();
+
+        // Verify the result read from public API matches the result returned from the importer.
+        assertNetworkTotal(sTemplateWifi, 1024L + 55L, 8L + 4L, 2048L + 31L, 16L + 10L, 0 + 5);
+        assertUidTotal(sTemplateWifi, UID_BLUE,
+                128L + 55L, 1L + 4L, 128L + 31L, 1L + 10L, 0 + 5);
+        assertStatsFilesExist(true);
+        verify(mImportLegacyAttemptsCounter).set(3);
+        verify(mImportLegacySuccessesCounter).set(1);
+    }
+
+    @Test
+    public void testShouldRunComparison() {
+        for (Boolean isDebuggable : Set.of(Boolean.TRUE, Boolean.FALSE)) {
+            mIsDebuggable = isDebuggable;
+            // Verify return false regardless of the device is debuggable.
+            doReturn(0).when(mResources)
+                    .getInteger(R.integer.config_netstats_validate_import);
+            assertShouldRunComparison(false, isDebuggable);
+            // Verify return true regardless of the device is debuggable.
+            doReturn(1).when(mResources)
+                    .getInteger(R.integer.config_netstats_validate_import);
+            assertShouldRunComparison(true, isDebuggable);
+            // Verify return true iff the device is debuggable.
+            for (int testValue : Set.of(-1, 2)) {
+                doReturn(testValue).when(mResources)
+                        .getInteger(R.integer.config_netstats_validate_import);
+                assertShouldRunComparison(isDebuggable, isDebuggable);
+            }
+        }
+    }
+
+    private void assertShouldRunComparison(boolean expected, boolean isDebuggable) {
+        assertEquals("shouldRunComparison (debuggable=" + isDebuggable + "): ",
+                expected, mService.shouldRunComparison());
+    }
+
     private NetworkStatsRecorder makeTestRecorder(File directory, String prefix, Config config,
-            boolean includeTags) {
+            boolean includeTags, boolean wipeOnError) {
         final NetworkStats.NonMonotonicObserver observer =
                 mock(NetworkStats.NonMonotonicObserver.class);
         final DropBoxManager dropBox = mock(DropBoxManager.class);
         return new NetworkStatsRecorder(new FileRotator(
                 directory, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
-                observer, dropBox, prefix, config.bucketDuration, includeTags);
+                observer, dropBox, prefix, config.bucketDuration, includeTags, wipeOnError);
     }
 
     private NetworkStatsCollection getLegacyCollection(String prefix, boolean includeTags) {
         final NetworkStatsRecorder recorder = makeTestRecorder(mLegacyStatsDir, prefix,
-                mSettings.getDevConfig(), includeTags);
+                mSettings.getDevConfig(), includeTags, false);
         return recorder.getOrLoadCompleteLocked();
     }
 
