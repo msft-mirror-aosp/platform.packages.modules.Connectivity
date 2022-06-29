@@ -73,16 +73,7 @@ static Status initPrograms(const char* cg2_path) {
     }
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_EGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_EGRESS));
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_INGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_INGRESS));
-
-    // For the devices that support cgroup socket filter, the socket filter
-    // should be loaded successfully by bpfloader. So we attach the filter to
-    // cgroup if the program is pinned properly.
-    // TODO: delete the if statement once all devices should support cgroup
-    // socket filter (ie. the minimum kernel version required is 4.14).
-    if (!access(CGROUP_SOCKET_PROG_PATH, F_OK)) {
-        RETURN_IF_NOT_OK(
-                attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
-    }
+    RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
     return netdutils::status::ok;
 }
 
@@ -110,9 +101,8 @@ Status BpfHandler::initMaps() {
     RETURN_IF_NOT_OK(mStatsMapA.init(STATS_MAP_A_PATH));
     RETURN_IF_NOT_OK(mStatsMapB.init(STATS_MAP_B_PATH));
     RETURN_IF_NOT_OK(mConfigurationMap.init(CONFIGURATION_MAP_PATH));
-    RETURN_IF_NOT_OK(mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY, SELECT_MAP_A,
-                                                  BPF_ANY));
     RETURN_IF_NOT_OK(mUidPermissionMap.init(UID_PERMISSION_MAP_PATH));
+    ALOGI("%s successfully", __func__);
 
     return netdutils::status::ok;
 }
@@ -207,6 +197,7 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
 
     BpfMap<StatsKey, StatsValue>& currentMap =
             (configuration.value() == SELECT_MAP_A) ? mStatsMapA : mStatsMapB;
+    // HACK: mStatsMapB becomes RW BpfMap here, but countUidStatsEntries doesn't modify so it works
     base::Result<void> res = currentMap.iterate(countUidStatsEntries);
     if (!res.ok()) {
         ALOGE("Failed to count the stats entry in map %d: %s", currentMap.getMap().get(),
@@ -242,7 +233,7 @@ int BpfHandler::untagSocket(int sockFd) {
     if (sock_cookie == NONEXISTENT_COOKIE) return -errno;
     base::Result<void> res = mCookieTagMap.deleteValue(sock_cookie);
     if (!res.ok()) {
-        ALOGE("Failed to untag socket: %s\n", strerror(res.error().code()));
+        ALOGE("Failed to untag socket: %s", strerror(res.error().code()));
         return -res.error().code();
     }
     return 0;

@@ -37,6 +37,11 @@ import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.EXTRA_NETWORK;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_REQUEST;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3;
+import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE;
 import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
 import static android.net.ConnectivityManager.TYPE_ETHERNET;
@@ -52,6 +57,7 @@ import static android.net.ConnectivityManager.TYPE_MOBILE_SUPL;
 import static android.net.ConnectivityManager.TYPE_PROXY;
 import static android.net.ConnectivityManager.TYPE_VPN;
 import static android.net.ConnectivityManager.TYPE_WIFI_P2P;
+import static android.net.ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_FOREGROUND;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_IMS;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
@@ -164,7 +170,6 @@ import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.ArraySet;
 import android.util.Log;
-import android.util.Pair;
 import android.util.Range;
 
 import androidx.test.InstrumentationRegistry;
@@ -182,6 +187,7 @@ import com.android.testutils.CompatUtil;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRuleKt;
+import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.TestHttpServer;
@@ -203,6 +209,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
 import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -217,6 +225,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -240,6 +249,10 @@ public class ConnectivityManagerTest {
     @Rule
     public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
 
+    @Rule
+    public final DeviceConfigRule mTestValidationConfigRule = new DeviceConfigRule(
+            5 /* retryCountBeforeSIfConfigChanged */);
+
     private static final String TAG = ConnectivityManagerTest.class.getSimpleName();
 
     public static final int TYPE_MOBILE = ConnectivityManager.TYPE_MOBILE;
@@ -254,6 +267,7 @@ public class ConnectivityManagerTest {
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
     private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 5_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
+    private static final int SOCKET_TIMEOUT_MS = 100;
     private static final int NUM_TRIES_MULTIPATH_PREF_CHECK = 20;
     private static final long INTERVAL_MULTIPATH_PREF_CHECK_MS = 500;
     // device could have only one interface: data, wifi.
@@ -1605,51 +1619,7 @@ public class ConnectivityManagerTest {
 
     private static boolean isTcpKeepaliveSupportedByKernel() {
         final String kVersionString = VintfRuntimeInfo.getKernelVersion();
-        return compareMajorMinorVersion(kVersionString, "4.8") >= 0;
-    }
-
-    private static Pair<Integer, Integer> getVersionFromString(String version) {
-        // Only gets major and minor number of the version string.
-        final Pattern versionPattern = Pattern.compile("^(\\d+)(\\.(\\d+))?.*");
-        final Matcher m = versionPattern.matcher(version);
-        if (m.matches()) {
-            final int major = Integer.parseInt(m.group(1));
-            final int minor = TextUtils.isEmpty(m.group(3)) ? 0 : Integer.parseInt(m.group(3));
-            return new Pair<>(major, minor);
-        } else {
-            return new Pair<>(0, 0);
-        }
-    }
-
-    // TODO: Move to util class.
-    private static int compareMajorMinorVersion(final String s1, final String s2) {
-        final Pair<Integer, Integer> v1 = getVersionFromString(s1);
-        final Pair<Integer, Integer> v2 = getVersionFromString(s2);
-
-        if (v1.first == v2.first) {
-            return Integer.compare(v1.second, v2.second);
-        } else {
-            return Integer.compare(v1.first, v2.first);
-        }
-    }
-
-    /**
-     * Verifies that version string compare logic returns expected result for various cases.
-     * Note that only major and minor number are compared.
-     */
-    @Test
-    public void testMajorMinorVersionCompare() {
-        assertEquals(0, compareMajorMinorVersion("4.8.1", "4.8"));
-        assertEquals(1, compareMajorMinorVersion("4.9", "4.8.1"));
-        assertEquals(1, compareMajorMinorVersion("5.0", "4.8"));
-        assertEquals(1, compareMajorMinorVersion("5", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("5", "5.0"));
-        assertEquals(1, compareMajorMinorVersion("5-beta1", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("4.8.0.0", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("4.8-RC1", "4.8"));
-        assertEquals(0, compareMajorMinorVersion("4.8", "4.8"));
-        assertEquals(-1, compareMajorMinorVersion("3.10", "4.8.0"));
-        assertEquals(-1, compareMajorMinorVersion("4.7.10.10", "4.8"));
+        return DeviceInfoUtils.compareMajorMinorVersion(kVersionString, "4.8") >= 0;
     }
 
     /**
@@ -2799,9 +2769,8 @@ public class ConnectivityManagerTest {
             // Accept partial connectivity network should result in a validated network
             expectNetworkHasCapability(network, NET_CAPABILITY_VALIDATED, WIFI_CONNECT_TIMEOUT_MS);
         } finally {
-            resetValidationConfig();
-            // Reconnect wifi to reset the wifi status
-            reconnectWifi();
+            mHttpServer.stop();
+            mTestValidationConfigRule.runAfterNextCleanup(this::reconnectWifi);
         }
     }
 
@@ -2826,11 +2795,13 @@ public class ConnectivityManagerTest {
             // Reject partial connectivity network should cause the network being torn down
             assertEquals(network, cb.waitForLost());
         } finally {
-            resetValidationConfig();
+            mHttpServer.stop();
             // Wifi will not automatically reconnect to the network. ensureWifiDisconnected cannot
             // apply here. Thus, turn off wifi first and restart to restore.
-            runShellCommand("svc wifi disable");
-            mCtsNetUtils.ensureWifiConnected();
+            mTestValidationConfigRule.runAfterNextCleanup(() -> {
+                runShellCommand("svc wifi disable");
+                mCtsNetUtils.ensureWifiConnected();
+            });
         }
     }
 
@@ -2866,11 +2837,13 @@ public class ConnectivityManagerTest {
             });
             waitForLost(wifiCb);
         } finally {
-            resetValidationConfig();
+            mHttpServer.stop();
             /// Wifi will not automatically reconnect to the network. ensureWifiDisconnected cannot
             // apply here. Thus, turn off wifi first and restart to restore.
-            runShellCommand("svc wifi disable");
-            mCtsNetUtils.ensureWifiConnected();
+            mTestValidationConfigRule.runAfterNextCleanup(() -> {
+                runShellCommand("svc wifi disable");
+                mCtsNetUtils.ensureWifiConnected();
+            });
         }
     }
 
@@ -2930,9 +2903,8 @@ public class ConnectivityManagerTest {
             wifiCb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS, c -> isValidatedCaps(c));
         } finally {
             resetAvoidBadWifi(previousAvoidBadWifi);
-            resetValidationConfig();
-            // Reconnect wifi to reset the wifi status
-            reconnectWifi();
+            mHttpServer.stop();
+            mTestValidationConfigRule.runAfterNextCleanup(this::reconnectWifi);
         }
     }
 
@@ -2974,11 +2946,6 @@ public class ConnectivityManagerTest {
 
         registerNetworkCallback(new NetworkRequest.Builder().build(), cb);
         return future.get(timeout, TimeUnit.MILLISECONDS);
-    }
-
-    private void resetValidationConfig() {
-        NetworkValidationTestUtil.clearValidationTestUrlsDeviceConfig();
-        mHttpServer.stop();
     }
 
     private void prepareHttpServer() throws Exception {
@@ -3053,9 +3020,11 @@ public class ConnectivityManagerTest {
         mHttpServer.addResponse(new TestHttpServer.Request(
                 TEST_HTTP_URL_PATH, Method.GET, "" /* queryParameters */),
                 httpStatusCode, null /* locationHeader */, "" /* content */);
-        NetworkValidationTestUtil.setHttpsUrlDeviceConfig(makeUrl(TEST_HTTPS_URL_PATH));
-        NetworkValidationTestUtil.setHttpUrlDeviceConfig(makeUrl(TEST_HTTP_URL_PATH));
-        NetworkValidationTestUtil.setUrlExpirationDeviceConfig(
+        NetworkValidationTestUtil.setHttpsUrlDeviceConfig(mTestValidationConfigRule,
+                makeUrl(TEST_HTTPS_URL_PATH));
+        NetworkValidationTestUtil.setHttpUrlDeviceConfig(mTestValidationConfigRule,
+                makeUrl(TEST_HTTP_URL_PATH));
+        NetworkValidationTestUtil.setUrlExpirationDeviceConfig(mTestValidationConfigRule,
                 System.currentTimeMillis() + WIFI_CONNECT_TIMEOUT_MS);
     }
 
@@ -3212,7 +3181,7 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "WRITE_SECURE_SETTINGS permission can't be granted to instant apps")
     @Test
     public void testUidsAllowedOnRestrictedNetworks() throws Exception {
-        assumeTrue(TestUtils.shouldTestSApis());
+        assumeTestSApis();
 
         // TODO (b/175199465): figure out a reasonable permission check for
         //  setUidsAllowedOnRestrictedNetworks that allows tests but not system-external callers.
@@ -3225,10 +3194,10 @@ public class ConnectivityManagerTest {
         // because it has been just installed to device. In case the uid is existed in setting
         // mistakenly, try to remove the uid and set correct uids to setting.
         originalUidsAllowedOnRestrictedNetworks.remove(uid);
-        runWithShellPermissionIdentity(() ->
-                ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
-                        mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
+        runWithShellPermissionIdentity(() -> setUidsAllowedOnRestrictedNetworks(
+                mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
 
+        // File a restricted network request with permission first to hold the connection.
         final TestableNetworkCallback testNetworkCb = new TestableNetworkCallback();
         final NetworkRequest testRequest = new NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_TEST)
@@ -3239,6 +3208,19 @@ public class ConnectivityManagerTest {
                 .build();
         runWithShellPermissionIdentity(() -> requestNetwork(testRequest, testNetworkCb),
                 CONNECTIVITY_USE_RESTRICTED_NETWORKS);
+
+        // File another restricted network request without permission.
+        final TestableNetworkCallback restrictedNetworkCb = new TestableNetworkCallback();
+        final NetworkRequest restrictedRequest = new NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_TEST)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                .setNetworkSpecifier(CompatUtil.makeTestNetworkSpecifier(
+                        TEST_RESTRICTED_NW_IFACE_NAME))
+                .build();
+        // Uid is not in allowed list and no permissions. Expect that SecurityException will throw.
+        assertThrows(SecurityException.class,
+                () -> mCm.requestNetwork(restrictedRequest, restrictedNetworkCb));
 
         final NetworkAgent agent = createRestrictedNetworkAgent(mContext);
         final Network network = agent.getNetwork();
@@ -3259,19 +3241,28 @@ public class ConnectivityManagerTest {
             final Set<Integer> newUidsAllowedOnRestrictedNetworks =
                     new ArraySet<>(originalUidsAllowedOnRestrictedNetworks);
             newUidsAllowedOnRestrictedNetworks.add(uid);
-            runWithShellPermissionIdentity(() ->
-                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
-                            mContext, newUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
+            runWithShellPermissionIdentity(() -> setUidsAllowedOnRestrictedNetworks(
+                    mContext, newUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
             // Wait a while for sending allowed uids on the restricted network to netd.
-            // TODD: Have a significant signal to know the uids has been send to netd.
+            // TODD: Have a significant signal to know the uids has been sent to netd.
             assertBindSocketToNetworkSuccess(network);
+
+            if (TestUtils.shouldTestTApis()) {
+                // Uid is in allowed list. Try file network request again.
+                requestNetwork(restrictedRequest, restrictedNetworkCb);
+                // Verify that the network is restricted.
+                restrictedNetworkCb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
+                        NETWORK_CALLBACK_TIMEOUT_MS,
+                        entry -> network.equals(entry.getNetwork())
+                                && (!((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                                .hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)));
+            }
         } finally {
             agent.unregister();
 
             // Restore setting.
-            runWithShellPermissionIdentity(() ->
-                    ConnectivitySettingsManager.setUidsAllowedOnRestrictedNetworks(
-                            mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
+            runWithShellPermissionIdentity(() -> setUidsAllowedOnRestrictedNetworks(
+                    mContext, originalUidsAllowedOnRestrictedNetworks), NETWORK_SETTINGS);
         }
     }
 
@@ -3293,6 +3284,119 @@ public class ConnectivityManagerTest {
         dumpOutput = DumpTestUtils.dumpServiceWithShellPermission(
                 Context.CONNECTIVITY_SERVICE, args[1]);
         assertTrue(dumpOutput, dumpOutput.contains("BPF map content"));
+    }
+
+    private void checkFirewallBlocking(final DatagramSocket srcSock, final DatagramSocket dstSock,
+            final boolean expectBlock) throws Exception {
+        final Random random = new Random();
+        final byte[] sendData = new byte[100];
+        random.nextBytes(sendData);
+
+        final DatagramPacket pkt = new DatagramPacket(sendData, sendData.length,
+                InetAddresses.parseNumericAddress("::1"), dstSock.getLocalPort());
+        try {
+            srcSock.send(pkt);
+        } catch (IOException e) {
+            if (expectBlock) {
+                return;
+            }
+            fail("Expect not to be blocked by firewall but sending packet was blocked");
+        }
+
+        if (expectBlock) {
+            fail("Expect to be blocked by firewall but sending packet was not blocked");
+        }
+
+        dstSock.receive(pkt);
+        assertArrayEquals(sendData, pkt.getData());
+    }
+
+    private static final boolean EXPECT_PASS = false;
+    private static final boolean EXPECT_BLOCK = true;
+
+    private void doTestFirewallBlockingDenyRule(final int chain) {
+        runWithShellPermissionIdentity(() -> {
+            try (DatagramSocket srcSock = new DatagramSocket();
+                 DatagramSocket dstSock = new DatagramSocket()) {
+                dstSock.setSoTimeout(SOCKET_TIMEOUT_MS);
+
+                // No global config, No uid config
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+
+                // Has global config, No uid config
+                mCm.setFirewallChainEnabled(chain, true /* enable */);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+
+                // Has global config, Has uid config
+                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_DENY);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_BLOCK);
+
+                // No global config, Has uid config
+                mCm.setFirewallChainEnabled(chain, false /* enable */);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+
+                // No global config, No uid config
+                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_ALLOW);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+            } finally {
+                mCm.setFirewallChainEnabled(chain, false /* enable */);
+                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_ALLOW);
+            }
+        }, NETWORK_SETTINGS);
+    }
+
+    private void doTestFirewallBlockingAllowRule(final int chain) {
+        runWithShellPermissionIdentity(() -> {
+            try (DatagramSocket srcSock = new DatagramSocket();
+                 DatagramSocket dstSock = new DatagramSocket()) {
+                dstSock.setSoTimeout(SOCKET_TIMEOUT_MS);
+
+                // No global config, No uid config
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+
+                // Has global config, No uid config
+                mCm.setFirewallChainEnabled(chain, true /* enable */);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_BLOCK);
+
+                // Has global config, Has uid config
+                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_ALLOW);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+
+                // No global config, Has uid config
+                mCm.setFirewallChainEnabled(chain, false /* enable */);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+
+                // No global config, No uid config
+                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_DENY);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+            } finally {
+                mCm.setFirewallChainEnabled(chain, false /* enable */);
+                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_DENY);
+            }
+        }, NETWORK_SETTINGS);
+    }
+
+    @Test @IgnoreUpTo(SC_V2)
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlocking() {
+        // Following tests affect the actual state of networking on the device after the test.
+        // This might cause unexpected behaviour of the device. So, we skip them for now.
+        // We will enable following tests after adding the logic of firewall state restoring.
+        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_DOZABLE);
+        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_POWERSAVE);
+        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_RESTRICTED);
+        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_LOW_POWER_STANDBY);
+
+        // doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_STANDBY);
+        doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_OEM_DENY_1);
+        doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_OEM_DENY_2);
+        doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_OEM_DENY_3);
+    }
+
+    private void assumeTestSApis() {
+        // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
+        // shims, and @IgnoreUpTo does not check that.
+        assumeTrue(TestUtils.shouldTestSApis());
     }
 
     private void unregisterRegisteredCallbacks() {

@@ -982,6 +982,30 @@ public class ConnectivityManager {
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_LOW_POWER_STANDBY = 5;
 
+    /**
+     * Firewall chain used for OEM-specific application restrictions.
+     * Denylist of apps that will not have network access due to OEM-specific restrictions.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_OEM_DENY_1 = 7;
+
+    /**
+     * Firewall chain used for OEM-specific application restrictions.
+     * Denylist of apps that will not have network access due to OEM-specific restrictions.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_OEM_DENY_2 = 8;
+
+    /**
+     * Firewall chain used for OEM-specific application restrictions.
+     * Denylist of apps that will not have network access due to OEM-specific restrictions.
+     * @hide
+     */
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_OEM_DENY_3 = 9;
+
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef(flag = false, prefix = "FIREWALL_CHAIN_", value = {
@@ -989,7 +1013,10 @@ public class ConnectivityManager {
         FIREWALL_CHAIN_STANDBY,
         FIREWALL_CHAIN_POWERSAVE,
         FIREWALL_CHAIN_RESTRICTED,
-        FIREWALL_CHAIN_LOW_POWER_STANDBY
+        FIREWALL_CHAIN_LOW_POWER_STANDBY,
+        FIREWALL_CHAIN_OEM_DENY_1,
+        FIREWALL_CHAIN_OEM_DENY_2,
+        FIREWALL_CHAIN_OEM_DENY_3
     })
     public @interface FirewallChain {}
     // LINT.ThenChange(packages/modules/Connectivity/service/native/include/Common.h)
@@ -5876,6 +5903,7 @@ public class ConnectivityManager {
      *
      * @param chain target chain.
      * @param enable whether the chain should be enabled.
+     * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws IllegalStateException if enabling or disabling the firewall chain failed.
      * @hide
      */
@@ -5888,6 +5916,29 @@ public class ConnectivityManager {
     public void setFirewallChainEnabled(@FirewallChain final int chain, final boolean enable) {
         try {
             mService.setFirewallChainEnabled(chain, enable);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Get the specified firewall chain status.
+     *
+     * @param chain target chain.
+     * @return {@code true} if chain is enabled, {@code false} if chain is disabled.
+     * @throws UnsupportedOperationException if called on pre-T devices.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     * @hide
+     */
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.NETWORK_SETTINGS,
+            android.Manifest.permission.NETWORK_STACK,
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
+    })
+    public boolean getFirewallChainEnabled(@FirewallChain final int chain) {
+        try {
+            return mService.getFirewallChainEnabled(chain);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
