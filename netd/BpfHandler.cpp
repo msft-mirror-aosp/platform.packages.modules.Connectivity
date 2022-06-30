@@ -73,16 +73,7 @@ static Status initPrograms(const char* cg2_path) {
     }
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_EGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_EGRESS));
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_INGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_INGRESS));
-
-    // For the devices that support cgroup socket filter, the socket filter
-    // should be loaded successfully by bpfloader. So we attach the filter to
-    // cgroup if the program is pinned properly.
-    // TODO: delete the if statement once all devices should support cgroup
-    // socket filter (ie. the minimum kernel version required is 4.14).
-    if (!access(CGROUP_SOCKET_PROG_PATH, F_OK)) {
-        RETURN_IF_NOT_OK(
-                attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
-    }
+    RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
     return netdutils::status::ok;
 }
 
@@ -110,9 +101,8 @@ Status BpfHandler::initMaps() {
     RETURN_IF_NOT_OK(mStatsMapA.init(STATS_MAP_A_PATH));
     RETURN_IF_NOT_OK(mStatsMapB.init(STATS_MAP_B_PATH));
     RETURN_IF_NOT_OK(mConfigurationMap.init(CONFIGURATION_MAP_PATH));
-    RETURN_IF_NOT_OK(mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY, SELECT_MAP_A,
-                                                  BPF_ANY));
     RETURN_IF_NOT_OK(mUidPermissionMap.init(UID_PERMISSION_MAP_PATH));
+    ALOGI("%s successfully", __func__);
 
     return netdutils::status::ok;
 }
@@ -132,6 +122,46 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
     std::lock_guard guard(mMutex);
     if (chargeUid != realUid && !hasUpdateDeviceStatsPermission(realUid)) {
         return -EPERM;
+    }
+
+    // Note that tagging the socket to AID_CLAT is only implemented in JNI ClatCoordinator.
+    // The process is not allowed to tag socket to AID_CLAT via tagSocket() which would cause
+    // process data usage accounting to be bypassed. Tagging AID_CLAT is used for avoiding counting
+    // CLAT traffic data usage twice. See packages/modules/Connectivity/service/jni/
+    // com_android_server_connectivity_ClatCoordinator.cpp
+    if (chargeUid == AID_CLAT) {
+        return -EPERM;
+    }
+
+    // The socket destroy listener only monitors on the group {INET_TCP, INET_UDP, INET6_TCP,
+    // INET6_UDP}. Tagging listener unsupported socket causes that the tag can't be removed from
+    // tag map automatically. Eventually, the tag map may run out of space because of dead tag
+    // entries. Note that although tagSocket() of net client has already denied the family which
+    // is neither AF_INET nor AF_INET6, the family validation is still added here just in case.
+    // See tagSocket in system/netd/client/NetdClient.cpp and
+    // TrafficController::makeSkDestroyListener in
+    // packages/modules/Connectivity/service/native/TrafficController.cpp
+    // TODO: remove this once the socket destroy listener can detect more types of socket destroy.
+    int socketFamily;
+    socklen_t familyLen = sizeof(socketFamily);
+    if (getsockopt(sockFd, SOL_SOCKET, SO_DOMAIN, &socketFamily, &familyLen)) {
+        ALOGE("Failed to getsockopt SO_DOMAIN: %s, fd: %d", strerror(errno), sockFd);
+        return -errno;
+    }
+    if (socketFamily != AF_INET && socketFamily != AF_INET6) {
+        ALOGE("Unsupported family: %d", socketFamily);
+        return -EAFNOSUPPORT;
+    }
+
+    int socketProto;
+    socklen_t protoLen = sizeof(socketProto);
+    if (getsockopt(sockFd, SOL_SOCKET, SO_PROTOCOL, &socketProto, &protoLen)) {
+        ALOGE("Failed to getsockopt SO_PROTOCOL: %s, fd: %d", strerror(errno), sockFd);
+        return -errno;
+    }
+    if (socketProto != IPPROTO_UDP && socketProto != IPPROTO_TCP) {
+        ALOGE("Unsupported protocol: %d", socketProto);
+        return -EPROTONOSUPPORT;
     }
 
     uint64_t sock_cookie = getSocketCookie(sockFd);
@@ -167,6 +197,7 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
 
     BpfMap<StatsKey, StatsValue>& currentMap =
             (configuration.value() == SELECT_MAP_A) ? mStatsMapA : mStatsMapB;
+    // HACK: mStatsMapB becomes RW BpfMap here, but countUidStatsEntries doesn't modify so it works
     base::Result<void> res = currentMap.iterate(countUidStatsEntries);
     if (!res.ok()) {
         ALOGE("Failed to count the stats entry in map %d: %s", currentMap.getMap().get(),
@@ -202,7 +233,7 @@ int BpfHandler::untagSocket(int sockFd) {
     if (sock_cookie == NONEXISTENT_COOKIE) return -errno;
     base::Result<void> res = mCookieTagMap.deleteValue(sock_cookie);
     if (!res.ok()) {
-        ALOGE("Failed to untag socket: %s\n", strerror(res.error().code()));
+        ALOGE("Failed to untag socket: %s", strerror(res.error().code()));
         return -res.error().code();
     }
     return 0;

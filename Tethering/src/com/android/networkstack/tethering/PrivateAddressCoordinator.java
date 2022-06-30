@@ -90,11 +90,8 @@ public class PrivateAddressCoordinator {
         mCachedAddresses.put(TETHERING_BLUETOOTH, new LinkAddress(LEGACY_BLUETOOTH_IFACE_ADDRESS));
         mCachedAddresses.put(TETHERING_WIFI_P2P, new LinkAddress(LEGACY_WIFI_P2P_IFACE_ADDRESS));
 
-        mTetheringPrefixes = new ArrayList<>(Arrays.asList(new IpPrefix("192.168.0.0/16")));
-        if (config.isSelectAllPrefixRangeEnabled()) {
-            mTetheringPrefixes.add(new IpPrefix("172.16.0.0/12"));
-            mTetheringPrefixes.add(new IpPrefix("10.0.0.0/8"));
-        }
+        mTetheringPrefixes = new ArrayList<>(Arrays.asList(new IpPrefix("192.168.0.0/16"),
+            new IpPrefix("172.16.0.0/12"), new IpPrefix("10.0.0.0/8")));
     }
 
     /**
@@ -175,6 +172,9 @@ public class PrivateAddressCoordinator {
             return new LinkAddress(LEGACY_WIFI_P2P_IFACE_ADDRESS);
         }
 
+        // This ensures that tethering isn't started on 2 different interfaces with the same type.
+        // Once tethering could support multiple interface with the same type,
+        // TetheringSoftApCallback would need to handle it among others.
         final LinkAddress cachedAddress = mCachedAddresses.get(ipServer.interfaceType());
         if (useLastAddress && cachedAddress != null
                 && !isConflictWithUpstream(asIpPrefix(cachedAddress))) {

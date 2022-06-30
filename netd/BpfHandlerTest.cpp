@@ -16,10 +16,12 @@
  * BpfHandlerTest.cpp - unit tests for BpfHandler.cpp
  */
 
+#include <private/android_filesystem_config.h>
 #include <sys/socket.h>
 
 #include <gtest/gtest.h>
 
+#define BPF_MAP_MAKE_VISIBLE_FOR_TESTING
 #include "BpfHandler.h"
 
 using namespace android::bpf;  // NOLINT(google-build-using-namespace): exempted
@@ -47,44 +49,36 @@ class BpfHandlerTest : public ::testing::Test {
     BpfHandler mBh;
     BpfMap<uint64_t, UidTagValue> mFakeCookieTagMap;
     BpfMap<StatsKey, StatsValue> mFakeStatsMapA;
-    BpfMap<uint32_t, uint8_t> mFakeConfigurationMap;
+    BpfMapRO<uint32_t, uint32_t> mFakeConfigurationMap;
     BpfMap<uint32_t, uint8_t> mFakeUidPermissionMap;
 
     void SetUp() {
         std::lock_guard guard(mBh.mMutex);
         ASSERT_EQ(0, setrlimitForTest());
 
-        mFakeCookieTagMap.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(uint64_t), sizeof(UidTagValue),
-                                          TEST_MAP_SIZE, 0));
+        mFakeCookieTagMap.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeCookieTagMap);
 
-        mFakeStatsMapA.reset(createMap(BPF_MAP_TYPE_HASH, sizeof(StatsKey), sizeof(StatsValue),
-                                       TEST_MAP_SIZE, 0));
+        mFakeStatsMapA.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeStatsMapA);
 
-        mFakeConfigurationMap.reset(
-                createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint8_t), 1, 0));
+        mFakeConfigurationMap.resetMap(BPF_MAP_TYPE_ARRAY, CONFIGURATION_MAP_SIZE);
         ASSERT_VALID(mFakeConfigurationMap);
 
-        mFakeUidPermissionMap.reset(
-                createMap(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint8_t), TEST_MAP_SIZE, 0));
+        mFakeUidPermissionMap.resetMap(BPF_MAP_TYPE_HASH, TEST_MAP_SIZE);
         ASSERT_VALID(mFakeUidPermissionMap);
 
-        mBh.mCookieTagMap.reset(dupFd(mFakeCookieTagMap.getMap()));
+        mBh.mCookieTagMap = mFakeCookieTagMap;
         ASSERT_VALID(mBh.mCookieTagMap);
-        mBh.mStatsMapA.reset(dupFd(mFakeStatsMapA.getMap()));
+        mBh.mStatsMapA = mFakeStatsMapA;
         ASSERT_VALID(mBh.mStatsMapA);
-        mBh.mConfigurationMap.reset(dupFd(mFakeConfigurationMap.getMap()));
+        mBh.mConfigurationMap = mFakeConfigurationMap;
         ASSERT_VALID(mBh.mConfigurationMap);
         // Always write to stats map A by default.
-        ASSERT_RESULT_OK(mBh.mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY,
-                                                          SELECT_MAP_A, BPF_ANY));
-        mBh.mUidPermissionMap.reset(dupFd(mFakeUidPermissionMap.getMap()));
-        ASSERT_VALID(mBh.mUidPermissionMap);
-    }
+        static_assert(SELECT_MAP_A == 0, "bpf map arrays are zero-initialized");
 
-    int dupFd(const android::base::unique_fd& mapFd) {
-        return fcntl(mapFd.get(), F_DUPFD_CLOEXEC, 0);
+        mBh.mUidPermissionMap = mFakeUidPermissionMap;
+        ASSERT_VALID(mBh.mUidPermissionMap);
     }
 
     int setUpSocketAndTag(int protocol, uint64_t* cookie, uint32_t tag, uid_t uid,
@@ -187,6 +181,20 @@ TEST_F(BpfHandlerTest, TestTagInvalidSocket) {
     expectMapEmpty(mFakeCookieTagMap);
 }
 
+TEST_F(BpfHandlerTest, TestTagSocketWithUnsupportedFamily) {
+    int packetSocket = socket(AF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    EXPECT_LE(0, packetSocket);
+    EXPECT_NE(NONEXISTENT_COOKIE, getSocketCookie(packetSocket));
+    EXPECT_EQ(-EAFNOSUPPORT, mBh.tagSocket(packetSocket, TEST_TAG, TEST_UID, TEST_UID));
+}
+
+TEST_F(BpfHandlerTest, TestTagSocketWithUnsupportedProtocol) {
+    int rawSocket = socket(AF_INET, SOCK_RAW | SOCK_CLOEXEC, IPPROTO_RAW);
+    EXPECT_LE(0, rawSocket);
+    EXPECT_NE(NONEXISTENT_COOKIE, getSocketCookie(rawSocket));
+    EXPECT_EQ(-EPROTONOSUPPORT, mBh.tagSocket(rawSocket, TEST_TAG, TEST_UID, TEST_UID));
+}
+
 TEST_F(BpfHandlerTest, TestTagSocketWithoutPermission) {
     int sock = socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC, 0);
     ASSERT_NE(-1, sock);
@@ -207,6 +215,12 @@ TEST_F(BpfHandlerTest, TestTagSocketWithPermission) {
     expectUidTag(sockCookie, TEST_UID, TEST_TAG);
     EXPECT_EQ(0, mBh.untagSocket(v6socket));
     expectNoTag(sockCookie);
+    expectMapEmpty(mFakeCookieTagMap);
+
+    // Tag a socket to AID_CLAT other then realUid.
+    int sock = socket(AF_INET6, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ASSERT_NE(-1, sock);
+    ASSERT_EQ(-EPERM, mBh.tagSocket(sock, TEST_TAG, AID_CLAT, realUid));
     expectMapEmpty(mFakeCookieTagMap);
 }
 

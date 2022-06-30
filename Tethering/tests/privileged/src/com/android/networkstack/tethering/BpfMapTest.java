@@ -352,15 +352,6 @@ public final class BpfMapTest {
         assertFalse(mTestMap.isEmpty());
         mTestMap.clear();
         assertTrue(mTestMap.isEmpty());
-
-        // Clearing an already-closed map throws.
-        mTestMap.close();
-        try {
-            mTestMap.clear();
-            fail("clearing already-closed map should throw");
-        } catch (ErrnoException expected) {
-            assertEquals(OsConstants.EBADF, expected.errno);
-        }
     }
 
     @Test
