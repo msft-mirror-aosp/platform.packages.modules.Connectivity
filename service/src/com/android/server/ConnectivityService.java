@@ -3422,6 +3422,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.increaseIndent();
         mNetworkActivityTracker.dump(pw);
         pw.decreaseIndent();
+
+        // pre-T is logged by netd.
+        if (SdkLevel.isAtLeastT()) {
+            pw.println();
+            pw.println("BPF programs & maps:");
+            pw.increaseIndent();
+            // Flush is required. Otherwise, the traces in fd can interleave with traces in pw.
+            pw.flush();
+            dumpTrafficController(pw, fd, /*verbose=*/ true);
+            pw.decreaseIndent();
+        }
     }
 
     private void dumpNetworks(IndentingPrintWriter pw) {
@@ -5487,7 +5498,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public int getLastTetherError(String iface) {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getLastTetherError(iface);
@@ -5496,7 +5506,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableIfaces() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableIfaces();
@@ -5505,7 +5514,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheredIfaces() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetheredIfaces();
@@ -5515,7 +5523,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheringErroredIfaces() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5525,7 +5532,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableUsbRegexs() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5535,7 +5541,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableWifiRegexs() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableWifiRegexs();
@@ -6358,7 +6363,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (null != satisfier) {
                 // If the old NRI was satisfied by an NAI, then it may have had an active request.
                 // The active request is necessary to figure out what callbacks to send, in
-                // particular then a network updates its capabilities.
+                // particular when a network updates its capabilities.
                 // As this code creates a new NRI with a new set of requests, figure out which of
                 // the list of requests should be the active request. It is always the first
                 // request of the list that can be satisfied by the satisfier since the order of
@@ -7766,10 +7771,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // when the old rules are removed and the time when new rules are added. To fix this,
         // make eBPF support two allowlisted interfaces so here new rules can be added before the
         // old rules are being removed.
-
-        // Null iface given to onVpnUidRangesAdded/Removed is a wildcard to allow apps to receive
-        // packets on all interfaces. This is required to accept incoming traffic in Lockdown mode
-        // by overriding the Lockdown blocking rule.
         if (wasFiltering) {
             mPermissionMonitor.onVpnUidRangesRemoved(oldIface, ranges, vpnAppUid);
         }
@@ -8095,12 +8096,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * Returns whether we need to set interface filtering rule or not
      */
     private boolean requiresVpnAllowRule(NetworkAgentInfo nai, LinkProperties lp,
-            String filterIface) {
-        // Only filter if lp has an interface.
-        if (lp == null || lp.getInterfaceName() == null) return false;
-        // Before T, allow rules are only needed if VPN isolation is enabled.
-        // T and After T, allow rules are needed for all VPNs.
-        return filterIface != null || (nai.isVPN() && SdkLevel.isAtLeastT());
+            String isolationIface) {
+        // Allow rules are always needed if VPN isolation is enabled.
+        if (isolationIface != null) return true;
+
+        // On T and above, allow rules are needed for all VPNs. Allow rule with null iface is a
+        // wildcard to allow apps to receive packets on all interfaces. This is required to accept
+        // incoming traffic in Lockdown mode by overriding the Lockdown blocking rule.
+        return SdkLevel.isAtLeastT() && nai.isVPN() && lp != null && lp.getInterfaceName() != null;
     }
 
     private static UidRangeParcel[] toUidRangeStableParcels(final @NonNull Set<UidRange> ranges) {
@@ -8243,10 +8246,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // above, where the addition of new ranges happens before the removal of old ranges.
             // TODO Fix this window by computing an accurate diff on Set<UidRange>, so the old range
             // to be removed will never overlap with the new range to be added.
-
-            // Null iface given to onVpnUidRangesAdded/Removed is a wildcard to allow apps to
-            // receive packets on all interfaces. This is required to accept incoming traffic in
-            // Lockdown mode by overriding the Lockdown blocking rule.
             if (wasFiltering && !prevRanges.isEmpty()) {
                 mPermissionMonitor.onVpnUidRangesRemoved(oldIface, prevRanges,
                         prevNc.getOwnerUid());
@@ -8348,15 +8347,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mPendingIntentWakeLock.acquire();
         try {
             if (DBG) log("Sending " + pendingIntent);
-            final BroadcastOptions options = BroadcastOptions.makeBasic();
-            if (SdkLevel.isAtLeastT()) {
-                // Explicitly disallow the receiver from starting activities, to prevent apps from
-                // utilizing the PendingIntent as a backdoor to do this.
-                options.setPendingIntentBackgroundActivityLaunchAllowed(false);
-            }
-            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */,
-                    null /* requiredPermission */,
-                    SdkLevel.isAtLeastT() ? options.toBundle() : null);
+            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */);
         } catch (PendingIntent.CanceledException e) {
             if (DBG) log(pendingIntent + " was not sent, it had been canceled.");
             mPendingIntentWakeLock.release();
@@ -11401,6 +11392,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    @Override
+    public boolean getFirewallChainEnabled(final int chain) {
+        enforceNetworkStackOrSettingsPermission();
+
+        return mBpfNetMaps.isChainEnabled(chain);
     }
 
     @Override
