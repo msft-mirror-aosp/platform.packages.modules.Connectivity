@@ -106,6 +106,7 @@ public class NearbyDeviceParcelableTest {
                         .setPublicCredential(publicCredential)
                         .setAction(ACTION)
                         .setRssi(RSSI)
+                        .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                         .setTxPower(TX_POWER)
                         .setSalt(SALT)
                         .build();
@@ -119,7 +120,6 @@ public class NearbyDeviceParcelableTest {
         assertThat(nearbyDeviceParcelable.getAction()).isEqualTo(ACTION);
         assertThat(nearbyDeviceParcelable.getPublicCredential()).isEqualTo(publicCredential);
         assertThat(nearbyDeviceParcelable.getSalt()).isEqualTo(SALT);
-        assertThat(nearbyDeviceParcelable.getScanType()).isEqualTo(SCAN_TYPE_NEARBY_PRESENCE);
         assertThat(nearbyDeviceParcelable.getTxPower()).isEqualTo(TX_POWER);
     }
 
@@ -180,11 +180,19 @@ public class NearbyDeviceParcelableTest {
     @Test
     @SdkSuppress(minSdkVersion = 33, codeName = "T")
     public void testEqual() {
-        NearbyDeviceParcelable nearbyDeviceParcelable1 = mBuilder.setBluetoothAddress(null).build();
-        NearbyDeviceParcelable nearbyDeviceParcelable2 = mBuilder.setBluetoothAddress(null).build();
+        PublicCredential publicCredential =
+                new PublicCredential.Builder(
+                        new byte[] {1},
+                        new byte[] {2},
+                        new byte[] {3},
+                        new byte[] {4},
+                        new byte[] {5})
+                        .build();
+        NearbyDeviceParcelable nearbyDeviceParcelable1 =
+                mBuilder.setPublicCredential(publicCredential).build();
+        NearbyDeviceParcelable nearbyDeviceParcelable2 =
+                mBuilder.setPublicCredential(publicCredential).build();
         assertThat(nearbyDeviceParcelable1.equals(nearbyDeviceParcelable2)).isTrue();
-        assertThat(nearbyDeviceParcelable1.hashCode())
-                .isEqualTo(nearbyDeviceParcelable2.hashCode());
     }
 
     @Test
