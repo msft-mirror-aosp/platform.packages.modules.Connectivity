@@ -67,6 +67,12 @@ public class HandlerEventLoopImplTest {
         assertThat(mExecutedRunnables).isEmpty();
     }
 
+    @Test
+    @SdkSuppress(minSdkVersion = 32, codeName = "T")
+    public void postEmptyQueueRunnable() {
+        mHandlerEventLoopImpl.postEmptyQueueRunnable(
+                new HandlerEventLoopImplTest.NumberedRunnable(0));
+    }
 
     private class NumberedRunnable extends NamedRunnable {
         private final int mId;
@@ -82,12 +88,5 @@ public class HandlerEventLoopImplTest {
             // thread, it's executed in the same thread the test runs in, so this is safe.
             mExecutedRunnables.add(mId);
         }
-    }
-
-    @Test
-    public void postEmptyQueueRunnable() {
-        mHandlerEventLoopImpl.postEmptyQueueRunnable(
-                new HandlerEventLoopImplTest.NumberedRunnable(0));
-        assertThat(mExecutedRunnables).isEmpty();
     }
 }
