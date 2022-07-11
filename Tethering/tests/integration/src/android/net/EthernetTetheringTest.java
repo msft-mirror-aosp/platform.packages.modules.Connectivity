@@ -32,6 +32,7 @@ import static android.system.OsConstants.IPPROTO_IP;
 import static android.system.OsConstants.IPPROTO_IPV6;
 import static android.system.OsConstants.IPPROTO_UDP;
 
+import static com.android.net.module.util.BpfDump.BASE64_DELIMITER;
 import static com.android.net.module.util.ConnectivityUtils.isIPv6ULA;
 import static com.android.net.module.util.HexDump.dumpHexString;
 import static com.android.net.module.util.NetworkStackConstants.ETHER_TYPE_IPV4;
@@ -156,7 +157,6 @@ public class EthernetTetheringTest {
     private static final String DUMPSYS_TETHERING_RAWMAP_ARG = "bpfRawMap";
     private static final String DUMPSYS_RAWMAP_ARG_STATS = "--stats";
     private static final String DUMPSYS_RAWMAP_ARG_UPSTREAM4 = "--upstream4";
-    private static final String BASE64_DELIMITER = ",";
     private static final String LINE_DELIMITER = "\\n";
 
     // version=6, traffic class=0x0, flowlabel=0x0;
@@ -1125,12 +1125,18 @@ public class EthernetTetheringTest {
     @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testTetherUdpV4AfterR() throws Exception {
         final String kernelVersion = VintfRuntimeInfo.getKernelVersion();
-        boolean usingBpf = isUdpOffloadSupportedByKernel(kernelVersion);
-        if (!usingBpf) {
+        final boolean isUdpOffloadSupported = isUdpOffloadSupportedByKernel(kernelVersion);
+        if (!isUdpOffloadSupported) {
             Log.i(TAG, "testTetherUdpV4AfterR will skip BPF offload test for kernel "
                     + kernelVersion);
         }
-        runUdp4Test(initTetheringTester(toList(TEST_IP4_ADDR), toList(TEST_IP4_DNS)), usingBpf);
+        final boolean isTetherConfigBpfOffloadEnabled = isTetherConfigBpfOffloadEnabled();
+        if (!isTetherConfigBpfOffloadEnabled) {
+            Log.i(TAG, "testTetherUdpV4AfterR will skip BPF offload test "
+                    + "because tethering config doesn't enable BPF offload.");
+        }
+        runUdp4Test(initTetheringTester(toList(TEST_IP4_ADDR), toList(TEST_IP4_DNS)),
+                isUdpOffloadSupported && isTetherConfigBpfOffloadEnabled);
     }
 
     @Nullable
@@ -1187,6 +1193,21 @@ public class EthernetTetheringTest {
 
         fail("Cannot get rules after " + DUMP_POLLING_MAX_RETRY * DUMP_POLLING_INTERVAL_MS + "ms");
         return null;
+    }
+
+    private boolean isTetherConfigBpfOffloadEnabled() throws Exception {
+        final String dumpStr = DumpTestUtils.dumpService(Context.TETHERING_SERVICE, "--short");
+
+        // BPF offload tether config can be overridden by "config_tether_enable_bpf_offload" in
+        // packages/modules/Connectivity/Tethering/res/values/config.xml. OEM may disable config by
+        // RRO to override the enabled default value. Get the tethering config via dumpsys.
+        // $ dumpsys tethering
+        //   mIsBpfEnabled: true
+        boolean enabled = dumpStr.contains("mIsBpfEnabled: true");
+        if (!enabled) {
+            Log.d(TAG, "BPF offload tether config not enabled: " + dumpStr);
+        }
+        return enabled;
     }
 
     @NonNull
