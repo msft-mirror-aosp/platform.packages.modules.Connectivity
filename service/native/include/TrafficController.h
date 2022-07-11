@@ -45,11 +45,6 @@ class TrafficController {
      */
     netdutils::Status swapActiveStatsMap() EXCLUDES(mMutex);
 
-    /*
-     * Add the interface name and index pair into the eBPF map.
-     */
-    int addInterface(const char* name, uint32_t ifaceIndex);
-
     int changeUidOwnerRule(ChildChain chain, const uid_t uid, FirewallRule rule, FirewallType type);
 
     int removeUidOwnerRule(const uid_t uid);
@@ -75,8 +70,6 @@ class TrafficController {
 
     netdutils::Status updateUidOwnerMap(const uint32_t uid,
                                         UidOwnerMatchType matchType, IptOp op) EXCLUDES(mMutex);
-
-    int toggleUidOwnerMap(ChildChain chain, bool enable) EXCLUDES(mMutex);
 
     static netdutils::StatusOr<std::unique_ptr<netdutils::NetlinkListenerInterface>>
     makeSkDestroyListener();
@@ -186,8 +179,6 @@ class TrafficController {
     // Keep track of uids that have permission UPDATE_DEVICE_STATS so we don't
     // need to call back to system server for permission check.
     std::set<uid_t> mPrivilegedUser GUARDED_BY(mMutex);
-
-    bool hasUpdateDeviceStatsPermission(uid_t uid) REQUIRES(mMutex);
 
     // For testing
     friend class TrafficControllerTest;
