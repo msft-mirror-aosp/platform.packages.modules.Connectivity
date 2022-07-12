@@ -800,11 +800,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             mSystemReady = true;
 
             // create data recorders along with historical rotators
-            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir);
-            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir);
-            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir);
+            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
+            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
+            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
             mUidTagRecorder = buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true,
-                    mStatsDir);
+                    mStatsDir, true /* wipeOnError */);
 
             updatePersistThresholdsLocked();
 
@@ -869,12 +872,13 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private NetworkStatsRecorder buildRecorder(
             String prefix, NetworkStatsSettings.Config config, boolean includeTags,
-            File baseDir) {
+            File baseDir, boolean wipeOnError) {
         final DropBoxManager dropBox = (DropBoxManager) mContext.getSystemService(
                 Context.DROPBOX_SERVICE);
         return new NetworkStatsRecorder(new FileRotator(
                 baseDir, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
-                mNonMonotonicObserver, dropBox, prefix, config.bucketDuration, includeTags);
+                mNonMonotonicObserver, dropBox, prefix, config.bucketDuration, includeTags,
+                wipeOnError);
     }
 
     @GuardedBy("mStatsLock")
@@ -971,12 +975,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         final NetworkStatsRecorder[] legacyRecorders;
         if (runComparison) {
             final File legacyBaseDir = mDeps.getLegacyStatsDir();
+            // Set wipeOnError flag false so the recorder won't damage persistent data if reads
+            // failed and calling deleteAll.
             legacyRecorders = new NetworkStatsRecorder[]{
-                    buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir),
-                    buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir),
-                    buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir),
-                    buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true, legacyBaseDir)
-            };
+                buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true, legacyBaseDir,
+                        false /* wipeOnError */)};
         } else {
             legacyRecorders = null;
         }
@@ -1117,9 +1126,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         } catch (Resources.NotFoundException e) {
             // Overlay value is not defined.
         }
-        // TODO(b/233752318): For now it is always true to collect signal from beta users.
-        //  Should change to the default behavior (true if debuggable builds) before formal release.
-        return (overlayValue != null ? overlayValue : mDeps.isDebuggable()) || true;
+        return overlayValue != null ? overlayValue : mDeps.isDebuggable();
     }
 
     /**
@@ -1145,10 +1152,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             if (error != null) {
                 Log.wtf(TAG, "Unexpected comparison result for recorder "
                         + legacyRecorder.getCookie() + ": " + error);
+                return false;
             }
         } catch (Throwable e) {
             Log.wtf(TAG, "Failed to compare migrated stats with legacy stats for recorder "
                     + legacyRecorder.getCookie(), e);
+            return false;
         }
         return true;
     }
