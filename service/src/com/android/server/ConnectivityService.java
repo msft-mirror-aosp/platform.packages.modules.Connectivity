@@ -3422,6 +3422,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.increaseIndent();
         mNetworkActivityTracker.dump(pw);
         pw.decreaseIndent();
+
+        // pre-T is logged by netd.
+        if (SdkLevel.isAtLeastT()) {
+            pw.println();
+            pw.println("BPF programs & maps:");
+            pw.increaseIndent();
+            // Flush is required. Otherwise, the traces in fd can interleave with traces in pw.
+            pw.flush();
+            dumpTrafficController(pw, fd, /*verbose=*/ true);
+            pw.decreaseIndent();
+        }
     }
 
     private void dumpNetworks(IndentingPrintWriter pw) {
@@ -5487,7 +5498,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public int getLastTetherError(String iface) {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getLastTetherError(iface);
@@ -5496,7 +5506,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableIfaces() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableIfaces();
@@ -5505,7 +5514,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheredIfaces() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetheredIfaces();
@@ -5515,7 +5523,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheringErroredIfaces() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5525,7 +5532,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableUsbRegexs() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5535,7 +5541,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableWifiRegexs() {
-        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableWifiRegexs();
@@ -6358,7 +6363,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (null != satisfier) {
                 // If the old NRI was satisfied by an NAI, then it may have had an active request.
                 // The active request is necessary to figure out what callbacks to send, in
-                // particular then a network updates its capabilities.
+                // particular when a network updates its capabilities.
                 // As this code creates a new NRI with a new set of requests, figure out which of
                 // the list of requests should be the active request. It is always the first
                 // request of the list that can be satisfied by the satisfier since the order of
@@ -8342,15 +8347,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mPendingIntentWakeLock.acquire();
         try {
             if (DBG) log("Sending " + pendingIntent);
-            final BroadcastOptions options = BroadcastOptions.makeBasic();
-            if (SdkLevel.isAtLeastT()) {
-                // Explicitly disallow the receiver from starting activities, to prevent apps from
-                // utilizing the PendingIntent as a backdoor to do this.
-                options.setPendingIntentBackgroundActivityLaunchAllowed(false);
-            }
-            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */,
-                    null /* requiredPermission */,
-                    SdkLevel.isAtLeastT() ? options.toBundle() : null);
+            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */);
         } catch (PendingIntent.CanceledException e) {
             if (DBG) log(pendingIntent + " was not sent, it had been canceled.");
             mPendingIntentWakeLock.release();
@@ -11395,6 +11392,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    @Override
+    public boolean getFirewallChainEnabled(final int chain) {
+        enforceNetworkStackOrSettingsPermission();
+
+        return mBpfNetMaps.isChainEnabled(chain);
     }
 
     @Override
