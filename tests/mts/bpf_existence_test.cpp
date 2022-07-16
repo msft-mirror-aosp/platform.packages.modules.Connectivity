@@ -35,11 +35,6 @@ using android::modules::sdklevel::IsAtLeastR;
 using android::modules::sdklevel::IsAtLeastS;
 using android::modules::sdklevel::IsAtLeastT;
 
-// Mainline development branches lack the constant for the current development OS.
-#ifndef __ANDROID_API_T__
-#define __ANDROID_API_T__ 33
-#endif
-
 #define PLATFORM "/sys/fs/bpf/"
 #define TETHERING "/sys/fs/bpf/tethering/"
 #define PRIVATE "/sys/fs/bpf/net_private/"
@@ -124,6 +119,9 @@ static const set<string> INTRODUCED_T = {
 static const set<string> INTRODUCED_T_5_4 = {
     SHARED "prog_block_bind4_block_port",
     SHARED "prog_block_bind6_block_port",
+};
+
+static const set<string> INTRODUCED_T_5_15 = {
     SHARED "prog_dscp_policy_schedcls_set_dscp_ether",
     SHARED "prog_dscp_policy_schedcls_set_dscp_raw_ip",
 };
@@ -148,30 +146,42 @@ void getFileLists(set<string>* expected, set<string>* unexpected) {
     addAll(unexpected, INTRODUCED_R);
     addAll(unexpected, INTRODUCED_S);
     addAll(unexpected, INTRODUCED_T);
+    addAll(unexpected, INTRODUCED_T_5_4);
+    addAll(unexpected, INTRODUCED_T_5_15);
 
     if (IsAtLeastR()) {
-        addAll(expected, INTRODUCED_R);
         removeAll(unexpected, INTRODUCED_R);
+        addAll(expected, INTRODUCED_R);
+
         // Nothing removed in R.
     }
 
     if (IsAtLeastS()) {
-        addAll(expected, INTRODUCED_S);
-        removeAll(expected, REMOVED_S);
-
-        addAll(unexpected, REMOVED_S);
         removeAll(unexpected, INTRODUCED_S);
+        addAll(expected, INTRODUCED_S);
+
+        removeAll(expected, REMOVED_S);
+        addAll(unexpected, REMOVED_S);
     }
 
     // Nothing added or removed in SCv2.
 
     if (IsAtLeastT()) {
-        addAll(expected, INTRODUCED_T);
-        if (android::bpf::isAtLeastKernelVersion(5, 4, 0)) addAll(expected, INTRODUCED_T_5_4);
-        removeAll(expected, REMOVED_T);
-
-        addAll(unexpected, REMOVED_T);
         removeAll(unexpected, INTRODUCED_T);
+        addAll(expected, INTRODUCED_T);
+
+        if (android::bpf::isAtLeastKernelVersion(5, 4, 0)) {
+            removeAll(unexpected, INTRODUCED_T_5_4);
+            addAll(expected, INTRODUCED_T_5_4);
+        }
+
+        if (android::bpf::isAtLeastKernelVersion(5, 15, 0)) {
+            removeAll(unexpected, INTRODUCED_T_5_15);
+            addAll(expected, INTRODUCED_T_5_15);
+        }
+
+        removeAll(expected, REMOVED_T);
+        addAll(unexpected, REMOVED_T);
     }
 }
 
