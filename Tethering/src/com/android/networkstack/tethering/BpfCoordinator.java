@@ -23,11 +23,11 @@ import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStats.UID_TETHERING;
-import static android.net.ip.ConntrackMonitor.ConntrackEvent;
 import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED;
 import static android.system.OsConstants.ETH_P_IP;
 import static android.system.OsConstants.ETH_P_IPV6;
 
+import static com.android.net.module.util.ip.ConntrackMonitor.ConntrackEvent;
 import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
@@ -40,18 +40,14 @@ import android.net.MacAddress;
 import android.net.NetworkStats;
 import android.net.NetworkStats.Entry;
 import android.net.TetherOffloadRuleParcel;
-import android.net.ip.ConntrackMonitor;
-import android.net.ip.ConntrackMonitor.ConntrackEventConsumer;
 import android.net.ip.IpServer;
 import android.net.netstats.provider.NetworkStatsProvider;
-import android.net.util.SharedLog;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.OsConstants;
 import android.text.TextUtils;
 import android.util.ArraySet;
-import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -61,16 +57,20 @@ import androidx.annotation.Nullable;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.BpfDump;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
+import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
 import com.android.net.module.util.bpf.TetherStatsKey;
 import com.android.net.module.util.bpf.TetherStatsValue;
+import com.android.net.module.util.ip.ConntrackMonitor;
+import com.android.net.module.util.ip.ConntrackMonitor.ConntrackEventConsumer;
 import com.android.net.module.util.netlink.ConntrackMessage;
 import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkSocket;
@@ -124,9 +124,6 @@ public class BpfCoordinator {
     private static final String TETHER_DEV_MAP_PATH = makeMapPath("dev");
     private static final String DUMPSYS_RAWMAP_ARG_STATS = "--stats";
     private static final String DUMPSYS_RAWMAP_ARG_UPSTREAM4 = "--upstream4";
-
-    // Using "," as a separator is safe because base64 characters are [0-9a-zA-Z/=+].
-    private static final String DUMP_BASE64_DELIMITER = ",";
 
     /** The names of all the BPF counters defined in bpf_tethering.h. */
     public static final String[] sBpfCounterNames = getBpfCounterNames();
@@ -944,6 +941,8 @@ public class BpfCoordinator {
      * be allowed to be accessed on the handler thread.
      */
     public void dump(@NonNull IndentingPrintWriter pw) {
+        // Note that EthernetTetheringTest#isTetherConfigBpfOffloadEnabled relies on
+        // "mIsBpfEnabled" to check tethering config via dumpsys. Beware of the change if any.
         pw.println("mIsBpfEnabled: " + mIsBpfEnabled);
         pw.println("Polling " + (mPollingStarted ? "started" : "not started"));
         pw.println("Stats provider " + (mStatsProvider != null
@@ -1078,18 +1077,6 @@ public class BpfCoordinator {
         }
     }
 
-    private <K extends Struct, V extends Struct> String bpfMapEntryToBase64String(
-            final K key, final V value) {
-        final byte[] keyBytes = key.writeToBytes();
-        final String keyBase64Str = Base64.encodeToString(keyBytes, Base64.DEFAULT)
-                .replace("\n", "");
-        final byte[] valueBytes = value.writeToBytes();
-        final String valueBase64Str = Base64.encodeToString(valueBytes, Base64.DEFAULT)
-                .replace("\n", "");
-
-        return keyBase64Str + DUMP_BASE64_DELIMITER + valueBase64Str;
-    }
-
     private <K extends Struct, V extends Struct> void dumpRawMap(BpfMap<K, V> map,
             IndentingPrintWriter pw) throws ErrnoException {
         if (map == null) {
@@ -1100,14 +1087,20 @@ public class BpfCoordinator {
             pw.println("No entries");
             return;
         }
-        map.forEach((k, v) -> pw.println(bpfMapEntryToBase64String(k, v)));
+        map.forEach((k, v) -> pw.println(BpfDump.toBase64EncodedString(k, v)));
     }
 
     /**
-     * Dump raw BPF map in base64 encoded strings. For test only.
-     * Only allow to dump one map path once.
-     * Format:
+     * Dump raw BPF map into the base64 encoded strings "<base64 key>,<base64 value>".
+     * Allow to dump only one map path once. For test only.
+     *
+     * Usage:
      * $ dumpsys tethering bpfRawMap --<map name>
+     *
+     * Output:
+     * <base64 encoded key #1>,<base64 encoded value #1>
+     * <base64 encoded key #2>,<base64 encoded value #2>
+     * ..
      */
     public void dumpRawMap(@NonNull IndentingPrintWriter pw, @Nullable String[] args) {
         // TODO: consider checking the arg order that <map name> is after "bpfRawMap". Probably
