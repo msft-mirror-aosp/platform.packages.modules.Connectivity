@@ -92,11 +92,57 @@ bpf {
 }
 
 bpf {
+    name: "offload@btf.o",
+    srcs: ["offload@btf.c"],
+    btf: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-DBTF",
+    ],
+}
+
+bpf {
+    name: "offload@inprocess.o",
+    srcs: ["offload@inprocess.c"],
+    btf: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-DBTF",
+        "-DINPROCESS",
+    ],
+}
+
+bpf {
     name: "test.o",
     srcs: ["test.c"],
     cflags: [
         "-Wall",
         "-Werror",
+    ],
+}
+
+bpf {
+    name: "test@btf.o",
+    srcs: ["test@btf.c"],
+    btf: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-DBTF",
+    ],
+}
+
+bpf {
+    name: "test@inprocess.o",
+    srcs: ["test@inprocess.c"],
+    btf: true,
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-DBTF",
+        "-DINPROCESS",
     ],
 }
 
