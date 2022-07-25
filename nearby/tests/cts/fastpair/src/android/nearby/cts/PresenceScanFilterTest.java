@@ -90,5 +90,21 @@ public class PresenceScanFilterTest {
         assertThat(parcelFilter.getType()).isEqualTo(ScanRequest.SCAN_TYPE_NEARBY_PRESENCE);
         assertThat(parcelFilter.getMaxPathLoss()).isEqualTo(RSSI);
         assertThat(parcelFilter.getPresenceActions()).containsExactly(ACTION);
+        assertThat(parcelFilter.getExtendedProperties().get(0).getKey()).isEqualTo(KEY);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 32, codeName = "T")
+    public void describeContents() {
+        PresenceScanFilter filter = mBuilder.build();
+        assertThat(filter.describeContents()).isEqualTo(0);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 32, codeName = "T")
+    public void testCreatorNewArray() {
+        PresenceScanFilter[] filters =
+                PresenceScanFilter.CREATOR.newArray(2);
+        assertThat(filters.length).isEqualTo(2);
     }
 }

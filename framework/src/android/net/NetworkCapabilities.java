@@ -192,7 +192,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Bitfield representing the network's enterprise capability identifier.  If any are specified
      * they will be satisfied by any Network that matches all of them.
-     * {@see addEnterpriseId} for details on how masks are added
+     * See {@link #addEnterpriseId(int)} for details on how masks are added
      */
     private int mEnterpriseId;
 
@@ -1460,7 +1460,7 @@ public final class NetworkCapabilities implements Parcelable {
      * Sets the upstream bandwidth for this network in Kbps.  This always only refers to
      * the estimated first hop transport bandwidth.
      * <p>
-     * {@see Builder#setLinkUpstreamBandwidthKbps}
+     * @see Builder#setLinkUpstreamBandwidthKbps
      *
      * @param upKbps the estimated first hop upstream (device to network) bandwidth.
      * @hide
@@ -1484,7 +1484,7 @@ public final class NetworkCapabilities implements Parcelable {
      * Sets the downstream bandwidth for this network in Kbps.  This always only refers to
      * the estimated first hop transport bandwidth.
      * <p>
-     * {@see Builder#setLinkUpstreamBandwidthKbps}
+     * @see Builder#setLinkUpstreamBandwidthKbps
      *
      * @param downKbps the estimated first hop downstream (network to device) bandwidth.
      * @hide
@@ -2534,7 +2534,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Set the uid and package name of the app causing this network to exist.
      *
-     * {@see #setRequestorUid} and {@link #setRequestorPackageName}
+     * See {@link #setRequestorUid} and {@link #setRequestorPackageName}
      *
      * @param uid UID of the app.
      * @param packageName package name of the app.
@@ -2719,7 +2719,7 @@ public final class NetworkCapabilities implements Parcelable {
         /**
          * Removes the given transport type.
          *
-         * {@see #addTransportType}.
+         * @see #addTransportType
          *
          * @param transportType the transport type to be added or removed.
          * @return this builder
@@ -3043,7 +3043,7 @@ public final class NetworkCapabilities implements Parcelable {
          * <p>
          * This list cannot be null, but it can be empty to mean that no UID without the
          * {@link android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS} permission
-         * gets to access this network.
+         * can access this network.
          *
          * @param uids the list of UIDs that can always access this network
          * @return this builder

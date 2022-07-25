@@ -51,7 +51,6 @@ import android.net.ConnectivitySettingsManager;
 import android.net.INetd;
 import android.net.UidRange;
 import android.net.Uri;
-import android.net.util.SharedLog;
 import android.os.Build;
 import android.os.Process;
 import android.os.RemoteException;
@@ -70,6 +69,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.SharedLog;
 import com.android.networkstack.apishim.ProcessShimImpl;
 import com.android.networkstack.apishim.common.ProcessShim;
 import com.android.server.BpfNetMaps;
@@ -791,7 +791,7 @@ public class PermissionMonitor {
         mAllApps.add(appId);
 
         // Log package added.
-        mPermissionUpdateLogs.log("Package add: name=" + packageName + ", uid=" + uid
+        mPermissionUpdateLogs.log("Package add: uid=" + uid
                 + ", nPerm=(" + permissionToString(permission) + "/"
                 + permissionToString(currentPermission) + ")"
                 + ", tPerm=" + permissionToString(appIdTrafficPerm));
@@ -844,7 +844,7 @@ public class PermissionMonitor {
         final int permission = highestUidNetworkPermission(uid);
 
         // Log package removed.
-        mPermissionUpdateLogs.log("Package remove: name=" + packageName + ", uid=" + uid
+        mPermissionUpdateLogs.log("Package remove: uid=" + uid
                 + ", nPerm=(" + permissionToString(permission) + "/"
                 + permissionToString(currentPermission) + ")"
                 + ", tPerm=" + permissionToString(appIdTrafficPerm));

@@ -24,7 +24,6 @@ import static android.content.Intent.ACTION_SHUTDOWN;
 import static android.content.Intent.ACTION_UID_REMOVED;
 import static android.content.Intent.ACTION_USER_REMOVED;
 import static android.content.Intent.EXTRA_UID;
-import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
@@ -304,7 +303,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /**
          * When enabled, all mobile data is reported under {@link NetworkTemplate#NETWORK_TYPE_ALL}.
          * When disabled, mobile data is broken down by a granular ratType representative of the
-         * actual ratType. {@see android.app.usage.NetworkStatsManager#getCollapsedRatType}.
+         * actual ratType. See {@link android.app.usage.NetworkStatsManager#getCollapsedRatType}.
          * Enabling this decreases the level of detail but saves performance, disk space and
          * amount of data logged.
          */
@@ -800,11 +799,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             mSystemReady = true;
 
             // create data recorders along with historical rotators
-            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir);
-            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir);
-            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir);
+            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
+            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
+            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
             mUidTagRecorder = buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true,
-                    mStatsDir);
+                    mStatsDir, true /* wipeOnError */);
 
             updatePersistThresholdsLocked();
 
@@ -869,12 +871,13 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private NetworkStatsRecorder buildRecorder(
             String prefix, NetworkStatsSettings.Config config, boolean includeTags,
-            File baseDir) {
+            File baseDir, boolean wipeOnError) {
         final DropBoxManager dropBox = (DropBoxManager) mContext.getSystemService(
                 Context.DROPBOX_SERVICE);
         return new NetworkStatsRecorder(new FileRotator(
                 baseDir, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
-                mNonMonotonicObserver, dropBox, prefix, config.bucketDuration, includeTags);
+                mNonMonotonicObserver, dropBox, prefix, config.bucketDuration, includeTags,
+                wipeOnError);
     }
 
     @GuardedBy("mStatsLock")
@@ -971,12 +974,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         final NetworkStatsRecorder[] legacyRecorders;
         if (runComparison) {
             final File legacyBaseDir = mDeps.getLegacyStatsDir();
+            // Set wipeOnError flag false so the recorder won't damage persistent data if reads
+            // failed and calling deleteAll.
             legacyRecorders = new NetworkStatsRecorder[]{
-                    buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir),
-                    buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir),
-                    buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir),
-                    buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true, legacyBaseDir)
-            };
+                buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true, legacyBaseDir,
+                        false /* wipeOnError */)};
         } else {
             legacyRecorders = null;
         }
@@ -1117,9 +1125,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         } catch (Resources.NotFoundException e) {
             // Overlay value is not defined.
         }
-        // TODO(b/233752318): For now it is always true to collect signal from beta users.
-        //  Should change to the default behavior (true if debuggable builds) before formal release.
-        return (overlayValue != null ? overlayValue : mDeps.isDebuggable()) || true;
+        return overlayValue != null ? overlayValue : mDeps.isDebuggable();
     }
 
     /**
@@ -1145,10 +1151,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             if (error != null) {
                 Log.wtf(TAG, "Unexpected comparison result for recorder "
                         + legacyRecorder.getCookie() + ": " + error);
+                return false;
             }
         } catch (Throwable e) {
             Log.wtf(TAG, "Failed to compare migrated stats with legacy stats for recorder "
                     + legacyRecorder.getCookie(), e);
+            return false;
         }
         return true;
     }
@@ -2801,28 +2809,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                     throw new IllegalStateException("invalid tethering stats " + e);
                 }
             }
-        } catch (IllegalStateException e) {
+        } catch (IllegalStateException | ServiceSpecificException e) {
             Log.wtf(TAG, "problem reading network stats", e);
         }
         return stats;
-    }
-
-    // TODO: It is copied from ConnectivityService, consider refactor these check permission
-    //  functions to a proper util.
-    private boolean checkAnyPermissionOf(String... permissions) {
-        for (String permission : permissions) {
-            if (mContext.checkCallingOrSelfPermission(permission) == PERMISSION_GRANTED) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void enforceAnyPermissionOf(String... permissions) {
-        if (!checkAnyPermissionOf(permissions)) {
-            throw new SecurityException("Requires one of the following permissions: "
-                    + String.join(", ", permissions) + ".");
-        }
     }
 
     /**
@@ -2839,7 +2829,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     public @NonNull INetworkStatsProviderCallback registerNetworkStatsProvider(
             @NonNull String tag, @NonNull INetworkStatsProvider provider) {
-        enforceAnyPermissionOf(NETWORK_STATS_PROVIDER,
+        PermissionUtils.enforceAnyPermissionOf(mContext, NETWORK_STATS_PROVIDER,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
         Objects.requireNonNull(provider, "provider is null");
         Objects.requireNonNull(tag, "tag is null");

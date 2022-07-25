@@ -2000,28 +2000,43 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     @Test
     public void testShouldRunComparison() {
-        // TODO(b/233752318): For now it should always true to collect signal from beta users.
-        //  Should change to the default behavior (true if userdebug rom) before formal release.
-        for (int testValue : Set.of(-1, 0, 1, 2)) {
-            doReturn(testValue).when(mResources)
+        for (Boolean isDebuggable : Set.of(Boolean.TRUE, Boolean.FALSE)) {
+            mIsDebuggable = isDebuggable;
+            // Verify return false regardless of the device is debuggable.
+            doReturn(0).when(mResources)
                     .getInteger(R.integer.config_netstats_validate_import);
-            assertEquals(true, mService.shouldRunComparison());
+            assertShouldRunComparison(false, isDebuggable);
+            // Verify return true regardless of the device is debuggable.
+            doReturn(1).when(mResources)
+                    .getInteger(R.integer.config_netstats_validate_import);
+            assertShouldRunComparison(true, isDebuggable);
+            // Verify return true iff the device is debuggable.
+            for (int testValue : Set.of(-1, 2)) {
+                doReturn(testValue).when(mResources)
+                        .getInteger(R.integer.config_netstats_validate_import);
+                assertShouldRunComparison(isDebuggable, isDebuggable);
+            }
         }
     }
 
+    private void assertShouldRunComparison(boolean expected, boolean isDebuggable) {
+        assertEquals("shouldRunComparison (debuggable=" + isDebuggable + "): ",
+                expected, mService.shouldRunComparison());
+    }
+
     private NetworkStatsRecorder makeTestRecorder(File directory, String prefix, Config config,
-            boolean includeTags) {
+            boolean includeTags, boolean wipeOnError) {
         final NetworkStats.NonMonotonicObserver observer =
                 mock(NetworkStats.NonMonotonicObserver.class);
         final DropBoxManager dropBox = mock(DropBoxManager.class);
         return new NetworkStatsRecorder(new FileRotator(
                 directory, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
-                observer, dropBox, prefix, config.bucketDuration, includeTags);
+                observer, dropBox, prefix, config.bucketDuration, includeTags, wipeOnError);
     }
 
     private NetworkStatsCollection getLegacyCollection(String prefix, boolean includeTags) {
         final NetworkStatsRecorder recorder = makeTestRecorder(mLegacyStatsDir, prefix,
-                mSettings.getDevConfig(), includeTags);
+                mSettings.getDevConfig(), includeTags, false);
         return recorder.getOrLoadCompleteLocked();
     }
 
