@@ -232,7 +232,7 @@ public class VpnTest extends VpnTestBase {
     private static final int TEST_TUNNEL_RESOURCE_ID = 0x2345;
     private static final long TEST_TIMEOUT_MS = 500L;
     private static final String PRIMARY_USER_APP_EXCLUDE_KEY =
-            "VPN_APP_EXCLUDED_27_com.testvpn.vpn";
+            "VPNAPPEXCLUDED_27_com.testvpn.vpn";
     static final String PKGS_BYTES = getPackageByteString(List.of(PKGS));
     private static final Range<Integer> PRIMARY_USER_RANGE = uidRangeForUser(PRIMARY_USER.id);
 
@@ -969,6 +969,31 @@ public class VpnTest extends VpnTestBase {
                 AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN, AppOpsManager.OPSTR_ACTIVATE_VPN);
     }
 
+    private void setAppOpsPermission() {
+        doAnswer(invocation -> {
+            when(mAppOps.noteOpNoThrow(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN,
+                    Process.myUid(), TEST_VPN_PKG,
+                    null /* attributionTag */, null /* message */))
+                    .thenReturn(AppOpsManager.MODE_ALLOWED);
+            return null;
+        }).when(mAppOps).setMode(
+                eq(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN),
+                eq(Process.myUid()),
+                eq(TEST_VPN_PKG),
+                eq(AppOpsManager.MODE_ALLOWED));
+    }
+
+    @Test
+    public void testProvisionVpnProfileNotPreconsented_withControlVpnPermission() throws Exception {
+        setAppOpsPermission();
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(CONTROL_VPN);
+        final Vpn vpn = createVpnAndSetupUidChecks();
+
+        // ACTIVATE_PLATFORM_VPN will be granted if VPN app has CONTROL_VPN permission.
+        checkProvisionVpnProfile(vpn, true /* expectedResult */,
+                AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
+    }
+
     @Test
     public void testProvisionVpnProfileVpnServicePreconsented() throws Exception {
         final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_VPN);
@@ -1360,6 +1385,31 @@ public class VpnTest extends VpnTestBase {
     }
 
     @Test
+    public void testReconnectVpnManagerVpnWithAlwaysOnEnabled() throws Exception {
+        final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
+        when(mVpnProfileStore.get(vpn.getProfileNameForPackage(TEST_VPN_PKG)))
+                .thenReturn(mVpnProfile.encode());
+        vpn.startVpnProfile(TEST_VPN_PKG);
+        verifyPlatformVpnIsActivated(TEST_VPN_PKG);
+
+        // Enable VPN always-on for TEST_VPN_PKG.
+        assertTrue(vpn.setAlwaysOnPackage(TEST_VPN_PKG, false /* lockdown */,
+                null /* lockdownAllowlist */));
+
+        // Reset to verify next startVpnProfile.
+        reset(mAppOps);
+
+        vpn.stopVpnProfile(TEST_VPN_PKG);
+
+        // Reconnect the vpn with different package will cause exception.
+        assertThrows(SecurityException.class, () -> vpn.startVpnProfile(PKGS[0]));
+
+        // Reconnect the vpn again with the vpn always on package w/o exception.
+        vpn.startVpnProfile(TEST_VPN_PKG);
+        verifyPlatformVpnIsActivated(TEST_VPN_PKG);
+    }
+
+    @Test
     public void testSetPackageAuthorizationVpnService() throws Exception {
         final Vpn vpn = createVpnAndSetupUidChecks();
 
@@ -1562,6 +1612,30 @@ public class VpnTest extends VpnTestBase {
         // state
         verify(mConnectivityManager, timeout(TEST_TIMEOUT_MS)).unregisterNetworkCallback(eq(cb));
         assertEquals(LegacyVpnInfo.STATE_FAILED, vpn.getLegacyVpnInfo().state);
+    }
+
+    @Test
+    public void testVpnManagerEventWillNotBeSentToSettingsVpn() throws Exception {
+        startLegacyVpn(createVpn(PRIMARY_USER.id), mVpnProfile);
+        triggerOnAvailableAndGetCallback();
+
+        verifyInterfaceSetCfgWithFlags(IF_STATE_UP);
+
+        final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
+        final IkeTimeoutException ikeTimeoutException =
+                new IkeTimeoutException("IkeTimeoutException");
+        when(exception.getCause()).thenReturn(ikeTimeoutException);
+
+        final ArgumentCaptor<IkeSessionCallback> captor =
+                ArgumentCaptor.forClass(IkeSessionCallback.class);
+        verify(mIkev2SessionCreator, timeout(TEST_TIMEOUT_MS))
+                .createIkeSession(any(), any(), any(), any(), captor.capture(), any());
+        final IkeSessionCallback ikeCb = captor.getValue();
+        ikeCb.onClosedWithException(exception);
+
+        final Context userContext =
+                mContext.createContextAsUser(UserHandle.of(PRIMARY_USER.id), 0 /* flags */);
+        verify(userContext, never()).startService(any());
     }
 
     private void setAndVerifyAlwaysOnPackage(Vpn vpn, int uid, boolean lockdownEnabled) {
