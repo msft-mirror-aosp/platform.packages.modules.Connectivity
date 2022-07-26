@@ -313,21 +313,28 @@ public class EthernetNetworkFactoryTest {
 
         assertTrue(ret);
         verify(mIpClient).shutdown();
-        assertEquals(listener.expectOnResult(), TEST_IFACE);
+        assertEquals(TEST_IFACE, listener.expectOnResult());
     }
 
     @Test
     public void testUpdateInterfaceLinkStateForProvisionedInterface() throws Exception {
         initEthernetNetworkFactory();
         createAndVerifyProvisionedInterface(TEST_IFACE);
-        final TestNetworkManagementListener listener = new TestNetworkManagementListener();
+        final TestNetworkManagementListener listenerDown = new TestNetworkManagementListener();
+        final TestNetworkManagementListener listenerUp = new TestNetworkManagementListener();
 
-        final boolean ret =
-                mNetFactory.updateInterfaceLinkState(TEST_IFACE, false /* up */, listener);
+        final boolean retDown =
+                mNetFactory.updateInterfaceLinkState(TEST_IFACE, false /* up */, listenerDown);
 
-        assertTrue(ret);
+        assertTrue(retDown);
         verifyStop();
-        assertEquals(listener.expectOnResult(), TEST_IFACE);
+        assertEquals(TEST_IFACE, listenerDown.expectOnResult());
+
+        final boolean retUp =
+                mNetFactory.updateInterfaceLinkState(TEST_IFACE, true /* up */, listenerUp);
+
+        assertTrue(retUp);
+        assertEquals(TEST_IFACE, listenerUp.expectOnResult());
     }
 
     @Test
@@ -344,7 +351,7 @@ public class EthernetNetworkFactoryTest {
         verify(mDeps, never()).makeIpClient(any(), any(), any());
         verify(mDeps, never())
                 .makeEthernetNetworkAgent(any(), any(), any(), any(), any(), any(), any());
-        assertEquals(listener.expectOnResult(), TEST_IFACE);
+        assertEquals(TEST_IFACE, listener.expectOnResult());
     }
 
     @Test
@@ -609,7 +616,7 @@ public class EthernetNetworkFactoryTest {
         mNetFactory.updateInterface(TEST_IFACE, ipConfiguration, capabilities, listener);
         triggerOnProvisioningSuccess();
 
-        assertEquals(listener.expectOnResult(), TEST_IFACE);
+        assertEquals(TEST_IFACE, listener.expectOnResult());
     }
 
     @Test
@@ -655,6 +662,7 @@ public class EthernetNetworkFactoryTest {
                 });
 
         assertEquals(successfulListener.expectOnResult(), TEST_IFACE);
+        assertEquals(TEST_IFACE, successfulListener.expectOnResult());
     }
 
     private void verifyNetworkManagementCallIsAbortedWhenInterrupted(
@@ -683,7 +691,7 @@ public class EthernetNetworkFactoryTest {
         mNetFactory.updateInterface(TEST_IFACE, ipConfiguration, capabilities, listener);
         triggerOnProvisioningSuccess();
 
-        assertEquals(listener.expectOnResult(), TEST_IFACE);
+        assertEquals(TEST_IFACE, listener.expectOnResult());
         verify(mDeps).makeEthernetNetworkAgent(any(), any(),
                 eq(capabilities), any(), any(), any(), any());
         verifyRestart(ipConfiguration);
@@ -725,5 +733,17 @@ public class EthernetNetworkFactoryTest {
                 null /*listener*/);
         triggerOnProvisioningSuccess();
         verifyRestart(initialIpConfig);
+    }
+
+    @Test
+    public void testOnNetworkNeededOnStaleNetworkOffer() throws Exception {
+        initEthernetNetworkFactory();
+        createAndVerifyProvisionedInterface(TEST_IFACE);
+        mNetFactory.updateInterfaceLinkState(TEST_IFACE, false, null);
+        verify(mNetworkProvider).unregisterNetworkOffer(mNetworkOfferCallback);
+        // It is possible that even after a network offer is unregistered, CS still sends it
+        // onNetworkNeeded() callbacks.
+        mNetworkOfferCallback.onNetworkNeeded(createDefaultRequest());
+        verify(mIpClient, never()).startProvisioning(any());
     }
 }
