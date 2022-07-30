@@ -46,6 +46,7 @@ import static org.junit.Assume.assumeFalse;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
+import android.content.Context;
 import android.net.INetd;
 import android.os.Build;
 import android.os.ServiceSpecificException;
@@ -102,6 +103,7 @@ public final class BpfNetMapsTest {
 
     @Mock INetd mNetd;
     @Mock BpfNetMaps.Dependencies mDeps;
+    @Mock Context mContext;
     private final BpfMap<U32, U32> mConfigurationMap = new TestBpfMap<>(U32.class, U32.class);
     private final BpfMap<U32, UidOwnerValue> mUidOwnerMap =
             new TestBpfMap<>(U32.class, UidOwnerValue.class);
@@ -110,9 +112,10 @@ public final class BpfNetMapsTest {
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         doReturn(TEST_IF_INDEX).when(mDeps).getIfIndex(TEST_IF_NAME);
+        BpfNetMaps.setEnableJavaBpfMapForTest(true /* enable */);
         BpfNetMaps.setConfigurationMapForTest(mConfigurationMap);
         BpfNetMaps.setUidOwnerMapForTest(mUidOwnerMap);
-        mBpfNetMaps = new BpfNetMaps(mNetd, mDeps);
+        mBpfNetMaps = new BpfNetMaps(mContext, mNetd, mDeps);
     }
 
     @Test
@@ -649,4 +652,80 @@ public final class BpfNetMapsTest {
         assertThrows(UnsupportedOperationException.class, () ->
                 mBpfNetMaps.setUidRule(FIREWALL_CHAIN_DOZABLE, TEST_UID, FIREWALL_RULE_ALLOW));
     }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testReplaceUidChain() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+
+        mBpfNetMaps.replaceUidChain(FIREWALL_CHAIN_DOZABLE, TEST_UIDS);
+
+        checkUidOwnerValue(uid0, NO_IIF, DOZABLE_MATCH);
+        checkUidOwnerValue(uid1, NO_IIF, DOZABLE_MATCH);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testReplaceUidChainWithOtherMatch() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        final long match0 = POWERSAVE_MATCH;
+        final long match1 = POWERSAVE_MATCH | RESTRICTED_MATCH;
+        mUidOwnerMap.updateEntry(new U32(uid0), new UidOwnerValue(NO_IIF, match0));
+        mUidOwnerMap.updateEntry(new U32(uid1), new UidOwnerValue(NO_IIF, match1));
+
+        mBpfNetMaps.replaceUidChain(FIREWALL_CHAIN_DOZABLE, new int[]{uid1});
+
+        checkUidOwnerValue(uid0, NO_IIF, match0);
+        checkUidOwnerValue(uid1, NO_IIF, match1 | DOZABLE_MATCH);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testReplaceUidChainWithExistingIifMatch() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        final long match0 = IIF_MATCH;
+        final long match1 = IIF_MATCH | POWERSAVE_MATCH | RESTRICTED_MATCH;
+        mUidOwnerMap.updateEntry(new U32(uid0), new UidOwnerValue(TEST_IF_INDEX, match0));
+        mUidOwnerMap.updateEntry(new U32(uid1), new UidOwnerValue(NULL_IIF, match1));
+
+        mBpfNetMaps.replaceUidChain(FIREWALL_CHAIN_DOZABLE, TEST_UIDS);
+
+        checkUidOwnerValue(uid0, TEST_IF_INDEX, match0 | DOZABLE_MATCH);
+        checkUidOwnerValue(uid1, NULL_IIF, match1 | DOZABLE_MATCH);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testReplaceUidChainRemoveExistingMatch() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        final long match0 = IIF_MATCH | DOZABLE_MATCH;
+        final long match1 = IIF_MATCH | POWERSAVE_MATCH | RESTRICTED_MATCH;
+        mUidOwnerMap.updateEntry(new U32(uid0), new UidOwnerValue(TEST_IF_INDEX, match0));
+        mUidOwnerMap.updateEntry(new U32(uid1), new UidOwnerValue(NULL_IIF, match1));
+
+        mBpfNetMaps.replaceUidChain(FIREWALL_CHAIN_DOZABLE, new int[]{uid1});
+
+        checkUidOwnerValue(uid0, TEST_IF_INDEX, match0 & ~DOZABLE_MATCH);
+        checkUidOwnerValue(uid1, NULL_IIF, match1 | DOZABLE_MATCH);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testReplaceUidChainInvalidChain() {
+        final Class<IllegalArgumentException> expected = IllegalArgumentException.class;
+        assertThrows(expected, () -> mBpfNetMaps.replaceUidChain(-1 /* chain */, TEST_UIDS));
+        assertThrows(expected, () -> mBpfNetMaps.replaceUidChain(1000 /* chain */, TEST_UIDS));
+    }
+
+    @Test
+    @IgnoreAfter(Build.VERSION_CODES.S_V2)
+    public void testReplaceUidChainBeforeT() {
+        assertThrows(UnsupportedOperationException.class,
+                () -> mBpfNetMaps.replaceUidChain(FIREWALL_CHAIN_DOZABLE, TEST_UIDS));
+    }
+
 }
