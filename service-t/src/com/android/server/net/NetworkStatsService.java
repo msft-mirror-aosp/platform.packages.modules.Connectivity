@@ -24,7 +24,6 @@ import static android.content.Intent.ACTION_SHUTDOWN;
 import static android.content.Intent.ACTION_UID_REMOVED;
 import static android.content.Intent.ACTION_USER_REMOVED;
 import static android.content.Intent.EXTRA_UID;
-import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
@@ -32,6 +31,7 @@ import static android.net.NetworkStats.IFACE_ALL;
 import static android.net.NetworkStats.IFACE_VT;
 import static android.net.NetworkStats.INTERFACES_ALL;
 import static android.net.NetworkStats.METERED_ALL;
+import static android.net.NetworkStats.METERED_YES;
 import static android.net.NetworkStats.ROAMING_ALL;
 import static android.net.NetworkStats.SET_ALL;
 import static android.net.NetworkStats.SET_DEFAULT;
@@ -42,8 +42,8 @@ import static android.net.NetworkStats.TAG_ALL;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStatsHistory.FIELD_ALL;
-import static android.net.NetworkTemplate.buildTemplateMobileWildcard;
-import static android.net.NetworkTemplate.buildTemplateWifiWildcard;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.TrafficStats.KB_IN_BYTES;
 import static android.net.TrafficStats.MB_IN_BYTES;
 import static android.net.TrafficStats.UID_TETHERING;
@@ -158,6 +158,8 @@ import com.android.net.module.util.NetworkStatsUtils;
 import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -304,7 +306,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /**
          * When enabled, all mobile data is reported under {@link NetworkTemplate#NETWORK_TYPE_ALL}.
          * When disabled, mobile data is broken down by a granular ratType representative of the
-         * actual ratType. {@see android.app.usage.NetworkStatsManager#getCollapsedRatType}.
+         * actual ratType. See {@link android.app.usage.NetworkStatsManager#getCollapsedRatType}.
          * Enabling this decreases the level of detail but saves performance, disk space and
          * amount of data logged.
          */
@@ -2360,7 +2362,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         NetworkStats.Entry uidTotal;
 
         // collect mobile sample
-        template = buildTemplateMobileWildcard();
+        template = new NetworkTemplate.Builder(MATCH_MOBILE).setMeteredness(METERED_YES).build();
         devTotal = mDevRecorder.getTotalSinceBootLocked(template);
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
@@ -2372,7 +2374,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 currentTime);
 
         // collect wifi sample
-        template = buildTemplateWifiWildcard();
+        template = new NetworkTemplate.Builder(MATCH_WIFI).build();
         devTotal = mDevRecorder.getTotalSinceBootLocked(template);
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
@@ -2810,28 +2812,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                     throw new IllegalStateException("invalid tethering stats " + e);
                 }
             }
-        } catch (IllegalStateException e) {
+        } catch (IllegalStateException | ServiceSpecificException e) {
             Log.wtf(TAG, "problem reading network stats", e);
         }
         return stats;
-    }
-
-    // TODO: It is copied from ConnectivityService, consider refactor these check permission
-    //  functions to a proper util.
-    private boolean checkAnyPermissionOf(String... permissions) {
-        for (String permission : permissions) {
-            if (mContext.checkCallingOrSelfPermission(permission) == PERMISSION_GRANTED) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void enforceAnyPermissionOf(String... permissions) {
-        if (!checkAnyPermissionOf(permissions)) {
-            throw new SecurityException("Requires one of the following permissions: "
-                    + String.join(", ", permissions) + ".");
-        }
     }
 
     /**
@@ -2848,7 +2832,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     public @NonNull INetworkStatsProviderCallback registerNetworkStatsProvider(
             @NonNull String tag, @NonNull INetworkStatsProvider provider) {
-        enforceAnyPermissionOf(NETWORK_STATS_PROVIDER,
+        PermissionUtils.enforceAnyPermissionOf(mContext, NETWORK_STATS_PROVIDER,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
         Objects.requireNonNull(provider, "provider is null");
         Objects.requireNonNull(tag, "tag is null");
