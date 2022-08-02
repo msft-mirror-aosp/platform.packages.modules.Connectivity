@@ -145,7 +145,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @DisableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS)
+    @DisableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testPreSClients() throws Exception {
         NsdService service = makeService();
 
@@ -176,7 +176,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS)
+    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testNoDaemonStartedWhenClientsConnect() throws Exception {
         final NsdService service = makeService();
 
@@ -214,7 +214,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS)
+    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testClientRequestsAreGCedAtDisconnection() throws Exception {
         NsdService service = makeService();
 
@@ -260,7 +260,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS)
+    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testCleanupDelayNoRequestActive() throws Exception {
         NsdService service = makeService();
         NsdManager client = connectClient(service);
