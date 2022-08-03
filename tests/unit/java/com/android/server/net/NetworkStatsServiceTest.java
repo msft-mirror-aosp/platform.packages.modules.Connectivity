@@ -16,6 +16,7 @@
 
 package com.android.server.net;
 
+import static android.Manifest.permission.DUMP;
 import static android.Manifest.permission.READ_NETWORK_USAGE_HISTORY;
 import static android.Manifest.permission.UPDATE_DEVICE_STATS;
 import static android.app.usage.NetworkStatsManager.PREFIX_DEV;
@@ -46,14 +47,10 @@ import static android.net.NetworkStats.TAG_ALL;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStatsHistory.FIELD_ALL;
-import static android.net.NetworkTemplate.MATCH_MOBILE_WILDCARD;
-import static android.net.NetworkTemplate.NETWORK_TYPE_ALL;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.NetworkTemplate.OEM_MANAGED_NO;
 import static android.net.NetworkTemplate.OEM_MANAGED_YES;
-import static android.net.NetworkTemplate.buildTemplateMobileAll;
-import static android.net.NetworkTemplate.buildTemplateMobileWithRatType;
-import static android.net.NetworkTemplate.buildTemplateWifi;
-import static android.net.NetworkTemplate.buildTemplateWifiWildcard;
 import static android.net.TrafficStats.MB_IN_BYTES;
 import static android.net.TrafficStats.UID_REMOVED;
 import static android.net.TrafficStats.UID_TETHERING;
@@ -65,7 +62,6 @@ import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
 import static android.text.format.DateUtils.WEEK_IN_MILLIS;
 
-import static com.android.net.module.util.NetworkStatsUtils.SUBSCRIBER_ID_MATCH_RULE_EXACT;
 import static com.android.server.net.NetworkStatsService.ACTION_NETWORK_STATS_POLL;
 import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_ATTEMPTS_COUNTER_NAME;
 import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_FALLBACKS_COUNTER_NAME;
@@ -138,6 +134,8 @@ import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 import com.android.server.net.NetworkStatsService.AlertObserver;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings.Config;
@@ -159,7 +157,10 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.io.File;
+import java.io.FileDescriptor;
 import java.io.IOException;
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -192,11 +193,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private static final String IMSI_2 = "310260";
     private static final String TEST_WIFI_NETWORK_KEY = "WifiNetworkKey";
 
-    private static NetworkTemplate sTemplateWifi = buildTemplateWifi(TEST_WIFI_NETWORK_KEY);
-    private static NetworkTemplate sTemplateCarrierWifi1 =
-            buildTemplateWifi(NetworkTemplate.WIFI_NETWORKID_ALL, IMSI_1);
-    private static NetworkTemplate sTemplateImsi1 = buildTemplateMobileAll(IMSI_1);
-    private static NetworkTemplate sTemplateImsi2 = buildTemplateMobileAll(IMSI_2);
+    private static NetworkTemplate sTemplateWifi = new NetworkTemplate.Builder(MATCH_WIFI)
+            .setWifiNetworkKeys(Set.of(TEST_WIFI_NETWORK_KEY)).build();
+    private static NetworkTemplate sTemplateCarrierWifi1 = new NetworkTemplate.Builder(MATCH_WIFI)
+            .setSubscriberIds(Set.of(IMSI_1)).build();
+    private static NetworkTemplate sTemplateImsi1 = new NetworkTemplate.Builder(MATCH_MOBILE)
+            .setMeteredness(METERED_YES).setSubscriberIds(Set.of(IMSI_1)).build();
+    private static NetworkTemplate sTemplateImsi2 = new NetworkTemplate.Builder(MATCH_MOBILE)
+            .setMeteredness(METERED_YES).setSubscriberIds(Set.of(IMSI_2)).build();
 
     private static final Network WIFI_NETWORK =  new Network(100);
     private static final Network MOBILE_NETWORK =  new Network(101);
@@ -283,6 +287,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 case PERMISSION_MAINLINE_NETWORK_STACK:
                 case READ_NETWORK_USAGE_HISTORY:
                 case UPDATE_DEVICE_STATS:
+                case DUMP:
                     return PERMISSION_GRANTED;
                 default:
                     return PERMISSION_DENIED;
@@ -833,15 +838,15 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     @Test
     public void testMobileStatsByRatType() throws Exception {
-        final NetworkTemplate template3g =
-                buildTemplateMobileWithRatType(null, TelephonyManager.NETWORK_TYPE_UMTS,
-                METERED_YES);
-        final NetworkTemplate template4g =
-                buildTemplateMobileWithRatType(null, TelephonyManager.NETWORK_TYPE_LTE,
-                METERED_YES);
-        final NetworkTemplate template5g =
-                buildTemplateMobileWithRatType(null, TelephonyManager.NETWORK_TYPE_NR,
-                METERED_YES);
+        final NetworkTemplate template3g = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setRatType(TelephonyManager.NETWORK_TYPE_UMTS)
+                .setMeteredness(METERED_YES).build();
+        final NetworkTemplate template4g = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setRatType(TelephonyManager.NETWORK_TYPE_LTE)
+                .setMeteredness(METERED_YES).build();
+        final NetworkTemplate template5g = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setRatType(TelephonyManager.NETWORK_TYPE_NR)
+                .setMeteredness(METERED_YES).build();
         final NetworkStateSnapshot[] states =
                 new NetworkStateSnapshot[]{buildMobileState(IMSI_1)};
 
@@ -912,12 +917,13 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     @Test
     public void testMobileStatsMeteredness() throws Exception {
         // Create metered 5g template.
-        final NetworkTemplate templateMetered5g =
-                buildTemplateMobileWithRatType(null, TelephonyManager.NETWORK_TYPE_NR,
-                METERED_YES);
+        final NetworkTemplate templateMetered5g = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setRatType(TelephonyManager.NETWORK_TYPE_NR)
+                .setMeteredness(METERED_YES).build();
         // Create non-metered 5g template
-        final NetworkTemplate templateNonMetered5g =
-                buildTemplateMobileWithRatType(null, TelephonyManager.NETWORK_TYPE_NR, METERED_NO);
+        final NetworkTemplate templateNonMetered5g = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setRatType(TelephonyManager.NETWORK_TYPE_NR)
+                .setMeteredness(METERED_NO).build();
 
         expectDefaultSettings();
         expectNetworkStatsSummary(buildEmptyStats());
@@ -950,33 +956,20 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     @Test
     public void testMobileStatsOemManaged() throws Exception {
-        final NetworkTemplate templateOemPaid = new NetworkTemplate(MATCH_MOBILE_WILDCARD,
-                /*subscriberId=*/null, /*matchSubscriberIds=*/null,
-                /*matchWifiNetworkKeys=*/new String[0], METERED_ALL, ROAMING_ALL,
-                DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL, OEM_PAID, SUBSCRIBER_ID_MATCH_RULE_EXACT);
+        final NetworkTemplate templateOemPaid = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setOemManaged(OEM_PAID).build();
 
-        final NetworkTemplate templateOemPrivate = new NetworkTemplate(MATCH_MOBILE_WILDCARD,
-                /*subscriberId=*/null, /*matchSubscriberIds=*/null,
-                /*matchWifiNetworkKeys=*/new String[0], METERED_ALL, ROAMING_ALL,
-                DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL, OEM_PRIVATE, SUBSCRIBER_ID_MATCH_RULE_EXACT);
+        final NetworkTemplate templateOemPrivate = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setOemManaged(OEM_PRIVATE).build();
 
-        final NetworkTemplate templateOemAll = new NetworkTemplate(MATCH_MOBILE_WILDCARD,
-                /*subscriberId=*/null, /*matchSubscriberIds=*/null,
-                /*matchWifiNetworkKeys=*/new String[0], METERED_ALL, ROAMING_ALL,
-                DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL, OEM_PAID | OEM_PRIVATE,
-                SUBSCRIBER_ID_MATCH_RULE_EXACT);
+        final NetworkTemplate templateOemAll = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setOemManaged(OEM_PAID | OEM_PRIVATE).build();
 
-        final NetworkTemplate templateOemYes = new NetworkTemplate(MATCH_MOBILE_WILDCARD,
-                /*subscriberId=*/null, /*matchSubscriberIds=*/null,
-                /*matchWifiNetworkKeys=*/new String[0], METERED_ALL, ROAMING_ALL,
-                DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL, OEM_MANAGED_YES,
-                SUBSCRIBER_ID_MATCH_RULE_EXACT);
+        final NetworkTemplate templateOemYes = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setOemManaged(OEM_MANAGED_YES).build();
 
-        final NetworkTemplate templateOemNone = new NetworkTemplate(MATCH_MOBILE_WILDCARD,
-                /*subscriberId=*/null, /*matchSubscriberIds=*/null,
-                /*matchWifiNetworkKeys=*/new String[0], METERED_ALL, ROAMING_ALL,
-                DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL, OEM_MANAGED_NO,
-                SUBSCRIBER_ID_MATCH_RULE_EXACT);
+        final NetworkTemplate templateOemNone = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setOemManaged(OEM_MANAGED_NO).build();
 
         // OEM_PAID network comes online.
         NetworkStateSnapshot[] states = new NetworkStateSnapshot[]{
@@ -1156,7 +1149,9 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         final ZonedDateTime end =
                 ZonedDateTime.ofInstant(mClock.instant(), ZoneId.systemDefault());
         final ZonedDateTime start = end.truncatedTo(ChronoUnit.HOURS);
-        NetworkStats stats = mSession.getSummaryForNetwork(buildTemplateWifi(TEST_WIFI_NETWORK_KEY),
+        NetworkStats stats = mSession.getSummaryForNetwork(
+                new NetworkTemplate.Builder(MATCH_WIFI)
+                .setWifiNetworkKeys(Set.of(TEST_WIFI_NETWORK_KEY)).build(),
                 start.toInstant().toEpochMilli(), end.toInstant().toEpochMilli());
         assertEquals(1, stats.size());
         assertValues(stats, IFACE_ALL, UID_ALL, SET_ALL, TAG_NONE, METERED_ALL, ROAMING_ALL,
@@ -1668,14 +1663,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     public void testDynamicWatchForNetworkRatTypeChanges() throws Exception {
         // Build 3G template, type unknown template to get stats while network type is unknown
         // and type all template to get the sum of all network type stats.
-        final NetworkTemplate template3g =
-                buildTemplateMobileWithRatType(null, TelephonyManager.NETWORK_TYPE_UMTS,
-                METERED_YES);
-        final NetworkTemplate templateUnknown =
-                buildTemplateMobileWithRatType(null, TelephonyManager.NETWORK_TYPE_UNKNOWN,
-                METERED_YES);
-        final NetworkTemplate templateAll =
-                buildTemplateMobileWithRatType(null, NETWORK_TYPE_ALL, METERED_YES);
+        final NetworkTemplate template3g = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setRatType(TelephonyManager.NETWORK_TYPE_UMTS)
+                .setMeteredness(METERED_YES).build();
+        final NetworkTemplate templateUnknown = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setRatType(TelephonyManager.NETWORK_TYPE_UNKNOWN)
+                .setMeteredness(METERED_YES).build();
+        final NetworkTemplate templateAll = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setMeteredness(METERED_YES).build();
         final NetworkStateSnapshot[] states =
                 new NetworkStateSnapshot[]{buildMobileState(IMSI_1)};
 
@@ -1772,8 +1767,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         forcePollAndWaitForIdle();
 
         // Verify mobile summary is not changed by the operation count.
-        final NetworkTemplate templateMobile =
-                buildTemplateMobileWithRatType(null, NETWORK_TYPE_ALL, METERED_YES);
+        final NetworkTemplate templateMobile = new NetworkTemplate.Builder(MATCH_MOBILE)
+                .setMeteredness(METERED_YES).build();
         final NetworkStats statsMobile = mSession.getSummaryForAllUid(
                 templateMobile, Long.MIN_VALUE, Long.MAX_VALUE, true);
         assertValues(statsMobile, IFACE_ALL, UID_RED, SET_ALL, TAG_NONE, METERED_ALL, ROAMING_ALL,
@@ -1784,7 +1779,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         // Verify the operation count is blamed onto the default network.
         // TODO: Blame onto the default network is not very reasonable. Consider blame onto the
         //  network that generates the traffic.
-        final NetworkTemplate templateWifi = buildTemplateWifiWildcard();
+        final NetworkTemplate templateWifi = new NetworkTemplate.Builder(MATCH_WIFI).build();
         final NetworkStats statsWifi = mSession.getSummaryForAllUid(
                 templateWifi, Long.MIN_VALUE, Long.MAX_VALUE, true);
         assertValues(statsWifi, IFACE_ALL, UID_RED, SET_ALL, 0xF00D, METERED_ALL, ROAMING_ALL,
@@ -2326,5 +2321,26 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         assertTrue(statsMapContainsUid(mStatsMapB, UID_RED));
         assertTrue(mAppUidStatsMap.containsKey(new UidStatsMapKey(UID_RED)));
         assertTrue(mUidCounterSetMap.containsKey(new U32(UID_RED)));
+    }
+
+    private void assertDumpContains(final String dump, final String message) {
+        assertTrue(String.format("dump(%s) does not contain '%s'", dump, message),
+                dump.contains(message));
+    }
+
+    private String getDump() {
+        final StringWriter sw = new StringWriter();
+        mService.dump(new FileDescriptor(), new PrintWriter(sw), new String[]{});
+        return sw.toString();
+    }
+
+    @Test
+    public void testDumpCookieTagMap() throws ErrnoException {
+        initBpfMapsWithTagData(UID_BLUE);
+
+        final String dump = getDump();
+        assertDumpContains(dump, "mCookieTagMap: OK");
+        assertDumpContains(dump, "cookie=2002 tag=0x1 uid=1002");
+        assertDumpContains(dump, "cookie=3002 tag=0x2 uid=1002");
     }
 }

@@ -92,7 +92,6 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.LocalSocket;
 import android.net.Network;
-import android.net.NetworkAgent;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo.DetailedState;
 import android.net.RouteInfo;
@@ -246,7 +245,7 @@ public class VpnTest extends VpnTestBase {
     @Mock private Vpn.SystemServices mSystemServices;
     @Mock private Vpn.IkeSessionWrapper mIkeSessionWrapper;
     @Mock private Vpn.Ikev2SessionCreator mIkev2SessionCreator;
-    @Mock private NetworkAgent mMockNetworkAgent;
+    @Mock private Vpn.VpnNetworkAgentWrapper mMockNetworkAgent;
     @Mock private ConnectivityManager mConnectivityManager;
     @Mock private IpSecService mIpSecService;
     @Mock private VpnProfileStore mVpnProfileStore;
@@ -870,7 +869,7 @@ public class VpnTest extends VpnTestBase {
     public void testRefreshPlatformVpnAppExclusionList_updatesExcludedUids() throws Exception {
         final Vpn vpn = prepareVpnForVerifyAppExclusionList();
         vpn.setAppExclusionList(TEST_VPN_PKG, Arrays.asList(PKGS));
-        verify(mMockNetworkAgent).sendNetworkCapabilities(any());
+        verify(mMockNetworkAgent).doSendNetworkCapabilities(any());
         assertEquals(Arrays.asList(PKGS), vpn.getAppExclusionList(TEST_VPN_PKG));
 
         reset(mMockNetworkAgent);
@@ -887,7 +886,7 @@ public class VpnTest extends VpnTestBase {
                 vpn.mNetworkCapabilities.getUids());
         ArgumentCaptor<NetworkCapabilities> ncCaptor =
                 ArgumentCaptor.forClass(NetworkCapabilities.class);
-        verify(mMockNetworkAgent).sendNetworkCapabilities(ncCaptor.capture());
+        verify(mMockNetworkAgent).doSendNetworkCapabilities(ncCaptor.capture());
         assertEquals(makeVpnUidRange(PRIMARY_USER.id, newExcludedUids),
                 ncCaptor.getValue().getUids());
 
@@ -902,7 +901,7 @@ public class VpnTest extends VpnTestBase {
         assertEquals(Arrays.asList(PKGS), vpn.getAppExclusionList(TEST_VPN_PKG));
         assertEquals(makeVpnUidRange(PRIMARY_USER.id, newExcludedUids),
                 vpn.mNetworkCapabilities.getUids());
-        verify(mMockNetworkAgent).sendNetworkCapabilities(ncCaptor.capture());
+        verify(mMockNetworkAgent).doSendNetworkCapabilities(ncCaptor.capture());
         assertEquals(makeVpnUidRange(PRIMARY_USER.id, newExcludedUids),
                 ncCaptor.getValue().getUids());
     }
@@ -1614,6 +1613,30 @@ public class VpnTest extends VpnTestBase {
         assertEquals(LegacyVpnInfo.STATE_FAILED, vpn.getLegacyVpnInfo().state);
     }
 
+    @Test
+    public void testVpnManagerEventWillNotBeSentToSettingsVpn() throws Exception {
+        startLegacyVpn(createVpn(PRIMARY_USER.id), mVpnProfile);
+        triggerOnAvailableAndGetCallback();
+
+        verifyInterfaceSetCfgWithFlags(IF_STATE_UP);
+
+        final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
+        final IkeTimeoutException ikeTimeoutException =
+                new IkeTimeoutException("IkeTimeoutException");
+        when(exception.getCause()).thenReturn(ikeTimeoutException);
+
+        final ArgumentCaptor<IkeSessionCallback> captor =
+                ArgumentCaptor.forClass(IkeSessionCallback.class);
+        verify(mIkev2SessionCreator, timeout(TEST_TIMEOUT_MS))
+                .createIkeSession(any(), any(), any(), any(), captor.capture(), any());
+        final IkeSessionCallback ikeCb = captor.getValue();
+        ikeCb.onClosedWithException(exception);
+
+        final Context userContext =
+                mContext.createContextAsUser(UserHandle.of(PRIMARY_USER.id), 0 /* flags */);
+        verify(userContext, never()).startService(any());
+    }
+
     private void setAndVerifyAlwaysOnPackage(Vpn vpn, int uid, boolean lockdownEnabled) {
         assertTrue(vpn.setAlwaysOnPackage(TEST_VPN_PKG, lockdownEnabled, null));
 
@@ -1830,7 +1853,7 @@ public class VpnTest extends VpnTestBase {
                 Collections.singletonList(TEST_NETWORK_2),
                 vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks());
         verify(mMockNetworkAgent)
-                .setUnderlyingNetworks(Collections.singletonList(TEST_NETWORK_2));
+                .doSetUnderlyingNetworks(Collections.singletonList(TEST_NETWORK_2));
 
         vpnSnapShot.vpn.mVpnRunner.exitVpnRunner();
     }
@@ -1872,7 +1895,7 @@ public class VpnTest extends VpnTestBase {
                 Collections.singletonList(TEST_NETWORK_2),
                 vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks());
         verify(mMockNetworkAgent)
-                .setUnderlyingNetworks(Collections.singletonList(TEST_NETWORK_2));
+                .doSetUnderlyingNetworks(Collections.singletonList(TEST_NETWORK_2));
 
         vpnSnapShot.vpn.mVpnRunner.exitVpnRunner();
     }
@@ -1880,7 +1903,7 @@ public class VpnTest extends VpnTestBase {
     private void verifyHandlingNetworkLoss() throws Exception {
         final ArgumentCaptor<LinkProperties> lpCaptor =
                 ArgumentCaptor.forClass(LinkProperties.class);
-        verify(mMockNetworkAgent).sendLinkProperties(lpCaptor.capture());
+        verify(mMockNetworkAgent).doSendLinkProperties(lpCaptor.capture());
         final LinkProperties lp = lpCaptor.getValue();
 
         assertNull(lp.getInterfaceName());

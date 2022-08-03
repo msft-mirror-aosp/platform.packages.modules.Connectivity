@@ -116,6 +116,7 @@ java_sdk_library {
         "//packages/modules/Connectivity/Tethering/apex",
         // In preparation for future move
         "//packages/modules/Connectivity/apex",
+        "//packages/modules/Connectivity/service", // For R8 only
         "//packages/modules/Connectivity/service-t",
         "//packages/modules/Nearby/service",
         "//frameworks/base",
@@ -140,4 +141,9 @@ java_sdk_library {
         "//packages/modules/Nearby/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
     ],
+}
+
+platform_compat_config {
+    name: "connectivity-t-platform-compat-config",
+    src: ":framework-connectivity-t",
 }
