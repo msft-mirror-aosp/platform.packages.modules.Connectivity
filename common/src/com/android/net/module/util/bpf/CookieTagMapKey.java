@@ -14,24 +14,20 @@
  * limitations under the License.
  */
 
-package com.android.server.net;
+package com.android.net.module.util.bpf;
 
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.Field;
 import com.android.net.module.util.Struct.Type;
 
 /**
- * Value for cookie tag map.
+ * Key for cookie tag map.
  */
-public class CookieTagMapValue extends Struct {
-    @Field(order = 0, type = Type.U32)
-    public final long uid;
+public class CookieTagMapKey extends Struct {
+    @Field(order = 0, type = Type.S64)
+    public final long socketCookie;
 
-    @Field(order = 1, type = Type.U32)
-    public final long tag;
-
-    public CookieTagMapValue(final long uid, final long tag) {
-        this.uid = uid;
-        this.tag = tag;
+    public CookieTagMapKey(final long socketCookie) {
+        this.socketCookie = socketCookie;
     }
 }
