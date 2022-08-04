@@ -98,8 +98,6 @@ import android.net.TetheringInterface;
 import android.net.TetheringManager.TetheringRequest;
 import android.net.TetheringRequestParcel;
 import android.net.ip.IpServer;
-import android.net.shared.NetdUtils;
-import android.net.util.SharedLog;
 import android.net.wifi.WifiClient;
 import android.net.wifi.WifiManager;
 import android.net.wifi.p2p.WifiP2pGroup;
@@ -136,6 +134,8 @@ import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.NetdUtils;
+import com.android.net.module.util.SharedLog;
 import com.android.networkstack.apishim.common.BluetoothPanShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceCallbackShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceRequestShim;
@@ -1406,7 +1406,9 @@ public class Tethering {
     private void enableIpServing(int tetheringType, String ifname, int ipServingMode,
             boolean isNcm) {
         ensureIpServerStarted(ifname, tetheringType, isNcm);
-        changeInterfaceState(ifname, ipServingMode);
+        if (tether(ifname, ipServingMode) != TETHER_ERROR_NO_ERROR) {
+            Log.e(TAG, "unable start tethering on iface " + ifname);
+        }
     }
 
     private void disableWifiIpServingCommon(int tetheringType, String ifname) {
@@ -1548,27 +1550,6 @@ public class Tethering {
             if (state.isNcm == forNcmFunction) {
                 ensureIpServerStopped(state.ipServer.interfaceName());
             }
-        }
-    }
-
-    private void changeInterfaceState(String ifname, int requestedState) {
-        final int result;
-        switch (requestedState) {
-            case IpServer.STATE_UNAVAILABLE:
-            case IpServer.STATE_AVAILABLE:
-                result = untether(ifname);
-                break;
-            case IpServer.STATE_TETHERED:
-            case IpServer.STATE_LOCAL_ONLY:
-                result = tether(ifname, requestedState);
-                break;
-            default:
-                Log.wtf(TAG, "Unknown interface state: " + requestedState);
-                return;
-        }
-        if (result != TETHER_ERROR_NO_ERROR) {
-            Log.e(TAG, "unable start or stop tethering on iface " + ifname);
-            return;
         }
     }
 
@@ -2544,7 +2525,7 @@ public class Tethering {
     // if ro.tether.denied = true we default to no tethering
     // gservices could set the secure setting to 1 though to enable it on a build where it
     // had previously been turned off.
-    private boolean isTetheringAllowed() {
+    boolean isTetheringAllowed() {
         final int defaultVal = mDeps.isTetheringDenied() ? 0 : 1;
         final boolean tetherSupported = Settings.Global.getInt(mContext.getContentResolver(),
                 Settings.Global.TETHER_SUPPORTED, defaultVal) != 0;
