@@ -14,9 +14,8 @@
  * limitations under the License.
  */
 
+#define CACHE_MAP_SIZE 1024
 #define MAX_POLICIES 16
-#define MAP_A 1
-#define MAP_B 2
 
 #define SRC_IP_MASK_FLAG     1
 #define DST_IP_MASK_FLAG     2
@@ -44,27 +43,27 @@ static long (*bpf_skb_ecn_set_ce)(struct __sk_buff* skb) =
         (void*)BPF_FUNC_skb_ecn_set_ce;
 
 typedef struct {
-    struct in6_addr srcIp;
-    struct in6_addr dstIp;
+    struct in6_addr src_ip;
+    struct in6_addr dst_ip;
     uint32_t ifindex;
-    __be16 srcPort;
-    __be16 dstPortStart;
-    __be16 dstPortEnd;
+    __be16 src_port;
+    __be16 dst_port_start;
+    __be16 dst_port_end;
     uint8_t proto;
-    uint8_t dscpVal;
-    uint8_t presentFields;
+    int8_t dscp_val;  // -1 none, or 0..63 DSCP value
+    uint8_t present_fields;
     uint8_t pad[3];
 } DscpPolicy;
 STRUCT_SIZE(DscpPolicy, 2 * 16 + 4 + 3 * 2 + 3 * 1 + 3);  // 48
 
 typedef struct {
-    struct in6_addr srcIp;
-    struct in6_addr dstIp;
+    struct in6_addr src_ip;
+    struct in6_addr dst_ip;
     __u32 ifindex;
-    __be16 srcPort;
-    __be16 dstPort;
+    __be16 src_port;
+    __be16 dst_port;
     __u8 proto;
-    __u8 dscpVal;
+    __s8 dscp_val;  // -1 none, or 0..63 DSCP value
     __u8 pad[2];
 } RuleEntry;
 STRUCT_SIZE(RuleEntry, 2 * 16 + 1 * 4 + 2 * 2 + 2 * 1 + 2);  // 44
