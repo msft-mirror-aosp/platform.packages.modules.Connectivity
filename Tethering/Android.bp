@@ -31,12 +31,12 @@ java_defaults {
         "apishim/**/*.java",
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
-        ":tethering-module-utils-srcs",
         ":services-tethering-shared-srcs",
         ":statslog-tethering-java-gen",
     ],
     static_libs: [
         "androidx.annotation_annotation",
+        "connectivity-net-module-utils-bpf",
         "modules-utils-build",
         "modules-utils-statemachine",
         "networkstack-client",
@@ -46,6 +46,7 @@ java_defaults {
         "net-utils-framework-common",
         "net-utils-device-common",
         "net-utils-device-common-bpf",
+        "net-utils-device-common-ip",
         "net-utils-device-common-netlink",
         "netd-client",
         "tetheringstatsprotos",
@@ -210,8 +211,11 @@ android_app {
 
 sdk {
     name: "tethering-module-sdk",
-    bootclasspath_fragments: ["com.android.tethering-bootclasspath-fragment"],
-    systemserverclasspath_fragments: ["com.android.tethering-systemserverclasspath-fragment"],
+    apexes: [
+        // Adds exportable dependencies of the APEX to the sdk,
+        // e.g. *classpath_fragments.
+        "com.android.tethering",
+    ],
 }
 
 java_library_static {
