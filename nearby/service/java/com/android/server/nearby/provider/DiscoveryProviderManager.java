@@ -33,6 +33,7 @@ import android.os.RemoteException;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.nearby.injector.Injector;
 import com.android.server.nearby.metrics.NearbyMetrics;
 import com.android.server.nearby.presence.PresenceDiscoveryResult;
@@ -50,7 +51,6 @@ import java.util.stream.Collectors;
 
 /** Manages all aspects of discovery providers. */
 public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Listener {
-
     protected final Object mLock = new Object();
     private final Context mContext;
     private final BleDiscoveryProvider mBleDiscoveryProvider;
@@ -122,6 +122,12 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                         mContext, new ChreCommunication(injector, executor), executor);
         mScanTypeScanListenerRecordMap = new HashMap<>();
         mInjector = injector;
+    }
+
+    /** Called after boot completed. */
+    public void init() {
+        mChreDiscoveryProvider.init();
+        mChreDiscoveryProvider.getController().setListener(this);
     }
 
     /**
@@ -227,10 +233,10 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         }
     }
 
-    private void startChreProvider() {
+    @VisibleForTesting
+    void startChreProvider() {
         Log.d(TAG, "DiscoveryProviderManager starts CHRE scanning.");
         synchronized (mLock) {
-            mChreDiscoveryProvider.getController().setListener(this);
             List<ScanFilter> scanFilters = new ArrayList();
             for (IBinder listenerBinder : mScanTypeScanListenerRecordMap.keySet()) {
                 ScanListenerRecord record = mScanTypeScanListenerRecordMap.get(listenerBinder);
@@ -261,7 +267,8 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         mChreDiscoveryProvider.getController().stop();
     }
 
-    private void invalidateProviderScanMode() {
+    @VisibleForTesting
+    void invalidateProviderScanMode() {
         if (mBleDiscoveryProvider.getController().isStarted()) {
             mBleDiscoveryProvider.getController().setProviderScanMode(mScanMode);
         } else {
@@ -272,7 +279,8 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         }
     }
 
-    private static boolean presenceFilterMatches(
+    @VisibleForTesting
+    static boolean presenceFilterMatches(
             NearbyDeviceParcelable device, List<ScanFilter> scanFilters) {
         if (scanFilters.isEmpty()) {
             return true;
