@@ -27,12 +27,15 @@ import static android.content.Intent.EXTRA_UID;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
+import static android.net.NetworkStats.DEFAULT_NETWORK_NO;
 import static android.net.NetworkStats.IFACE_ALL;
 import static android.net.NetworkStats.IFACE_VT;
 import static android.net.NetworkStats.INTERFACES_ALL;
 import static android.net.NetworkStats.METERED_ALL;
+import static android.net.NetworkStats.METERED_NO;
 import static android.net.NetworkStats.METERED_YES;
 import static android.net.NetworkStats.ROAMING_ALL;
+import static android.net.NetworkStats.ROAMING_NO;
 import static android.net.NetworkStats.SET_ALL;
 import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.SET_FOREGROUND;
@@ -2715,6 +2718,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             pw.println("BPF map content:");
             pw.increaseIndent();
             dumpCookieTagMapLocked(pw);
+            dumpUidCounterSetMapLocked(pw);
+            dumpAppUidStatsMapLocked(pw);
             pw.decreaseIndent();
         }
     }
@@ -2765,6 +2770,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private void dumpMapStatus(final IndentingPrintWriter pw) {
         pw.println("mCookieTagMap: " + getMapStatus(mCookieTagMap, COOKIE_TAG_MAP_PATH));
+        pw.println("mUidCounterSetMap: "
+                + getMapStatus(mUidCounterSetMap, UID_COUNTERSET_MAP_PATH));
+        pw.println("mAppUidStatsMap: " + getMapStatus(mAppUidStatsMap, APP_UID_STATS_MAP_PATH));
     }
 
     @GuardedBy("mStatsLock")
@@ -2788,6 +2796,57 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             });
         } catch (ErrnoException e) {
             pw.println("mCookieTagMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpUidCounterSetMapLocked(final IndentingPrintWriter pw) {
+        if (mUidCounterSetMap == null) {
+            return;
+        }
+        pw.println("mUidCounterSetMap:");
+        pw.increaseIndent();
+        try {
+            mUidCounterSetMap.forEach((uid, set) -> {
+                // set could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (set != null) {
+                    pw.println("uid=" + uid.val + " set=" + set.val);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mUidCounterSetMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpAppUidStatsMapLocked(final IndentingPrintWriter pw) {
+        if (mAppUidStatsMap == null) {
+            return;
+        }
+        pw.println("mAppUidStatsMap:");
+        pw.increaseIndent();
+        pw.println("uid rxBytes rxPackets txBytes txPackets");
+        try {
+            mAppUidStatsMap.forEach((key, value) -> {
+                // value could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (value != null) {
+                    pw.println(key.uid + " "
+                            + value.rxBytes + " "
+                            + value.rxPackets + " "
+                            + value.txBytes + " "
+                            + value.txPackets);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mAppUidStatsMap dump end with error: " + Os.strerror(e.errno));
         }
         pw.decreaseIndent();
     }
@@ -2866,7 +2925,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             for (TetherStatsParcel tetherStats : tetherStatsParcels) {
                 try {
                     stats.combineValues(new NetworkStats.Entry(tetherStats.iface, UID_TETHERING,
-                            SET_DEFAULT, TAG_NONE, tetherStats.rxBytes, tetherStats.rxPackets,
+                            SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO,
+                            tetherStats.rxBytes, tetherStats.rxPackets,
                             tetherStats.txBytes, tetherStats.txPackets, 0L));
                 } catch (ArrayIndexOutOfBoundsException e) {
                     throw new IllegalStateException("invalid tethering stats " + e);
