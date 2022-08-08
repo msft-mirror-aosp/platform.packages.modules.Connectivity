@@ -24,15 +24,18 @@ import static android.content.Intent.ACTION_SHUTDOWN;
 import static android.content.Intent.ACTION_UID_REMOVED;
 import static android.content.Intent.ACTION_USER_REMOVED;
 import static android.content.Intent.EXTRA_UID;
-import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
+import static android.net.NetworkStats.DEFAULT_NETWORK_NO;
 import static android.net.NetworkStats.IFACE_ALL;
 import static android.net.NetworkStats.IFACE_VT;
 import static android.net.NetworkStats.INTERFACES_ALL;
 import static android.net.NetworkStats.METERED_ALL;
+import static android.net.NetworkStats.METERED_NO;
+import static android.net.NetworkStats.METERED_YES;
 import static android.net.NetworkStats.ROAMING_ALL;
+import static android.net.NetworkStats.ROAMING_NO;
 import static android.net.NetworkStats.SET_ALL;
 import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.SET_FOREGROUND;
@@ -42,8 +45,8 @@ import static android.net.NetworkStats.TAG_ALL;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStatsHistory.FIELD_ALL;
-import static android.net.NetworkTemplate.buildTemplateMobileWildcard;
-import static android.net.NetworkTemplate.buildTemplateWifiWildcard;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.TrafficStats.KB_IN_BYTES;
 import static android.net.TrafficStats.MB_IN_BYTES;
 import static android.net.TrafficStats.UID_TETHERING;
@@ -53,6 +56,7 @@ import static android.net.netstats.NetworkStatsDataMigrationUtils.PREFIX_UID_TAG
 import static android.net.netstats.NetworkStatsDataMigrationUtils.PREFIX_XT;
 import static android.os.Trace.TRACE_TAG_NETWORK;
 import static android.system.OsConstants.ENOENT;
+import static android.system.OsConstants.R_OK;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 import static android.text.format.DateUtils.DAY_IN_MILLIS;
 import static android.text.format.DateUtils.HOUR_IN_MILLIS;
@@ -130,6 +134,7 @@ import android.provider.Settings.Global;
 import android.service.NetworkInterfaceProto;
 import android.service.NetworkStatsServiceDumpProto;
 import android.system.ErrnoException;
+import android.system.Os;
 import android.telephony.PhoneStateListener;
 import android.telephony.SubscriptionPlan;
 import android.text.TextUtils;
@@ -156,8 +161,11 @@ import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.NetworkStatsUtils;
 import com.android.net.module.util.PermissionUtils;
+import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -304,7 +312,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /**
          * When enabled, all mobile data is reported under {@link NetworkTemplate#NETWORK_TYPE_ALL}.
          * When disabled, mobile data is broken down by a granular ratType representative of the
-         * actual ratType. {@see android.app.usage.NetworkStatsManager#getCollapsedRatType}.
+         * actual ratType. See {@link android.app.usage.NetworkStatsManager#getCollapsedRatType}.
          * Enabling this decreases the level of detail but saves performance, disk space and
          * amount of data logged.
          */
@@ -2360,7 +2368,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         NetworkStats.Entry uidTotal;
 
         // collect mobile sample
-        template = buildTemplateMobileWildcard();
+        template = new NetworkTemplate.Builder(MATCH_MOBILE).setMeteredness(METERED_YES).build();
         devTotal = mDevRecorder.getTotalSinceBootLocked(template);
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
@@ -2372,7 +2380,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 currentTime);
 
         // collect wifi sample
-        template = buildTemplateWifiWildcard();
+        template = new NetworkTemplate.Builder(MATCH_WIFI).build();
         devTotal = mDevRecorder.getTotalSinceBootLocked(template);
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
@@ -2696,6 +2704,23 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 mUidTagRecorder.dumpLocked(pw, fullHistory);
                 pw.decreaseIndent();
             }
+
+            pw.println();
+            pw.println("BPF map status:");
+            pw.increaseIndent();
+            dumpMapStatus(pw);
+            pw.decreaseIndent();
+            pw.println();
+
+            // Following BPF map content dump contains uid and tag regardless of the flags because
+            // following dumps are moved from TrafficController and bug report already contains this
+            // information.
+            pw.println("BPF map content:");
+            pw.increaseIndent();
+            dumpCookieTagMapLocked(pw);
+            dumpUidCounterSetMapLocked(pw);
+            dumpAppUidStatsMapLocked(pw);
+            pw.decreaseIndent();
         }
     }
 
@@ -2728,6 +2753,102 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
             proto.end(start);
         }
+    }
+
+    private <K extends Struct, V extends Struct> String getMapStatus(
+            final IBpfMap<K, V> map, final String path) {
+        if (map != null) {
+            return "OK";
+        }
+        try {
+            Os.access(path, R_OK);
+            return "NULL(map is pinned to " + path + ")";
+        } catch (ErrnoException e) {
+            return "NULL(map is not pinned to " + path + ": " + Os.strerror(e.errno) + ")";
+        }
+    }
+
+    private void dumpMapStatus(final IndentingPrintWriter pw) {
+        pw.println("mCookieTagMap: " + getMapStatus(mCookieTagMap, COOKIE_TAG_MAP_PATH));
+        pw.println("mUidCounterSetMap: "
+                + getMapStatus(mUidCounterSetMap, UID_COUNTERSET_MAP_PATH));
+        pw.println("mAppUidStatsMap: " + getMapStatus(mAppUidStatsMap, APP_UID_STATS_MAP_PATH));
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpCookieTagMapLocked(final IndentingPrintWriter pw) {
+        if (mCookieTagMap == null) {
+            return;
+        }
+        pw.println("mCookieTagMap:");
+        pw.increaseIndent();
+        try {
+            mCookieTagMap.forEach((key, value) -> {
+                // value could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (value != null) {
+                    pw.println("cookie=" + key.socketCookie
+                            + " tag=0x" + Long.toHexString(value.tag)
+                            + " uid=" + value.uid);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mCookieTagMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpUidCounterSetMapLocked(final IndentingPrintWriter pw) {
+        if (mUidCounterSetMap == null) {
+            return;
+        }
+        pw.println("mUidCounterSetMap:");
+        pw.increaseIndent();
+        try {
+            mUidCounterSetMap.forEach((uid, set) -> {
+                // set could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (set != null) {
+                    pw.println("uid=" + uid.val + " set=" + set.val);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mUidCounterSetMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpAppUidStatsMapLocked(final IndentingPrintWriter pw) {
+        if (mAppUidStatsMap == null) {
+            return;
+        }
+        pw.println("mAppUidStatsMap:");
+        pw.increaseIndent();
+        pw.println("uid rxBytes rxPackets txBytes txPackets");
+        try {
+            mAppUidStatsMap.forEach((key, value) -> {
+                // value could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (value != null) {
+                    pw.println(key.uid + " "
+                            + value.rxBytes + " "
+                            + value.rxPackets + " "
+                            + value.txBytes + " "
+                            + value.txPackets);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mAppUidStatsMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
     }
 
     private NetworkStats readNetworkStatsSummaryDev() {
@@ -2804,34 +2925,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             for (TetherStatsParcel tetherStats : tetherStatsParcels) {
                 try {
                     stats.combineValues(new NetworkStats.Entry(tetherStats.iface, UID_TETHERING,
-                            SET_DEFAULT, TAG_NONE, tetherStats.rxBytes, tetherStats.rxPackets,
+                            SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO,
+                            tetherStats.rxBytes, tetherStats.rxPackets,
                             tetherStats.txBytes, tetherStats.txPackets, 0L));
                 } catch (ArrayIndexOutOfBoundsException e) {
                     throw new IllegalStateException("invalid tethering stats " + e);
                 }
             }
-        } catch (IllegalStateException e) {
+        } catch (IllegalStateException | ServiceSpecificException e) {
             Log.wtf(TAG, "problem reading network stats", e);
         }
         return stats;
-    }
-
-    // TODO: It is copied from ConnectivityService, consider refactor these check permission
-    //  functions to a proper util.
-    private boolean checkAnyPermissionOf(String... permissions) {
-        for (String permission : permissions) {
-            if (mContext.checkCallingOrSelfPermission(permission) == PERMISSION_GRANTED) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void enforceAnyPermissionOf(String... permissions) {
-        if (!checkAnyPermissionOf(permissions)) {
-            throw new SecurityException("Requires one of the following permissions: "
-                    + String.join(", ", permissions) + ".");
-        }
     }
 
     /**
@@ -2848,7 +2952,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     public @NonNull INetworkStatsProviderCallback registerNetworkStatsProvider(
             @NonNull String tag, @NonNull INetworkStatsProvider provider) {
-        enforceAnyPermissionOf(NETWORK_STATS_PROVIDER,
+        PermissionUtils.enforceAnyPermissionOf(mContext, NETWORK_STATS_PROVIDER,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
         Objects.requireNonNull(provider, "provider is null");
         Objects.requireNonNull(tag, "tag is null");
