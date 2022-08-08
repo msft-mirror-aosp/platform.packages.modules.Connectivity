@@ -14,20 +14,26 @@
  * limitations under the License.
  */
 
-package com.android.server.net;
+package com.android.server.nearby.util.encryption;
 
-import com.android.net.module.util.Struct;
-import com.android.net.module.util.Struct.Field;
-import com.android.net.module.util.Struct.Type;
+import androidx.annotation.Nullable;
 
 /**
- * Key for cookie tag map.
+ * A Cryptor that returns the original data without actual encryption
  */
-public class CookieTagMapKey extends Struct {
-    @Field(order = 0, type = Type.S64)
-    public final long socketCookie;
+public class CryptorImpFake implements Cryptor {
+    // Lazily instantiated when {@link #getInstance()} is called.
+    @Nullable
+    private static CryptorImpFake sCryptor;
 
-    public CookieTagMapKey(final long socketCookie) {
-        this.socketCookie = socketCookie;
+    /** Returns an instance of CryptorImpFake. */
+    public static CryptorImpFake getInstance() {
+        if (sCryptor == null) {
+            sCryptor = new CryptorImpFake();
+        }
+        return sCryptor;
+    }
+
+    private CryptorImpFake() {
     }
 }
