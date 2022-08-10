@@ -67,12 +67,14 @@ filegroup {
         "java/com/android/internal/net/NetworkUtilsInternalTest.java",
         "java/com/android/internal/net/VpnProfileTest.java",
         "java/com/android/server/NetworkManagementServiceTest.java",
+        "java/com/android/server/VpnManagerServiceTest.java",
         "java/com/android/server/connectivity/IpConnectivityEventBuilderTest.java",
         "java/com/android/server/connectivity/IpConnectivityMetricsTest.java",
         "java/com/android/server/connectivity/MultipathPolicyTrackerTest.java",
         "java/com/android/server/connectivity/NetdEventListenerServiceTest.java",
         "java/com/android/server/connectivity/VpnTest.java",
         "java/com/android/server/net/ipmemorystore/*.java",
+        "java/com/android/server/connectivity/mdns/**/*.java",
     ]
 }
 
@@ -147,10 +149,10 @@ android_test {
     static_libs: [
         "services.core",
         "services.net",
+        "service-mdns",
     ],
     jni_libs: [
         "libandroid_net_connectivity_com_android_net_module_util_jni",
         "libservice-connectivity",
-        "libandroid_net_connectivity_com_android_net_module_util_jni",
     ],
 }

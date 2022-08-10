@@ -21,6 +21,8 @@ import android.Manifest.permission.NETWORK_SETTINGS
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.EthernetManager
+import android.net.EthernetManager.ETHERNET_STATE_DISABLED
+import android.net.EthernetManager.ETHERNET_STATE_ENABLED
 import android.net.EthernetManager.InterfaceStateListener
 import android.net.EthernetManager.ROLE_CLIENT
 import android.net.EthernetManager.ROLE_NONE
@@ -35,39 +37,45 @@ import android.net.EthernetNetworkSpecifier
 import android.net.EthernetNetworkUpdateRequest
 import android.net.InetAddresses
 import android.net.IpConfiguration
+import android.net.LinkAddress
 import android.net.MacAddress
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED
 import android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED
 import android.net.NetworkCapabilities.TRANSPORT_ETHERNET
 import android.net.NetworkCapabilities.TRANSPORT_TEST
 import android.net.NetworkRequest
+import android.net.StaticIpConfiguration
 import android.net.TestNetworkInterface
 import android.net.TestNetworkManager
+import android.net.cts.EthernetManagerTest.EthernetStateListener.CallbackEntry.EthernetStateChanged
 import android.net.cts.EthernetManagerTest.EthernetStateListener.CallbackEntry.InterfaceStateChanged
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.OutcomeReceiver
-import android.os.SystemProperties
 import android.platform.test.annotations.AppModeFull
 import android.util.ArraySet
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.net.module.util.TrackRecord
-import com.android.testutils.anyNetwork
 import com.android.testutils.ConnectivityModuleTest
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRunner
+import com.android.testutils.DeviceInfoUtils.isKernelVersionAtLeast
 import com.android.testutils.RecorderCallback.CallbackEntry.Available
+import com.android.testutils.RecorderCallback.CallbackEntry.CapabilitiesChanged
 import com.android.testutils.RecorderCallback.CallbackEntry.Lost
 import com.android.testutils.RouterAdvertisementResponder
+import com.android.testutils.SkipPresubmit
 import com.android.testutils.TapPacketReader
 import com.android.testutils.TestableNetworkCallback
+import com.android.testutils.anyNetwork
 import com.android.testutils.runAsShell
 import com.android.testutils.waitForIdle
 import org.junit.After
-import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -75,6 +83,8 @@ import java.net.Inet6Address
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
+import java.util.function.IntConsumer
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -83,23 +93,32 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
+private const val TAG = "EthernetManagerTest"
 // TODO: try to lower this timeout in the future. Currently, ethernet tests are still flaky because
 // the interface is not ready fast enough (mostly due to the up / up / down / up issue).
 private const val TIMEOUT_MS = 2000L
-private const val NO_CALLBACK_TIMEOUT_MS = 200L
+// Timeout used to confirm no callbacks matching given criteria are received. Must be long enough to
+// process all callbacks including ip provisioning when using the updateConfiguration API.
+private const val NO_CALLBACK_TIMEOUT_MS = 500L
+
 private val DEFAULT_IP_CONFIGURATION = IpConfiguration(IpConfiguration.IpAssignment.DHCP,
-    IpConfiguration.ProxySettings.NONE, null, null)
+        IpConfiguration.ProxySettings.NONE, null, null)
 private val ETH_REQUEST: NetworkRequest = NetworkRequest.Builder()
-    .addTransportType(TRANSPORT_TEST)
-    .addTransportType(TRANSPORT_ETHERNET)
-    .removeCapability(NET_CAPABILITY_TRUSTED)
-    .build()
+        .addTransportType(TRANSPORT_TEST)
+        .addTransportType(TRANSPORT_ETHERNET)
+        .removeCapability(NET_CAPABILITY_TRUSTED)
+        .build()
+private val STATIC_IP_CONFIGURATION = IpConfiguration.Builder()
+        .setStaticIpConfiguration(StaticIpConfiguration.Builder()
+                .setIpAddress(LinkAddress("192.0.2.1/30")).build())
+        .build()
 
 @AppModeFull(reason = "Instant apps can't access EthernetManager")
 // EthernetManager is not updatable before T, so tests do not need to be backwards compatible.
 @RunWith(DevSdkIgnoreRunner::class)
 // This test depends on behavior introduced post-T as part of connectivity module updates
 @ConnectivityModuleTest
+@SkipPresubmit(reason = "Flaky: b/240323229; remove annotation after fixing")
 @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 class EthernetManagerTest {
 
@@ -143,6 +162,8 @@ class EthernetManagerTest {
             raResponder.start()
         }
 
+        // WARNING: this function requires kernel support. Call assumeChangingCarrierSupported() at
+        // the top of your test.
         fun setCarrierEnabled(enabled: Boolean) {
             runAsShell(MANAGE_TEST_NETWORKS) {
                 tnm.setCarrierEnabled(tapInterface, enabled)
@@ -158,7 +179,7 @@ class EthernetManagerTest {
 
     private open class EthernetStateListener private constructor(
         private val history: ArrayTrackRecord<CallbackEntry>
-    ) : InterfaceStateListener,
+    ) : InterfaceStateListener, IntConsumer,
                 TrackRecord<EthernetStateListener.CallbackEntry> by history {
         constructor() : this(ArrayTrackRecord())
 
@@ -171,6 +192,8 @@ class EthernetManagerTest {
                 val role: Int,
                 val configuration: IpConfiguration?
             ) : CallbackEntry()
+
+            data class EthernetStateChanged(val state: Int) : CallbackEntry()
         }
 
         override fun onInterfaceStateChanged(
@@ -180,6 +203,10 @@ class EthernetManagerTest {
             cfg: IpConfiguration?
         ) {
             add(InterfaceStateChanged(iface, state, role, cfg))
+        }
+
+        override fun accept(state: Int) {
+            add(EthernetStateChanged(state))
         }
 
         fun <T : CallbackEntry> expectCallback(expected: T): T {
@@ -192,6 +219,10 @@ class EthernetManagerTest {
             expectCallback(createChangeEvent(iface.name, state, role))
         }
 
+        fun expectCallback(state: Int) {
+            expectCallback(EthernetStateChanged(state))
+        }
+
         fun createChangeEvent(iface: String, state: Int, role: Int) =
                 InterfaceStateChanged(iface, state, role,
                         if (state != STATE_ABSENT) DEFAULT_IP_CONFIGURATION else null)
@@ -202,12 +233,12 @@ class EthernetManagerTest {
 
         fun eventuallyExpect(expected: CallbackEntry) = events.poll(TIMEOUT_MS) { it == expected }
 
-        fun eventuallyExpect(interfaceName: String, state: Int, role: Int) {
-            assertNotNull(eventuallyExpect(createChangeEvent(interfaceName, state, role)))
+        fun eventuallyExpect(iface: EthernetTestInterface, state: Int, role: Int) {
+            assertNotNull(eventuallyExpect(createChangeEvent(iface.name, state, role)))
         }
 
-        fun eventuallyExpect(iface: EthernetTestInterface, state: Int, role: Int) {
-            eventuallyExpect(iface.name, state, role)
+        fun eventuallyExpect(state: Int) {
+            assertNotNull(eventuallyExpect(EthernetStateChanged(state)))
         }
 
         fun assertNoCallback() {
@@ -281,17 +312,26 @@ class EthernetManagerTest {
 
     @After
     fun tearDown() {
-        setIncludeTestInterfaces(false)
+        // Reenable ethernet, so ABSENT callbacks are received.
+        setEthernetEnabled(true)
+
         for (iface in createdIfaces) {
             iface.destroy()
             ifaceListener.eventuallyExpect(iface, STATE_ABSENT, ROLE_NONE)
         }
+
+        // After test interfaces are removed, disable tracking.
+        setIncludeTestInterfaces(false)
+
         for (listener in addedListeners) {
             em.removeInterfaceStateListener(listener)
         }
         registeredCallbacks.forEach { cm.unregisterNetworkCallback(it) }
         releaseTetheredInterface()
     }
+
+    // Setting the carrier up / down relies on TUNSETCARRIER which was added in kernel version 5.0.
+    private fun assumeChangingCarrierSupported() = assumeTrue(isKernelVersionAtLeast("5.0.0"))
 
     private fun addInterfaceStateListener(listener: EthernetStateListener) {
         runAsShell(CONNECTIVITY_USE_RESTRICTED_NETWORKS) {
@@ -300,6 +340,8 @@ class EthernetManagerTest {
         addedListeners.add(listener)
     }
 
+    // WARNING: setting hasCarrier to false requires kernel support. Call
+    // assumeChangingCarrierSupported() at the top of your test.
     private fun createInterface(hasCarrier: Boolean = true): EthernetTestInterface {
         val iface = EthernetTestInterface(
             context,
@@ -387,6 +429,19 @@ class EthernetManagerTest {
         }
     }
 
+    private fun setEthernetEnabled(enabled: Boolean) {
+        runAsShell(NETWORK_SETTINGS) { em.setEthernetEnabled(enabled) }
+
+        val listener = EthernetStateListener()
+        em.addEthernetStateListener(handler::post, listener)
+        try {
+            listener.eventuallyExpect(
+                    if (enabled) ETHERNET_STATE_ENABLED else ETHERNET_STATE_DISABLED)
+        } finally {
+            em.removeEthernetStateListener(listener)
+        }
+    }
+
     // NetworkRequest.Builder does not create a copy of the passed NetworkRequest, so in order to
     // keep ETH_REQUEST as it is, a defensive copy is created here.
     private fun NetworkRequest.createCopyWithEthernetSpecifier(ifaceName: String) =
@@ -395,7 +450,10 @@ class EthernetManagerTest {
 
     // It can take multiple seconds for the network to become available.
     private fun TestableNetworkCallback.expectAvailable() =
-        expectCallback<Available>(anyNetwork(), 5000 /* ms timeout */).network
+            expectCallback<Available>(anyNetwork(), 5000 /* ms timeout */).network
+
+    private fun TestableNetworkCallback.expectLost(n: Network = anyNetwork()) =
+            expectCallback<Lost>(n, 5000 /* ms timeout */)
 
     // b/233534110: eventuallyExpect<Lost>() does not advance ReadHead, use
     // eventuallyExpect(Lost::class) instead.
@@ -403,7 +461,9 @@ class EthernetManagerTest {
         eventuallyExpect(Lost::class, TIMEOUT_MS) { n?.equals(it.network) ?: true }
 
     private fun TestableNetworkCallback.assertNeverLost(n: Network? = null) =
-        assertNoCallbackThat() { it is Lost && (n?.equals(it.network) ?: true) }
+        assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS) {
+            it is Lost && (n?.equals(it.network) ?: true)
+        }
 
     private fun TestableNetworkCallback.assertNeverAvailable(n: Network? = null) =
         assertNoCallbackThat() { it is Available && (n?.equals(it.network) ?: true) }
@@ -411,6 +471,18 @@ class EthernetManagerTest {
     private fun TestableNetworkCallback.expectCapabilitiesWithInterfaceName(name: String) =
         expectCapabilitiesThat(anyNetwork()) {
             it.networkSpecifier == EthernetNetworkSpecifier(name)
+        }
+
+    private fun TestableNetworkCallback.expectCapabilitiesWithCapability(cap: Int) =
+        expectCapabilitiesThat(anyNetwork(), TIMEOUT_MS) {
+            it.hasCapability(cap)
+        }
+
+    private fun TestableNetworkCallback.expectLinkPropertiesWithLinkAddress(addr: LinkAddress) =
+        expectLinkPropertiesThat(anyNetwork(), TIMEOUT_MS) {
+            // LinkAddress.equals isn't possible as the system changes the LinkAddress.flags value.
+            // any() must be used since the interface may also have a link-local address.
+            it.linkAddresses.any { x -> x.isSameAddressAs(addr) }
         }
 
     @Test
@@ -449,32 +521,45 @@ class EthernetManagerTest {
         }
     }
 
-    // TODO: this function is now used in two places (EthernetManagerTest and
-    // EthernetTetheringTest), so it should be moved to testutils.
-    private fun isAdbOverNetwork(): Boolean {
-        // If adb TCP port opened, this test may running by adb over network.
-        return (SystemProperties.getInt("persist.adb.tcp.port", -1) > -1 ||
-                SystemProperties.getInt("service.adb.tcp.port", -1) > -1)
+    private fun assumeNoInterfaceForTetheringAvailable() {
+        // Interfaces that have configured NetworkCapabilities will never be used for tethering,
+        // see aosp/2123900.
+        try {
+            // assumeException does not exist.
+            requestTetheredInterface().expectOnAvailable()
+            // interface used for tethering is available, throw an assumption error.
+            assumeTrue(false)
+        } catch (e: TimeoutException) {
+            // do nothing -- the TimeoutException indicates that no interface is available for
+            // tethering.
+            releaseTetheredInterface()
+        }
     }
 
     @Test
     fun testCallbacks_forServerModeInterfaces() {
-        // do not run this test when adb might be connected over ethernet.
-        assumeFalse(isAdbOverNetwork())
+        // do not run this test if an interface that can be used for tethering already exists.
+        assumeNoInterfaceForTetheringAvailable()
+
+        val iface = createInterface()
+        requestTetheredInterface().expectOnAvailable()
 
         val listener = EthernetStateListener()
         addInterfaceStateListener(listener)
-
-        // it is possible that a physical interface is present, so it is not guaranteed that iface
-        // will be put into server mode. This should not matter for the test though. Calling
-        // createInterface() makes sure we have at least one interface available.
-        val iface = createInterface()
-        val cb = requestTetheredInterface()
-        val ifaceName = cb.expectOnAvailable()
-        listener.eventuallyExpect(ifaceName, STATE_LINK_UP, ROLE_SERVER)
+        // TODO(b/236895792): THIS IS A BUG! Existing server mode interfaces are not reported when
+        // an InterfaceStateListener is registered.
+        // Note: using eventuallyExpect as there may be other interfaces present.
+        // listener.eventuallyExpect(iface, STATE_LINK_UP, ROLE_SERVER)
 
         releaseTetheredInterface()
-        listener.eventuallyExpect(ifaceName, STATE_LINK_UP, ROLE_CLIENT)
+        listener.eventuallyExpect(iface, STATE_LINK_UP, ROLE_CLIENT)
+
+        requestTetheredInterface().expectOnAvailable()
+        // This should be changed to expectCallback, once b/236895792 is fixed.
+        listener.eventuallyExpect(iface, STATE_LINK_UP, ROLE_SERVER)
+
+        releaseTetheredInterface()
+        listener.expectCallback(iface, STATE_LINK_UP, ROLE_CLIENT)
     }
 
     /**
@@ -629,6 +714,8 @@ class EthernetManagerTest {
 
     @Test
     fun testNetworkRequest_forInterfaceWhileTogglingCarrier() {
+        assumeChangingCarrierSupported()
+
         val iface = createInterface(false /* hasCarrier */)
 
         val cb = requestNetwork(ETH_REQUEST)
@@ -639,5 +726,103 @@ class EthernetManagerTest {
 
         iface.setCarrierEnabled(false)
         cb.eventuallyExpectLost()
+    }
+
+    @Test
+    fun testRemoveInterface_whileInServerMode() {
+        assumeNoInterfaceForTetheringAvailable()
+
+        val listener = EthernetStateListener()
+        addInterfaceStateListener(listener)
+
+        val iface = createInterface()
+        val ifaceName = requestTetheredInterface().expectOnAvailable()
+
+        assertEquals(iface.name, ifaceName)
+        listener.eventuallyExpect(iface, STATE_LINK_UP, ROLE_SERVER)
+
+        removeInterface(iface)
+
+        // Note: removeInterface already verifies that a STATE_ABSENT, ROLE_NONE callback is
+        // received, but it can't hurt to explicitly check for it.
+        listener.expectCallback(iface, STATE_ABSENT, ROLE_NONE)
+        releaseTetheredInterface()
+        listener.assertNoCallback()
+    }
+
+    @Test
+    fun testEnableDisableInterface_withActiveRequest() {
+        val iface = createInterface()
+        val cb = requestNetwork(ETH_REQUEST)
+        cb.expectAvailable()
+        cb.assertNeverLost()
+
+        disableInterface(iface).expectResult(iface.name)
+        cb.eventuallyExpectLost()
+
+        enableInterface(iface).expectResult(iface.name)
+        cb.expectAvailable()
+    }
+
+    @Test
+    fun testUpdateConfiguration_forBothIpConfigAndCapabilities() {
+        val iface = createInterface()
+        val cb = requestNetwork(ETH_REQUEST.createCopyWithEthernetSpecifier(iface.name))
+        val network = cb.expectAvailable()
+        cb.assertNeverLost()
+
+        val testCapability = NET_CAPABILITY_TEMPORARILY_NOT_METERED
+        val nc = NetworkCapabilities
+                .Builder(ETH_REQUEST.networkCapabilities)
+                .addCapability(testCapability)
+                .build()
+        updateConfiguration(iface, STATIC_IP_CONFIGURATION, nc)
+
+        // UpdateConfiguration() currently does a restarts on the ethernet interface therefore lost
+        // will be expected first before available, as part of the restart.
+        cb.expectLost(network)
+        cb.expectAvailable()
+        cb.expectCapabilitiesWithCapability(testCapability)
+        cb.expectLinkPropertiesWithLinkAddress(
+                STATIC_IP_CONFIGURATION.staticIpConfiguration.ipAddress!!)
+    }
+
+    @Test
+    fun testUpdateConfiguration_forOnlyIpConfig() {
+        val iface: EthernetTestInterface = createInterface()
+        val cb = requestNetwork(ETH_REQUEST.createCopyWithEthernetSpecifier(iface.name))
+        val network = cb.expectAvailable()
+        cb.assertNeverLost()
+
+        updateConfiguration(iface, STATIC_IP_CONFIGURATION)
+
+        // UpdateConfiguration() currently does a restarts on the ethernet interface therefore lost
+        // will be expected first before available, as part of the restart.
+        cb.expectLost(network)
+        cb.expectAvailable()
+        cb.expectCallback<CapabilitiesChanged>()
+        cb.expectLinkPropertiesWithLinkAddress(
+                STATIC_IP_CONFIGURATION.staticIpConfiguration.ipAddress!!)
+    }
+
+    @Test
+    fun testUpdateConfiguration_forOnlyCapabilities() {
+        val iface: EthernetTestInterface = createInterface()
+        val cb = requestNetwork(ETH_REQUEST.createCopyWithEthernetSpecifier(iface.name))
+        val network = cb.expectAvailable()
+        cb.assertNeverLost()
+
+        val testCapability = NET_CAPABILITY_TEMPORARILY_NOT_METERED
+        val nc = NetworkCapabilities
+                .Builder(ETH_REQUEST.networkCapabilities)
+                .addCapability(testCapability)
+                .build()
+        updateConfiguration(iface, capabilities = nc)
+
+        // UpdateConfiguration() currently does a restarts on the ethernet interface therefore lost
+        // will be expected first before available, as part of the restart.
+        cb.expectLost(network)
+        cb.expectAvailable()
+        cb.expectCapabilitiesWithCapability(testCapability)
     }
 }
