@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.ACCESS_NETWORK_STATE;
 import static android.Manifest.permission.CHANGE_NETWORK_STATE;
 import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.CONTROL_OEM_PAID_NETWORK_PREFERENCE;
@@ -241,6 +242,7 @@ import android.net.ConnectivitySettingsManager;
 import android.net.ConnectivityThread;
 import android.net.DataStallReportParcelable;
 import android.net.EthernetManager;
+import android.net.EthernetNetworkSpecifier;
 import android.net.IConnectivityDiagnosticsCallback;
 import android.net.IDnsResolver;
 import android.net.INetd;
@@ -287,6 +289,7 @@ import android.net.RouteInfo;
 import android.net.RouteInfoParcel;
 import android.net.SocketKeepalive;
 import android.net.TelephonyNetworkSpecifier;
+import android.net.TetheringManager;
 import android.net.TransportInfo;
 import android.net.UidRange;
 import android.net.UidRangeParcel;
@@ -299,7 +302,6 @@ import android.net.netd.aidl.NativeUidRangeConfig;
 import android.net.networkstack.NetworkStackClientBase;
 import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
-import android.net.shared.NetworkMonitorUtils;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.MultinetworkPolicyTracker;
 import android.net.wifi.WifiInfo;
@@ -355,6 +357,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.LocationPermissionChecker;
+import com.android.net.module.util.NetworkMonitorUtils;
 import com.android.networkstack.apishim.NetworkAgentConfigShimImpl;
 import com.android.networkstack.apishim.api29.ConstantsShim;
 import com.android.server.ConnectivityService.ConnectivityDiagnosticsCallbackInfo;
@@ -569,6 +572,7 @@ public class ConnectivityServiceTest {
     @Mock PacProxyManager mPacProxyManager;
     @Mock BpfNetMaps mBpfNetMaps;
     @Mock CarrierPrivilegeAuthenticator mCarrierPrivilegeAuthenticator;
+    @Mock TetheringManager mTetheringManager;
 
     // BatteryStatsManager is final and cannot be mocked with regular mockito, so just mock the
     // underlying binder calls.
@@ -691,6 +695,7 @@ public class ConnectivityServiceTest {
             if (Context.NETWORK_STATS_SERVICE.equals(name)) return mStatsManager;
             if (Context.BATTERY_STATS_SERVICE.equals(name)) return mBatteryStatsManager;
             if (Context.PAC_PROXY_SERVICE.equals(name)) return mPacProxyManager;
+            if (Context.TETHERING_SERVICE.equals(name)) return mTetheringManager;
             return super.getSystemService(name);
         }
 
@@ -2988,8 +2993,7 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testRequiresValidation() {
-        assertTrue(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(null),
+        assertTrue(NetworkMonitorUtils.isValidationRequired(false /* isVpnValidationRequired */,
                 mCm.getDefaultRequest().networkCapabilities));
     }
 
@@ -7979,7 +7983,8 @@ public class ConnectivityServiceTest {
         // VPN networks do not satisfy the default request and are automatically validated
         // by NetworkMonitor
         assertFalse(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig()),
+                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
+                        .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
         mMockVpn.getAgent().setNetworkValid(false /* isStrictMode */);
 
@@ -8130,7 +8135,8 @@ public class ConnectivityServiceTest {
         assertTrue(nc.hasCapability(NET_CAPABILITY_INTERNET));
 
         assertFalse(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig()),
+                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
+                        .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
         assertTrue(NetworkMonitorUtils.isPrivateDnsValidationRequired(
                 mMockVpn.getAgent().getNetworkCapabilities()));
@@ -8531,8 +8537,7 @@ public class ConnectivityServiceTest {
 
         // Enable always-on VPN lockdown. The main user loses network access because no VPN is up.
         final ArrayList<String> allowList = new ArrayList<>();
-        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, ALWAYS_ON_PACKAGE,
-                true /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         waitForIdle();
         assertNull(mCm.getActiveNetworkForUid(uid));
         // This is arguably overspecified: a UID that is not running doesn't have an active network.
@@ -8564,8 +8569,7 @@ public class ConnectivityServiceTest {
         assertNull(mCm.getActiveNetworkForUid(uid));
         assertNotNull(mCm.getActiveNetworkForUid(restrictedUid));
 
-        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, null, false /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         waitForIdle();
     }
 
@@ -9023,10 +9027,8 @@ public class ConnectivityServiceTest {
                 new Handler(ConnectivityThread.getInstanceLooper()));
 
         final int uid = Process.myUid();
-        final int userId = UserHandle.getUserId(uid);
         final ArrayList<String> allowList = new ArrayList<>();
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         waitForIdle();
 
         final Set<Integer> excludedUids = new ArraySet<Integer>();
@@ -9056,7 +9058,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_WIFI, DetailedState.BLOCKED);
 
         // Disable lockdown, expect to see the network unblocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         callback.expectBlockedStatusCallback(false, mWiFiNetworkAgent);
         defaultCallback.expectBlockedStatusCallback(false, mWiFiNetworkAgent);
         vpnUidCallback.assertNoCallback();
@@ -9071,8 +9073,7 @@ public class ConnectivityServiceTest {
 
         // Add our UID to the allowlist and re-enable lockdown, expect network is not blocked.
         allowList.add(TEST_PACKAGE_NAME);
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         callback.assertNoCallback();
         defaultCallback.assertNoCallback();
         vpnUidCallback.assertNoCallback();
@@ -9110,12 +9111,11 @@ public class ConnectivityServiceTest {
 
         // Disable lockdown, remove our UID from the allowlist, and re-enable lockdown.
         // Everything should now be blocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         waitForIdle();
         expectNetworkRejectNonSecureVpn(inOrder, false, uidRangeParcelsAlsoExcludingUs);
         allowList.clear();
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         waitForIdle();
         expectNetworkRejectNonSecureVpn(inOrder, true, uidRangeParcels);
         defaultCallback.expectBlockedStatusCallback(true, mWiFiNetworkAgent);
@@ -9130,7 +9130,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_WIFI, DetailedState.BLOCKED);
 
         // Disable lockdown. Everything is unblocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         defaultCallback.expectBlockedStatusCallback(false, mWiFiNetworkAgent);
         assertBlockedCallbackInAnyOrder(callback, false, mWiFiNetworkAgent, mCellNetworkAgent);
         vpnUidCallback.assertNoCallback();
@@ -9144,8 +9144,7 @@ public class ConnectivityServiceTest {
 
         // Enable and disable an always-on VPN package without lockdown. Expect no changes.
         reset(mMockNetd);
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, false /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, false /* lockdown */, allowList);
         inOrder.verify(mMockNetd, never()).networkRejectNonSecureVpn(anyBoolean(), any());
         callback.assertNoCallback();
         defaultCallback.assertNoCallback();
@@ -9158,7 +9157,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_MOBILE, DetailedState.DISCONNECTED);
         assertNetworkInfo(TYPE_WIFI, DetailedState.CONNECTED);
 
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         inOrder.verify(mMockNetd, never()).networkRejectNonSecureVpn(anyBoolean(), any());
         callback.assertNoCallback();
         defaultCallback.assertNoCallback();
@@ -9172,8 +9171,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_WIFI, DetailedState.CONNECTED);
 
         // Enable lockdown and connect a VPN. The VPN is not blocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         defaultCallback.expectBlockedStatusCallback(true, mWiFiNetworkAgent);
         assertBlockedCallbackInAnyOrder(callback, true, mWiFiNetworkAgent, mCellNetworkAgent);
         vpnUidCallback.assertNoCallback();
@@ -15707,6 +15705,45 @@ public class ConnectivityServiceTest {
         mCm.unregisterNetworkCallback(cb);
     }
 
+    @Test
+    public void testSanitizedCapabilitiesFromAgentDoesNotMutateArgument()
+            throws Exception {
+        // This NetworkCapabilities builds an usual object to maximize the chance that this requires
+        // sanitization, so we have a high chance to detect any changes to the original.
+        final NetworkCapabilities unsanitized = new NetworkCapabilities.Builder()
+                .withoutDefaultCapabilities()
+                .addTransportType(TRANSPORT_WIFI)
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .setOwnerUid(12345)
+                .setAdministratorUids(new int[] {12345, 23456, 34567})
+                .setLinkUpstreamBandwidthKbps(20)
+                .setLinkDownstreamBandwidthKbps(10)
+                .setNetworkSpecifier(new EthernetNetworkSpecifier("foobar"))
+                .setTransportInfo(new WifiInfo.Builder().setBssid("AA:AA:AA:AA:AA:AA").build())
+                .setSignalStrength(-75)
+                .setSsid("SSID1")
+                .setRequestorUid(98765)
+                .setRequestorPackageName("TestPackage")
+                .setSubscriptionIds(Collections.singleton(Process.myUid()))
+                .setUids(UidRange.toIntRanges(uidRangesForUids(
+                        UserHandle.getUid(PRIMARY_USER, 10100),
+                        UserHandle.getUid(SECONDARY_USER, 10101),
+                        UserHandle.getUid(TERTIARY_USER, 10043))))
+                .setAllowedUids(Set.of(45678, 56789, 65432))
+                .setUnderlyingNetworks(List.of(new Network(99999)))
+                .build();
+        final NetworkCapabilities copyOfUnsanitized = new NetworkCapabilities(unsanitized);
+        final NetworkInfo info = new NetworkInfo(TYPE_MOBILE, TelephonyManager.NETWORK_TYPE_LTE,
+                ConnectivityManager.getNetworkTypeName(TYPE_MOBILE),
+                TelephonyManager.getNetworkTypeName(TelephonyManager.NETWORK_TYPE_LTE));
+        final NetworkAgentInfo agent = fakeNai(unsanitized, info);
+        agent.setDeclaredCapabilities(unsanitized);
+        final NetworkCapabilities sanitized = agent.getDeclaredCapabilitiesSanitized(
+                null /* carrierPrivilegeAuthenticator */);
+        assertEquals(copyOfUnsanitized, unsanitized);
+        assertNotEquals(sanitized, unsanitized);
+    }
+
     /**
      * Validate request counts are counted accurately on setProfileNetworkPreference on set/replace.
      */
@@ -16495,5 +16532,37 @@ public class ConnectivityServiceTest {
         waitForValidationBlock.block(150);
         mCm.reportNetworkConnectivity(mWiFiNetworkAgent.getNetwork(), false);
         mDefaultNetworkCallback.expectAvailableCallbacksValidated(mCellNetworkAgent);
+    }
+
+    @Test
+    public void testLegacyTetheringApiGuardWithProperPermission() throws Exception {
+        final String testIface = "test0";
+        mServiceContext.setPermission(ACCESS_NETWORK_STATE, PERMISSION_DENIED);
+        assertThrows(SecurityException.class, () -> mService.getLastTetherError(testIface));
+        assertThrows(SecurityException.class, () -> mService.getTetherableIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetheredIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetheringErroredIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetherableUsbRegexs());
+        assertThrows(SecurityException.class, () -> mService.getTetherableWifiRegexs());
+
+        withPermission(ACCESS_NETWORK_STATE, () -> {
+            mService.getLastTetherError(testIface);
+            verify(mTetheringManager).getLastTetherError(testIface);
+
+            mService.getTetherableIfaces();
+            verify(mTetheringManager).getTetherableIfaces();
+
+            mService.getTetheredIfaces();
+            verify(mTetheringManager).getTetheredIfaces();
+
+            mService.getTetheringErroredIfaces();
+            verify(mTetheringManager).getTetheringErroredIfaces();
+
+            mService.getTetherableUsbRegexs();
+            verify(mTetheringManager).getTetherableUsbRegexs();
+
+            mService.getTetherableWifiRegexs();
+            verify(mTetheringManager).getTetherableWifiRegexs();
+        });
     }
 }
