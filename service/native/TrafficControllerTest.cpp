@@ -793,11 +793,6 @@ TEST_F(TrafficControllerTest, TestDumpsys) {
     std::vector<std::string> expectedLines = {
         "mCookieTagMap:",
         fmt::format("cookie={} tag={:#x} uid={}", TEST_COOKIE, TEST_TAG, TEST_UID),
-        "mUidCounterSetMap:",
-        fmt::format("{} {}", TEST_UID3, TEST_COUNTERSET),
-        "mAppUidStatsMap::",  // TODO@: fix double colon
-        "uid rxBytes rxPackets txBytes txPackets",
-        fmt::format("{} {} {} {} {}", TEST_UID, RXBYTES, RXPACKETS, TXBYTES, TXPACKETS),
         "mStatsMapA",
         "ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets",
         fmt::format("{} {} {:#x} {} {} {} {} {} {}",
@@ -834,8 +829,6 @@ TEST_F(TrafficControllerTest, dumpsysInvalidMaps) {
 
     std::vector<std::string> expectedLines = {
         fmt::format("mCookieTagMap {}", kErrIterate),
-        fmt::format("mUidCounterSetMap {}", kErrIterate),
-        fmt::format("mAppUidStatsMap {}", kErrIterate),
         fmt::format("mStatsMapA {}", kErrIterate),
         fmt::format("mStatsMapB {}", kErrIterate),
         fmt::format("mIfaceIndexNameMap {}", kErrIterate),

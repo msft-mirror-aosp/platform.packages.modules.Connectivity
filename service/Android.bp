@@ -143,8 +143,6 @@ java_library {
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
         ":services-connectivity-shared-srcs",
-        // TODO: move to net-utils-device-common
-        ":connectivity-module-utils-srcs",
     ],
     libs: [
         "framework-annotations-lib",
@@ -164,6 +162,7 @@ java_library {
         "modules-utils-shell-command-handler",
         "net-utils-device-common",
         "net-utils-device-common-bpf",
+        "net-utils-device-common-ip",
         "net-utils-device-common-netlink",
         "net-utils-services-common",
         "netd-client",
@@ -225,11 +224,26 @@ java_defaults {
     // This library combines system server jars that have access to different bootclasspath jars.
     // Lower SDK service jars must not depend on higher SDK jars as that would let them
     // transitively depend on the wrong bootclasspath jars. Sources also cannot be added here as
-    // they would transitively depend on bootclasspath jars that may not be available.
+    // they would depend on bootclasspath jars that may not be available.
     static_libs: [
         "service-connectivity-pre-jarjar",
         "service-connectivity-tiramisu-pre-jarjar",
         "service-nearby-pre-jarjar",
+    ],
+    // The below libraries are not actually needed to build since no source is compiled
+    // (only combining prebuilt static_libs), but they are necessary so that R8 has the right
+    // references to optimize the code. Without these, there will be missing class warnings and
+    // code may be wrongly optimized.
+    // R8 runs after jarjar, so the framework-X libraries need to be the post-jarjar artifacts
+    // (.impl), if they are not just stubs, so that the name of jarjared classes match.
+    libs: [
+        "androidx.annotation_annotation",
+        "framework-annotations-lib",
+        "framework-connectivity.impl",
+        "framework-connectivity-t.impl",
+        "framework-tethering.stubs.module_lib",
+        "framework-wifi.stubs.module_lib",
+        "libprotobuf-java-nano",
     ],
     jarjar_rules: ":connectivity-jarjar-rules",
     apex_available: [
@@ -261,9 +275,15 @@ java_library {
     installable: true,
 }
 
-filegroup {
+genrule {
     name: "connectivity-jarjar-rules",
-    srcs: ["jarjar-rules.txt"],
+    defaults: ["jarjar-rules-combine-defaults"],
+    srcs: [
+        ":framework-connectivity-jarjar-rules",
+        ":service-connectivity-jarjar-gen",
+        ":service-nearby-jarjar-gen",
+    ],
+    out: ["connectivity-jarjar-rules.txt"],
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
@@ -273,4 +293,42 @@ filegroup {
     name: "traffic-controller-utils",
     srcs: ["src/com/android/server/BpfNetMaps.java"],
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
+}
+
+java_genrule {
+    name: "service-connectivity-jarjar-gen",
+    tool_files: [
+        ":service-connectivity-pre-jarjar{.jar}",
+        ":service-connectivity-tiramisu-pre-jarjar{.jar}",
+        "jarjar-excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["service_connectivity_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "--jars $(location :service-connectivity-pre-jarjar{.jar}) " +
+        "$(location :service-connectivity-tiramisu-pre-jarjar{.jar}) " +
+        "--prefix android.net.connectivity " +
+        "--excludes $(location jarjar-excludes.txt) " +
+        "--output $(out)",
+    visibility: ["//visibility:private"],
+}
+
+java_genrule {
+    name: "service-nearby-jarjar-gen",
+    tool_files: [
+        ":service-nearby-pre-jarjar{.jar}",
+        "jarjar-excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["service_nearby_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "--jars $(location :service-nearby-pre-jarjar{.jar}) " +
+        "--prefix com.android.server.nearby " +
+        "--excludes $(location jarjar-excludes.txt) " +
+        "--output $(out)",
+    visibility: ["//visibility:private"],
 }

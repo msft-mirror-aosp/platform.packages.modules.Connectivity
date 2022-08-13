@@ -23,11 +23,11 @@ import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStats.UID_TETHERING;
-import static android.net.ip.ConntrackMonitor.ConntrackEvent;
 import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED;
 import static android.system.OsConstants.ETH_P_IP;
 import static android.system.OsConstants.ETH_P_IPV6;
 
+import static com.android.net.module.util.ip.ConntrackMonitor.ConntrackEvent;
 import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
@@ -40,8 +40,6 @@ import android.net.MacAddress;
 import android.net.NetworkStats;
 import android.net.NetworkStats.Entry;
 import android.net.TetherOffloadRuleParcel;
-import android.net.ip.ConntrackMonitor;
-import android.net.ip.ConntrackMonitor.ConntrackEventConsumer;
 import android.net.ip.IpServer;
 import android.net.netstats.provider.NetworkStatsProvider;
 import android.os.Handler;
@@ -71,6 +69,8 @@ import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
 import com.android.net.module.util.bpf.TetherStatsKey;
 import com.android.net.module.util.bpf.TetherStatsValue;
+import com.android.net.module.util.ip.ConntrackMonitor;
+import com.android.net.module.util.ip.ConntrackMonitor.ConntrackEventConsumer;
 import com.android.net.module.util.netlink.ConntrackMessage;
 import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkSocket;
@@ -895,6 +895,28 @@ public class BpfCoordinator {
         }
     }
 
+    private boolean is464XlatInterface(@NonNull String ifaceName) {
+        return ifaceName.startsWith("v4-");
+    }
+
+    private void maybeAttachProgramImpl(@NonNull String iface, boolean downstream) {
+        mBpfCoordinatorShim.attachProgram(iface, downstream, true /* ipv4 */);
+
+        // Ignore 464xlat interface because it is IPv4 only.
+        if (!is464XlatInterface(iface)) {
+            mBpfCoordinatorShim.attachProgram(iface, downstream, false /* ipv4 */);
+        }
+    }
+
+    private void maybeDetachProgramImpl(@NonNull String iface) {
+        mBpfCoordinatorShim.detachProgram(iface, true /* ipv4 */);
+
+        // Ignore 464xlat interface because it is IPv4 only.
+        if (!is464XlatInterface(iface)) {
+            mBpfCoordinatorShim.detachProgram(iface, false /* ipv4 */);
+        }
+    }
+
     /**
      * Attach BPF program
      *
@@ -905,13 +927,19 @@ public class BpfCoordinator {
 
         if (forwardingPairExists(intIface, extIface)) return;
 
+        boolean firstUpstreamForThisDownstream = !isAnyForwardingPairOnDownstream(intIface);
         boolean firstDownstreamForThisUpstream = !isAnyForwardingPairOnUpstream(extIface);
         forwardingPairAdd(intIface, extIface);
 
-        mBpfCoordinatorShim.attachProgram(intIface, UPSTREAM);
+        // Attach if the downstream is the first time to be used in a forwarding pair.
+        // Ex: IPv6 only interface has two forwarding pair, iface and v4-iface, on the
+        // same downstream.
+        if (firstUpstreamForThisDownstream) {
+            maybeAttachProgramImpl(intIface, UPSTREAM);
+        }
         // Attach if the upstream is the first time to be used in a forwarding pair.
         if (firstDownstreamForThisUpstream) {
-            mBpfCoordinatorShim.attachProgram(extIface, DOWNSTREAM);
+            maybeAttachProgramImpl(extIface, DOWNSTREAM);
         }
     }
 
@@ -922,10 +950,12 @@ public class BpfCoordinator {
         forwardingPairRemove(intIface, extIface);
 
         // Detaching program may fail because the interface has been removed already.
-        mBpfCoordinatorShim.detachProgram(intIface);
+        if (!isAnyForwardingPairOnDownstream(intIface)) {
+            maybeDetachProgramImpl(intIface);
+        }
         // Detach if no more forwarding pair is using the upstream.
         if (!isAnyForwardingPairOnUpstream(extIface)) {
-            mBpfCoordinatorShim.detachProgram(extIface);
+            maybeDetachProgramImpl(extIface);
         }
     }
 
@@ -1825,6 +1855,13 @@ public class BpfCoordinator {
 
     private boolean isAnyForwardingPairOnUpstream(@NonNull String extIface) {
         return mForwardingPairs.containsKey(extIface);
+    }
+
+    private boolean isAnyForwardingPairOnDownstream(@NonNull String intIface) {
+        for (final HashSet downstreams : mForwardingPairs.values()) {
+            if (downstreams.contains(intIface)) return true;
+        }
+        return false;
     }
 
     @NonNull

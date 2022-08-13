@@ -16,14 +16,22 @@
 
 package com.android.server.nearby.presence;
 
+import android.annotation.NonNull;
+import android.nearby.DataElement;
 import android.nearby.NearbyDevice;
 import android.nearby.NearbyDeviceParcelable;
 import android.nearby.PresenceDevice;
 import android.nearby.PresenceScanFilter;
 import android.nearby.PublicCredential;
+import android.util.ArraySet;
+import android.util.Log;
+
+import com.android.internal.annotations.VisibleForTesting;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 /** Represents a Presence discovery result. */
 public class PresenceDiscoveryResult {
@@ -34,13 +42,16 @@ public class PresenceDiscoveryResult {
         if (salt == null) {
             salt = new byte[0];
         }
-        return new PresenceDiscoveryResult.Builder()
-                .setTxPower(device.getTxPower())
+        PresenceDiscoveryResult.Builder builder = new PresenceDiscoveryResult.Builder();
+        builder.setTxPower(device.getTxPower())
                 .setRssi(device.getRssi())
                 .setSalt(salt)
                 .addPresenceAction(device.getAction())
-                .setPublicCredential(device.getPublicCredential())
-                .build();
+                .setPublicCredential(device.getPublicCredential());
+        if (device.getPresenceDevice() != null) {
+            builder.addExtendedProperties(device.getPresenceDevice().getExtendedProperties());
+        }
+        return builder.build();
     }
 
     private final int mTxPower;
@@ -48,22 +59,28 @@ public class PresenceDiscoveryResult {
     private final byte[] mSalt;
     private final List<Integer> mPresenceActions;
     private final PublicCredential mPublicCredential;
+    private final List<DataElement> mExtendedProperties;
 
     private PresenceDiscoveryResult(
             int txPower,
             int rssi,
             byte[] salt,
             List<Integer> presenceActions,
-            PublicCredential publicCredential) {
+            PublicCredential publicCredential,
+            List<DataElement> extendedProperties) {
         mTxPower = txPower;
         mRssi = rssi;
         mSalt = salt;
         mPresenceActions = presenceActions;
         mPublicCredential = publicCredential;
+        mExtendedProperties = extendedProperties;
     }
 
     /** Returns whether the discovery result matches the scan filter. */
     public boolean matches(PresenceScanFilter scanFilter) {
+        if (accountKeyMatches(scanFilter.getExtendedProperties())) {
+            return true;
+        }
         return pathLossMatches(scanFilter.getMaxPathLoss())
                 && actionMatches(scanFilter.getPresenceActions())
                 && credentialMatches(scanFilter.getCredentials());
@@ -82,6 +99,30 @@ public class PresenceDiscoveryResult {
 
     private boolean credentialMatches(List<PublicCredential> credentials) {
         return credentials.contains(mPublicCredential);
+    }
+
+    @VisibleForTesting
+    boolean accountKeyMatches(List<DataElement> extendedProperties) {
+        Set<byte[]> accountKeys = new ArraySet<>();
+        for (DataElement requestedDe : mExtendedProperties) {
+            if (requestedDe.getKey() != DataElement.DataType.ACCOUNT_KEY) {
+                continue;
+            }
+            accountKeys.add(requestedDe.getValue());
+        }
+        for (DataElement scannedDe : extendedProperties) {
+            if (scannedDe.getKey() != DataElement.DataType.ACCOUNT_KEY) {
+                continue;
+            }
+            // If one account key matches, then returns true.
+            for (byte[] key : accountKeys) {
+                if (Arrays.equals(key, scannedDe.getValue())) {
+                    Log.d("NearbyService", "PresenceDiscoveryResult account key matched");
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     /** Converts a presence device from the discovery result. */
@@ -105,9 +146,11 @@ public class PresenceDiscoveryResult {
 
         private PublicCredential mPublicCredential;
         private final List<Integer> mPresenceActions;
+        private final List<DataElement> mExtendedProperties;
 
         public Builder() {
             mPresenceActions = new ArrayList<>();
+            mExtendedProperties = new ArrayList<>();
         }
 
         /** Sets the calibrated tx power for the discovery result. */
@@ -140,10 +183,17 @@ public class PresenceDiscoveryResult {
             return this;
         }
 
+        /** Adds presence {@link DataElement}s of the discovery result. */
+        public Builder addExtendedProperties(@NonNull List<DataElement> dataElements) {
+            mExtendedProperties.addAll(dataElements);
+            return this;
+        }
+
         /** Builds a {@link PresenceDiscoveryResult}. */
         public PresenceDiscoveryResult build() {
             return new PresenceDiscoveryResult(
-                    mTxPower, mRssi, mSalt, mPresenceActions, mPublicCredential);
+                    mTxPower, mRssi, mSalt, mPresenceActions,
+                    mPublicCredential, mExtendedProperties);
         }
     }
 }

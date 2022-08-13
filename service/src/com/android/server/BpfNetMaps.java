@@ -24,26 +24,34 @@ import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_POWERSAVE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_RESTRICTED;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_STANDBY;
+import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.system.OsConstants.EINVAL;
+import static android.system.OsConstants.ENODEV;
 import static android.system.OsConstants.ENOENT;
 import static android.system.OsConstants.EOPNOTSUPP;
 
+import android.content.Context;
 import android.net.INetd;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
+import android.provider.DeviceConfig;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.Log;
-import android.util.SparseLongArray;
 
-import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
+import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.Struct.U32;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * BpfNetMaps is responsible for providing traffic controller relevant functionality.
@@ -60,8 +68,13 @@ public class BpfNetMaps {
 
     private static final String TAG = "BpfNetMaps";
     private final INetd mNetd;
+    private final Dependencies mDeps;
     // Use legacy netd for releases before T.
     private static boolean sInitialized = false;
+
+    private static Boolean sEnableJavaBpfMap = null;
+    private static final String BPF_NET_MAPS_ENABLE_JAVA_BPF_MAP =
+            "bpf_net_maps_enable_java_bpf_map";
 
     // Lock for sConfigurationMap entry for UID_RULES_CONFIGURATION_KEY.
     // This entry is not accessed by others.
@@ -73,6 +86,11 @@ public class BpfNetMaps {
     private static final String UID_OWNER_MAP_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_uid_owner_map";
     private static final U32 UID_RULES_CONFIGURATION_KEY = new U32(0);
+    private static final U32 CURRENT_STATS_MAP_CONFIGURATION_KEY = new U32(1);
+    private static final long UID_RULES_DEFAULT_CONFIGURATION = 0;
+    private static final long STATS_SELECT_MAP_A = 0;
+    private static final long STATS_SELECT_MAP_B = 1;
+
     private static BpfMap<U32, U32> sConfigurationMap = null;
     // BpfMap for UID_OWNER_MAP_PATH. This map is not accessed by others.
     private static BpfMap<U32, UidOwnerValue> sUidOwnerMap = null;
@@ -93,20 +111,12 @@ public class BpfNetMaps {
     @VisibleForTesting public static final long OEM_DENY_3_MATCH = (1 << 11);
     // LINT.ThenChange(packages/modules/Connectivity/bpf_progs/bpf_shared.h)
 
-    // TODO: Use Java BpfMap instead of JNI code (TrafficController) for map update.
-    // Currently, BpfNetMaps uses TrafficController for map update and TrafficController
-    // (changeUidOwnerRule and toggleUidOwnerMap) also does conversion from "firewall chain" to
-    // "match". Migrating map update from JNI to Java BpfMap will solve this duplication.
-    private static final SparseLongArray FIREWALL_CHAIN_TO_MATCH = new SparseLongArray();
-    static {
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_DOZABLE, DOZABLE_MATCH);
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_STANDBY, STANDBY_MATCH);
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_POWERSAVE, POWERSAVE_MATCH);
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_RESTRICTED, RESTRICTED_MATCH);
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_LOW_POWER_STANDBY, LOW_POWER_STANDBY_MATCH);
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_OEM_DENY_1, OEM_DENY_1_MATCH);
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_OEM_DENY_2, OEM_DENY_2_MATCH);
-        FIREWALL_CHAIN_TO_MATCH.put(FIREWALL_CHAIN_OEM_DENY_3, OEM_DENY_3_MATCH);
+    /**
+     * Set sEnableJavaBpfMap for test.
+     */
+    @VisibleForTesting
+    public static void setEnableJavaBpfMapForTest(boolean enable) {
+        sEnableJavaBpfMap = enable;
     }
 
     /**
@@ -143,12 +153,30 @@ public class BpfNetMaps {
         }
     }
 
-    private static void setBpfMaps() {
+    private static void initBpfMaps() {
         if (sConfigurationMap == null) {
             sConfigurationMap = getConfigurationMap();
         }
+        try {
+            sConfigurationMap.updateEntry(UID_RULES_CONFIGURATION_KEY,
+                    new U32(UID_RULES_DEFAULT_CONFIGURATION));
+        } catch (ErrnoException e) {
+            throw new IllegalStateException("Failed to initialize uid rules configuration", e);
+        }
+        try {
+            sConfigurationMap.updateEntry(CURRENT_STATS_MAP_CONFIGURATION_KEY,
+                    new U32(STATS_SELECT_MAP_A));
+        } catch (ErrnoException e) {
+            throw new IllegalStateException("Failed to initialize current stats configuration", e);
+        }
+
         if (sUidOwnerMap == null) {
             sUidOwnerMap = getUidOwnerMap();
+        }
+        try {
+            sUidOwnerMap.clear();
+        } catch (ErrnoException e) {
+            throw new IllegalStateException("Failed to initialize uid owner map", e);
         }
     }
 
@@ -156,25 +184,51 @@ public class BpfNetMaps {
      * Initializes the class if it is not already initialized. This method will open maps but not
      * cause any other effects. This method may be called multiple times on any thread.
      */
-    private static synchronized void ensureInitialized() {
+    private static synchronized void ensureInitialized(final Context context) {
         if (sInitialized) return;
-        setBpfMaps();
+        if (sEnableJavaBpfMap == null) {
+            sEnableJavaBpfMap = DeviceConfigUtils.isFeatureEnabled(context,
+                    DeviceConfig.NAMESPACE_TETHERING, BPF_NET_MAPS_ENABLE_JAVA_BPF_MAP,
+                    SdkLevel.isAtLeastU() /* defaultValue */);
+        }
+        Log.d(TAG, "BpfNetMaps is initialized with sEnableJavaBpfMap=" + sEnableJavaBpfMap);
+
+        initBpfMaps();
         native_init();
         sInitialized = true;
     }
 
+    /**
+     * Dependencies of BpfNetMaps, for injection in tests.
+     */
+    @VisibleForTesting
+    public static class Dependencies {
+        /**
+         * Get interface index.
+         */
+        public int getIfIndex(final String ifName) {
+            return Os.if_nametoindex(ifName);
+        }
+    }
+
     /** Constructor used after T that doesn't need to use netd anymore. */
-    public BpfNetMaps() {
-        this(null);
+    public BpfNetMaps(final Context context) {
+        this(context, null);
 
         if (PRE_T) throw new IllegalArgumentException("BpfNetMaps need to use netd before T");
     }
 
-    public BpfNetMaps(final INetd netd) {
+    public BpfNetMaps(final Context context, final INetd netd) {
+        this(context, netd, new Dependencies());
+    }
+
+    @VisibleForTesting
+    public BpfNetMaps(final Context context, final INetd netd, final Dependencies deps) {
         if (!PRE_T) {
-            ensureInitialized();
+            ensureInitialized(context);
         }
         mNetd = netd;
+        mDeps = deps;
     }
 
     /**
@@ -182,11 +236,50 @@ public class BpfNetMaps {
      */
     @VisibleForTesting
     public long getMatchByFirewallChain(final int chain) {
-        final long match = FIREWALL_CHAIN_TO_MATCH.get(chain, NO_MATCH);
-        if (match == NO_MATCH) {
-            throw new ServiceSpecificException(EINVAL, "Invalid firewall chain: " + chain);
+        switch (chain) {
+            case FIREWALL_CHAIN_DOZABLE:
+                return DOZABLE_MATCH;
+            case FIREWALL_CHAIN_STANDBY:
+                return STANDBY_MATCH;
+            case FIREWALL_CHAIN_POWERSAVE:
+                return POWERSAVE_MATCH;
+            case FIREWALL_CHAIN_RESTRICTED:
+                return RESTRICTED_MATCH;
+            case FIREWALL_CHAIN_LOW_POWER_STANDBY:
+                return LOW_POWER_STANDBY_MATCH;
+            case FIREWALL_CHAIN_OEM_DENY_1:
+                return OEM_DENY_1_MATCH;
+            case FIREWALL_CHAIN_OEM_DENY_2:
+                return OEM_DENY_2_MATCH;
+            case FIREWALL_CHAIN_OEM_DENY_3:
+                return OEM_DENY_3_MATCH;
+            default:
+                throw new ServiceSpecificException(EINVAL, "Invalid firewall chain: " + chain);
         }
-        return match;
+    }
+
+    /**
+     * Get if the chain is allow list or not.
+     *
+     * ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+     * DENYLIST means the firewall allows all by default, uids must be explicitly denyed
+     */
+    @VisibleForTesting
+    public boolean isFirewallAllowList(final int chain) {
+        switch (chain) {
+            case FIREWALL_CHAIN_DOZABLE:
+            case FIREWALL_CHAIN_POWERSAVE:
+            case FIREWALL_CHAIN_RESTRICTED:
+            case FIREWALL_CHAIN_LOW_POWER_STANDBY:
+                return true;
+            case FIREWALL_CHAIN_STANDBY:
+            case FIREWALL_CHAIN_OEM_DENY_1:
+            case FIREWALL_CHAIN_OEM_DENY_2:
+            case FIREWALL_CHAIN_OEM_DENY_3:
+                return false;
+            default:
+                throw new ServiceSpecificException(EINVAL, "Invalid firewall chain: " + chain);
+        }
     }
 
     private void maybeThrow(final int err, final String msg) {
@@ -271,7 +364,13 @@ public class BpfNetMaps {
      */
     public void addNaughtyApp(final int uid) {
         throwIfPreT("addNaughtyApp is not available on pre-T devices");
-        addRule(uid, PENALTY_BOX_MATCH, "addNaughtyApp");
+
+        if (sEnableJavaBpfMap) {
+            addRule(uid, PENALTY_BOX_MATCH, "addNaughtyApp");
+        } else {
+            final int err = native_addNaughtyApp(uid);
+            maybeThrow(err, "Unable to add naughty app");
+        }
     }
 
     /**
@@ -283,7 +382,13 @@ public class BpfNetMaps {
      */
     public void removeNaughtyApp(final int uid) {
         throwIfPreT("removeNaughtyApp is not available on pre-T devices");
-        removeRule(uid, PENALTY_BOX_MATCH, "removeNaughtyApp");
+
+        if (sEnableJavaBpfMap) {
+            removeRule(uid, PENALTY_BOX_MATCH, "removeNaughtyApp");
+        } else {
+            final int err = native_removeNaughtyApp(uid);
+            maybeThrow(err, "Unable to remove naughty app");
+        }
     }
 
     /**
@@ -295,7 +400,13 @@ public class BpfNetMaps {
      */
     public void addNiceApp(final int uid) {
         throwIfPreT("addNiceApp is not available on pre-T devices");
-        addRule(uid, HAPPY_BOX_MATCH, "addNiceApp");
+
+        if (sEnableJavaBpfMap) {
+            addRule(uid, HAPPY_BOX_MATCH, "addNiceApp");
+        } else {
+            final int err = native_addNiceApp(uid);
+            maybeThrow(err, "Unable to add nice app");
+        }
     }
 
     /**
@@ -307,7 +418,13 @@ public class BpfNetMaps {
      */
     public void removeNiceApp(final int uid) {
         throwIfPreT("removeNiceApp is not available on pre-T devices");
-        removeRule(uid, HAPPY_BOX_MATCH, "removeNiceApp");
+
+        if (sEnableJavaBpfMap) {
+            removeRule(uid, HAPPY_BOX_MATCH, "removeNiceApp");
+        } else {
+            final int err = native_removeNiceApp(uid);
+            maybeThrow(err, "Unable to remove nice app");
+        }
     }
 
     /**
@@ -322,16 +439,21 @@ public class BpfNetMaps {
     public void setChildChain(final int childChain, final boolean enable) {
         throwIfPreT("setChildChain is not available on pre-T devices");
 
-        final long match = getMatchByFirewallChain(childChain);
-        try {
-            synchronized (sUidRulesConfigBpfMapLock) {
-                final U32 config = sConfigurationMap.getValue(UID_RULES_CONFIGURATION_KEY);
-                final long newConfig = enable ? (config.val | match) : (config.val & ~match);
-                sConfigurationMap.updateEntry(UID_RULES_CONFIGURATION_KEY, new U32(newConfig));
+        if (sEnableJavaBpfMap) {
+            final long match = getMatchByFirewallChain(childChain);
+            try {
+                synchronized (sUidRulesConfigBpfMapLock) {
+                    final U32 config = sConfigurationMap.getValue(UID_RULES_CONFIGURATION_KEY);
+                    final long newConfig = enable ? (config.val | match) : (config.val & ~match);
+                    sConfigurationMap.updateEntry(UID_RULES_CONFIGURATION_KEY, new U32(newConfig));
+                }
+            } catch (ErrnoException e) {
+                throw new ServiceSpecificException(e.errno,
+                        "Unable to set child chain: " + Os.strerror(e.errno));
             }
-        } catch (ErrnoException e) {
-            throw new ServiceSpecificException(e.errno,
-                    "Unable to set child chain: " + Os.strerror(e.errno));
+        } else {
+            final int err = native_setChildChain(childChain, enable);
+            maybeThrow(err, "Unable to set child chain");
         }
     }
 
@@ -359,25 +481,83 @@ public class BpfNetMaps {
 
     /**
      * Replaces the contents of the specified UID-based firewall chain.
+     * Enables the chain for specified uids and disables the chain for non-specified uids.
      *
-     * The chain may be an allowlist chain or a denylist chain. A denylist chain contains DROP
-     * rules for the specified UIDs and a RETURN rule at the end. An allowlist chain contains RETURN
-     * rules for the system UID range (0 to {@code UID_APP} - 1), RETURN rules for the specified
-     * UIDs, and a DROP rule at the end. The chain will be created if it does not exist.
-     *
-     * @param chainName   The name of the chain to replace.
-     * @param isAllowlist Whether this is an allowlist or denylist chain.
+     * @param chain       Target chain.
      * @param uids        The list of UIDs to allow/deny.
-     * @return 0 if the chain was successfully replaced, errno otherwise.
+     * @throws UnsupportedOperationException if called on pre-T devices.
+     * @throws IllegalArgumentException if {@code chain} is not a valid chain.
      */
-    public int replaceUidChain(final String chainName, final boolean isAllowlist,
-            final int[] uids) {
-        synchronized (sUidOwnerMap) {
-            final int err = native_replaceUidChain(chainName, isAllowlist, uids);
+    public void replaceUidChain(final int chain, final int[] uids) {
+        throwIfPreT("replaceUidChain is not available on pre-T devices");
+
+        if (sEnableJavaBpfMap) {
+            final long match;
+            try {
+                match = getMatchByFirewallChain(chain);
+            } catch (ServiceSpecificException e) {
+                // Throws IllegalArgumentException to keep the behavior of
+                // ConnectivityManager#replaceFirewallChain API
+                throw new IllegalArgumentException("Invalid firewall chain: " + chain);
+            }
+            final Set<Integer> uidSet = Arrays.stream(uids).boxed().collect(Collectors.toSet());
+            final Set<Integer> uidSetToRemoveRule = new HashSet<>();
+            try {
+                synchronized (sUidOwnerMap) {
+                    sUidOwnerMap.forEach((uid, config) -> {
+                        // config could be null if there is a concurrent entry deletion.
+                        // http://b/220084230.
+                        if (config != null
+                                && !uidSet.contains((int) uid.val) && (config.rule & match) != 0) {
+                            uidSetToRemoveRule.add((int) uid.val);
+                        }
+                    });
+
+                    for (final int uid : uidSetToRemoveRule) {
+                        removeRule(uid, match, "replaceUidChain");
+                    }
+                    for (final int uid : uids) {
+                        addRule(uid, match, "replaceUidChain");
+                    }
+                }
+            } catch (ErrnoException | ServiceSpecificException e) {
+                Log.e(TAG, "replaceUidChain failed: " + e);
+            }
+        } else {
+            final int err;
+            switch (chain) {
+                case FIREWALL_CHAIN_DOZABLE:
+                    err = native_replaceUidChain("fw_dozable", true /* isAllowList */, uids);
+                    break;
+                case FIREWALL_CHAIN_STANDBY:
+                    err = native_replaceUidChain("fw_standby", false /* isAllowList */, uids);
+                    break;
+                case FIREWALL_CHAIN_POWERSAVE:
+                    err = native_replaceUidChain("fw_powersave", true /* isAllowList */, uids);
+                    break;
+                case FIREWALL_CHAIN_RESTRICTED:
+                    err = native_replaceUidChain("fw_restricted", true /* isAllowList */, uids);
+                    break;
+                case FIREWALL_CHAIN_LOW_POWER_STANDBY:
+                    err = native_replaceUidChain(
+                            "fw_low_power_standby", true /* isAllowList */, uids);
+                    break;
+                case FIREWALL_CHAIN_OEM_DENY_1:
+                    err = native_replaceUidChain("fw_oem_deny_1", false /* isAllowList */, uids);
+                    break;
+                case FIREWALL_CHAIN_OEM_DENY_2:
+                    err = native_replaceUidChain("fw_oem_deny_2", false /* isAllowList */, uids);
+                    break;
+                case FIREWALL_CHAIN_OEM_DENY_3:
+                    err = native_replaceUidChain("fw_oem_deny_3", false /* isAllowList */, uids);
+                    break;
+                default:
+                    throw new IllegalArgumentException("replaceFirewallChain with invalid chain: "
+                            + chain);
+            }
             if (err != 0) {
                 Log.e(TAG, "replaceUidChain failed: " + Os.strerror(-err));
             }
-            return -err;
         }
     }
 
@@ -391,7 +571,20 @@ public class BpfNetMaps {
      *                                  cause of the failure.
      */
     public void setUidRule(final int childChain, final int uid, final int firewallRule) {
-        synchronized (sUidOwnerMap) {
+        throwIfPreT("setUidRule is not available on pre-T devices");
+
+        if (sEnableJavaBpfMap) {
+            final long match = getMatchByFirewallChain(childChain);
+            final boolean isAllowList = isFirewallAllowList(childChain);
+            final boolean add = (firewallRule == FIREWALL_RULE_ALLOW && isAllowList)
+                    || (firewallRule == FIREWALL_RULE_DENY && !isAllowList);
+
+            if (add) {
+                addRule(uid, match, "setUidRule");
+            } else {
+                removeRule(uid, match, "setUidRule");
+            }
+        } else {
             final int err = native_setUidRule(childChain, uid, firewallRule);
             maybeThrow(err, "Unable to set uid rule");
         }
@@ -419,7 +612,28 @@ public class BpfNetMaps {
             mNetd.firewallAddUidInterfaceRules(ifName, uids);
             return;
         }
-        synchronized (sUidOwnerMap) {
+
+        if (sEnableJavaBpfMap) {
+            // Null ifName is a wildcard to allow apps to receive packets on all interfaces and
+            // ifIndex is set to 0.
+            final int ifIndex;
+            if (ifName == null) {
+                ifIndex = 0;
+            } else {
+                ifIndex = mDeps.getIfIndex(ifName);
+                if (ifIndex == 0) {
+                    throw new ServiceSpecificException(ENODEV,
+                            "Failed to get index of interface " + ifName);
+                }
+            }
+            for (final int uid : uids) {
+                try {
+                    addRule(uid, IIF_MATCH, ifIndex, "addUidInterfaceRules");
+                } catch (ServiceSpecificException e) {
+                    Log.e(TAG, "addRule failed uid=" + uid + " ifName=" + ifName + ", " + e);
+                }
+            }
+        } else {
             final int err = native_addUidInterfaceRules(ifName, uids);
             maybeThrow(err, "Unable to add uid interface rules");
         }
@@ -441,7 +655,16 @@ public class BpfNetMaps {
             mNetd.firewallRemoveUidInterfaceRules(uids);
             return;
         }
-        synchronized (sUidOwnerMap) {
+
+        if (sEnableJavaBpfMap) {
+            for (final int uid : uids) {
+                try {
+                    removeRule(uid, IIF_MATCH, "removeUidInterfaceRules");
+                } catch (ServiceSpecificException e) {
+                    Log.e(TAG, "removeRule failed uid=" + uid + ", " + e);
+                }
+            }
+        } else {
             final int err = native_removeUidInterfaceRules(uids);
             maybeThrow(err, "Unable to remove uid interface rules");
         }
@@ -457,10 +680,16 @@ public class BpfNetMaps {
      */
     public void updateUidLockdownRule(final int uid, final boolean add) {
         throwIfPreT("updateUidLockdownRule is not available on pre-T devices");
-        if (add) {
-            addRule(uid, LOCKDOWN_VPN_MATCH, "updateUidLockdownRule");
+
+        if (sEnableJavaBpfMap) {
+            if (add) {
+                addRule(uid, LOCKDOWN_VPN_MATCH, "updateUidLockdownRule");
+            } else {
+                removeRule(uid, LOCKDOWN_VPN_MATCH, "updateUidLockdownRule");
+            }
         } else {
-            removeRule(uid, LOCKDOWN_VPN_MATCH, "updateUidLockdownRule");
+            final int err = native_updateUidLockdownRule(uid, add);
+            maybeThrow(err, "Unable to update lockdown rule");
         }
     }
 
@@ -511,23 +740,15 @@ public class BpfNetMaps {
     }
 
     private static native void native_init();
-    @GuardedBy("sUidOwnerMap")
     private native int native_addNaughtyApp(int uid);
-    @GuardedBy("sUidOwnerMap")
     private native int native_removeNaughtyApp(int uid);
-    @GuardedBy("sUidOwnerMap")
     private native int native_addNiceApp(int uid);
-    @GuardedBy("sUidOwnerMap")
     private native int native_removeNiceApp(int uid);
-    @GuardedBy("sUidOwnerMap")
+    private native int native_setChildChain(int childChain, boolean enable);
     private native int native_replaceUidChain(String name, boolean isAllowlist, int[] uids);
-    @GuardedBy("sUidOwnerMap")
     private native int native_setUidRule(int childChain, int uid, int firewallRule);
-    @GuardedBy("sUidOwnerMap")
     private native int native_addUidInterfaceRules(String ifName, int[] uids);
-    @GuardedBy("sUidOwnerMap")
     private native int native_removeUidInterfaceRules(int[] uids);
-    @GuardedBy("sUidOwnerMap")
     private native int native_updateUidLockdownRule(int uid, boolean add);
     private native int native_swapActiveStatsMap();
     private native void native_setPermissionForUids(int permissions, int[] uids);
