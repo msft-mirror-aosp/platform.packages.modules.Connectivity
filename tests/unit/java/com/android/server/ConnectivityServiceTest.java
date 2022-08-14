@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.ACCESS_NETWORK_STATE;
 import static android.Manifest.permission.CHANGE_NETWORK_STATE;
 import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.CONTROL_OEM_PAID_NETWORK_PREFERENCE;
@@ -288,6 +289,7 @@ import android.net.RouteInfo;
 import android.net.RouteInfoParcel;
 import android.net.SocketKeepalive;
 import android.net.TelephonyNetworkSpecifier;
+import android.net.TetheringManager;
 import android.net.TransportInfo;
 import android.net.UidRange;
 import android.net.UidRangeParcel;
@@ -300,7 +302,6 @@ import android.net.netd.aidl.NativeUidRangeConfig;
 import android.net.networkstack.NetworkStackClientBase;
 import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
-import android.net.shared.NetworkMonitorUtils;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.MultinetworkPolicyTracker;
 import android.net.wifi.WifiInfo;
@@ -356,6 +357,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.LocationPermissionChecker;
+import com.android.net.module.util.NetworkMonitorUtils;
 import com.android.networkstack.apishim.NetworkAgentConfigShimImpl;
 import com.android.networkstack.apishim.api29.ConstantsShim;
 import com.android.server.ConnectivityService.ConnectivityDiagnosticsCallbackInfo;
@@ -570,6 +572,7 @@ public class ConnectivityServiceTest {
     @Mock PacProxyManager mPacProxyManager;
     @Mock BpfNetMaps mBpfNetMaps;
     @Mock CarrierPrivilegeAuthenticator mCarrierPrivilegeAuthenticator;
+    @Mock TetheringManager mTetheringManager;
 
     // BatteryStatsManager is final and cannot be mocked with regular mockito, so just mock the
     // underlying binder calls.
@@ -692,6 +695,7 @@ public class ConnectivityServiceTest {
             if (Context.NETWORK_STATS_SERVICE.equals(name)) return mStatsManager;
             if (Context.BATTERY_STATS_SERVICE.equals(name)) return mBatteryStatsManager;
             if (Context.PAC_PROXY_SERVICE.equals(name)) return mPacProxyManager;
+            if (Context.TETHERING_SERVICE.equals(name)) return mTetheringManager;
             return super.getSystemService(name);
         }
 
@@ -2989,8 +2993,7 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testRequiresValidation() {
-        assertTrue(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(null),
+        assertTrue(NetworkMonitorUtils.isValidationRequired(false /* isVpnValidationRequired */,
                 mCm.getDefaultRequest().networkCapabilities));
     }
 
@@ -7980,7 +7983,8 @@ public class ConnectivityServiceTest {
         // VPN networks do not satisfy the default request and are automatically validated
         // by NetworkMonitor
         assertFalse(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig()),
+                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
+                        .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
         mMockVpn.getAgent().setNetworkValid(false /* isStrictMode */);
 
@@ -8131,7 +8135,8 @@ public class ConnectivityServiceTest {
         assertTrue(nc.hasCapability(NET_CAPABILITY_INTERNET));
 
         assertFalse(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig()),
+                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
+                        .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
         assertTrue(NetworkMonitorUtils.isPrivateDnsValidationRequired(
                 mMockVpn.getAgent().getNetworkCapabilities()));
@@ -16527,5 +16532,37 @@ public class ConnectivityServiceTest {
         waitForValidationBlock.block(150);
         mCm.reportNetworkConnectivity(mWiFiNetworkAgent.getNetwork(), false);
         mDefaultNetworkCallback.expectAvailableCallbacksValidated(mCellNetworkAgent);
+    }
+
+    @Test
+    public void testLegacyTetheringApiGuardWithProperPermission() throws Exception {
+        final String testIface = "test0";
+        mServiceContext.setPermission(ACCESS_NETWORK_STATE, PERMISSION_DENIED);
+        assertThrows(SecurityException.class, () -> mService.getLastTetherError(testIface));
+        assertThrows(SecurityException.class, () -> mService.getTetherableIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetheredIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetheringErroredIfaces());
+        assertThrows(SecurityException.class, () -> mService.getTetherableUsbRegexs());
+        assertThrows(SecurityException.class, () -> mService.getTetherableWifiRegexs());
+
+        withPermission(ACCESS_NETWORK_STATE, () -> {
+            mService.getLastTetherError(testIface);
+            verify(mTetheringManager).getLastTetherError(testIface);
+
+            mService.getTetherableIfaces();
+            verify(mTetheringManager).getTetherableIfaces();
+
+            mService.getTetheredIfaces();
+            verify(mTetheringManager).getTetheredIfaces();
+
+            mService.getTetheringErroredIfaces();
+            verify(mTetheringManager).getTetheringErroredIfaces();
+
+            mService.getTetherableUsbRegexs();
+            verify(mTetheringManager).getTetherableUsbRegexs();
+
+            mService.getTetherableWifiRegexs();
+            verify(mTetheringManager).getTetherableWifiRegexs();
+        });
     }
 }

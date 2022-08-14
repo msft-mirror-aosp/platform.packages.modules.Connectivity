@@ -89,7 +89,6 @@ import static android.net.NetworkRequest.Type.LISTEN_FOR_BEST;
 import static android.net.NetworkScore.POLICY_TRANSPORT_PRIMARY;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
-import static android.net.shared.NetworkMonitorUtils.isPrivateDnsValidationRequired;
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
@@ -98,6 +97,7 @@ import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
+import static com.android.net.module.util.NetworkMonitorUtils.isPrivateDnsValidationRequired;
 import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermission;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermissionOr;
@@ -1220,16 +1220,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         public void incrementCountOrThrow(final int uid) {
             synchronized (mUidToNetworkRequestCount) {
                 final int newRequestCount = mUidToNetworkRequestCount.get(uid, 0) + 1;
-                if (newRequestCount >= mMaxCountPerUid
-                        // HACK : the system server is allowed to go over the request count limit
-                        // when it is creating requests on behalf of another app (but not itself,
-                        // so it can still detect its own request leaks). This only happens in the
-                        // per-app API flows in which case the old requests for that particular
-                        // UID will be removed soon.
-                        // TODO : with the removal of the legacy transact() method, exempting the
-                        // system server UID should no longer be necessary. Make sure this is the
-                        // case and remove this test.
-                        && (Process.myUid() == uid || Process.myUid() != Binder.getCallingUid())) {
+                if (newRequestCount >= mMaxCountPerUid) {
                     throw new ServiceSpecificException(
                             ConnectivityManager.Errors.TOO_MANY_REQUESTS,
                             "Uid " + uid + " exceeded its allotted requests limit");
@@ -5482,6 +5473,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public int getLastTetherError(String iface) {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getLastTetherError(iface);
@@ -5490,6 +5482,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableIfaces();
@@ -5498,6 +5491,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetheredIfaces();
@@ -5507,6 +5501,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheringErroredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5516,6 +5511,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableUsbRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5525,6 +5521,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableWifiRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableWifiRegexs();
@@ -10864,6 +10861,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_PROFILE);
         addPerAppDefaultNetworkRequests(
                 createNrisFromProfileNetworkPreferences(mProfileNetworkPreferences));
+
         // Finally, rematch.
         rematchAllNetworksAndRequests();
 
