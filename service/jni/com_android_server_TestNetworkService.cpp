@@ -51,7 +51,15 @@ static void throwException(JNIEnv* env, int error, const char* action, const cha
     jniThrowException(env, "java/lang/IllegalStateException", msg.c_str());
 }
 
-static int createTunTapInterface(JNIEnv* env, bool isTun, const char* iface) {
+// enable or disable  carrier on tun / tap interface.
+static void setTunTapCarrierEnabledImpl(JNIEnv* env, const char* iface, int tunFd, bool enabled) {
+    uint32_t carrierOn = enabled;
+    if (ioctl(tunFd, TUNSETCARRIER, &carrierOn)) {
+        throwException(env, errno, "set carrier", iface);
+    }
+}
+
+static int createTunTapImpl(JNIEnv* env, bool isTun, bool hasCarrier, const char* iface) {
     base::unique_fd tun(open("/dev/tun", O_RDWR | O_NONBLOCK));
     ifreq ifr{};
 
@@ -63,39 +71,82 @@ static int createTunTapInterface(JNIEnv* env, bool isTun, const char* iface) {
         return -1;
     }
 
-    // Activate interface using an unconnected datagram socket.
-    base::unique_fd inet6CtrlSock(socket(AF_INET6, SOCK_DGRAM, 0));
-    ifr.ifr_flags = IFF_UP;
-    // Mark TAP interfaces as supporting multicast
-    if (!isTun) ifr.ifr_flags |= IFF_MULTICAST;
+    if (!hasCarrier) {
+        // disable carrier before setting IFF_UP
+        setTunTapCarrierEnabledImpl(env, iface, tun.get(), hasCarrier);
+    }
 
-    if (ioctl(inet6CtrlSock.get(), SIOCSIFFLAGS, &ifr)) {
-        throwException(env, errno, "activating", ifr.ifr_name);
-        return -1;
+    // Mark TAP interfaces as supporting multicast
+    if (!isTun) {
+        base::unique_fd inet6CtrlSock(socket(AF_INET6, SOCK_DGRAM, 0));
+        ifr.ifr_flags = IFF_MULTICAST;
+
+        if (ioctl(inet6CtrlSock.get(), SIOCSIFFLAGS, &ifr)) {
+            throwException(env, errno, "set IFF_MULTICAST", ifr.ifr_name);
+            return -1;
+        }
     }
 
     return tun.release();
 }
 
+static void bringUpInterfaceImpl(JNIEnv* env, const char* iface) {
+    // Activate interface using an unconnected datagram socket.
+    base::unique_fd inet6CtrlSock(socket(AF_INET6, SOCK_DGRAM, 0));
+
+    ifreq ifr{};
+    strlcpy(ifr.ifr_name, iface, IFNAMSIZ);
+    if (ioctl(inet6CtrlSock.get(), SIOCGIFFLAGS, &ifr)) {
+        throwException(env, errno, "read flags", iface);
+        return;
+    }
+    ifr.ifr_flags |= IFF_UP;
+    if (ioctl(inet6CtrlSock.get(), SIOCSIFFLAGS, &ifr)) {
+        throwException(env, errno, "set IFF_UP", iface);
+        return;
+    }
+}
+
 //------------------------------------------------------------------------------
 
-static jint create(JNIEnv* env, jobject /* thiz */, jboolean isTun, jstring jIface) {
+
+
+static void setTunTapCarrierEnabled(JNIEnv* env, jclass /* clazz */, jstring
+                                    jIface, jint tunFd, jboolean enabled) {
+    ScopedUtfChars iface(env, jIface);
+    if (!iface.c_str()) {
+        jniThrowNullPointerException(env, "iface");
+        return;
+    }
+    setTunTapCarrierEnabledImpl(env, iface.c_str(), tunFd, enabled);
+}
+
+static jint createTunTap(JNIEnv* env, jclass /* clazz */, jboolean isTun,
+                             jboolean hasCarrier, jstring jIface) {
     ScopedUtfChars iface(env, jIface);
     if (!iface.c_str()) {
         jniThrowNullPointerException(env, "iface");
         return -1;
     }
 
-    int tun = createTunTapInterface(env, isTun, iface.c_str());
+    return createTunTapImpl(env, isTun, hasCarrier, iface.c_str());
+}
 
-    // Any exceptions will be thrown from the createTunTapInterface call
-    return tun;
+static void bringUpInterface(JNIEnv* env, jclass /* clazz */, jstring jIface) {
+    ScopedUtfChars iface(env, jIface);
+    if (!iface.c_str()) {
+        jniThrowNullPointerException(env, "iface");
+        return;
+    }
+    bringUpInterfaceImpl(env, iface.c_str());
 }
 
 //------------------------------------------------------------------------------
 
 static const JNINativeMethod gMethods[] = {
-    {"jniCreateTunTap", "(ZLjava/lang/String;)I", (void*)create},
+    {"nativeSetTunTapCarrierEnabled", "(Ljava/lang/String;IZ)V", (void*)setTunTapCarrierEnabled},
+    {"nativeCreateTunTap", "(ZZLjava/lang/String;)I", (void*)createTunTap},
+    {"nativeBringUpInterface", "(Ljava/lang/String;)V", (void*)bringUpInterface},
 };
 
 int register_com_android_server_TestNetworkService(JNIEnv* env) {

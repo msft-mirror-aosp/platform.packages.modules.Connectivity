@@ -26,6 +26,8 @@
 #include <nativehelper/ScopedPrimitiveArray.h>
 #include <netjniutils/netjniutils.h>
 #include <net/if.h>
+#include <private/android_filesystem_config.h>
+#include <unistd.h>
 #include <vector>
 
 
@@ -48,6 +50,12 @@ namespace android {
 static void native_init(JNIEnv* env, jclass clazz) {
   Status status = mTc.start();
   CHECK_LOG(status);
+  if (!isOk(status)) {
+    uid_t uid = getuid();
+    ALOGE("BpfNetMaps jni init failure as uid=%d", uid);
+    // TODO: Fix tests to not use this jni lib, so we can unconditionally abort()
+    if (uid == AID_SYSTEM || uid == AID_NETWORK_STACK) abort();
+  }
 }
 
 static jint native_addNaughtyApp(JNIEnv* env, jobject self, jint uid) {
@@ -151,6 +159,12 @@ static jint native_removeUidInterfaceRules(JNIEnv* env, jobject self, jintArray 
     return (jint)status.code();
 }
 
+static jint native_updateUidLockdownRule(JNIEnv* env, jobject self, jint uid, jboolean add) {
+    Status status = mTc.updateUidLockdownRule(uid, add);
+    CHECK_LOG(status);
+    return (jint)status.code();
+}
+
 static jint native_swapActiveStatsMap(JNIEnv* env, jobject self) {
     Status status = mTc.swapActiveStatsMap();
     CHECK_LOG(status);
@@ -203,6 +217,8 @@ static const JNINativeMethod gMethods[] = {
     (void*)native_addUidInterfaceRules},
     {"native_removeUidInterfaceRules", "([I)I",
     (void*)native_removeUidInterfaceRules},
+    {"native_updateUidLockdownRule", "(IZ)I",
+    (void*)native_updateUidLockdownRule},
     {"native_swapActiveStatsMap", "()I",
     (void*)native_swapActiveStatsMap},
     {"native_setPermissionForUids", "(I[I)V",

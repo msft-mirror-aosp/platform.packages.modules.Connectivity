@@ -24,15 +24,18 @@ import static android.content.Intent.ACTION_SHUTDOWN;
 import static android.content.Intent.ACTION_UID_REMOVED;
 import static android.content.Intent.ACTION_USER_REMOVED;
 import static android.content.Intent.EXTRA_UID;
-import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
+import static android.net.NetworkStats.DEFAULT_NETWORK_NO;
 import static android.net.NetworkStats.IFACE_ALL;
 import static android.net.NetworkStats.IFACE_VT;
 import static android.net.NetworkStats.INTERFACES_ALL;
 import static android.net.NetworkStats.METERED_ALL;
+import static android.net.NetworkStats.METERED_NO;
+import static android.net.NetworkStats.METERED_YES;
 import static android.net.NetworkStats.ROAMING_ALL;
+import static android.net.NetworkStats.ROAMING_NO;
 import static android.net.NetworkStats.SET_ALL;
 import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.SET_FOREGROUND;
@@ -42,8 +45,8 @@ import static android.net.NetworkStats.TAG_ALL;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStatsHistory.FIELD_ALL;
-import static android.net.NetworkTemplate.buildTemplateMobileWildcard;
-import static android.net.NetworkTemplate.buildTemplateWifiWildcard;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.TrafficStats.KB_IN_BYTES;
 import static android.net.TrafficStats.MB_IN_BYTES;
 import static android.net.TrafficStats.UID_TETHERING;
@@ -53,6 +56,7 @@ import static android.net.netstats.NetworkStatsDataMigrationUtils.PREFIX_UID_TAG
 import static android.net.netstats.NetworkStatsDataMigrationUtils.PREFIX_XT;
 import static android.os.Trace.TRACE_TAG_NETWORK;
 import static android.system.OsConstants.ENOENT;
+import static android.system.OsConstants.R_OK;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 import static android.text.format.DateUtils.DAY_IN_MILLIS;
 import static android.text.format.DateUtils.HOUR_IN_MILLIS;
@@ -76,8 +80,10 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.net.ConnectivityManager;
+import android.net.ConnectivityResources;
 import android.net.DataUsageRequest;
 import android.net.INetd;
 import android.net.INetworkStatsService;
@@ -128,6 +134,7 @@ import android.provider.Settings.Global;
 import android.service.NetworkInterfaceProto;
 import android.service.NetworkStatsServiceDumpProto;
 import android.system.ErrnoException;
+import android.system.Os;
 import android.telephony.PhoneStateListener;
 import android.telephony.SubscriptionPlan;
 import android.text.TextUtils;
@@ -140,6 +147,7 @@ import android.util.Log;
 import android.util.SparseIntArray;
 import android.util.proto.ProtoOutputStream;
 
+import com.android.connectivity.resources.R;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.FileRotator;
@@ -153,8 +161,11 @@ import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.NetworkStatsUtils;
 import com.android.net.module.util.PermissionUtils;
+import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -301,7 +312,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /**
          * When enabled, all mobile data is reported under {@link NetworkTemplate#NETWORK_TYPE_ALL}.
          * When disabled, mobile data is broken down by a granular ratType representative of the
-         * actual ratType. {@see android.app.usage.NetworkStatsManager#getCollapsedRatType}.
+         * actual ratType. See {@link android.app.usage.NetworkStatsManager#getCollapsedRatType}.
          * Enabling this decreases the level of detail but saves performance, disk space and
          * amount of data logged.
          */
@@ -765,6 +776,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 return null;
             }
         }
+
+        /** Gets whether the build is userdebug. */
+        public boolean isDebuggable() {
+            return Build.isDebuggable();
+        }
     }
 
     /**
@@ -792,11 +808,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             mSystemReady = true;
 
             // create data recorders along with historical rotators
-            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir);
-            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir);
-            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir);
+            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
+            mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
+            mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir,
+                    true /* wipeOnError */);
             mUidTagRecorder = buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true,
-                    mStatsDir);
+                    mStatsDir, true /* wipeOnError */);
 
             updatePersistThresholdsLocked();
 
@@ -861,12 +880,13 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private NetworkStatsRecorder buildRecorder(
             String prefix, NetworkStatsSettings.Config config, boolean includeTags,
-            File baseDir) {
+            File baseDir, boolean wipeOnError) {
         final DropBoxManager dropBox = (DropBoxManager) mContext.getSystemService(
                 Context.DROPBOX_SERVICE);
         return new NetworkStatsRecorder(new FileRotator(
                 baseDir, prefix, config.rotateAgeMillis, config.deleteAgeMillis),
-                mNonMonotonicObserver, dropBox, prefix, config.bucketDuration, includeTags);
+                mNonMonotonicObserver, dropBox, prefix, config.bucketDuration, includeTags,
+                wipeOnError);
     }
 
     @GuardedBy("mStatsLock")
@@ -927,18 +947,27 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         final int targetAttempts = mDeps.getImportLegacyTargetAttempts();
         final int attempts;
         final int fallbacks;
+        final boolean runComparison;
         try {
             attempts = mImportLegacyAttemptsCounter.get();
+            // Fallbacks counter would be set to non-zero value to indicate the migration was
+            // not successful.
             fallbacks = mImportLegacyFallbacksCounter.get();
+            runComparison = shouldRunComparison();
         } catch (IOException e) {
             Log.wtf(TAG, "Failed to read counters, skip.", e);
             return;
         }
-        // If fallbacks is not zero, proceed with reading only to give signals from dogfooders.
-        // TODO(b/233752318): Remove fallbacks counter check before T formal release.
-        if (attempts >= targetAttempts && fallbacks == 0) return;
 
-        final boolean dryRunImportOnly = (attempts >= targetAttempts);
+        // If the target number of attempts are reached, don't import any data.
+        // However, if comparison is requested, still read the legacy data and compare
+        // it to the importer output. This allows OEMs to debug issues with the
+        // importer code and to collect signals from the field.
+        final boolean dryRunImportOnly =
+                fallbacks != 0 && runComparison && (attempts >= targetAttempts);
+        // Return if target attempts are reached and there is no need to dry run.
+        if (attempts >= targetAttempts && !dryRunImportOnly) return;
+
         if (dryRunImportOnly) {
             Log.i(TAG, "Starting import : only perform read");
         } else {
@@ -951,69 +980,59 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         };
 
         // Legacy directories will be created by recorders if they do not exist
-        final File legacyBaseDir = mDeps.getLegacyStatsDir();
-        final NetworkStatsRecorder[] legacyRecorders = new NetworkStatsRecorder[]{
-                buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir),
-                buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir),
-                buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir),
-                buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true, legacyBaseDir)
-        };
+        final NetworkStatsRecorder[] legacyRecorders;
+        if (runComparison) {
+            final File legacyBaseDir = mDeps.getLegacyStatsDir();
+            // Set wipeOnError flag false so the recorder won't damage persistent data if reads
+            // failed and calling deleteAll.
+            legacyRecorders = new NetworkStatsRecorder[]{
+                buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir,
+                        false /* wipeOnError */),
+                buildRecorder(PREFIX_UID_TAG, mSettings.getUidTagConfig(), true, legacyBaseDir,
+                        false /* wipeOnError */)};
+        } else {
+            legacyRecorders = null;
+        }
 
         long migrationEndTime = Long.MIN_VALUE;
-        boolean endedWithFallback = false;
         try {
             // First, read all legacy collections. This is OEM code and it can throw. Don't
             // commit any data to disk until all are read.
             for (int i = 0; i < migrations.length; i++) {
-                String errMsg = null;
-                Throwable exception = null;
                 final MigrationInfo migration = migrations[i];
 
-                // Read the collection from platform code, and using fallback method if throws.
+                // Read the collection from platform code, and set fallbacks counter if throws
+                // for better debugging.
                 try {
                     migration.collection = readPlatformCollectionForRecorder(migration.recorder);
                 } catch (Throwable e) {
-                    errMsg = "Failed to read stats from platform";
-                    exception = e;
-                }
-
-                // Also read the collection with legacy method
-                final NetworkStatsRecorder legacyRecorder = legacyRecorders[i];
-
-                final NetworkStatsCollection legacyStats;
-                try {
-                    legacyStats = legacyRecorder.getOrLoadCompleteLocked();
-                } catch (Throwable e) {
-                    Log.wtf(TAG, "Failed to read stats with legacy method for recorder " + i, e);
-                    if (exception != null) {
-                        throw exception;
+                    if (dryRunImportOnly) {
+                        Log.wtf(TAG, "Platform data read failed. ", e);
+                        return;
                     } else {
-                        // Use newer stats, since that's all that is available
-                        continue;
+                        // Data is not imported successfully, set fallbacks counter to non-zero
+                        // value to trigger dry run every later boot when the runComparison is
+                        // true, in order to make it easier to debug issues.
+                        tryIncrementLegacyFallbacksCounter();
+                        // Re-throw for error handling. This will increase attempts counter.
+                        throw e;
                     }
                 }
 
-                if (errMsg == null) {
-                    try {
-                        errMsg = compareStats(migration.collection, legacyStats);
-                    } catch (Throwable e) {
-                        errMsg = "Failed to compare migrated stats with all stats";
-                        exception = e;
+                if (runComparison) {
+                    final boolean success =
+                            compareImportedToLegacyStats(migration, legacyRecorders[i]);
+                    if (!success && !dryRunImportOnly) {
+                        tryIncrementLegacyFallbacksCounter();
                     }
-                }
-
-                if (errMsg != null) {
-                    Log.wtf(TAG, "NetworkStats import for migration " + i
-                            + " returned invalid data: " + errMsg, exception);
-                    // Fall back to legacy stats for this boot. The stats for old data will be
-                    // re-imported again on next boot until they succeed the import. This is fine
-                    // since every import clears the previous stats for the imported timespan.
-                    migration.collection = legacyStats;
-                    endedWithFallback = true;
                 }
             }
 
-            // For cases where the fallbacks is not zero but target attempts counts reached,
+            // For cases where the fallbacks are not zero but target attempts counts reached,
             // only perform reads above and return here.
             if (dryRunImportOnly) return;
 
@@ -1079,20 +1098,76 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         // Success ! No need to import again next time.
         try {
             mImportLegacyAttemptsCounter.set(targetAttempts);
-            if (endedWithFallback) {
-                Log.wtf(TAG, "Imported platform collections with legacy fallback");
-                final int fallbacksCount = mImportLegacyFallbacksCounter.get();
-                mImportLegacyFallbacksCounter.set(fallbacksCount + 1);
-            } else {
-                Log.i(TAG, "Successfully imported platform collections");
-                // The successes counter is only for debugging. Hence, the synchronization
-                // between successes counter and attempts counter are not very critical.
-                final int successCount = mImportLegacySuccessesCounter.get();
-                mImportLegacySuccessesCounter.set(successCount + 1);
-            }
+            Log.i(TAG, "Successfully imported platform collections");
+            // The successes counter is only for debugging. Hence, the synchronization
+            // between successes counter and attempts counter are not very critical.
+            final int successCount = mImportLegacySuccessesCounter.get();
+            mImportLegacySuccessesCounter.set(successCount + 1);
         } catch (IOException e) {
             Log.wtf(TAG, "Succeed but failed to update counters.", e);
         }
+    }
+
+    void tryIncrementLegacyFallbacksCounter() {
+        try {
+            final int fallbacks = mImportLegacyFallbacksCounter.get();
+            mImportLegacyFallbacksCounter.set(fallbacks + 1);
+        } catch (IOException e) {
+            Log.wtf(TAG, "Failed to update fallback counter.", e);
+        }
+    }
+
+    @VisibleForTesting
+    boolean shouldRunComparison() {
+        final ConnectivityResources resources = new ConnectivityResources(mContext);
+        // 0 if id not found.
+        Boolean overlayValue = null;
+        try {
+            switch (resources.get().getInteger(R.integer.config_netstats_validate_import)) {
+                case 1:
+                    overlayValue = Boolean.TRUE;
+                    break;
+                case 0:
+                    overlayValue = Boolean.FALSE;
+                    break;
+            }
+        } catch (Resources.NotFoundException e) {
+            // Overlay value is not defined.
+        }
+        return overlayValue != null ? overlayValue : mDeps.isDebuggable();
+    }
+
+    /**
+     * Compare imported data with the data returned by legacy recorders.
+     *
+     * @return true if the data matches, false if the data does not match or throw with exceptions.
+     */
+    private boolean compareImportedToLegacyStats(@NonNull MigrationInfo migration,
+            @NonNull NetworkStatsRecorder legacyRecorder) {
+        final NetworkStatsCollection legacyStats;
+        try {
+            legacyStats = legacyRecorder.getOrLoadCompleteLocked();
+        } catch (Throwable e) {
+            Log.wtf(TAG, "Failed to read stats with legacy method for recorder "
+                    + legacyRecorder.getCookie(), e);
+            // Cannot read data from legacy method, skip comparison.
+            return false;
+        }
+
+        // The result of comparison is only for logging.
+        try {
+            final String error = compareStats(migration.collection, legacyStats);
+            if (error != null) {
+                Log.wtf(TAG, "Unexpected comparison result for recorder "
+                        + legacyRecorder.getCookie() + ": " + error);
+                return false;
+            }
+        } catch (Throwable e) {
+            Log.wtf(TAG, "Failed to compare migrated stats with legacy stats for recorder "
+                    + legacyRecorder.getCookie(), e);
+            return false;
+        }
+        return true;
     }
 
     private static String str(NetworkStatsCollection.Key key) {
@@ -2293,7 +2368,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         NetworkStats.Entry uidTotal;
 
         // collect mobile sample
-        template = buildTemplateMobileWildcard();
+        template = new NetworkTemplate.Builder(MATCH_MOBILE).setMeteredness(METERED_YES).build();
         devTotal = mDevRecorder.getTotalSinceBootLocked(template);
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
@@ -2305,7 +2380,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 currentTime);
 
         // collect wifi sample
-        template = buildTemplateWifiWildcard();
+        template = new NetworkTemplate.Builder(MATCH_WIFI).build();
         devTotal = mDevRecorder.getTotalSinceBootLocked(template);
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
@@ -2629,6 +2704,23 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 mUidTagRecorder.dumpLocked(pw, fullHistory);
                 pw.decreaseIndent();
             }
+
+            pw.println();
+            pw.println("BPF map status:");
+            pw.increaseIndent();
+            dumpMapStatus(pw);
+            pw.decreaseIndent();
+            pw.println();
+
+            // Following BPF map content dump contains uid and tag regardless of the flags because
+            // following dumps are moved from TrafficController and bug report already contains this
+            // information.
+            pw.println("BPF map content:");
+            pw.increaseIndent();
+            dumpCookieTagMapLocked(pw);
+            dumpUidCounterSetMapLocked(pw);
+            dumpAppUidStatsMapLocked(pw);
+            pw.decreaseIndent();
         }
     }
 
@@ -2661,6 +2753,102 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
             proto.end(start);
         }
+    }
+
+    private <K extends Struct, V extends Struct> String getMapStatus(
+            final IBpfMap<K, V> map, final String path) {
+        if (map != null) {
+            return "OK";
+        }
+        try {
+            Os.access(path, R_OK);
+            return "NULL(map is pinned to " + path + ")";
+        } catch (ErrnoException e) {
+            return "NULL(map is not pinned to " + path + ": " + Os.strerror(e.errno) + ")";
+        }
+    }
+
+    private void dumpMapStatus(final IndentingPrintWriter pw) {
+        pw.println("mCookieTagMap: " + getMapStatus(mCookieTagMap, COOKIE_TAG_MAP_PATH));
+        pw.println("mUidCounterSetMap: "
+                + getMapStatus(mUidCounterSetMap, UID_COUNTERSET_MAP_PATH));
+        pw.println("mAppUidStatsMap: " + getMapStatus(mAppUidStatsMap, APP_UID_STATS_MAP_PATH));
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpCookieTagMapLocked(final IndentingPrintWriter pw) {
+        if (mCookieTagMap == null) {
+            return;
+        }
+        pw.println("mCookieTagMap:");
+        pw.increaseIndent();
+        try {
+            mCookieTagMap.forEach((key, value) -> {
+                // value could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (value != null) {
+                    pw.println("cookie=" + key.socketCookie
+                            + " tag=0x" + Long.toHexString(value.tag)
+                            + " uid=" + value.uid);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mCookieTagMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpUidCounterSetMapLocked(final IndentingPrintWriter pw) {
+        if (mUidCounterSetMap == null) {
+            return;
+        }
+        pw.println("mUidCounterSetMap:");
+        pw.increaseIndent();
+        try {
+            mUidCounterSetMap.forEach((uid, set) -> {
+                // set could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (set != null) {
+                    pw.println("uid=" + uid.val + " set=" + set.val);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mUidCounterSetMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpAppUidStatsMapLocked(final IndentingPrintWriter pw) {
+        if (mAppUidStatsMap == null) {
+            return;
+        }
+        pw.println("mAppUidStatsMap:");
+        pw.increaseIndent();
+        pw.println("uid rxBytes rxPackets txBytes txPackets");
+        try {
+            mAppUidStatsMap.forEach((key, value) -> {
+                // value could be null if there is a concurrent entry deletion.
+                // http://b/220084230.
+                if (value != null) {
+                    pw.println(key.uid + " "
+                            + value.rxBytes + " "
+                            + value.rxPackets + " "
+                            + value.txBytes + " "
+                            + value.txPackets);
+                } else {
+                    pw.println("Entry is deleted while dumping, iterating from first entry");
+                }
+            });
+        } catch (ErrnoException e) {
+            pw.println("mAppUidStatsMap dump end with error: " + Os.strerror(e.errno));
+        }
+        pw.decreaseIndent();
     }
 
     private NetworkStats readNetworkStatsSummaryDev() {
@@ -2737,34 +2925,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             for (TetherStatsParcel tetherStats : tetherStatsParcels) {
                 try {
                     stats.combineValues(new NetworkStats.Entry(tetherStats.iface, UID_TETHERING,
-                            SET_DEFAULT, TAG_NONE, tetherStats.rxBytes, tetherStats.rxPackets,
+                            SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO,
+                            tetherStats.rxBytes, tetherStats.rxPackets,
                             tetherStats.txBytes, tetherStats.txPackets, 0L));
                 } catch (ArrayIndexOutOfBoundsException e) {
                     throw new IllegalStateException("invalid tethering stats " + e);
                 }
             }
-        } catch (IllegalStateException e) {
+        } catch (IllegalStateException | ServiceSpecificException e) {
             Log.wtf(TAG, "problem reading network stats", e);
         }
         return stats;
-    }
-
-    // TODO: It is copied from ConnectivityService, consider refactor these check permission
-    //  functions to a proper util.
-    private boolean checkAnyPermissionOf(String... permissions) {
-        for (String permission : permissions) {
-            if (mContext.checkCallingOrSelfPermission(permission) == PERMISSION_GRANTED) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void enforceAnyPermissionOf(String... permissions) {
-        if (!checkAnyPermissionOf(permissions)) {
-            throw new SecurityException("Requires one of the following permissions: "
-                    + String.join(", ", permissions) + ".");
-        }
     }
 
     /**
@@ -2781,7 +2952,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     public @NonNull INetworkStatsProviderCallback registerNetworkStatsProvider(
             @NonNull String tag, @NonNull INetworkStatsProvider provider) {
-        enforceAnyPermissionOf(NETWORK_STATS_PROVIDER,
+        PermissionUtils.enforceAnyPermissionOf(mContext, NETWORK_STATS_PROVIDER,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
         Objects.requireNonNull(provider, "provider is null");
         Objects.requireNonNull(tag, "tag is null");

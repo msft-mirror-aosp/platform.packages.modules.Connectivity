@@ -64,6 +64,16 @@ static Status attachProgramToCgroup(const char* programPath, const unique_fd& cg
     return netdutils::status::ok;
 }
 
+static Status checkProgramAccessible(const char* programPath) {
+    unique_fd prog(retrieveProgram(programPath));
+    if (prog == -1) {
+        int ret = errno;
+        ALOGE("Failed to get program from %s: %s", programPath, strerror(ret));
+        return statusFromErrno(ret, "program retrieve failed");
+    }
+    return netdutils::status::ok;
+}
+
 static Status initPrograms(const char* cg2_path) {
     unique_fd cg_fd(open(cg2_path, O_DIRECTORY | O_RDONLY | O_CLOEXEC));
     if (cg_fd == -1) {
@@ -71,6 +81,10 @@ static Status initPrograms(const char* cg2_path) {
         ALOGE("Failed to open the cgroup directory: %s", strerror(ret));
         return statusFromErrno(ret, "Open the cgroup directory failed");
     }
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_ALLOWLIST_PROG_PATH));
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_DENYLIST_PROG_PATH));
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_EGRESS_PROG_PATH));
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_INGRESS_PROG_PATH));
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_EGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_EGRESS));
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_INGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_INGRESS));
     RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
@@ -101,8 +115,6 @@ Status BpfHandler::initMaps() {
     RETURN_IF_NOT_OK(mStatsMapA.init(STATS_MAP_A_PATH));
     RETURN_IF_NOT_OK(mStatsMapB.init(STATS_MAP_B_PATH));
     RETURN_IF_NOT_OK(mConfigurationMap.init(CONFIGURATION_MAP_PATH));
-    RETURN_IF_NOT_OK(mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY, SELECT_MAP_A,
-                                                  BPF_ANY));
     RETURN_IF_NOT_OK(mUidPermissionMap.init(UID_PERMISSION_MAP_PATH));
     ALOGI("%s successfully", __func__);
 
@@ -199,6 +211,7 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
 
     BpfMap<StatsKey, StatsValue>& currentMap =
             (configuration.value() == SELECT_MAP_A) ? mStatsMapA : mStatsMapB;
+    // HACK: mStatsMapB becomes RW BpfMap here, but countUidStatsEntries doesn't modify so it works
     base::Result<void> res = currentMap.iterate(countUidStatsEntries);
     if (!res.ok()) {
         ALOGE("Failed to count the stats entry in map %d: %s", currentMap.getMap().get(),
