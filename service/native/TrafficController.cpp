@@ -173,13 +173,8 @@ Status TrafficController::initMaps() {
     RETURN_IF_NOT_OK(mIfaceStatsMap.init(IFACE_STATS_MAP_PATH));
 
     RETURN_IF_NOT_OK(mConfigurationMap.init(CONFIGURATION_MAP_PATH));
-    RETURN_IF_NOT_OK(
-            mConfigurationMap.writeValue(UID_RULES_CONFIGURATION_KEY, DEFAULT_CONFIG, BPF_ANY));
-    RETURN_IF_NOT_OK(mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY, SELECT_MAP_A,
-                                                  BPF_ANY));
 
     RETURN_IF_NOT_OK(mUidOwnerMap.init(UID_OWNER_MAP_PATH));
-    RETURN_IF_NOT_OK(mUidOwnerMap.clear());
     RETURN_IF_NOT_OK(mUidPermissionMap.init(UID_PERMISSION_MAP_PATH));
     ALOGI("%s successfully", __func__);
 
@@ -451,6 +446,53 @@ int TrafficController::replaceUidOwnerMap(const std::string& name, bool isAllowl
     return 0;
 }
 
+int TrafficController::toggleUidOwnerMap(ChildChain chain, bool enable) {
+    std::lock_guard guard(mMutex);
+    uint32_t key = UID_RULES_CONFIGURATION_KEY;
+    auto oldConfigure = mConfigurationMap.readValue(key);
+    if (!oldConfigure.ok()) {
+        ALOGE("Cannot read the old configuration from map: %s",
+              oldConfigure.error().message().c_str());
+        return -oldConfigure.error().code();
+    }
+    uint32_t match;
+    switch (chain) {
+        case DOZABLE:
+            match = DOZABLE_MATCH;
+            break;
+        case STANDBY:
+            match = STANDBY_MATCH;
+            break;
+        case POWERSAVE:
+            match = POWERSAVE_MATCH;
+            break;
+        case RESTRICTED:
+            match = RESTRICTED_MATCH;
+            break;
+        case LOW_POWER_STANDBY:
+            match = LOW_POWER_STANDBY_MATCH;
+            break;
+        case OEM_DENY_1:
+            match = OEM_DENY_1_MATCH;
+            break;
+        case OEM_DENY_2:
+            match = OEM_DENY_2_MATCH;
+            break;
+        case OEM_DENY_3:
+            match = OEM_DENY_3_MATCH;
+            break;
+        default:
+            return -EINVAL;
+    }
+    BpfConfig newConfiguration =
+            enable ? (oldConfigure.value() | match) : (oldConfigure.value() & ~match);
+    Status res = mConfigurationMap.writeValue(key, newConfiguration, BPF_EXIST);
+    if (!isOk(res)) {
+        ALOGE("Failed to toggleUidOwnerMap(%d): %s", chain, res.msg().c_str());
+    }
+    return -res.code();
+}
+
 Status TrafficController::swapActiveStatsMap() {
     std::lock_guard guard(mMutex);
 
@@ -530,17 +572,6 @@ void TrafficController::setPermissionForUids(int permission, const std::vector<u
     }
 }
 
-std::string getProgramStatus(const char *path) {
-    int ret = access(path, R_OK);
-    if (ret == 0) {
-        return StringPrintf("OK");
-    }
-    if (ret != 0 && errno == ENOENT) {
-        return StringPrintf("program is missing at: %s", path);
-    }
-    return StringPrintf("check Program %s error: %s", path, strerror(errno));
-}
-
 std::string getMapStatus(const base::unique_fd& map_fd, const char* path) {
     if (map_fd.get() < 0) {
         return StringPrintf("map fd lost");
@@ -589,19 +620,6 @@ void TrafficController::dump(int fd, bool verbose) {
     dw.println("mUidOwnerMap status: %s",
                getMapStatus(mUidOwnerMap.getMap(), UID_OWNER_MAP_PATH).c_str());
 
-    dw.blankline();
-    dw.println("Cgroup ingress program status: %s",
-               getProgramStatus(BPF_INGRESS_PROG_PATH).c_str());
-    dw.println("Cgroup egress program status: %s", getProgramStatus(BPF_EGRESS_PROG_PATH).c_str());
-    dw.println("xt_bpf ingress program status: %s",
-               getProgramStatus(XT_BPF_INGRESS_PROG_PATH).c_str());
-    dw.println("xt_bpf egress program status: %s",
-               getProgramStatus(XT_BPF_EGRESS_PROG_PATH).c_str());
-    dw.println("xt_bpf bandwidth allowlist program status: %s",
-               getProgramStatus(XT_BPF_ALLOWLIST_PROG_PATH).c_str());
-    dw.println("xt_bpf bandwidth denylist program status: %s",
-               getProgramStatus(XT_BPF_DENYLIST_PROG_PATH).c_str());
-
     if (!verbose) {
         return;
     }
@@ -612,6 +630,8 @@ void TrafficController::dump(int fd, bool verbose) {
     ScopedIndent indentForMapContent(dw);
 
     // Print CookieTagMap content.
+    // TagSocketTest in CTS was using the output of mCookieTagMap dump.
+    // So, mCookieTagMap dump can not be removed until the previous CTS support period is over.
     dumpBpfMap("mCookieTagMap", dw, "");
     const auto printCookieTagInfo = [&dw](const uint64_t& key, const UidTagValue& value,
                                           const BpfMap<uint64_t, UidTagValue>&) {
@@ -623,31 +643,6 @@ void TrafficController::dump(int fd, bool verbose) {
         dw.println("mCookieTagMap print end with error: %s", res.error().message().c_str());
     }
 
-    // Print UidCounterSetMap content.
-    dumpBpfMap("mUidCounterSetMap", dw, "");
-    const auto printUidInfo = [&dw](const uint32_t& key, const uint8_t& value,
-                                    const BpfMap<uint32_t, uint8_t>&) {
-        dw.println("%u %u", key, value);
-        return base::Result<void>();
-    };
-    res = mUidCounterSetMap.iterateWithValue(printUidInfo);
-    if (!res.ok()) {
-        dw.println("mUidCounterSetMap print end with error: %s", res.error().message().c_str());
-    }
-
-    // Print AppUidStatsMap content.
-    std::string appUidStatsHeader = StringPrintf("uid rxBytes rxPackets txBytes txPackets");
-    dumpBpfMap("mAppUidStatsMap:", dw, appUidStatsHeader);
-    auto printAppUidStatsInfo = [&dw](const uint32_t& key, const StatsValue& value,
-                                      const BpfMap<uint32_t, StatsValue>&) {
-        dw.println("%u %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64, key, value.rxBytes,
-                   value.rxPackets, value.txBytes, value.txPackets);
-        return base::Result<void>();
-    };
-    res = mAppUidStatsMap.iterateWithValue(printAppUidStatsInfo);
-    if (!res.ok()) {
-        dw.println("mAppUidStatsMap print end with error: %s", res.error().message().c_str());
-    }
 
     // Print uidStatsMap content.
     std::string statsHeader = StringPrintf("ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes"

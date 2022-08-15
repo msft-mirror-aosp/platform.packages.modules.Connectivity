@@ -59,6 +59,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.anyBoolean;
 import static org.mockito.Matchers.anyInt;
 import static org.mockito.Matchers.anyLong;
 import static org.mockito.Matchers.anyString;
@@ -140,6 +141,9 @@ import java.util.LinkedHashMap;
 public class BpfCoordinatorTest {
     @Rule
     public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
+
+    private static final boolean IPV4 = true;
+    private static final boolean IPV6 = false;
 
     private static final int TEST_NET_ID = 24;
     private static final int TEST_NET_ID2 = 25;
@@ -1277,48 +1281,72 @@ public class BpfCoordinatorTest {
         try {
             final String intIface1 = "wlan1";
             final String intIface2 = "rndis0";
-            final String extIface = "rmnet_data0";
+            final String extIface1 = "rmnet_data0";
+            final String extIface2 = "v4-rmnet_data0";
             final String virtualIface = "ipsec0";
             final BpfUtils mockMarkerBpfUtils = staticMockMarker(BpfUtils.class);
             final BpfCoordinator coordinator = makeBpfCoordinator();
 
             // [1] Add the forwarding pair <wlan1, rmnet_data0>. Expect that attach both wlan1 and
             // rmnet_data0.
-            coordinator.maybeAttachProgram(intIface1, extIface);
-            ExtendedMockito.verify(() -> BpfUtils.attachProgram(extIface, DOWNSTREAM));
-            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface1, UPSTREAM));
+            coordinator.maybeAttachProgram(intIface1, extIface1);
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(extIface1, DOWNSTREAM, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(extIface1, DOWNSTREAM, IPV6));
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface1, UPSTREAM, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface1, UPSTREAM, IPV6));
             ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
             ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
 
             // [2] Add the forwarding pair <wlan1, rmnet_data0> again. Expect no more action.
-            coordinator.maybeAttachProgram(intIface1, extIface);
+            coordinator.maybeAttachProgram(intIface1, extIface1);
             ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
             ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
 
             // [3] Add the forwarding pair <rndis0, rmnet_data0>. Expect that attach rndis0 only.
-            coordinator.maybeAttachProgram(intIface2, extIface);
-            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface2, UPSTREAM));
+            coordinator.maybeAttachProgram(intIface2, extIface1);
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface2, UPSTREAM, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface2, UPSTREAM, IPV6));
             ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
             ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
 
-            // [4] Remove the forwarding pair <rndis0, rmnet_data0>. Expect detach rndis0 only.
-            coordinator.maybeDetachProgram(intIface2, extIface);
-            ExtendedMockito.verify(() -> BpfUtils.detachProgram(intIface2));
+            // [4] Add the forwarding pair <rndis0, v4-rmnet_data0>. Expect that attach
+            // v4-rmnet_data0 IPv4 program only.
+            coordinator.maybeAttachProgram(intIface2, extIface2);
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(extIface2, DOWNSTREAM, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.attachProgram(extIface2, DOWNSTREAM, IPV6),
+                    never());
             ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
             ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
 
-            // [5] Remove the forwarding pair <wlan1, rmnet_data0>. Expect that detach both wlan1
+            // [5] Remove the forwarding pair <rndis0, v4-rmnet_data0>. Expect detach
+            // v4-rmnet_data0 IPv4 program only.
+            coordinator.maybeDetachProgram(intIface2, extIface2);
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(extIface2, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(extIface2, IPV6), never());
+            ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
+            ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
+
+            // [6] Remove the forwarding pair <rndis0, rmnet_data0>. Expect detach rndis0 only.
+            coordinator.maybeDetachProgram(intIface2, extIface1);
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(intIface2, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(intIface2, IPV6));
+            ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
+            ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
+
+            // [7] Remove the forwarding pair <wlan1, rmnet_data0>. Expect that detach both wlan1
             // and rmnet_data0.
-            coordinator.maybeDetachProgram(intIface1, extIface);
-            ExtendedMockito.verify(() -> BpfUtils.detachProgram(extIface));
-            ExtendedMockito.verify(() -> BpfUtils.detachProgram(intIface1));
+            coordinator.maybeDetachProgram(intIface1, extIface1);
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(extIface1, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(extIface1, IPV6));
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(intIface1, IPV4));
+            ExtendedMockito.verify(() -> BpfUtils.detachProgram(intIface1, IPV6));
             ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
             ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
 
-            // [6] Skip attaching if upstream is virtual interface.
+            // [8] Skip attaching if upstream is virtual interface.
             coordinator.maybeAttachProgram(intIface1, virtualIface);
-            ExtendedMockito.verify(() -> BpfUtils.attachProgram(extIface, DOWNSTREAM), never());
-            ExtendedMockito.verify(() -> BpfUtils.attachProgram(intIface1, UPSTREAM), never());
+            ExtendedMockito.verify(() ->
+                    BpfUtils.attachProgram(anyString(), anyBoolean(), anyBoolean()), never());
             ExtendedMockito.verifyNoMoreInteractions(mockMarkerBpfUtils);
             ExtendedMockito.clearInvocations(mockMarkerBpfUtils);
 

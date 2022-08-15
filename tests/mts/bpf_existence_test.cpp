@@ -65,6 +65,7 @@ static const set<string> MAINLINE_FOR_S_PLUS = {
     TETHERING "map_offload_tether_stats_map",
     TETHERING "map_offload_tether_upstream4_map",
     TETHERING "map_offload_tether_upstream6_map",
+    TETHERING "map_test_bitmap",
     TETHERING "map_test_tether_downstream6_map",
     TETHERING "prog_offload_schedcls_tether_downstream4_ether",
     TETHERING "prog_offload_schedcls_tether_downstream4_rawip",
@@ -76,18 +77,19 @@ static const set<string> MAINLINE_FOR_S_PLUS = {
     TETHERING "prog_offload_schedcls_tether_upstream6_rawip",
 };
 
+// Provided by *current* mainline module for S+ devices with 5.10+ kernels
+static const set<string> MAINLINE_FOR_S_5_10_PLUS = {
+    TETHERING "prog_test_xdp_drop_ipv4_udp_ether",
+};
+
 // Provided by *current* mainline module for T+ devices
 static const set<string> MAINLINE_FOR_T_PLUS = {
     SHARED "map_block_blocked_ports_map",
     SHARED "map_clatd_clat_egress4_map",
     SHARED "map_clatd_clat_ingress6_map",
-    SHARED "map_dscp_policy_ipv4_dscp_policies_map",
-    SHARED "map_dscp_policy_ipv4_socket_to_policies_map_A",
-    SHARED "map_dscp_policy_ipv4_socket_to_policies_map_B",
-    SHARED "map_dscp_policy_ipv6_dscp_policies_map",
-    SHARED "map_dscp_policy_ipv6_socket_to_policies_map_A",
-    SHARED "map_dscp_policy_ipv6_socket_to_policies_map_B",
-    SHARED "map_dscp_policy_switch_comp_map",
+    SHARED "map_dscpPolicy_ipv4_dscp_policies_map",
+    SHARED "map_dscpPolicy_ipv6_dscp_policies_map",
+    SHARED "map_dscpPolicy_socket_policy_cache_map",
     NETD "map_netd_app_uid_stats_map",
     NETD "map_netd_configuration_map",
     NETD "map_netd_cookie_tag_map",
@@ -120,8 +122,7 @@ static const set<string> MAINLINE_FOR_T_5_4_PLUS = {
 
 // Provided by *current* mainline module for T+ devices with 5.15+ kernels
 static const set<string> MAINLINE_FOR_T_5_15_PLUS = {
-    SHARED "prog_dscp_policy_schedcls_set_dscp_ether",
-    SHARED "prog_dscp_policy_schedcls_set_dscp_raw_ip",
+    SHARED "prog_dscpPolicy_schedcls_set_dscp_ether",
 };
 
 void addAll(set<string>* a, const set<string>& b) {
@@ -146,6 +147,7 @@ void getFileLists(set<string>* expected, set<string>* unexpected) {
     DO_EXPECT(IsAtLeastR() && !IsAtLeastS(), PLATFORM_ONLY_IN_R);
 
     DO_EXPECT(IsAtLeastS(), MAINLINE_FOR_S_PLUS);
+    DO_EXPECT(IsAtLeastS() && isAtLeastKernelVersion(5, 10, 0), MAINLINE_FOR_S_5_10_PLUS);
 
     // Nothing added or removed in SCv2.
 
