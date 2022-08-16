@@ -14,23 +14,28 @@
  * limitations under the License.
  */
 
+#define CACHE_MAP_SIZE 1024
 #define MAX_POLICIES 16
-#define MAP_A 1
-#define MAP_B 2
 
 #define SRC_IP_MASK_FLAG     1
 #define DST_IP_MASK_FLAG     2
 #define SRC_PORT_MASK_FLAG   4
-#define DST_PORT_MASK_FLAG   8
-#define PROTO_MASK_FLAG      16
+#define PROTO_MASK_FLAG      8
 
 #define STRUCT_SIZE(name, size) _Static_assert(sizeof(name) == (size), "Incorrect struct size.")
 
-#define v6_equal(a, b) \
-    (((a.s6_addr32[0] ^ b.s6_addr32[0]) | \
-      (a.s6_addr32[1] ^ b.s6_addr32[1]) | \
-      (a.s6_addr32[2] ^ b.s6_addr32[2]) | \
-      (a.s6_addr32[3] ^ b.s6_addr32[3])) == 0)
+// Retrieve the first (ie. high) 64 bits of an IPv6 address (in network order)
+#define v6_hi_be64(v) (*(uint64_t*)&((v).s6_addr32[0]))
+
+// Retrieve the last (ie. low) 64 bits of an IPv6 address (in network order)
+#define v6_lo_be64(v) (*(uint64_t*)&((v).s6_addr32[2]))
+
+// This returns a non-zero u64 iff a != b
+#define v6_not_equal(a, b) ((v6_hi_be64(a) ^ v6_hi_be64(b)) \
+                          | (v6_lo_be64(a) ^ v6_lo_be64(b)))
+
+// Returns 'a == b' as boolean
+#define v6_equal(a, b) (!v6_not_equal((a), (b)))
 
 // TODO: these are already defined in packages/modules/Connectivity/bpf_progs/bpf_net_helpers.h.
 // smove to common location in future.
@@ -44,27 +49,27 @@ static long (*bpf_skb_ecn_set_ce)(struct __sk_buff* skb) =
         (void*)BPF_FUNC_skb_ecn_set_ce;
 
 typedef struct {
-    struct in6_addr srcIp;
-    struct in6_addr dstIp;
+    struct in6_addr src_ip;
+    struct in6_addr dst_ip;
     uint32_t ifindex;
-    __be16 srcPort;
-    __be16 dstPortStart;
-    __be16 dstPortEnd;
+    __be16 src_port;
+    uint16_t dst_port_start;
+    uint16_t dst_port_end;
     uint8_t proto;
-    uint8_t dscpVal;
-    uint8_t presentFields;
+    int8_t dscp_val;  // -1 none, or 0..63 DSCP value
+    uint8_t present_fields;
     uint8_t pad[3];
 } DscpPolicy;
 STRUCT_SIZE(DscpPolicy, 2 * 16 + 4 + 3 * 2 + 3 * 1 + 3);  // 48
 
 typedef struct {
-    struct in6_addr srcIp;
-    struct in6_addr dstIp;
-    __u32 ifindex;
-    __be16 srcPort;
-    __be16 dstPort;
-    __u8 proto;
-    __u8 dscpVal;
-    __u8 pad[2];
+    struct in6_addr src_ip;
+    struct in6_addr dst_ip;
+    uint32_t ifindex;
+    __be16 src_port;
+    uint16_t dst_port;
+    uint8_t proto;
+    int8_t dscp_val;  // -1 none, or 0..63 DSCP value
+    uint8_t pad[2];
 } RuleEntry;
 STRUCT_SIZE(RuleEntry, 2 * 16 + 1 * 4 + 2 * 2 + 2 * 1 + 2);  // 44

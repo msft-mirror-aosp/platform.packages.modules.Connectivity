@@ -14,20 +14,24 @@
  * limitations under the License.
  */
 
-package com.android.server.net;
+package com.android.net.module.util.bpf;
 
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.Field;
 import com.android.net.module.util.Struct.Type;
 
-/**
- * Key for cookie tag map.
- */
-public class CookieTagMapKey extends Struct {
-    @Field(order = 0, type = Type.S64)
-    public final long socketCookie;
+import java.net.Inet4Address;
 
-    public CookieTagMapKey(final long socketCookie) {
-        this.socketCookie = socketCookie;
+/** Key type for clat egress IPv4 maps. */
+public class ClatEgress4Key extends Struct {
+    @Field(order = 0, type = Type.U32)
+    public final long iif; // The input interface index
+
+    @Field(order = 1, type = Type.Ipv4Address)
+    public final Inet4Address local4; // The source IPv4 address
+
+    public ClatEgress4Key(final long iif, final Inet4Address local4) {
+        this.iif = iif;
+        this.local4 = local4;
     }
 }
