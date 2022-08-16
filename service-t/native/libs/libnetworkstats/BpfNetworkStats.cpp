@@ -58,13 +58,7 @@ int bpfGetUidStatsInternal(uid_t uid, Stats* stats,
 }
 
 int bpfGetUidStats(uid_t uid, Stats* stats) {
-    BpfMapRO<uint32_t, StatsValue> appUidStatsMap(APP_UID_STATS_MAP_PATH);
-
-    if (!appUidStatsMap.isValid()) {
-        int ret = -errno;
-        ALOGE("Opening appUidStatsMap(%s) failed: %s", APP_UID_STATS_MAP_PATH, strerror(errno));
-        return ret;
-    }
+    static BpfMapRO<uint32_t, StatsValue> appUidStatsMap(APP_UID_STATS_MAP_PATH);
     return bpfGetUidStatsInternal(uid, stats, appUidStatsMap);
 }
 
@@ -100,19 +94,8 @@ int bpfGetIfaceStatsInternal(const char* iface, Stats* stats,
 }
 
 int bpfGetIfaceStats(const char* iface, Stats* stats) {
-    BpfMapRO<uint32_t, StatsValue> ifaceStatsMap(IFACE_STATS_MAP_PATH);
-    int ret;
-    if (!ifaceStatsMap.isValid()) {
-        ret = -errno;
-        ALOGE("get ifaceStats map fd failed: %s", strerror(errno));
-        return ret;
-    }
-    BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
-    if (!ifaceIndexNameMap.isValid()) {
-        ret = -errno;
-        ALOGE("get ifaceIndexName map fd failed: %s", strerror(errno));
-        return ret;
-    }
+    static BpfMapRO<uint32_t, StatsValue> ifaceStatsMap(IFACE_STATS_MAP_PATH);
+    static BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
     return bpfGetIfaceStatsInternal(iface, stats, ifaceStatsMap, ifaceIndexNameMap);
 }
 
@@ -186,32 +169,21 @@ int parseBpfNetworkStatsDetailInternal(std::vector<stats_line>* lines,
 int parseBpfNetworkStatsDetail(std::vector<stats_line>* lines,
                                const std::vector<std::string>& limitIfaces, int limitTag,
                                int limitUid) {
-    BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
-    if (!ifaceIndexNameMap.isValid()) {
-        int ret = -errno;
-        ALOGE("get ifaceIndexName map fd failed: %s", strerror(errno));
-        return ret;
-    }
-
-    BpfMapRO<uint32_t, uint8_t> configurationMap(CONFIGURATION_MAP_PATH);
-    if (!configurationMap.isValid()) {
-        int ret = -errno;
-        ALOGE("get configuration map fd failed: %s", strerror(errno));
-        return ret;
-    }
+    static BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
+    static BpfMapRO<uint32_t, uint32_t> configurationMap(CONFIGURATION_MAP_PATH);
     auto configuration = configurationMap.readValue(CURRENT_STATS_MAP_CONFIGURATION_KEY);
     if (!configuration.ok()) {
         ALOGE("Cannot read the old configuration from map: %s",
               configuration.error().message().c_str());
         return -configuration.error().code();
     }
-    const char* statsMapPath = STATS_MAP_PATH[configuration.value()];
-    BpfMap<StatsKey, StatsValue> statsMap(statsMapPath);
-    if (!statsMap.isValid()) {
-        int ret = -errno;
-        ALOGE("get stats map fd failed: %s, path: %s", strerror(errno), statsMapPath);
-        return ret;
+    if (configuration.value() != SELECT_MAP_A && configuration.value() != SELECT_MAP_B) {
+        ALOGE("%s unknown configuration value: %d", __func__, configuration.value());
+        return -EINVAL;
     }
+    const char* statsMapPath = STATS_MAP_PATH[configuration.value()];
+    // TODO: fix this to not constantly reopen the bpf map
+    BpfMap<StatsKey, StatsValue> statsMap(statsMapPath);
 
     // It is safe to read and clear the old map now since the
     // networkStatsFactory should call netd to swap the map in advance already.
@@ -262,20 +234,8 @@ int parseBpfNetworkStatsDevInternal(std::vector<stats_line>* lines,
 }
 
 int parseBpfNetworkStatsDev(std::vector<stats_line>* lines) {
-    int ret = 0;
-    BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
-    if (!ifaceIndexNameMap.isValid()) {
-        ret = -errno;
-        ALOGE("get ifaceIndexName map fd failed: %s", strerror(errno));
-        return ret;
-    }
-
-    BpfMapRO<uint32_t, StatsValue> ifaceStatsMap(IFACE_STATS_MAP_PATH);
-    if (!ifaceStatsMap.isValid()) {
-        ret = -errno;
-        ALOGE("get ifaceStats map fd failed: %s", strerror(errno));
-        return ret;
-    }
+    static BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
+    static BpfMapRO<uint32_t, StatsValue> ifaceStatsMap(IFACE_STATS_MAP_PATH);
     return parseBpfNetworkStatsDevInternal(lines, ifaceStatsMap, ifaceIndexNameMap);
 }
 

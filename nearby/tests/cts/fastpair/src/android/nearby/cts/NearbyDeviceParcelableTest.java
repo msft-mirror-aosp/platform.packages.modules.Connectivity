@@ -42,8 +42,11 @@ public class NearbyDeviceParcelableTest {
 
     private static final String BLUETOOTH_ADDRESS = "00:11:22:33:FF:EE";
     private static final byte[] SCAN_DATA = new byte[] {1, 2, 3, 4};
+    private static final byte[] SALT = new byte[] {1, 2, 3, 4};
     private static final String FAST_PAIR_MODEL_ID = "1234";
     private static final int RSSI = -60;
+    private static final int TX_POWER = -10;
+    private static final int ACTION = 1;
 
     private NearbyDeviceParcelable.Builder mBuilder;
 
@@ -66,11 +69,11 @@ public class NearbyDeviceParcelableTest {
     public void testToString() {
         PublicCredential publicCredential =
                 new PublicCredential.Builder(
-                                new byte[] {1},
-                                new byte[] {2},
-                                new byte[] {3},
-                                new byte[] {4},
-                                new byte[] {5})
+                        new byte[] {1},
+                        new byte[] {2},
+                        new byte[] {3},
+                        new byte[] {4},
+                        new byte[] {5})
                         .build();
         NearbyDeviceParcelable nearbyDeviceParcelable =
                 mBuilder.setFastPairModelId(null)
@@ -83,25 +86,42 @@ public class NearbyDeviceParcelableTest {
                         "NearbyDeviceParcelable[scanType=2, name=testDevice, medium=BLE, "
                                 + "txPower=0, rssi=-60, action=0, bluetoothAddress="
                                 + BLUETOOTH_ADDRESS
-                                + ", fastPairModelId=null, data=null, salt=null]");
+                                + ", fastPairModelId=null, data=null, salt=null,"
+                                + " presenceDevice=null, encryptionKeyTag=null]");
     }
 
     @Test
     @SdkSuppress(minSdkVersion = 33, codeName = "T")
-    public void test_defaultNullFields() {
+    public void testNullFields() {
+        PublicCredential publicCredential =
+                new PublicCredential.Builder(
+                        new byte[] {1},
+                        new byte[] {2},
+                        new byte[] {3},
+                        new byte[] {4},
+                        new byte[] {5})
+                        .build();
         NearbyDeviceParcelable nearbyDeviceParcelable =
                 new NearbyDeviceParcelable.Builder()
                         .setMedium(NearbyDevice.Medium.BLE)
+                        .setPublicCredential(publicCredential)
+                        .setAction(ACTION)
                         .setRssi(RSSI)
+                        .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
+                        .setTxPower(TX_POWER)
+                        .setSalt(SALT)
                         .build();
 
         assertThat(nearbyDeviceParcelable.getName()).isNull();
         assertThat(nearbyDeviceParcelable.getFastPairModelId()).isNull();
         assertThat(nearbyDeviceParcelable.getBluetoothAddress()).isNull();
         assertThat(nearbyDeviceParcelable.getData()).isNull();
-
         assertThat(nearbyDeviceParcelable.getMedium()).isEqualTo(NearbyDevice.Medium.BLE);
         assertThat(nearbyDeviceParcelable.getRssi()).isEqualTo(RSSI);
+        assertThat(nearbyDeviceParcelable.getAction()).isEqualTo(ACTION);
+        assertThat(nearbyDeviceParcelable.getPublicCredential()).isEqualTo(publicCredential);
+        assertThat(nearbyDeviceParcelable.getSalt()).isEqualTo(SALT);
+        assertThat(nearbyDeviceParcelable.getTxPower()).isEqualTo(TX_POWER);
     }
 
     @Test
@@ -141,7 +161,6 @@ public class NearbyDeviceParcelableTest {
     @SdkSuppress(minSdkVersion = 33, codeName = "T")
     public void testWriteParcel_nullBluetoothAddress() {
         NearbyDeviceParcelable nearbyDeviceParcelable = mBuilder.setBluetoothAddress(null).build();
-
         Parcel parcel = Parcel.obtain();
         nearbyDeviceParcelable.writeToParcel(parcel, 0);
         parcel.setDataPosition(0);
@@ -150,5 +169,37 @@ public class NearbyDeviceParcelableTest {
         parcel.recycle();
 
         assertThat(actualNearbyDevice.getBluetoothAddress()).isNull();
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 33, codeName = "T")
+    public void describeContents() {
+        NearbyDeviceParcelable nearbyDeviceParcelable = mBuilder.setBluetoothAddress(null).build();
+        assertThat(nearbyDeviceParcelable.describeContents()).isEqualTo(0);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 33, codeName = "T")
+    public void testEqual() {
+        PublicCredential publicCredential =
+                new PublicCredential.Builder(
+                        new byte[] {1},
+                        new byte[] {2},
+                        new byte[] {3},
+                        new byte[] {4},
+                        new byte[] {5})
+                        .build();
+        NearbyDeviceParcelable nearbyDeviceParcelable1 =
+                mBuilder.setPublicCredential(publicCredential).build();
+        NearbyDeviceParcelable nearbyDeviceParcelable2 =
+                mBuilder.setPublicCredential(publicCredential).build();
+        assertThat(nearbyDeviceParcelable1.equals(nearbyDeviceParcelable2)).isTrue();
+    }
+
+    @Test
+    public void testCreatorNewArray() {
+        NearbyDeviceParcelable[] nearbyDeviceParcelables =
+                NearbyDeviceParcelable.CREATOR.newArray(2);
+        assertThat(nearbyDeviceParcelables.length).isEqualTo(2);
     }
 }

@@ -16,6 +16,10 @@
 
 package android.app.usage;
 
+import static android.net.NetworkStats.METERED_YES;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
+
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
@@ -52,9 +56,11 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
 
+import java.util.Set;
+
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 public class NetworkStatsManagerTest {
     private static final String TEST_SUBSCRIBER_ID = "subid";
 
@@ -82,20 +88,28 @@ public class NetworkStatsManagerTest {
 
         Entry uid1Entry1 = new Entry("if1", uid1,
                 android.net.NetworkStats.SET_DEFAULT, android.net.NetworkStats.TAG_NONE,
+                android.net.NetworkStats.METERED_NO, android.net.NetworkStats.ROAMING_NO,
+                android.net.NetworkStats.DEFAULT_NETWORK_NO,
                 100, 10, 200, 20, 0);
 
         Entry uid1Entry2 = new Entry(
                 "if2", uid1,
                 android.net.NetworkStats.SET_DEFAULT, android.net.NetworkStats.TAG_NONE,
+                android.net.NetworkStats.METERED_NO, android.net.NetworkStats.ROAMING_NO,
+                android.net.NetworkStats.DEFAULT_NETWORK_NO,
                 100, 10, 200, 20, 0);
 
         Entry uid2Entry1 = new Entry("if1", uid2,
                 android.net.NetworkStats.SET_DEFAULT, android.net.NetworkStats.TAG_NONE,
+                android.net.NetworkStats.METERED_NO, android.net.NetworkStats.ROAMING_NO,
+                android.net.NetworkStats.DEFAULT_NETWORK_NO,
                 150, 10, 250, 20, 0);
 
         Entry uid2Entry2 = new Entry(
                 "if2", uid2,
                 android.net.NetworkStats.SET_DEFAULT, android.net.NetworkStats.TAG_NONE,
+                android.net.NetworkStats.METERED_NO, android.net.NetworkStats.ROAMING_NO,
+                android.net.NetworkStats.DEFAULT_NETWORK_NO,
                 150, 10, 250, 20, 0);
 
         NetworkStatsHistory history1 = new NetworkStatsHistory(10, 2);
@@ -204,20 +218,20 @@ public class NetworkStatsManagerTest {
     @Test
     public void testNetworkTemplateWhenRunningQueryDetails_NoSubscriberId() throws RemoteException {
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_MOBILE,
-                null /* subscriberId */, NetworkTemplate.buildTemplateMobileWildcard());
+                null /* subscriberId */, new NetworkTemplate.Builder(MATCH_MOBILE)
+                        .setMeteredness(METERED_YES).build());
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_WIFI,
-                "" /* subscriberId */, NetworkTemplate.buildTemplateWifiWildcard());
+                "" /* subscriberId */, new NetworkTemplate.Builder(MATCH_WIFI).build());
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_WIFI,
-                null /* subscriberId */, NetworkTemplate.buildTemplateWifiWildcard());
+                null /* subscriberId */, new NetworkTemplate.Builder(MATCH_WIFI).build());
     }
 
     @Test
     public void testNetworkTemplateWhenRunningQueryDetails_MergedCarrierWifi()
             throws RemoteException {
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_WIFI,
-                TEST_SUBSCRIBER_ID,
-                NetworkTemplate.buildTemplateWifi(NetworkTemplate.WIFI_NETWORKID_ALL,
-                        TEST_SUBSCRIBER_ID));
+                TEST_SUBSCRIBER_ID, new NetworkTemplate.Builder(MATCH_WIFI)
+                        .setSubscriberIds(Set.of(TEST_SUBSCRIBER_ID)).build());
     }
 
     @Test

@@ -26,6 +26,7 @@ import static android.net.NetworkCapabilities.transportNamesOf;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.net.CaptivePortalData;
 import android.net.DscpPolicy;
 import android.net.IDnsResolver;
@@ -66,6 +67,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.server.ConnectivityService;
 
 import java.io.PrintWriter;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -104,7 +106,7 @@ import java.util.TreeSet;
 //    for example:
 //    a. a captive portal is present, or
 //    b. a WiFi router whose Internet backhaul is down, or
-//    c. a wireless connection stops transfering packets temporarily (e.g. device is in elevator
+//    c. a wireless connection stops transferring packets temporarily (e.g. device is in elevator
 //       or tunnel) but does not disconnect from the AP/cell tower, or
 //    d. a stand-alone device offering a WiFi AP without an uplink for configuration purposes.
 // 5. registered, created, connected, validated
@@ -157,7 +159,7 @@ import java.util.TreeSet;
 // the network is no longer considered "lingering". After the linger timer expires, if the network
 // is satisfying one or more background NetworkRequests it is kept up in the background. If it is
 // not, ConnectivityService disconnects the NetworkAgent's AsyncChannel.
-public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRanker.Scoreable {
+public class NetworkAgentInfo implements NetworkRanker.Scoreable {
 
     @NonNull public NetworkInfo networkInfo;
     // This Network object should always be used if possible, so as to encourage reuse of the
@@ -181,8 +183,11 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
 
     // The capabilities originally announced by the NetworkAgent, regardless of any capabilities
     // that were added or removed due to this network's underlying networks.
-    // Only set if #propagateUnderlyingCapabilities is true.
-    public @Nullable NetworkCapabilities declaredCapabilities;
+    //
+    // As the name implies, these capabilities are not sanitized and are not to
+    // be trusted. Most callers should simply use the {@link networkCapabilities}
+    // field instead.
+    private @Nullable NetworkCapabilities mDeclaredCapabilitiesUnsanitized;
 
     // Indicates if netd has been told to create this Network. From this point on the appropriate
     // routing rules are setup and routes are added so packets can begin flowing over the Network.
@@ -235,6 +240,53 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
     // non-RFC8908 sources, such as Wi-Fi Passpoint, which can provide information such as Venue
     // URL, Terms & Conditions URL, and network friendly name.
     public CaptivePortalData networkAgentPortalData;
+
+    /**
+     * Sets the capabilities sent by the agent for later retrieval.
+     *
+     * This method does not sanitize the capabilities ; instead, use
+     * {@link #getDeclaredCapabilitiesSanitized} to retrieve a sanitized
+     * copy of the capabilities as they were passed here.
+     *
+     * This method makes a defensive copy to avoid issues where the passed object is later mutated.
+     *
+     * @param caps the caps sent by the agent
+     */
+    public void setDeclaredCapabilities(@NonNull final NetworkCapabilities caps) {
+        mDeclaredCapabilitiesUnsanitized = new NetworkCapabilities(caps);
+    }
+
+    /**
+     * Get the latest capabilities sent by the network agent, after sanitizing them.
+     *
+     * These are the capabilities as they were sent by the agent (but sanitized to conform to
+     * their restrictions). They are NOT the capabilities currently applying to this agent ;
+     * for that, use {@link #networkCapabilities}.
+     *
+     * Agents have restrictions on what capabilities they can send to Connectivity. For example,
+     * they can't change the owner UID from what they declared before, and complex restrictions
+     * apply to the allowedUids field.
+     * They also should not mutate immutable capabilities, although for backward-compatibility
+     * this is not enforced and limited to just a log.
+     *
+     * @param carrierPrivilegeAuthenticator the authenticator, to check access UIDs.
+     */
+    public NetworkCapabilities getDeclaredCapabilitiesSanitized(
+            final CarrierPrivilegeAuthenticator carrierPrivilegeAuthenticator) {
+        final NetworkCapabilities nc = new NetworkCapabilities(mDeclaredCapabilitiesUnsanitized);
+        if (nc.hasConnectivityManagedCapability()) {
+            Log.wtf(TAG, "BUG: " + this + " has CS-managed capability.");
+        }
+        if (networkCapabilities.getOwnerUid() != nc.getOwnerUid()) {
+            Log.e(TAG, toShortString() + ": ignoring attempt to change owner from "
+                    + networkCapabilities.getOwnerUid() + " to " + nc.getOwnerUid());
+            nc.setOwnerUid(networkCapabilities.getOwnerUid());
+        }
+        restrictCapabilitiesFromNetworkAgent(nc, creatorUid,
+                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE),
+                carrierPrivilegeAuthenticator);
+        return nc;
+    }
 
     // Networks are lingered when they become unneeded as a result of their NetworkRequests being
     // satisfied by a higher-scoring network. so as to allow communication to wrap up before the
@@ -366,6 +418,8 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
     private final Handler mHandler;
     private final QosCallbackTracker mQosCallbackTracker;
 
+    private final long mCreationTime;
+
     public NetworkAgentInfo(INetworkAgent na, Network net, NetworkInfo info,
             @NonNull LinkProperties lp, @NonNull NetworkCapabilities nc,
             @NonNull NetworkScore score, Context context,
@@ -398,6 +452,7 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
         declaredUnderlyingNetworks = (nc.getUnderlyingNetworks() != null)
                 ? nc.getUnderlyingNetworks().toArray(new Network[0])
                 : null;
+        mCreationTime = System.currentTimeMillis();
     }
 
     private class AgentDeathMonitor implements IBinder.DeathRecipient {
@@ -963,18 +1018,6 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
         return mScore;
     }
 
-    // Get the current score for this Network.  This may be modified from what the
-    // NetworkAgent sent, as it has modifiers applied to it.
-    public int getCurrentScore() {
-        return mScore.getLegacyInt();
-    }
-
-    // Get the current score for this Network as if it was validated.  This may be modified from
-    // what the NetworkAgent sent, as it has modifiers applied to it.
-    public int getCurrentScoreAsValidated() {
-        return mScore.getLegacyIntAsValidated();
-    }
-
     /**
      * Mix-in the ConnectivityService-managed bits in the score.
      */
@@ -1279,6 +1322,7 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
         return "NetworkAgentInfo{"
                 + "network{" + network + "}  handle{" + network.getNetworkHandle() + "}  ni{"
                 + networkInfo.toShortString() + "} "
+                + "created=" + Instant.ofEpochMilli(mCreationTime) + " "
                 + mScore + " "
                 + (created ? " created" : "")
                 + (destroyed ? " destroyed" : "")
@@ -1310,12 +1354,6 @@ public class NetworkAgentInfo implements Comparable<NetworkAgentInfo>, NetworkRa
     public String toShortString() {
         return "[" + network.getNetId() + " "
                 + transportNamesOf(networkCapabilities.getTransportTypes()) + "]";
-    }
-
-    // Enables sorting in descending order of score.
-    @Override
-    public int compareTo(NetworkAgentInfo other) {
-        return other.getCurrentScore() - getCurrentScore();
     }
 
     /**

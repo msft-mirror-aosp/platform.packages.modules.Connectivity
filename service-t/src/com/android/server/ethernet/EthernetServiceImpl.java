@@ -16,20 +16,22 @@
 
 package com.android.server.ethernet;
 
+import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.net.EthernetNetworkSpecifier;
+import android.net.EthernetNetworkUpdateRequest;
 import android.net.IEthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.INetworkInterfaceOutcomeReceiver;
 import android.net.ITetheredInterfaceCallback;
-import android.net.EthernetNetworkUpdateRequest;
 import android.net.IpConfiguration;
 import android.net.NetworkCapabilities;
-import android.os.Binder;
+import android.net.NetworkSpecifier;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.util.Log;
@@ -185,13 +187,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     @Override
     protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
         final IndentingPrintWriter pw = new IndentingPrintWriter(writer, "  ");
-        if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
-                != PackageManager.PERMISSION_GRANTED) {
-            pw.println("Permission Denial: can't dump EthernetService from pid="
-                    + Binder.getCallingPid()
-                    + ", uid=" + Binder.getCallingUid());
-            return;
-        }
+        if (!PermissionUtils.checkDumpPermission(mContext, TAG, pw)) return;
 
         pw.println("Current Ethernet state: ");
         pw.increaseIndent();
@@ -216,16 +212,36 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
                 "EthernetServiceImpl");
     }
 
-    private void maybeValidateTestCapabilities(final String iface,
-            @Nullable final NetworkCapabilities nc) {
+    private void validateOrSetNetworkSpecifier(String iface, NetworkCapabilities nc) {
+        final NetworkSpecifier spec = nc.getNetworkSpecifier();
+        if (spec == null) {
+            nc.setNetworkSpecifier(new EthernetNetworkSpecifier(iface));
+            return;
+        }
+        if (!(spec instanceof EthernetNetworkSpecifier)) {
+            throw new IllegalArgumentException("Invalid specifier type for request.");
+        }
+        if (!((EthernetNetworkSpecifier) spec).getInterfaceName().matches(iface)) {
+            throw new IllegalArgumentException("Invalid interface name set on specifier.");
+        }
+    }
+
+    private void maybeValidateTestCapabilities(String iface, NetworkCapabilities nc) {
         if (!mTracker.isValidTestInterface(iface)) {
             return;
         }
-        // For test interfaces, only null or capabilities that include TRANSPORT_TEST are
-        // allowed.
-        if (nc != null && !nc.hasTransport(TRANSPORT_TEST)) {
+        if (!nc.hasTransport(TRANSPORT_TEST)) {
             throw new IllegalArgumentException(
                     "Updates to test interfaces must have NetworkCapabilities.TRANSPORT_TEST.");
+        }
+    }
+
+    private void maybeValidateEthernetTransport(String iface, NetworkCapabilities nc) {
+        if (mTracker.isValidTestInterface(iface)) {
+            return;
+        }
+        if (!nc.hasSingleTransport(TRANSPORT_ETHERNET)) {
+            throw new IllegalArgumentException("Invalid transport type for request.");
         }
     }
 
@@ -251,36 +267,41 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
 
         // TODO: validate that iface is listed in overlay config_ethernet_interfaces
         // only automotive devices are allowed to set the NetworkCapabilities using this API
-        enforceAdminPermission(iface, request.getNetworkCapabilities() != null,
-                "updateConfiguration() with non-null capabilities");
-        maybeValidateTestCapabilities(iface, request.getNetworkCapabilities());
+        final NetworkCapabilities nc = request.getNetworkCapabilities();
+        enforceAdminPermission(
+                iface, nc != null, "updateConfiguration() with non-null capabilities");
+        if (nc != null) {
+            validateOrSetNetworkSpecifier(iface, nc);
+            maybeValidateTestCapabilities(iface, nc);
+            maybeValidateEthernetTransport(iface, nc);
+        }
 
         mTracker.updateConfiguration(
-                iface, request.getIpConfiguration(), request.getNetworkCapabilities(), listener);
+                iface, request.getIpConfiguration(), nc, listener);
     }
 
     @Override
-    public void connectNetwork(@NonNull final String iface,
+    public void enableInterface(@NonNull final String iface,
             @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        Log.i(TAG, "connectNetwork called with: iface=" + iface + ", listener=" + listener);
+        Log.i(TAG, "enableInterface called with: iface=" + iface + ", listener=" + listener);
         Objects.requireNonNull(iface);
         throwIfEthernetNotStarted();
 
-        enforceAdminPermission(iface, true, "connectNetwork()");
+        enforceAdminPermission(iface, false, "enableInterface()");
 
-        mTracker.connectNetwork(iface, listener);
+        mTracker.enableInterface(iface, listener);
     }
 
     @Override
-    public void disconnectNetwork(@NonNull final String iface,
+    public void disableInterface(@NonNull final String iface,
             @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        Log.i(TAG, "disconnectNetwork called with: iface=" + iface + ", listener=" + listener);
+        Log.i(TAG, "disableInterface called with: iface=" + iface + ", listener=" + listener);
         Objects.requireNonNull(iface);
         throwIfEthernetNotStarted();
 
-        enforceAdminPermission(iface, true, "connectNetwork()");
+        enforceAdminPermission(iface, false, "disableInterface()");
 
-        mTracker.disconnectNetwork(iface, listener);
+        mTracker.disableInterface(iface, listener);
     }
 
     @Override

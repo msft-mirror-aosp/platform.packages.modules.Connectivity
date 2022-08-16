@@ -32,6 +32,7 @@ java_defaults {
         "net-tests-utils",
         "net-utils-device-common-bpf",
         "testables",
+        "connectivity-net-module-utils-bpf",
     ],
     libs: [
         "android.test.runner",
@@ -49,7 +50,7 @@ java_defaults {
 // Use with NetworkStackJarJarRules.
 android_library {
     name: "TetheringIntegrationTestsLatestSdkLib",
-    target_sdk_version: "31",
+    target_sdk_version: "33",
     platform_apis: true,
     defaults: ["TetheringIntegrationTestsDefaults"],
     visibility: [
@@ -78,7 +79,6 @@ android_test {
     defaults: ["TetheringIntegrationTestsDefaults"],
     test_suites: [
         "device-tests",
-        "mts-tethering",
     ],
     compile_multilib: "both",
     jarjar_rules: ":NetworkStackJarJarRules",

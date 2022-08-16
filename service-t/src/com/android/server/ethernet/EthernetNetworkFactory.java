@@ -31,10 +31,9 @@ import android.net.IpConfiguration.ProxySettings;
 import android.net.LinkProperties;
 import android.net.NetworkAgentConfig;
 import android.net.NetworkCapabilities;
-import android.net.NetworkFactory;
 import android.net.NetworkProvider;
 import android.net.NetworkRequest;
-import android.net.NetworkSpecifier;
+import android.net.NetworkScore;
 import android.net.ip.IIpClient;
 import android.net.ip.IpClientCallbacks;
 import android.net.ip.IpClientManager;
@@ -61,22 +60,21 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * {@link NetworkFactory} that represents Ethernet networks.
+ * Class that manages NetworkOffers for Ethernet networks.
  *
- * This class reports a static network score of 70 when it is tracking an interface and that
- * interface's link is up, and a score of 0 otherwise.
+ * TODO: this class should be merged into EthernetTracker.
  */
-public class EthernetNetworkFactory extends NetworkFactory {
+public class EthernetNetworkFactory {
     private final static String TAG = EthernetNetworkFactory.class.getSimpleName();
     final static boolean DBG = true;
 
-    private final static int NETWORK_SCORE = 70;
     private static final String NETWORK_TYPE = "Ethernet";
 
     private final ConcurrentHashMap<String, NetworkInterfaceState> mTrackingInterfaces =
             new ConcurrentHashMap<>();
     private final Handler mHandler;
     private final Context mContext;
+    private final NetworkProvider mProvider;
     final Dependencies mDeps;
 
     public static class Dependencies {
@@ -111,54 +109,24 @@ public class EthernetNetworkFactory extends NetworkFactory {
     }
 
     public EthernetNetworkFactory(Handler handler, Context context) {
-        this(handler, context, new Dependencies());
+        this(handler, context, new NetworkProvider(context, handler.getLooper(), TAG),
+            new Dependencies());
     }
 
     @VisibleForTesting
-    EthernetNetworkFactory(Handler handler, Context context, Dependencies deps) {
-        super(handler.getLooper(), context, NETWORK_TYPE, createDefaultNetworkCapabilities());
-
+    EthernetNetworkFactory(Handler handler, Context context, NetworkProvider provider,
+            Dependencies deps) {
         mHandler = handler;
         mContext = context;
+        mProvider = provider;
         mDeps = deps;
-
-        setScoreFilter(NETWORK_SCORE);
     }
 
-    @Override
-    public boolean acceptRequest(NetworkRequest request) {
-        if (DBG) {
-            Log.d(TAG, "acceptRequest, request: " + request);
-        }
-
-        return networkForRequest(request) != null;
-    }
-
-    @Override
-    protected void needNetworkFor(NetworkRequest networkRequest) {
-        NetworkInterfaceState network = networkForRequest(networkRequest);
-
-        if (network == null) {
-            Log.e(TAG, "needNetworkFor, failed to get a network for " + networkRequest);
-            return;
-        }
-
-        if (++network.refCount == 1) {
-            network.start();
-        }
-    }
-
-    @Override
-    protected void releaseNetworkFor(NetworkRequest networkRequest) {
-        NetworkInterfaceState network = networkForRequest(networkRequest);
-        if (network == null) {
-            Log.e(TAG, "releaseNetworkFor, failed to get a network for " + networkRequest);
-            return;
-        }
-
-        if (--network.refCount == 0) {
-            network.stop();
-        }
+    /**
+     * Registers the network provider with the system.
+     */
+    public void register() {
+        mContext.getSystemService(ConnectivityManager.class).registerNetworkProvider(mProvider);
     }
 
     /**
@@ -196,9 +164,8 @@ public class EthernetNetworkFactory extends NetworkFactory {
         }
 
         final NetworkInterfaceState iface = new NetworkInterfaceState(
-                ifaceName, hwAddress, mHandler, mContext, ipConfig, nc, getProvider(), mDeps);
+                ifaceName, hwAddress, mHandler, mContext, ipConfig, nc, mProvider, mDeps);
         mTrackingInterfaces.put(ifaceName, iface);
-        updateCapabilityFilter();
     }
 
     @VisibleForTesting
@@ -239,7 +206,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
         final NetworkInterfaceState iface = mTrackingInterfaces.get(ifaceName);
         iface.updateInterface(ipConfig, capabilities, listener);
         mTrackingInterfaces.put(ifaceName, iface);
-        updateCapabilityFilter();
     }
 
     private static NetworkCapabilities mixInCapabilities(NetworkCapabilities nc,
@@ -250,16 +216,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
        return builder.build();
     }
 
-    private void updateCapabilityFilter() {
-        NetworkCapabilities capabilitiesFilter = createDefaultNetworkCapabilities();
-        for (NetworkInterfaceState iface:  mTrackingInterfaces.values()) {
-            capabilitiesFilter = mixInCapabilities(capabilitiesFilter, iface.mCapabilities);
-        }
-
-        if (DBG) Log.d(TAG, "updateCapabilityFilter: " + capabilitiesFilter);
-        setCapabilityFilter(capabilitiesFilter);
-    }
-
     private static NetworkCapabilities createDefaultNetworkCapabilities() {
         return NetworkCapabilities.Builder
                 .withoutDefaultCapabilities()
@@ -267,14 +223,17 @@ public class EthernetNetworkFactory extends NetworkFactory {
     }
 
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
-    protected void removeInterface(String interfaceName) {
+    protected boolean removeInterface(String interfaceName) {
         NetworkInterfaceState iface = mTrackingInterfaces.remove(interfaceName);
         if (iface != null) {
-            iface.maybeSendNetworkManagementCallbackForAbort();
-            iface.stop();
+            iface.unregisterNetworkOfferAndStop();
+            return true;
         }
-
-        updateCapabilityFilter();
+        // TODO(b/236892130): if an interface is currently in server mode, it may not be properly
+        // removed.
+        // TODO: when false is returned, do not send a STATE_ABSENT callback.
+        Log.w(TAG, interfaceName + " is not tracked and cannot be removed");
+        return false;
     }
 
     /** Returns true if state has been modified */
@@ -306,37 +265,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
         return mTrackingInterfaces.containsKey(ifaceName);
     }
 
-    private NetworkInterfaceState networkForRequest(NetworkRequest request) {
-        String requestedIface = null;
-
-        NetworkSpecifier specifier = request.getNetworkSpecifier();
-        if (specifier instanceof EthernetNetworkSpecifier) {
-            requestedIface = ((EthernetNetworkSpecifier) specifier)
-                .getInterfaceName();
-        }
-
-        NetworkInterfaceState network = null;
-        if (!TextUtils.isEmpty(requestedIface)) {
-            NetworkInterfaceState n = mTrackingInterfaces.get(requestedIface);
-            if (n != null && request.canBeSatisfiedBy(n.mCapabilities)) {
-                network = n;
-            }
-        } else {
-            for (NetworkInterfaceState n : mTrackingInterfaces.values()) {
-                if (request.canBeSatisfiedBy(n.mCapabilities) && n.mLinkUp) {
-                    network = n;
-                    break;
-                }
-            }
-        }
-
-        if (DBG) {
-            Log.i(TAG, "networkForRequest, request: " + request + ", network: " + network);
-        }
-
-        return network;
-    }
-
     private static void maybeSendNetworkManagementCallback(
             @Nullable final INetworkInterfaceOutcomeReceiver listener,
             @Nullable final String iface,
@@ -365,14 +293,14 @@ public class EthernetNetworkFactory extends NetworkFactory {
         private final Context mContext;
         private final NetworkProvider mNetworkProvider;
         private final Dependencies mDeps;
-        private final NetworkProvider.NetworkOfferCallback mNetworkOfferCallback;
+        private NetworkProvider.NetworkOfferCallback mNetworkOfferCallback;
 
         private static String sTcpBufferSizes = null;  // Lazy initialized.
 
         private boolean mLinkUp;
         private int mLegacyType;
         private LinkProperties mLinkProperties = new LinkProperties();
-        private Set<NetworkRequest> mRequests = new ArraySet<>();
+        private final Set<Integer> mRequestIds = new ArraySet<>();
 
         private volatile @Nullable IpClientManager mIpClient;
         private @NonNull NetworkCapabilities mCapabilities;
@@ -400,8 +328,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
             sTransports.put(NetworkCapabilities.TRANSPORT_WIFI_AWARE,
                     ConnectivityManager.TYPE_NONE);
         }
-
-        long refCount = 0;
 
         private class EthernetIpClientCallback extends IpClientCallbacks {
             private final ConditionVariable mIpClientStartCv = new ConditionVariable(false);
@@ -474,21 +400,42 @@ public class EthernetNetworkFactory extends NetworkFactory {
         }
 
         private class EthernetNetworkOfferCallback implements NetworkProvider.NetworkOfferCallback {
+            private boolean isStale() {
+                return this != mNetworkOfferCallback;
+            }
+
             @Override
             public void onNetworkNeeded(@NonNull NetworkRequest request) {
+                if (isStale()) {
+                    return;
+                }
+                if (DBG) {
+                    Log.d(TAG, String.format("%s: onNetworkNeeded for request: %s", name, request));
+                }
                 // When the network offer is first registered, onNetworkNeeded is called with all
                 // existing requests.
                 // ConnectivityService filters requests for us based on the NetworkCapabilities
                 // passed in the registerNetworkOffer() call.
-                mRequests.add(request);
+                mRequestIds.add(request.requestId);
                 // if the network is already started, this is a no-op.
                 start();
             }
 
             @Override
             public void onNetworkUnneeded(@NonNull NetworkRequest request) {
-                mRequests.remove(request);
-                if (mRequests.isEmpty()) {
+                if (isStale()) {
+                    return;
+                }
+                if (DBG) {
+                    Log.d(TAG,
+                            String.format("%s: onNetworkUnneeded for request: %s", name, request));
+                }
+                if (!mRequestIds.remove(request.requestId)) {
+                    // This can only happen if onNetworkNeeded was not called for a request or if
+                    // the requestId changed. Both should *never* happen.
+                    Log.wtf(TAG, "onNetworkUnneeded called for unknown request");
+                }
+                if (mRequestIds.isEmpty()) {
                     // not currently serving any requests, stop the network.
                     stop();
                 }
@@ -506,7 +453,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
             mContext = context;
             mNetworkProvider = networkProvider;
             mDeps = deps;
-            mNetworkOfferCallback = new EthernetNetworkOfferCallback();
             mHwAddress = hwAddress;
         }
 
@@ -529,9 +475,19 @@ public class EthernetNetworkFactory extends NetworkFactory {
                     + "transport type.");
         }
 
+        private static NetworkScore getNetworkScore() {
+            return new NetworkScore.Builder().build();
+        }
+
         private void setCapabilities(@NonNull final NetworkCapabilities capabilities) {
             mCapabilities = new NetworkCapabilities(capabilities);
             mLegacyType = getLegacyType(mCapabilities);
+
+            if (mLinkUp) {
+                // registering a new network offer will update the existing one, not install a
+                // new one.
+                registerNetworkOffer();
+            }
         }
 
         void updateInterface(@Nullable final IpConfiguration ipConfig,
@@ -551,8 +507,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
             if (null != capabilities) {
                 setCapabilities(capabilities);
             }
-            // Send an abort callback if a request is filed before the previous one has completed.
-            maybeSendNetworkManagementCallbackForAbort();
             // TODO: Update this logic to only do a restart if required. Although a restart may
             //  be required due to the capabilities or ipConfiguration values, not all
             //  capabilities changes require a restart.
@@ -693,26 +647,26 @@ public class EthernetNetworkFactory extends NetworkFactory {
             mLinkUp = up;
 
             if (!up) { // was up, goes down
-                // Send an abort on a provisioning request callback if necessary before stopping.
-                maybeSendNetworkManagementCallbackForAbort();
-                stop();
-                // If only setting the interface down, send a callback to signal completion.
-                EthernetNetworkFactory.maybeSendNetworkManagementCallback(listener, name, null);
+                // retract network offer and stop IpClient.
+                unregisterNetworkOfferAndStop();
             } else { // was down, goes up
-                stop();
-                start(listener);
+                // register network offer
+                registerNetworkOffer();
             }
 
+            EthernetNetworkFactory.maybeSendNetworkManagementCallback(listener, name, null);
             return true;
         }
 
-        void stop() {
+        private void stop() {
             // Invalidate all previous start requests
             if (mIpClient != null) {
                 mIpClient.shutdown();
                 mIpClientCallback.awaitIpClientShutdown();
                 mIpClient = null;
             }
+            // Send an abort callback if an updateInterface request was in progress.
+            maybeSendNetworkManagementCallbackForAbort();
             mIpClientCallback = null;
 
             if (mNetworkAgent != null) {
@@ -720,6 +674,26 @@ public class EthernetNetworkFactory extends NetworkFactory {
                 mNetworkAgent = null;
             }
             mLinkProperties.clear();
+        }
+
+        private void registerNetworkOffer() {
+            // If mNetworkOfferCallback is already set, it should be reused to update the existing
+            // offer.
+            if (mNetworkOfferCallback == null) {
+                mNetworkOfferCallback = new EthernetNetworkOfferCallback();
+            }
+            mNetworkProvider.registerNetworkOffer(getNetworkScore(),
+                    new NetworkCapabilities(mCapabilities), cmd -> mHandler.post(cmd),
+                    mNetworkOfferCallback);
+        }
+
+        private void unregisterNetworkOfferAndStop() {
+            mNetworkProvider.unregisterNetworkOffer(mNetworkOfferCallback);
+            // Setting mNetworkOfferCallback to null allows the callback object to be identified
+            // as stale.
+            mNetworkOfferCallback = null;
+            stop();
+            mRequestIds.clear();
         }
 
         private static void provisionIpClient(@NonNull final IpClientManager ipClient,
@@ -761,7 +735,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
         @Override
         public String toString() {
             return getClass().getSimpleName() + "{ "
-                    + "refCount: " + refCount + ", "
                     + "iface: " + name + ", "
                     + "up: " + mLinkUp + ", "
                     + "hwAddress: " + mHwAddress + ", "
@@ -774,7 +747,6 @@ public class EthernetNetworkFactory extends NetworkFactory {
     }
 
     void dump(FileDescriptor fd, IndentingPrintWriter pw, String[] args) {
-        super.dump(fd, pw, args);
         pw.println(getClass().getSimpleName());
         pw.println("Tracking interfaces:");
         pw.increaseIndent();
