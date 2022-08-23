@@ -159,7 +159,7 @@ import static com.android.testutils.ConcurrentUtils.durationOf;
 import static com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
 import static com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
-import static com.android.testutils.ExceptionUtils.ignoreExceptions;
+import static com.android.testutils.FunctionalUtils.ignoreExceptions;
 import static com.android.testutils.HandlerUtils.waitForIdleSerialExecutor;
 import static com.android.testutils.MiscAsserts.assertContainsAll;
 import static com.android.testutils.MiscAsserts.assertContainsExactly;
@@ -242,6 +242,7 @@ import android.net.ConnectivitySettingsManager;
 import android.net.ConnectivityThread;
 import android.net.DataStallReportParcelable;
 import android.net.EthernetManager;
+import android.net.EthernetNetworkSpecifier;
 import android.net.IConnectivityDiagnosticsCallback;
 import android.net.IDnsResolver;
 import android.net.INetd;
@@ -301,7 +302,6 @@ import android.net.netd.aidl.NativeUidRangeConfig;
 import android.net.networkstack.NetworkStackClientBase;
 import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
-import android.net.shared.NetworkMonitorUtils;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.MultinetworkPolicyTracker;
 import android.net.wifi.WifiInfo;
@@ -357,6 +357,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.LocationPermissionChecker;
+import com.android.net.module.util.NetworkMonitorUtils;
 import com.android.networkstack.apishim.NetworkAgentConfigShimImpl;
 import com.android.networkstack.apishim.api29.ConstantsShim;
 import com.android.server.ConnectivityService.ConnectivityDiagnosticsCallbackInfo;
@@ -377,7 +378,9 @@ import com.android.server.connectivity.VpnProfileStore;
 import com.android.server.net.NetworkPinner;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
-import com.android.testutils.ExceptionUtils;
+import com.android.testutils.FunctionalUtils.Function3;
+import com.android.testutils.FunctionalUtils.ThrowingConsumer;
+import com.android.testutils.FunctionalUtils.ThrowingRunnable;
 import com.android.testutils.HandlerUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.TestableNetworkCallback;
@@ -430,6 +433,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
@@ -742,7 +746,7 @@ public class ConnectivityServiceTest {
         }
 
         private int checkMockedPermission(String permission, int pid, int uid,
-                Supplier<Integer> ifAbsent) {
+                Function3<String, Integer, Integer, Integer> ifAbsent /* perm, uid, pid -> int */) {
             final Integer granted = mMockedPermissions.get(permission + "," + pid + "," + uid);
             if (null != granted) {
                 return granted;
@@ -751,27 +755,27 @@ public class ConnectivityServiceTest {
             if (null != allGranted) {
                 return allGranted;
             }
-            return ifAbsent.get();
+            return ifAbsent.apply(permission, pid, uid);
         }
 
         @Override
         public int checkPermission(String permission, int pid, int uid) {
             return checkMockedPermission(permission, pid, uid,
-                    () -> super.checkPermission(permission, pid, uid));
+                    (perm, p, u) -> super.checkPermission(perm, p, u));
         }
 
         @Override
         public int checkCallingOrSelfPermission(String permission) {
             return checkMockedPermission(permission, Process.myPid(), Process.myUid(),
-                    () -> super.checkCallingOrSelfPermission(permission));
+                    (perm, p, u) -> super.checkCallingOrSelfPermission(perm));
         }
 
         @Override
         public void enforceCallingOrSelfPermission(String permission, String message) {
             final Integer granted = checkMockedPermission(permission,
                     Process.myPid(), Process.myUid(),
-                    () -> {
-                        super.enforceCallingOrSelfPermission(permission, message);
+                    (perm, p, u) -> {
+                        super.enforceCallingOrSelfPermission(perm, message);
                         // enforce will crash if the permission is not granted
                         return PERMISSION_GRANTED;
                     });
@@ -784,7 +788,7 @@ public class ConnectivityServiceTest {
         /**
          * Mock checks for the specified permission, and have them behave as per {@code granted}.
          *
-         * This will apply across the board no matter what the checked UID and PID are.
+         * This will apply to all calls no matter what the checked UID and PID are.
          *
          * <p>Passing null reverts to default behavior, which does a real permission check on the
          * test package.
@@ -926,9 +930,6 @@ public class ConnectivityServiceTest {
         private int mProbesSucceeded;
         private String mNmValidationRedirectUrl = null;
         private boolean mNmProvNotificationRequested = false;
-        private Runnable mCreatedCallback;
-        private Runnable mUnwantedCallback;
-        private Runnable mDisconnectedCallback;
 
         private final ConditionVariable mNetworkStatusReceived = new ConditionVariable();
         // Contains the redirectUrl from networkStatus(). Before reading, wait for
@@ -936,22 +937,34 @@ public class ConnectivityServiceTest {
         private String mRedirectUrl;
 
         TestNetworkAgentWrapper(int transport) throws Exception {
-            this(transport, new LinkProperties(), null /* ncTemplate */, null /* provider */);
+            this(transport, new LinkProperties(), null /* ncTemplate */, null /* provider */, null);
         }
 
         TestNetworkAgentWrapper(int transport, LinkProperties linkProperties)
                 throws Exception {
-            this(transport, linkProperties, null /* ncTemplate */, null /* provider */);
+            this(transport, linkProperties, null /* ncTemplate */, null /* provider */, null);
         }
 
         private TestNetworkAgentWrapper(int transport, LinkProperties linkProperties,
                 NetworkCapabilities ncTemplate) throws Exception {
-            this(transport, linkProperties, ncTemplate, null /* provider */);
+            this(transport, linkProperties, ncTemplate, null /* provider */, null);
         }
 
         private TestNetworkAgentWrapper(int transport, LinkProperties linkProperties,
                 NetworkCapabilities ncTemplate, NetworkProvider provider) throws Exception {
-            super(transport, linkProperties, ncTemplate, provider, mServiceContext);
+            this(transport, linkProperties, ncTemplate, provider /* provider */, null);
+        }
+
+        private TestNetworkAgentWrapper(int transport, NetworkAgentWrapper.Callbacks callbacks)
+                throws Exception {
+            this(transport, new LinkProperties(), null /* ncTemplate */, null /* provider */,
+                    callbacks);
+        }
+
+        private TestNetworkAgentWrapper(int transport, LinkProperties linkProperties,
+                NetworkCapabilities ncTemplate, NetworkProvider provider,
+                NetworkAgentWrapper.Callbacks callbacks) throws Exception {
+            super(transport, linkProperties, ncTemplate, provider, callbacks, mServiceContext);
 
             // Waits for the NetworkAgent to be registered, which includes the creation of the
             // NetworkMonitor.
@@ -972,23 +985,6 @@ public class ConnectivityServiceTest {
                 mNetworkStatusReceived.open();
             }
 
-            @Override
-            public void onNetworkCreated() {
-                super.onNetworkCreated();
-                if (mCreatedCallback != null) mCreatedCallback.run();
-            }
-
-            @Override
-            public void onNetworkUnwanted() {
-                super.onNetworkUnwanted();
-                if (mUnwantedCallback != null) mUnwantedCallback.run();
-            }
-
-            @Override
-            public void onNetworkDestroyed() {
-                super.onNetworkDestroyed();
-                if (mDisconnectedCallback != null) mDisconnectedCallback.run();
-            }
         }
 
         @Override
@@ -1217,18 +1213,6 @@ public class ConnectivityServiceTest {
             p.detectionMethod = DATA_STALL_DETECTION_METHOD;
             p.timestampMillis = DATA_STALL_TIMESTAMP;
             mNmCallbacks.notifyDataStallSuspected(p);
-        }
-
-        public void setCreatedCallback(Runnable r) {
-            mCreatedCallback = r;
-        }
-
-        public void setUnwantedCallback(Runnable r) {
-            mUnwantedCallback = r;
-        }
-
-        public void setDisconnectedCallback(Runnable r) {
-            mDisconnectedCallback = r;
         }
     }
 
@@ -1736,11 +1720,7 @@ public class ConnectivityServiceTest {
         });
     }
 
-    private interface ExceptionalRunnable {
-        void run() throws Exception;
-    }
-
-    private void withPermission(String permission, ExceptionalRunnable r) throws Exception {
+    private void withPermission(String permission, ThrowingRunnable r) throws Exception {
         try {
             mServiceContext.setPermission(permission, PERMISSION_GRANTED);
             r.run();
@@ -1749,7 +1729,7 @@ public class ConnectivityServiceTest {
         }
     }
 
-    private void withPermission(String permission, int pid, int uid, ExceptionalRunnable r)
+    private void withPermission(String permission, int pid, int uid, ThrowingRunnable r)
             throws Exception {
         try {
             mServiceContext.setPermission(permission, pid, uid, PERMISSION_GRANTED);
@@ -1858,6 +1838,7 @@ public class ConnectivityServiceTest {
         // getSystemService() correctly.
         mCm = new WrappedConnectivityManager(InstrumentationRegistry.getContext(), mService);
         mService.systemReadyInternal();
+        verify(mMockDnsResolver).registerUnsolicitedEventListener(any());
         mVpnManagerService = makeVpnManagerService();
         mVpnManagerService.systemReady();
         mockVpn(Process.myUid());
@@ -2065,7 +2046,7 @@ public class ConnectivityServiceTest {
         }
 
         @Override
-        public BpfNetMaps getBpfNetMaps(INetd netd) {
+        public BpfNetMaps getBpfNetMaps(Context context, INetd netd) {
             return mBpfNetMaps;
         }
 
@@ -2608,7 +2589,7 @@ public class ConnectivityServiceTest {
         doTestValidatedCellularOutscoresUnvalidatedWiFi(false);
     }
 
-    public void doTestValidatedCellularOutscoresUnvalidatedWiFi(
+    private void doTestValidatedCellularOutscoresUnvalidatedWiFi(
             final boolean cellRadioTimesharingCapable) throws Exception {
         mService.mCellularRadioTimesharingCapable = cellRadioTimesharingCapable;
         // Test bringing up unvalidated WiFi
@@ -2656,7 +2637,7 @@ public class ConnectivityServiceTest {
         doTestUnvalidatedWifiOutscoresUnvalidatedCellular(false);
     }
 
-    public void doTestUnvalidatedWifiOutscoresUnvalidatedCellular(
+    private void doTestUnvalidatedWifiOutscoresUnvalidatedCellular(
             final boolean cellRadioTimesharingCapable) throws Exception {
         mService.mCellularRadioTimesharingCapable = cellRadioTimesharingCapable;
         // Test bringing up unvalidated cellular.
@@ -2695,7 +2676,7 @@ public class ConnectivityServiceTest {
         doTestUnlingeringDoesNotValidate(false);
     }
 
-    public void doTestUnlingeringDoesNotValidate(
+    private void doTestUnlingeringDoesNotValidate(
             final boolean cellRadioTimesharingCapable) throws Exception {
         mService.mCellularRadioTimesharingCapable = cellRadioTimesharingCapable;
         // Test bringing up unvalidated WiFi.
@@ -2744,7 +2725,7 @@ public class ConnectivityServiceTest {
         doTestRequestMigrationToSameTransport(TRANSPORT_ETHERNET, true);
     }
 
-    public void doTestRequestMigrationToSameTransport(final int transport,
+    private void doTestRequestMigrationToSameTransport(final int transport,
             final boolean expectLingering) throws Exception {
         // To speed up tests the linger delay is very short by default in tests but this
         // test needs to make sure the delay is not incurred so a longer value is safer (it
@@ -2849,7 +2830,7 @@ public class ConnectivityServiceTest {
         doTestCellularOutscoresWeakWifi(false);
     }
 
-    public void doTestCellularOutscoresWeakWifi(
+    private void doTestCellularOutscoresWeakWifi(
             final boolean cellRadioTimesharingCapable) throws Exception {
         mService.mCellularRadioTimesharingCapable = cellRadioTimesharingCapable;
         // Test bringing up validated cellular.
@@ -2888,7 +2869,7 @@ public class ConnectivityServiceTest {
         doTestReapingNetwork(false);
     }
 
-    public void doTestReapingNetwork(
+    private void doTestReapingNetwork(
             final boolean cellRadioTimesharingCapable) throws Exception {
         mService.mCellularRadioTimesharingCapable = cellRadioTimesharingCapable;
         // Test bringing up WiFi without NET_CAPABILITY_INTERNET.
@@ -2930,7 +2911,7 @@ public class ConnectivityServiceTest {
         doTestCellularFallback(false);
     }
 
-    public void doTestCellularFallback(
+    private void doTestCellularFallback(
             final boolean cellRadioTimesharingCapable) throws Exception {
         mService.mCellularRadioTimesharingCapable = cellRadioTimesharingCapable;
         // Test bringing up validated cellular.
@@ -2981,7 +2962,7 @@ public class ConnectivityServiceTest {
         doTestWiFiFallback(false);
     }
 
-    public void doTestWiFiFallback(
+    private void doTestWiFiFallback(
             final boolean cellRadioTimesharingCapable) throws Exception {
         mService.mCellularRadioTimesharingCapable = cellRadioTimesharingCapable;
         // Test bringing up unvalidated WiFi.
@@ -3010,8 +2991,7 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testRequiresValidation() {
-        assertTrue(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(null),
+        assertTrue(NetworkMonitorUtils.isValidationRequired(false /* isVpnValidationRequired */,
                 mCm.getDefaultRequest().networkCapabilities));
     }
 
@@ -3569,37 +3549,35 @@ public class ConnectivityServiceTest {
         final NetworkRequest request = new NetworkRequest.Builder()
                 .addTransportType(TRANSPORT_WIFI).build();
         final TestNetworkCallback callback = new TestNetworkCallback();
-        final AtomicReference<Network> wifiNetwork = new AtomicReference<>();
-        mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
 
         // Expectations for state when various callbacks fire. These expectations run on the handler
         // thread and not on the test thread because they need to prevent the handler thread from
         // advancing while they examine state.
 
         // 1. When onCreated fires, netd has been told to create the network.
-        mWiFiNetworkAgent.setCreatedCallback(() -> {
+        final Consumer<NetworkAgent> onNetworkCreated = (agent) -> {
             eventOrder.offer("onNetworkCreated");
-            wifiNetwork.set(mWiFiNetworkAgent.getNetwork());
-            assertNotNull(wifiNetwork.get());
             try {
                 verify(mMockNetd).networkCreate(nativeNetworkConfigPhysical(
-                        wifiNetwork.get().getNetId(), INetd.PERMISSION_NONE));
+                        agent.getNetwork().getNetId(), INetd.PERMISSION_NONE));
             } catch (RemoteException impossible) {
                 fail();
             }
-        });
+        };
 
         // 2. onNetworkUnwanted isn't precisely ordered with respect to any particular events. Just
         //    check that it is fired at some point after disconnect.
-        mWiFiNetworkAgent.setUnwantedCallback(() -> eventOrder.offer("onNetworkUnwanted"));
+        final Consumer<NetworkAgent> onNetworkUnwanted = (agent) -> {
+            eventOrder.offer("onNetworkUnwanted");
+        };
 
         // 3. While the teardown timer is running, connectivity APIs report the network is gone, but
         //    netd has not yet been told to destroy it.
-        final Runnable duringTeardown = () -> {
+        final Consumer<Network> duringTeardown = (network) -> {
             eventOrder.offer("timePasses");
-            assertNull(mCm.getLinkProperties(wifiNetwork.get()));
+            assertNull(mCm.getLinkProperties(network));
             try {
-                verify(mMockNetd, never()).networkDestroy(wifiNetwork.get().getNetId());
+                verify(mMockNetd, never()).networkDestroy(network.getNetId());
             } catch (RemoteException impossible) {
                 fail();
             }
@@ -3607,15 +3585,20 @@ public class ConnectivityServiceTest {
 
         // 4. After onNetworkDisconnected is called, connectivity APIs report the network is gone,
         // and netd has been told to destroy it.
-        mWiFiNetworkAgent.setDisconnectedCallback(() -> {
+        final Consumer<NetworkAgent> onNetworkDisconnected = (agent) -> {
             eventOrder.offer("onNetworkDisconnected");
-            assertNull(mCm.getLinkProperties(wifiNetwork.get()));
+            assertNull(mCm.getLinkProperties(agent.getNetwork()));
             try {
-                verify(mMockNetd).networkDestroy(wifiNetwork.get().getNetId());
+                verify(mMockNetd).networkDestroy(agent.getNetwork().getNetId());
             } catch (RemoteException impossible) {
                 fail();
             }
-        });
+        };
+
+        final NetworkAgentWrapper.Callbacks callbacks = new NetworkAgentWrapper.Callbacks(
+                onNetworkCreated, onNetworkUnwanted, onNetworkDisconnected);
+
+        mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI, callbacks);
 
         // Connect a network, and file a request for it after it has come up, to ensure the nascent
         // timer is cleared and the test does not have to wait for it. Filing the request after the
@@ -3637,7 +3620,7 @@ public class ConnectivityServiceTest {
         // down the network and started the teardown timer, and short enough that the lambda is
         // scheduled to run before the teardown timer.
         final Handler h = new Handler(mCsHandlerThread.getLooper());
-        h.postDelayed(duringTeardown, 150);
+        h.postDelayed(() -> duringTeardown.accept(mWiFiNetworkAgent.getNetwork()), 150);
 
         // Disconnect the network and check that events happened in the right order.
         mCm.unregisterNetworkCallback(callback);
@@ -6215,7 +6198,7 @@ public class ConnectivityServiceTest {
     }
 
     // Helper method to prepare the executor and run test
-    private void runTestWithSerialExecutors(ExceptionUtils.ThrowingConsumer<Executor> functor)
+    private void runTestWithSerialExecutors(ThrowingConsumer<Executor> functor)
             throws Exception {
         final ExecutorService executorSingleThread = Executors.newSingleThreadExecutor();
         final Executor executorInline = (Runnable r) -> r.run();
@@ -7260,9 +7243,6 @@ public class ConnectivityServiceTest {
     public void testBasicDnsConfigurationPushed() throws Exception {
         setPrivateDnsSettings(PRIVATE_DNS_MODE_OPPORTUNISTIC, "ignored.example.com");
 
-        // Clear any interactions that occur as a result of CS starting up.
-        reset(mMockDnsResolver);
-
         mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
         waitForIdle();
         verify(mMockDnsResolver, never()).setResolverConfiguration(any());
@@ -7335,9 +7315,6 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testDnsConfigurationTransTypesPushed() throws Exception {
-        // Clear any interactions that occur as a result of CS starting up.
-        reset(mMockDnsResolver);
-
         final NetworkRequest request = new NetworkRequest.Builder()
                 .clearCapabilities().addCapability(NET_CAPABILITY_INTERNET)
                 .build();
@@ -7396,9 +7373,6 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testPrivateDnsSettingsChange() throws Exception {
-        // Clear any interactions that occur as a result of CS starting up.
-        reset(mMockDnsResolver);
-
         // The default on Android is opportunistic mode ("Automatic").
         setPrivateDnsSettings(PRIVATE_DNS_MODE_OPPORTUNISTIC, "ignored.example.com");
 
@@ -8007,7 +7981,8 @@ public class ConnectivityServiceTest {
         // VPN networks do not satisfy the default request and are automatically validated
         // by NetworkMonitor
         assertFalse(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig()),
+                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
+                        .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
         mMockVpn.getAgent().setNetworkValid(false /* isStrictMode */);
 
@@ -8158,7 +8133,8 @@ public class ConnectivityServiceTest {
         assertTrue(nc.hasCapability(NET_CAPABILITY_INTERNET));
 
         assertFalse(NetworkMonitorUtils.isValidationRequired(
-                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig()),
+                NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
+                        .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
         assertTrue(NetworkMonitorUtils.isPrivateDnsValidationRequired(
                 mMockVpn.getAgent().getNetworkCapabilities()));
@@ -8559,8 +8535,7 @@ public class ConnectivityServiceTest {
 
         // Enable always-on VPN lockdown. The main user loses network access because no VPN is up.
         final ArrayList<String> allowList = new ArrayList<>();
-        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, ALWAYS_ON_PACKAGE,
-                true /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         waitForIdle();
         assertNull(mCm.getActiveNetworkForUid(uid));
         // This is arguably overspecified: a UID that is not running doesn't have an active network.
@@ -8592,8 +8567,7 @@ public class ConnectivityServiceTest {
         assertNull(mCm.getActiveNetworkForUid(uid));
         assertNotNull(mCm.getActiveNetworkForUid(restrictedUid));
 
-        mVpnManagerService.setAlwaysOnVpnPackage(PRIMARY_USER, null, false /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         waitForIdle();
     }
 
@@ -9051,10 +9025,8 @@ public class ConnectivityServiceTest {
                 new Handler(ConnectivityThread.getInstanceLooper()));
 
         final int uid = Process.myUid();
-        final int userId = UserHandle.getUserId(uid);
         final ArrayList<String> allowList = new ArrayList<>();
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         waitForIdle();
 
         final Set<Integer> excludedUids = new ArraySet<Integer>();
@@ -9084,7 +9056,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_WIFI, DetailedState.BLOCKED);
 
         // Disable lockdown, expect to see the network unblocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         callback.expectBlockedStatusCallback(false, mWiFiNetworkAgent);
         defaultCallback.expectBlockedStatusCallback(false, mWiFiNetworkAgent);
         vpnUidCallback.assertNoCallback();
@@ -9099,8 +9071,7 @@ public class ConnectivityServiceTest {
 
         // Add our UID to the allowlist and re-enable lockdown, expect network is not blocked.
         allowList.add(TEST_PACKAGE_NAME);
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         callback.assertNoCallback();
         defaultCallback.assertNoCallback();
         vpnUidCallback.assertNoCallback();
@@ -9138,12 +9109,11 @@ public class ConnectivityServiceTest {
 
         // Disable lockdown, remove our UID from the allowlist, and re-enable lockdown.
         // Everything should now be blocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         waitForIdle();
         expectNetworkRejectNonSecureVpn(inOrder, false, uidRangeParcelsAlsoExcludingUs);
         allowList.clear();
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         waitForIdle();
         expectNetworkRejectNonSecureVpn(inOrder, true, uidRangeParcels);
         defaultCallback.expectBlockedStatusCallback(true, mWiFiNetworkAgent);
@@ -9158,7 +9128,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_WIFI, DetailedState.BLOCKED);
 
         // Disable lockdown. Everything is unblocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         defaultCallback.expectBlockedStatusCallback(false, mWiFiNetworkAgent);
         assertBlockedCallbackInAnyOrder(callback, false, mWiFiNetworkAgent, mCellNetworkAgent);
         vpnUidCallback.assertNoCallback();
@@ -9172,8 +9142,7 @@ public class ConnectivityServiceTest {
 
         // Enable and disable an always-on VPN package without lockdown. Expect no changes.
         reset(mMockNetd);
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, false /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, false /* lockdown */, allowList);
         inOrder.verify(mMockNetd, never()).networkRejectNonSecureVpn(anyBoolean(), any());
         callback.assertNoCallback();
         defaultCallback.assertNoCallback();
@@ -9186,7 +9155,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_MOBILE, DetailedState.DISCONNECTED);
         assertNetworkInfo(TYPE_WIFI, DetailedState.CONNECTED);
 
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, null, false /* lockdown */, allowList);
+        mMockVpn.setAlwaysOnPackage(null, false /* lockdown */, allowList);
         inOrder.verify(mMockNetd, never()).networkRejectNonSecureVpn(anyBoolean(), any());
         callback.assertNoCallback();
         defaultCallback.assertNoCallback();
@@ -9200,8 +9169,7 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_WIFI, DetailedState.CONNECTED);
 
         // Enable lockdown and connect a VPN. The VPN is not blocked.
-        mVpnManagerService.setAlwaysOnVpnPackage(userId, ALWAYS_ON_PACKAGE, true /* lockdown */,
-                allowList);
+        mMockVpn.setAlwaysOnPackage(ALWAYS_ON_PACKAGE, true /* lockdown */, allowList);
         defaultCallback.expectBlockedStatusCallback(true, mWiFiNetworkAgent);
         assertBlockedCallbackInAnyOrder(callback, true, mWiFiNetworkAgent, mCellNetworkAgent);
         vpnUidCallback.assertNoCallback();
@@ -9596,24 +9564,23 @@ public class ConnectivityServiceTest {
         }
     }
 
-    private void doTestReplaceFirewallChain(final int chain, final String chainName,
-            final boolean allowList) {
+    private void doTestReplaceFirewallChain(final int chain) {
         final int[] uids = new int[] {1001, 1002};
         mCm.replaceFirewallChain(chain, uids);
-        verify(mBpfNetMaps).replaceUidChain(chainName, allowList, uids);
+        verify(mBpfNetMaps).replaceUidChain(chain, uids);
         reset(mBpfNetMaps);
     }
 
     @Test @IgnoreUpTo(SC_V2)
     public void testReplaceFirewallChain() {
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_DOZABLE, "fw_dozable", true);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_STANDBY, "fw_standby", false);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_POWERSAVE, "fw_powersave",  true);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_RESTRICTED, "fw_restricted", true);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_LOW_POWER_STANDBY, "fw_low_power_standby", true);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_1, "fw_oem_deny_1", false);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_2, "fw_oem_deny_2", false);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_3, "fw_oem_deny_3", false);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_DOZABLE);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_STANDBY);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_POWERSAVE);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_RESTRICTED);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_LOW_POWER_STANDBY);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_1);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_2);
+        doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_3);
     }
 
     @Test @IgnoreUpTo(SC_V2)
@@ -9624,8 +9591,6 @@ public class ConnectivityServiceTest {
                 () -> mCm.setUidFirewallRule(-1 /* chain */, uid, FIREWALL_RULE_ALLOW));
         assertThrows(expected,
                 () -> mCm.setUidFirewallRule(100 /* chain */, uid, FIREWALL_RULE_ALLOW));
-        assertThrows(expected, () -> mCm.replaceFirewallChain(-1 /* chain */, new int[]{uid}));
-        assertThrows(expected, () -> mCm.replaceFirewallChain(100 /* chain */, new int[]{uid}));
     }
 
     @Test @IgnoreUpTo(SC_V2)
@@ -9849,8 +9814,6 @@ public class ConnectivityServiceTest {
         cellLp.addRoute(ipv6Default);
         cellLp.addRoute(ipv6Subnet);
         mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR, cellLp);
-        reset(mMockDnsResolver);
-        reset(mMockNetd);
         reset(mClatCoordinator);
 
         // Connect with ipv6 link properties. Expect prefix discovery to be started.
@@ -10634,19 +10597,6 @@ public class ConnectivityServiceTest {
         // Back to routing all IPv6 traffic should have filtering rules
         verify(mBpfNetMaps).addUidInterfaceRules(eq("tun1"), uidCaptor.capture());
         assertContainsExactly(uidCaptor.getValue(), APP1_UID, APP2_UID);
-    }
-
-    @Test
-    public void testStartVpnProfileFromDiffPackage() throws Exception {
-        final String notMyVpnPkg = "com.not.my.vpn";
-        assertThrows(
-                SecurityException.class, () -> mVpnManagerService.startVpnProfile(notMyVpnPkg));
-    }
-
-    @Test
-    public void testStopVpnProfileFromDiffPackage() throws Exception {
-        final String notMyVpnPkg = "com.not.my.vpn";
-        assertThrows(SecurityException.class, () -> mVpnManagerService.stopVpnProfile(notMyVpnPkg));
     }
 
     @Test
@@ -14380,7 +14330,7 @@ public class ConnectivityServiceTest {
      * Make sure per profile network preferences behave as expected for a given
      * profile network preference.
      */
-    public void testPreferenceForUserNetworkUpDownForGivenPreference(
+    private void doTestPreferenceForUserNetworkUpDownForGivenPreference(
             ProfileNetworkPreference profileNetworkPreference,
             boolean connectWorkProfileAgentAhead,
             UserHandle testHandle,
@@ -14624,7 +14574,7 @@ public class ConnectivityServiceTest {
                 new ProfileNetworkPreference.Builder();
         profileNetworkPreferenceBuilder.setPreference(PROFILE_NETWORK_PREFERENCE_ENTERPRISE);
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), false,
                 testHandle, mProfileDefaultNetworkCallback, null);
     }
@@ -14643,7 +14593,7 @@ public class ConnectivityServiceTest {
                 PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK);
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), false,
                 testHandle, mProfileDefaultNetworkCallback, null);
     }
@@ -14664,7 +14614,7 @@ public class ConnectivityServiceTest {
                 PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK);
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), true, testHandle,
                 mProfileDefaultNetworkCallback, null);
     }
@@ -14683,7 +14633,7 @@ public class ConnectivityServiceTest {
         profileNetworkPreferenceBuilder.setIncludedUids(
                 new int[]{testHandle.getUid(TEST_WORK_PROFILE_APP_UID)});
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), false, testHandle,
                 mProfileDefaultNetworkCallback, null);
     }
@@ -14702,7 +14652,7 @@ public class ConnectivityServiceTest {
         profileNetworkPreferenceBuilder.setIncludedUids(
                 new int[]{testHandle.getUid(TEST_WORK_PROFILE_APP_UID_2)});
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), false,
                 testHandle, mProfileDefaultNetworkCallbackAsAppUid2, null);
     }
@@ -14721,7 +14671,7 @@ public class ConnectivityServiceTest {
         profileNetworkPreferenceBuilder.setExcludedUids(
                 new int[]{testHandle.getUid(TEST_WORK_PROFILE_APP_UID_2)});
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), false,
                 testHandle, mProfileDefaultNetworkCallback,
                 mProfileDefaultNetworkCallbackAsAppUid2);
@@ -14817,7 +14767,7 @@ public class ConnectivityServiceTest {
         profileNetworkPreferenceBuilder.setPreference(PROFILE_NETWORK_PREFERENCE_ENTERPRISE);
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), true,
                 testHandle, mProfileDefaultNetworkCallback,
                 null);
@@ -14837,7 +14787,7 @@ public class ConnectivityServiceTest {
                 PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK);
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), true,
                 testHandle, mProfileDefaultNetworkCallback,
                 null);
@@ -14858,7 +14808,7 @@ public class ConnectivityServiceTest {
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(
                 NET_ENTERPRISE_ID_2);
         registerDefaultNetworkCallbacks();
-        testPreferenceForUserNetworkUpDownForGivenPreference(
+        doTestPreferenceForUserNetworkUpDownForGivenPreference(
                 profileNetworkPreferenceBuilder.build(), true,
                 testHandle, mProfileDefaultNetworkCallback, null);
     }
@@ -15753,6 +15703,45 @@ public class ConnectivityServiceTest {
         mCm.unregisterNetworkCallback(cb);
     }
 
+    @Test
+    public void testSanitizedCapabilitiesFromAgentDoesNotMutateArgument()
+            throws Exception {
+        // This NetworkCapabilities builds an usual object to maximize the chance that this requires
+        // sanitization, so we have a high chance to detect any changes to the original.
+        final NetworkCapabilities unsanitized = new NetworkCapabilities.Builder()
+                .withoutDefaultCapabilities()
+                .addTransportType(TRANSPORT_WIFI)
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .setOwnerUid(12345)
+                .setAdministratorUids(new int[] {12345, 23456, 34567})
+                .setLinkUpstreamBandwidthKbps(20)
+                .setLinkDownstreamBandwidthKbps(10)
+                .setNetworkSpecifier(new EthernetNetworkSpecifier("foobar"))
+                .setTransportInfo(new WifiInfo.Builder().setBssid("AA:AA:AA:AA:AA:AA").build())
+                .setSignalStrength(-75)
+                .setSsid("SSID1")
+                .setRequestorUid(98765)
+                .setRequestorPackageName("TestPackage")
+                .setSubscriptionIds(Collections.singleton(Process.myUid()))
+                .setUids(UidRange.toIntRanges(uidRangesForUids(
+                        UserHandle.getUid(PRIMARY_USER, 10100),
+                        UserHandle.getUid(SECONDARY_USER, 10101),
+                        UserHandle.getUid(TERTIARY_USER, 10043))))
+                .setAllowedUids(Set.of(45678, 56789, 65432))
+                .setUnderlyingNetworks(List.of(new Network(99999)))
+                .build();
+        final NetworkCapabilities copyOfUnsanitized = new NetworkCapabilities(unsanitized);
+        final NetworkInfo info = new NetworkInfo(TYPE_MOBILE, TelephonyManager.NETWORK_TYPE_LTE,
+                ConnectivityManager.getNetworkTypeName(TYPE_MOBILE),
+                TelephonyManager.getNetworkTypeName(TelephonyManager.NETWORK_TYPE_LTE));
+        final NetworkAgentInfo agent = fakeNai(unsanitized, info);
+        agent.setDeclaredCapabilities(unsanitized);
+        final NetworkCapabilities sanitized = agent.getDeclaredCapabilitiesSanitized(
+                null /* carrierPrivilegeAuthenticator */);
+        assertEquals(copyOfUnsanitized, unsanitized);
+        assertNotEquals(sanitized, unsanitized);
+    }
+
     /**
      * Validate request counts are counted accurately on setProfileNetworkPreference on set/replace.
      */
@@ -15761,7 +15750,7 @@ public class ConnectivityServiceTest {
         final UserHandle testHandle = setupEnterpriseNetwork();
         final TestOnCompleteListener listener = new TestOnCompleteListener();
         // Leave one request available so the profile preference can be set.
-        testRequestCountLimits(1 /* countToLeaveAvailable */, () -> {
+        withRequestCountersAcquired(1 /* countToLeaveAvailable */, () -> {
             withPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
                     Process.myPid(), Process.myUid(), () -> {
                         // Set initially to test the limit prior to having existing requests.
@@ -15810,7 +15799,7 @@ public class ConnectivityServiceTest {
         @OemNetworkPreferences.OemNetworkPreference final int networkPref =
                 OEM_NETWORK_PREFERENCE_OEM_PRIVATE_ONLY;
         // Leave one request available so the OEM preference can be set.
-        testRequestCountLimits(1 /* countToLeaveAvailable */, () ->
+        withRequestCountersAcquired(1 /* countToLeaveAvailable */, () ->
                 withPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, () -> {
                     // Set initially to test the limit prior to having existing requests.
                     final TestOemListenerCallback listener = new TestOemListenerCallback();
@@ -15825,8 +15814,8 @@ public class ConnectivityServiceTest {
                 }));
     }
 
-    private void testRequestCountLimits(final int countToLeaveAvailable,
-            @NonNull final ExceptionalRunnable r) throws Exception {
+    private void withRequestCountersAcquired(final int countToLeaveAvailable,
+            @NonNull final ThrowingRunnable r) throws Exception {
         final ArraySet<TestNetworkCallback> callbacks = new ArraySet<>();
         try {
             final int requestCount = mService.mSystemNetworkRequestCounter
@@ -16093,7 +16082,7 @@ public class ConnectivityServiceTest {
         ConnectivitySettingsManager.setMobileDataPreferredUids(mServiceContext,
                 Set.of(PRIMARY_USER_HANDLE.getUid(TEST_PACKAGE_UID)));
         // Leave one request available so MDO preference set up above can be set.
-        testRequestCountLimits(1 /* countToLeaveAvailable */, () ->
+        withRequestCountersAcquired(1 /* countToLeaveAvailable */, () ->
                 withPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
                         Process.myPid(), Process.myUid(), () -> {
                             // Set initially to test the limit prior to having existing requests.

@@ -49,7 +49,6 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
-import android.net.util.SharedLog;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -60,6 +59,7 @@ import androidx.test.runner.AndroidJUnit4;
 
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
+import com.android.net.module.util.SharedLog;
 import com.android.networkstack.tethering.TestConnectivityManager.NetworkRequestInfo;
 import com.android.networkstack.tethering.TestConnectivityManager.TestNetworkAgent;
 
@@ -446,6 +446,36 @@ public class UpstreamNetworkMonitorTest {
         mUNM.setUpstreamConfig(true /* autoUpstream */, false /* dunRequired */);
         assertEquals(0, mCM.mRequested.size());
         assertFalse(isDunRequested());
+    }
+
+    @Test
+    public void testGetCurrentPreferredUpstream_TestNetworkPreferred() throws Exception {
+        mUNM.startTrackDefaultNetwork(mEntitleMgr);
+        mUNM.startObserveAllNetworks();
+        mUNM.setUpstreamConfig(true /* autoUpstream */, false /* dunRequired */);
+        mUNM.setTryCell(true);
+        mUNM.setPreferTestNetworks(true);
+
+        // [1] Mobile connects, DUN not required -> mobile selected.
+        final TestNetworkAgent cellAgent = new TestNetworkAgent(mCM, CELL_CAPABILITIES);
+        cellAgent.fakeConnect();
+        mCM.makeDefaultNetwork(cellAgent);
+        mLooper.dispatchAll();
+        assertEquals(cellAgent.networkId, mUNM.getCurrentPreferredUpstream().network);
+        assertEquals(0, mCM.mRequested.size());
+
+        // [2] Test network connects -> test network selected.
+        final TestNetworkAgent testAgent =
+                TestNetworkAgent.buildTestNetworkAgentForTestNetwork(mCM);
+        testAgent.fakeConnect();
+        mLooper.dispatchAll();
+        assertEquals(testAgent.networkId, mUNM.getCurrentPreferredUpstream().network);
+        assertEquals(0, mCM.mRequested.size());
+
+        // [3] Disable test networks preferred -> mobile selected.
+        mUNM.setPreferTestNetworks(false);
+        assertEquals(cellAgent.networkId, mUNM.getCurrentPreferredUpstream().network);
+        assertEquals(0, mCM.mRequested.size());
     }
 
     @Test

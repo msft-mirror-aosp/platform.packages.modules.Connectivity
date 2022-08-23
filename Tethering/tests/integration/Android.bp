@@ -32,6 +32,7 @@ java_defaults {
         "net-tests-utils",
         "net-utils-device-common-bpf",
         "testables",
+        "connectivity-net-module-utils-bpf",
     ],
     libs: [
         "android.test.runner",
@@ -78,7 +79,6 @@ android_test {
     defaults: ["TetheringIntegrationTestsDefaults"],
     test_suites: [
         "device-tests",
-        "mts-tethering",
     ],
     compile_multilib: "both",
     jarjar_rules: ":NetworkStackJarJarRules",
