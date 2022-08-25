@@ -84,6 +84,12 @@ public class BluetoothGattWrapperTest {
     }
 
     @Test
+    public void testHashCode_asExpected() {
+        assertThat(mBluetoothGattWrapper.hashCode())
+                .isEqualTo(BluetoothGattWrapper.wrap(mBluetoothGatt).hashCode());
+    }
+
+    @Test
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testGetServices_callsWrapped() {
         when(mBluetoothGatt.getServices()).thenReturn(null);
@@ -170,7 +176,7 @@ public class BluetoothGattWrapperTest {
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testDisconnect_callsWrapped() {
         doNothing().when(mBluetoothGatt).disconnect();
-        mBluetoothGatt.disconnect();
+        mBluetoothGattWrapper.disconnect();
         verify(mBluetoothGatt).disconnect();
     }
 
@@ -178,7 +184,7 @@ public class BluetoothGattWrapperTest {
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testClose_callsWrapped() {
         doNothing().when(mBluetoothGatt).close();
-        mBluetoothGatt.close();
+        mBluetoothGattWrapper.close();
         verify(mBluetoothGatt).close();
     }
 }

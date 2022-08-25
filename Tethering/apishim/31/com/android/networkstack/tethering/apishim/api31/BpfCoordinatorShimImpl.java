@@ -19,7 +19,6 @@ package com.android.networkstack.tethering.apishim.api31;
 import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED;
 
 import android.net.MacAddress;
-import android.net.util.SharedLog;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
@@ -31,6 +30,7 @@ import androidx.annotation.Nullable;
 
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.IBpfMap.ThrowingBiConsumer;
+import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
 import com.android.net.module.util.bpf.TetherStatsKey;
@@ -425,11 +425,11 @@ public class BpfCoordinatorShimImpl
     }
 
     @Override
-    public boolean attachProgram(String iface, boolean downstream) {
+    public boolean attachProgram(String iface, boolean downstream, boolean ipv4) {
         if (!isInitialized()) return false;
 
         try {
-            BpfUtils.attachProgram(iface, downstream);
+            BpfUtils.attachProgram(iface, downstream, ipv4);
         } catch (IOException e) {
             mLog.e("Could not attach program: " + e);
             return false;
@@ -438,11 +438,11 @@ public class BpfCoordinatorShimImpl
     }
 
     @Override
-    public boolean detachProgram(String iface) {
+    public boolean detachProgram(String iface, boolean ipv4) {
         if (!isInitialized()) return false;
 
         try {
-            BpfUtils.detachProgram(iface);
+            BpfUtils.detachProgram(iface, ipv4);
         } catch (IOException e) {
             mLog.e("Could not detach program: " + e);
             return false;
