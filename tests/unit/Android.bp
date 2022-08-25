@@ -3,6 +3,10 @@
 //########################################################################
 package {
     // See: http://go/android-license-faq
+    // A large-scale-change added 'default_applicable_licenses' to import
+    // all of the 'license_kinds' from "Android-Apache-2.0"
+    // to get the below license kinds:
+    //   SPDX-license-identifier-Apache-2.0
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -150,6 +154,5 @@ android_test {
     jni_libs: [
         "libandroid_net_connectivity_com_android_net_module_util_jni",
         "libservice-connectivity",
-        "libandroid_net_connectivity_com_android_net_module_util_jni",
     ],
 }

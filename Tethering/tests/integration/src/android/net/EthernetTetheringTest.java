@@ -16,8 +16,6 @@
 
 package android.net;
 
-import static android.Manifest.permission.ACCESS_NETWORK_STATE;
-import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.DUMP;
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
@@ -26,13 +24,14 @@ import static android.net.InetAddresses.parseNumericAddress;
 import static android.net.TetheringManager.CONNECTIVITY_SCOPE_GLOBAL;
 import static android.net.TetheringManager.CONNECTIVITY_SCOPE_LOCAL;
 import static android.net.TetheringManager.TETHERING_ETHERNET;
+import static android.net.TetheringTester.TestDnsPacket;
 import static android.net.TetheringTester.isExpectedIcmpv6Packet;
+import static android.net.TetheringTester.isExpectedUdpDnsPacket;
 import static android.net.TetheringTester.isExpectedUdpPacket;
 import static android.system.OsConstants.IPPROTO_IP;
 import static android.system.OsConstants.IPPROTO_IPV6;
 import static android.system.OsConstants.IPPROTO_UDP;
 
-import static com.android.net.module.util.BpfDump.BASE64_DELIMITER;
 import static com.android.net.module.util.ConnectivityUtils.isIPv6ULA;
 import static com.android.net.module.util.HexDump.dumpHexString;
 import static com.android.net.module.util.NetworkStackConstants.ETHER_TYPE_IPV4;
@@ -42,6 +41,7 @@ import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ECHO_REQU
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ROUTER_ADVERTISEMENT;
 import static com.android.testutils.DeviceInfoUtils.KVersion;
 import static com.android.testutils.TestNetworkTrackerKt.initTestNetwork;
+import static com.android.testutils.TestPermissionUtil.runAsShell;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -66,8 +66,6 @@ import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.VintfRuntimeInfo;
-import android.text.TextUtils;
-import android.util.Base64;
 import android.util.Log;
 import android.util.Pair;
 
@@ -77,6 +75,7 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.MediumTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.net.module.util.BpfDump;
 import com.android.net.module.util.Ipv6Utils;
 import com.android.net.module.util.PacketBuilder;
 import com.android.net.module.util.Struct;
@@ -84,7 +83,9 @@ import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
 import com.android.net.module.util.bpf.TetherStatsKey;
 import com.android.net.module.util.bpf.TetherStatsValue;
+import com.android.net.module.util.structs.Ipv4Header;
 import com.android.net.module.util.structs.Ipv6Header;
+import com.android.net.module.util.structs.UdpHeader;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DeviceInfoUtils;
@@ -107,7 +108,6 @@ import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
@@ -129,6 +129,10 @@ public class EthernetTetheringTest {
 
     private static final String TAG = EthernetTetheringTest.class.getSimpleName();
     private static final int TIMEOUT_MS = 5000;
+    // Used to check if any tethering interface is available. Choose 200ms to be request timeout
+    // because the average interface requested time on cuttlefish@acloud is around 10ms.
+    // See TetheredInterfaceRequester.getInterface, isInterfaceForTetheringAvailable.
+    private static final int AVAILABLE_TETHER_IFACE_REQUEST_TIMEOUT_MS = 200;
     private static final int TETHER_REACHABILITY_ATTEMPTS = 20;
     private static final int DUMP_POLLING_MAX_RETRY = 100;
     private static final int DUMP_POLLING_INTERVAL_MS = 50;
@@ -156,6 +160,8 @@ public class EthernetTetheringTest {
     private static final ByteBuffer TEST_REACHABILITY_PAYLOAD =
             ByteBuffer.wrap(new byte[] { (byte) 0x55, (byte) 0xaa });
 
+    private static final short DNS_PORT = 53;
+
     private static final String DUMPSYS_TETHERING_RAWMAP_ARG = "bpfRawMap";
     private static final String DUMPSYS_RAWMAP_ARG_STATS = "--stats";
     private static final String DUMPSYS_RAWMAP_ARG_UPSTREAM4 = "--upstream4";
@@ -164,6 +170,66 @@ public class EthernetTetheringTest {
     // version=6, traffic class=0x0, flowlabel=0x0;
     private static final int VERSION_TRAFFICCLASS_FLOWLABEL = 0x60000000;
     private static final short HOP_LIMIT = 0x40;
+
+    // TODO: use class DnsPacket to build DNS query and reply message once DnsPacket supports
+    // building packet for given arguments.
+    private static final ByteBuffer DNS_QUERY = ByteBuffer.wrap(new byte[] {
+            // scapy.DNS(
+            //   id=0xbeef,
+            //   qr=0,
+            //   qd=scapy.DNSQR(qname="hello.example.com"))
+            //
+            /* Header */
+            (byte) 0xbe, (byte) 0xef, /* Transaction ID: 0xbeef */
+            (byte) 0x01, (byte) 0x00, /* Flags: rd */
+            (byte) 0x00, (byte) 0x01, /* Questions: 1 */
+            (byte) 0x00, (byte) 0x00, /* Answer RRs: 0 */
+            (byte) 0x00, (byte) 0x00, /* Authority RRs: 0 */
+            (byte) 0x00, (byte) 0x00, /* Additional RRs: 0 */
+            /* Queries */
+            (byte) 0x05, (byte) 0x68, (byte) 0x65, (byte) 0x6c,
+            (byte) 0x6c, (byte) 0x6f, (byte) 0x07, (byte) 0x65,
+            (byte) 0x78, (byte) 0x61, (byte) 0x6d, (byte) 0x70,
+            (byte) 0x6c, (byte) 0x65, (byte) 0x03, (byte) 0x63,
+            (byte) 0x6f, (byte) 0x6d, (byte) 0x00, /* Name: hello.example.com */
+            (byte) 0x00, (byte) 0x01,              /* Type: A */
+            (byte) 0x00, (byte) 0x01               /* Class: IN */
+    });
+
+    private static final byte[] DNS_REPLY = new byte[] {
+            // scapy.DNS(
+            //   id=0,
+            //   qr=1,
+            //   qd=scapy.DNSQR(qname="hello.example.com"),
+            //   an=scapy.DNSRR(rrname="hello.example.com", rdata='1.2.3.4'))
+            //
+            /* Header */
+            (byte) 0x00, (byte) 0x00, /* Transaction ID: 0x0, must be updated by dns query id */
+            (byte) 0x81, (byte) 0x00, /* Flags: qr rd */
+            (byte) 0x00, (byte) 0x01, /* Questions: 1 */
+            (byte) 0x00, (byte) 0x01, /* Answer RRs: 1 */
+            (byte) 0x00, (byte) 0x00, /* Authority RRs: 0 */
+            (byte) 0x00, (byte) 0x00, /* Additional RRs: 0 */
+            /* Queries */
+            (byte) 0x05, (byte) 0x68, (byte) 0x65, (byte) 0x6c,
+            (byte) 0x6c, (byte) 0x6f, (byte) 0x07, (byte) 0x65,
+            (byte) 0x78, (byte) 0x61, (byte) 0x6d, (byte) 0x70,
+            (byte) 0x6c, (byte) 0x65, (byte) 0x03, (byte) 0x63,
+            (byte) 0x6f, (byte) 0x6d, (byte) 0x00,              /* Name: hello.example.com */
+            (byte) 0x00, (byte) 0x01,                           /* Type: A */
+            (byte) 0x00, (byte) 0x01,                           /* Class: IN */
+            /* Answers */
+            (byte) 0x05, (byte) 0x68, (byte) 0x65, (byte) 0x6c,
+            (byte) 0x6c, (byte) 0x6f, (byte) 0x07, (byte) 0x65,
+            (byte) 0x78, (byte) 0x61, (byte) 0x6d, (byte) 0x70,
+            (byte) 0x6c, (byte) 0x65, (byte) 0x03, (byte) 0x63,
+            (byte) 0x6f, (byte) 0x6d, (byte) 0x00,              /* Name: hello.example.com */
+            (byte) 0x00, (byte) 0x01,                           /* Type: A */
+            (byte) 0x00, (byte) 0x01,                           /* Class: IN */
+            (byte) 0x00, (byte) 0x00, (byte) 0x00, (byte) 0x00, /* Time to live: 0 */
+            (byte) 0x00, (byte) 0x04,                           /* Data length: 4 */
+            (byte) 0x01, (byte) 0x02, (byte) 0x03, (byte) 0x04  /* Address: 1.2.3.4 */
+    };
 
     private final Context mContext = InstrumentationRegistry.getContext();
     private final EthernetManager mEm = mContext.getSystemService(EthernetManager.class);
@@ -186,30 +252,25 @@ public class EthernetTetheringTest {
 
     @Before
     public void setUp() throws Exception {
-        // Needed to create a TestNetworkInterface, to call requestTetheredInterface, and to receive
-        // tethered client callbacks. The restricted networks permission is needed to ensure that
-        // EthernetManager#isAvailable will correctly return true on devices where Ethernet is
-        // marked restricted, like cuttlefish. The dump permission is needed to verify bpf related
-        // functions via dumpsys output.
-        mUiAutomation.adoptShellPermissionIdentity(
-                MANAGE_TEST_NETWORKS, NETWORK_SETTINGS, TETHER_PRIVILEGED, ACCESS_NETWORK_STATE,
-                CONNECTIVITY_USE_RESTRICTED_NETWORKS, DUMP);
         mHandlerThread = new HandlerThread(getClass().getSimpleName());
         mHandlerThread.start();
         mHandler = new Handler(mHandlerThread.getLooper());
 
-        mRunTests = isEthernetTetheringSupported();
+        mRunTests = runAsShell(NETWORK_SETTINGS, TETHER_PRIVILEGED, () ->
+                mTm.isTetheringSupported());
         assumeTrue(mRunTests);
 
         mTetheredInterfaceRequester = new TetheredInterfaceRequester(mHandler, mEm);
     }
 
     private void cleanUp() throws Exception {
-        mTm.setPreferTestNetworks(false);
+        setPreferTestNetworks(false);
 
         if (mUpstreamTracker != null) {
-            mUpstreamTracker.teardown();
-            mUpstreamTracker = null;
+            runAsShell(MANAGE_TEST_NETWORKS, () -> {
+                mUpstreamTracker.teardown();
+                mUpstreamTracker = null;
+            });
         }
         if (mUpstreamReader != null) {
             TapPacketReader reader = mUpstreamReader;
@@ -217,19 +278,25 @@ public class EthernetTetheringTest {
             mUpstreamReader = null;
         }
 
-        mTm.stopTethering(TETHERING_ETHERNET);
-        if (mTetheringEventCallback != null) {
-            mTetheringEventCallback.awaitInterfaceUntethered();
-            mTetheringEventCallback.unregister();
-            mTetheringEventCallback = null;
-        }
+        runAsShell(TETHER_PRIVILEGED, () -> {
+            mTm.stopTethering(TETHERING_ETHERNET);
+            // Binder call is an async call. Need to hold the shell permission until tethering
+            // stopped. This helps to avoid the test become flaky.
+            if (mTetheringEventCallback != null) {
+                mTetheringEventCallback.awaitInterfaceUntethered();
+                mTetheringEventCallback.unregister();
+                mTetheringEventCallback = null;
+            }
+        });
         if (mDownstreamReader != null) {
             TapPacketReader reader = mDownstreamReader;
             mHandler.post(() -> reader.stop());
             mDownstreamReader = null;
         }
-        mTetheredInterfaceRequester.release();
-        mEm.setIncludeTestInterfaces(false);
+        runAsShell(NETWORK_SETTINGS, () -> {
+            mTetheredInterfaceRequester.release();
+        });
+        setIncludeTestInterfaces(false);
         maybeDeleteTestInterface();
     }
 
@@ -243,10 +310,44 @@ public class EthernetTetheringTest {
         }
     }
 
+    private boolean isInterfaceForTetheringAvailable() throws Exception {
+        // If previous test case doesn't release tethering interface successfully, the other tests
+        // after that test may be skipped as unexcepted.
+        // TODO: figure out a better way to check default tethering interface existenion.
+        final TetheredInterfaceRequester requester = new TetheredInterfaceRequester(mHandler, mEm);
+        try {
+            // Use short timeout (200ms) for requesting an existing interface, if any, because
+            // it should reurn faster than requesting a new tethering interface. Using default
+            // timeout (5000ms, TIMEOUT_MS) may make that total testing time is over 1 minute
+            // test module timeout on internal testing.
+            // TODO: if this becomes flaky, consider using default timeout (5000ms) and moving
+            // this check into #setUpOnce.
+            return requester.getInterface(AVAILABLE_TETHER_IFACE_REQUEST_TIMEOUT_MS) != null;
+        } catch (TimeoutException e) {
+            return false;
+        } finally {
+            runAsShell(NETWORK_SETTINGS, () -> {
+                requester.release();
+            });
+        }
+    }
+
+    private void setIncludeTestInterfaces(boolean include) {
+        runAsShell(NETWORK_SETTINGS, () -> {
+            mEm.setIncludeTestInterfaces(include);
+        });
+    }
+
+    private void setPreferTestNetworks(boolean prefer) {
+        runAsShell(NETWORK_SETTINGS, () -> {
+            mTm.setPreferTestNetworks(prefer);
+        });
+    }
+
     @Test
     public void testVirtualEthernetAlreadyExists() throws Exception {
         // This test requires manipulating packets. Skip if there is a physical Ethernet connected.
-        assumeFalse(mEm.isAvailable());
+        assumeFalse(isInterfaceForTetheringAvailable());
 
         mDownstreamIface = createTestInterface();
         // This must be done now because as soon as setIncludeTestInterfaces(true) is called, the
@@ -256,7 +357,7 @@ public class EthernetTetheringTest {
         int mtu = getMTU(mDownstreamIface);
 
         Log.d(TAG, "Including test interfaces");
-        mEm.setIncludeTestInterfaces(true);
+        setIncludeTestInterfaces(true);
 
         final String iface = mTetheredInterfaceRequester.getInterface();
         assertEquals("TetheredInterfaceCallback for unexpected interface",
@@ -268,11 +369,11 @@ public class EthernetTetheringTest {
     @Test
     public void testVirtualEthernet() throws Exception {
         // This test requires manipulating packets. Skip if there is a physical Ethernet connected.
-        assumeFalse(mEm.isAvailable());
+        assumeFalse(isInterfaceForTetheringAvailable());
 
         CompletableFuture<String> futureIface = mTetheredInterfaceRequester.requestInterface();
 
-        mEm.setIncludeTestInterfaces(true);
+        setIncludeTestInterfaces(true);
 
         mDownstreamIface = createTestInterface();
 
@@ -285,9 +386,9 @@ public class EthernetTetheringTest {
 
     @Test
     public void testStaticIpv4() throws Exception {
-        assumeFalse(mEm.isAvailable());
+        assumeFalse(isInterfaceForTetheringAvailable());
 
-        mEm.setIncludeTestInterfaces(true);
+        setIncludeTestInterfaces(true);
 
         mDownstreamIface = createTestInterface();
 
@@ -363,9 +464,9 @@ public class EthernetTetheringTest {
 
     @Test
     public void testLocalOnlyTethering() throws Exception {
-        assumeFalse(mEm.isAvailable());
+        assumeFalse(isInterfaceForTetheringAvailable());
 
-        mEm.setIncludeTestInterfaces(true);
+        setIncludeTestInterfaces(true);
 
         mDownstreamIface = createTestInterface();
 
@@ -397,7 +498,7 @@ public class EthernetTetheringTest {
 
     @Test
     public void testPhysicalEthernet() throws Exception {
-        assumeTrue(mEm.isAvailable());
+        assumeTrue(isInterfaceForTetheringAvailable());
         // Do not run this test if adb is over network and ethernet is connected.
         // It is likely the adb run over ethernet, the adb would break when ethernet is switching
         // from client mode to server mode. See b/160389275.
@@ -438,6 +539,7 @@ public class EthernetTetheringTest {
         private final CountDownLatch mLocalOnlyStoppedLatch = new CountDownLatch(1);
         private final CountDownLatch mClientConnectedLatch = new CountDownLatch(1);
         private final CountDownLatch mUpstreamLatch = new CountDownLatch(1);
+        private final CountDownLatch mCallbackRegisteredLatch = new CountDownLatch(1);
         private final TetheringInterface mIface;
         private final Network mExpectedUpstream;
 
@@ -516,6 +618,22 @@ public class EthernetTetheringTest {
                     mLocalOnlyStartedLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS));
         }
 
+        // Used to check if the callback has registered. When the callback is registered,
+        // onSupportedTetheringTypes is celled in onCallbackStarted(). After
+        // onSupportedTetheringTypes called, drop the permission for registering callback.
+        // See MyTetheringEventCallback#register, TetheringManager#onCallbackStarted.
+        @Override
+        public void onSupportedTetheringTypes(Set<Integer> supportedTypes) {
+            // Used to check callback registered.
+            mCallbackRegisteredLatch.countDown();
+        }
+
+        public void awaitCallbackRegistered() throws Exception {
+            if (!mCallbackRegisteredLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                fail("Did not receive callback registered signal after " + TIMEOUT_MS + "ms");
+            }
+        }
+
         public void awaitInterfaceUntethered() throws Exception {
             // Don't block teardown if the interface was never tethered.
             // This is racy because the interface might become tethered right after this check, but
@@ -591,16 +709,34 @@ public class EthernetTetheringTest {
         } else {
             callback = new MyTetheringEventCallback(mTm, iface);
         }
-        mTm.registerTetheringEventCallback(mHandler::post, callback);
-
+        runAsShell(NETWORK_SETTINGS, () -> {
+            mTm.registerTetheringEventCallback(mHandler::post, callback);
+            // Need to hold the shell permission until callback is registered. This helps to avoid
+            // the test become flaky.
+            callback.awaitCallbackRegistered();
+        });
+        final CountDownLatch tetheringStartedLatch = new CountDownLatch(1);
         StartTetheringCallback startTetheringCallback = new StartTetheringCallback() {
+            @Override
+            public void onTetheringStarted() {
+                Log.d(TAG, "Ethernet tethering started");
+                tetheringStartedLatch.countDown();
+            }
+
             @Override
             public void onTetheringFailed(int resultCode) {
                 fail("Unexpectedly got onTetheringFailed");
             }
         };
         Log.d(TAG, "Starting Ethernet tethering");
-        mTm.startTethering(request, mHandler::post /* executor */,  startTetheringCallback);
+        runAsShell(TETHER_PRIVILEGED, () -> {
+            mTm.startTethering(request, mHandler::post /* executor */, startTetheringCallback);
+            // Binder call is an async call. Need to hold the shell permission until tethering
+            // started. This helps to avoid the test become flaky.
+            if (!tetheringStartedLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                fail("Did not receive tethering started callback after " + TIMEOUT_MS + "ms");
+            }
+        });
 
         final int connectivityType = request.getConnectivityScope();
         switch (connectivityType) {
@@ -708,12 +844,17 @@ public class EthernetTetheringTest {
         public CompletableFuture<String> requestInterface() {
             assertNull("BUG: more than one tethered interface request", mRequest);
             Log.d(TAG, "Requesting tethered interface");
-            mRequest = mEm.requestTetheredInterface(mHandler::post, this);
+            mRequest = runAsShell(NETWORK_SETTINGS, () ->
+                    mEm.requestTetheredInterface(mHandler::post, this));
             return mFuture;
         }
 
+        public String getInterface(int timeout) throws Exception {
+            return requestInterface().get(timeout, TimeUnit.MILLISECONDS);
+        }
+
         public String getInterface() throws Exception {
-            return requestInterface().get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return getInterface(TIMEOUT_MS);
         }
 
         public void release() {
@@ -764,8 +905,10 @@ public class EthernetTetheringTest {
     }
 
     private TestNetworkInterface createTestInterface() throws Exception {
-        TestNetworkManager tnm = mContext.getSystemService(TestNetworkManager.class);
-        TestNetworkInterface iface = tnm.createTapInterface();
+        TestNetworkManager tnm = runAsShell(MANAGE_TEST_NETWORKS, () ->
+                mContext.getSystemService(TestNetworkManager.class));
+        TestNetworkInterface iface = runAsShell(MANAGE_TEST_NETWORKS, () ->
+                tnm.createTapInterface());
         Log.d(TAG, "Created test interface " + iface.getInterfaceName());
         return iface;
     }
@@ -780,14 +923,14 @@ public class EthernetTetheringTest {
 
     private TestNetworkTracker createTestUpstream(final List<LinkAddress> addresses,
             final List<InetAddress> dnses) throws Exception {
-        mTm.setPreferTestNetworks(true);
+        setPreferTestNetworks(true);
 
         final LinkProperties lp = new LinkProperties();
         lp.setLinkAddresses(addresses);
         lp.setDnsServers(dnses);
         lp.setNat64Prefix(TEST_NAT64PREFIX);
 
-        return initTestNetwork(mContext, lp, TIMEOUT_MS);
+        return runAsShell(MANAGE_TEST_NETWORKS, () -> initTestNetwork(mContext, lp, TIMEOUT_MS));
     }
 
     @Test
@@ -1091,7 +1234,7 @@ public class EthernetTetheringTest {
 
     private TetheringTester initTetheringTester(List<LinkAddress> upstreamAddresses,
             List<InetAddress> upstreamDnses) throws Exception {
-        assumeFalse(mEm.isAvailable());
+        assumeFalse(isInterfaceForTetheringAvailable());
 
         // MyTetheringEventCallback currently only support await first available upstream. Tethering
         // may select internet network as upstream if test network is not available and not be
@@ -1099,7 +1242,7 @@ public class EthernetTetheringTest {
         mUpstreamTracker = createTestUpstream(upstreamAddresses, upstreamDnses);
 
         mDownstreamIface = createTestInterface();
-        mEm.setIncludeTestInterfaces(true);
+        setIncludeTestInterfaces(true);
 
         // Make sure EtherentTracker use "mDownstreamIface" as server mode interface.
         assertEquals("TetheredInterfaceCallback for unexpected interface",
@@ -1193,42 +1336,18 @@ public class EthernetTetheringTest {
         runUdp4Test(true /* verifyBpf */);
     }
 
-    @Nullable
-    private <K extends Struct, V extends Struct> Pair<K, V> parseMapKeyValue(
-            Class<K> keyClass, Class<V> valueClass, @NonNull String dumpStr) {
-        Log.w(TAG, "Parsing string: " + dumpStr);
-
-        String[] keyValueStrs = dumpStr.split(BASE64_DELIMITER);
-        if (keyValueStrs.length != 2 /* key + value */) {
-            fail("The length is " + keyValueStrs.length + " but expect 2. "
-                    + "Split string(s): " + TextUtils.join(",", keyValueStrs));
-        }
-
-        final byte[] keyBytes = Base64.decode(keyValueStrs[0], Base64.DEFAULT);
-        Log.d(TAG, "keyBytes: " + dumpHexString(keyBytes));
-        final ByteBuffer keyByteBuffer = ByteBuffer.wrap(keyBytes);
-        keyByteBuffer.order(ByteOrder.nativeOrder());
-        final K k = Struct.parse(keyClass, keyByteBuffer);
-
-        final byte[] valueBytes = Base64.decode(keyValueStrs[1], Base64.DEFAULT);
-        Log.d(TAG, "valueBytes: " + dumpHexString(valueBytes));
-        final ByteBuffer valueByteBuffer = ByteBuffer.wrap(valueBytes);
-        valueByteBuffer.order(ByteOrder.nativeOrder());
-        final V v = Struct.parse(valueClass, valueByteBuffer);
-
-        return new Pair<>(k, v);
-    }
-
     @NonNull
     private <K extends Struct, V extends Struct> HashMap<K, V> dumpAndParseRawMap(
             Class<K> keyClass, Class<V> valueClass, @NonNull String mapArg)
             throws Exception {
         final String[] args = new String[] {DUMPSYS_TETHERING_RAWMAP_ARG, mapArg};
-        final String rawMapStr = DumpTestUtils.dumpService(Context.TETHERING_SERVICE, args);
+        final String rawMapStr = runAsShell(DUMP, () ->
+                DumpTestUtils.dumpService(Context.TETHERING_SERVICE, args));
         final HashMap<K, V> map = new HashMap<>();
 
         for (final String line : rawMapStr.split(LINE_DELIMITER)) {
-            final Pair<K, V> rule = parseMapKeyValue(keyClass, valueClass, line.trim());
+            final Pair<K, V> rule =
+                    BpfDump.fromBase64EncodedString(keyClass, valueClass, line.trim());
             map.put(rule.first, rule.second);
         }
         return map;
@@ -1250,7 +1369,8 @@ public class EthernetTetheringTest {
     }
 
     private boolean isTetherConfigBpfOffloadEnabled() throws Exception {
-        final String dumpStr = DumpTestUtils.dumpService(Context.TETHERING_SERVICE, "--short");
+        final String dumpStr = runAsShell(DUMP, () ->
+                DumpTestUtils.dumpService(Context.TETHERING_SERVICE, "--short"));
 
         // BPF offload tether config can be overridden by "config_tether_enable_bpf_offload" in
         // packages/modules/Connectivity/Tethering/res/values/config.xml. OEM may disable config by
@@ -1315,6 +1435,94 @@ public class EthernetTetheringTest {
     @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testTetherClatUdp() throws Exception {
         runClatUdpTest();
+    }
+
+    @NonNull
+    private ByteBuffer buildDnsReplyMessageById(short id) {
+        byte[] replyMessage = Arrays.copyOf(DNS_REPLY, DNS_REPLY.length);
+        // Assign transaction id of reply message pattern with a given DNS transaction id.
+        replyMessage[0] = (byte) ((id >> 8) & 0xff);
+        replyMessage[1] = (byte) (id & 0xff);
+        Log.d(TAG, "Built DNS reply: " + dumpHexString(replyMessage));
+
+        return ByteBuffer.wrap(replyMessage);
+    }
+
+    @NonNull
+    private void sendDownloadPacketDnsV4(@NonNull final Inet4Address srcIp,
+            @NonNull final Inet4Address dstIp, short srcPort, short dstPort, short dnsId,
+            @NonNull final TetheringTester tester) throws Exception {
+        // DNS response transaction id must be copied from DNS query. Used by the requester
+        // to match up replies to outstanding queries. See RFC 1035 section 4.1.1.
+        final ByteBuffer dnsReplyMessage = buildDnsReplyMessageById(dnsId);
+        final ByteBuffer testPacket = buildUdpPacket((InetAddress) srcIp,
+                (InetAddress) dstIp, srcPort, dstPort, dnsReplyMessage);
+
+        tester.verifyDownload(testPacket, p -> {
+            Log.d(TAG, "Packet in downstream: " + dumpHexString(p));
+            return isExpectedUdpDnsPacket(p, true /* hasEther */, true /* isIpv4 */,
+                    dnsReplyMessage);
+        });
+    }
+
+    // Send IPv4 UDP DNS packet and return the forwarded DNS packet on upstream.
+    @NonNull
+    private byte[] sendUploadPacketDnsV4(@NonNull final MacAddress srcMac,
+            @NonNull final MacAddress dstMac, @NonNull final Inet4Address srcIp,
+            @NonNull final Inet4Address dstIp, short srcPort, short dstPort,
+            @NonNull final TetheringTester tester) throws Exception {
+        final ByteBuffer testPacket = buildUdpPacket(srcMac, dstMac, srcIp, dstIp,
+                srcPort, dstPort, DNS_QUERY);
+
+        return tester.verifyUpload(testPacket, p -> {
+            Log.d(TAG, "Packet in upstream: " + dumpHexString(p));
+            return isExpectedUdpDnsPacket(p, false /* hasEther */, true /* isIpv4 */,
+                    DNS_QUERY);
+        });
+    }
+
+    @Test
+    public void testTetherUdpV4Dns() throws Exception {
+        final TetheringTester tester = initTetheringTester(toList(TEST_IP4_ADDR),
+                toList(TEST_IP4_DNS));
+        final TetheredDevice tethered = tester.createTetheredDevice(TEST_MAC, false /* hasIpv6 */);
+
+        // TODO: remove the connectivity verification for upstream connected notification race.
+        // See the same reason in runUdp4Test().
+        probeV4TetheringConnectivity(tester, tethered, false /* is4To6 */);
+
+        // [1] Send DNS query.
+        // tethered device --> downstream --> dnsmasq forwarding --> upstream --> DNS server
+        //
+        // Need to extract DNS transaction id and source port from dnsmasq forwarded DNS query
+        // packet. dnsmasq forwarding creats new query which means UDP source port and DNS
+        // transaction id are changed from original sent DNS query. See forward_query() in
+        // external/dnsmasq/src/forward.c. Note that #TetheringTester.isExpectedUdpDnsPacket
+        // guarantees that |forwardedQueryPacket| is a valid DNS packet. So we can parse it as DNS
+        // packet.
+        final MacAddress srcMac = tethered.macAddr;
+        final MacAddress dstMac = tethered.routerMacAddr;
+        final Inet4Address clientIp = tethered.ipv4Addr;
+        final Inet4Address gatewayIp = tethered.ipv4Gatway;
+        final byte[] forwardedQueryPacket = sendUploadPacketDnsV4(srcMac, dstMac, clientIp,
+                gatewayIp, LOCAL_PORT, DNS_PORT, tester);
+        final ByteBuffer buf = ByteBuffer.wrap(forwardedQueryPacket);
+        Struct.parse(Ipv4Header.class, buf);
+        final UdpHeader udpHeader = Struct.parse(UdpHeader.class, buf);
+        final TestDnsPacket dnsQuery = TestDnsPacket.getTestDnsPacket(buf);
+        assertNotNull(dnsQuery);
+        Log.d(TAG, "Forwarded UDP source port: " + udpHeader.srcPort + ", DNS query id: "
+                + dnsQuery.getHeader().id);
+
+        // [2] Send DNS reply.
+        // DNS server --> upstream --> dnsmasq forwarding --> downstream --> tethered device
+        //
+        // DNS reply transaction id must be copied from DNS query. Used by the requester to match
+        // up replies to outstanding queries. See RFC 1035 section 4.1.1.
+        final Inet4Address remoteIp = (Inet4Address) TEST_IP4_DNS;
+        final Inet4Address tetheringUpstreamIp = (Inet4Address) TEST_IP4_ADDR.getAddress();
+        sendDownloadPacketDnsV4(remoteIp, tetheringUpstreamIp, DNS_PORT,
+                (short) udpHeader.srcPort, (short) dnsQuery.getHeader().id, tester);
     }
 
     private <T> List<T> toList(T... array) {
