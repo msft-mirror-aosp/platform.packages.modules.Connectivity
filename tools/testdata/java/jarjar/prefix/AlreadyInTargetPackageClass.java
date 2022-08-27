@@ -14,26 +14,12 @@
  * limitations under the License.
  */
 
-package com.android.server.nearby.util.encryption;
-
-import androidx.annotation.Nullable;
+package jarjar.prefix;
 
 /**
- * A Cryptor that returns the original data without actual encryption
+ * Sample class to test jarjar rules, already in the "jarjar.prefix" package.
  */
-public class CryptorImpFake extends Cryptor {
-    // Lazily instantiated when {@link #getInstance()} is called.
-    @Nullable
-    private static CryptorImpFake sCryptor;
-
-    /** Returns an instance of CryptorImpFake. */
-    public static CryptorImpFake getInstance() {
-        if (sCryptor == null) {
-            sCryptor = new CryptorImpFake();
-        }
-        return sCryptor;
-    }
-
-    private CryptorImpFake() {
-    }
+public class AlreadyInTargetPackageClass {
+    /** Test inner class that should not be jarjared either */
+    public static class TestInnerClass {}
 }
