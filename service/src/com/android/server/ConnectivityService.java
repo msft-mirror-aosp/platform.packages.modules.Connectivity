@@ -89,7 +89,6 @@ import static android.net.NetworkRequest.Type.LISTEN_FOR_BEST;
 import static android.net.NetworkScore.POLICY_TRANSPORT_PRIMARY;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
-import static android.net.shared.NetworkMonitorUtils.isPrivateDnsValidationRequired;
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
@@ -98,6 +97,7 @@ import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
+import static com.android.net.module.util.NetworkMonitorUtils.isPrivateDnsValidationRequired;
 import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermission;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermissionOr;
@@ -257,6 +257,7 @@ import com.android.net.module.util.LinkPropertiesUtils.CompareOrUpdateResult;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.NetworkCapabilitiesUtils;
+import com.android.net.module.util.PerUidCounter;
 import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.TcUtils;
 import com.android.net.module.util.netlink.InetDiagMessage;
@@ -386,9 +387,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     protected final PermissionMonitor mPermissionMonitor;
 
     @VisibleForTesting
-    final PerUidCounter mNetworkRequestCounter;
+    final RequestInfoPerUidCounter mNetworkRequestCounter;
     @VisibleForTesting
-    final PerUidCounter mSystemNetworkRequestCounter;
+    final RequestInfoPerUidCounter mSystemNetworkRequestCounter;
 
     private volatile boolean mLockdownEnabled;
 
@@ -1186,80 +1187,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     /**
-     * Keeps track of the number of requests made under different uids.
-     */
-    // TODO: Remove the hack and use com.android.net.module.util.PerUidCounter instead.
-    public static class PerUidCounter {
-        private final int mMaxCountPerUid;
-
-        // Map from UID to number of NetworkRequests that UID has filed.
-        @VisibleForTesting
-        @GuardedBy("mUidToNetworkRequestCount")
-        final SparseIntArray mUidToNetworkRequestCount = new SparseIntArray();
-
-        /**
-         * Constructor
-         *
-         * @param maxCountPerUid the maximum count per uid allowed
-         */
-        public PerUidCounter(final int maxCountPerUid) {
-            mMaxCountPerUid = maxCountPerUid;
-        }
-
-        /**
-         * Increments the request count of the given uid.  Throws an exception if the number
-         * of open requests for the uid exceeds the value of maxCounterPerUid which is the value
-         * passed into the constructor. see: {@link #PerUidCounter(int)}.
-         *
-         * @throws ServiceSpecificException with
-         * {@link ConnectivityManager.Errors.TOO_MANY_REQUESTS} if the number of requests for
-         * the uid exceed the allowed number.
-         *
-         * @param uid the uid that the request was made under
-         */
-        public void incrementCountOrThrow(final int uid) {
-            synchronized (mUidToNetworkRequestCount) {
-                final int newRequestCount = mUidToNetworkRequestCount.get(uid, 0) + 1;
-                if (newRequestCount >= mMaxCountPerUid
-                        // HACK : the system server is allowed to go over the request count limit
-                        // when it is creating requests on behalf of another app (but not itself,
-                        // so it can still detect its own request leaks). This only happens in the
-                        // per-app API flows in which case the old requests for that particular
-                        // UID will be removed soon.
-                        // TODO : with the removal of the legacy transact() method, exempting the
-                        // system server UID should no longer be necessary. Make sure this is the
-                        // case and remove this test.
-                        && (Process.myUid() == uid || Process.myUid() != Binder.getCallingUid())) {
-                    throw new ServiceSpecificException(
-                            ConnectivityManager.Errors.TOO_MANY_REQUESTS,
-                            "Uid " + uid + " exceeded its allotted requests limit");
-                }
-                mUidToNetworkRequestCount.put(uid, newRequestCount);
-            }
-        }
-
-        /**
-         * Decrements the request count of the given uid.
-         *
-         * @param uid the uid that the request was made under
-         */
-        public void decrementCount(final int uid) {
-            synchronized (mUidToNetworkRequestCount) {
-                /* numToDecrement */
-                final int newRequestCount = mUidToNetworkRequestCount.get(uid, 0) - 1;
-                if (newRequestCount < 0) {
-                    logwtf("BUG: too small request count " + newRequestCount + " for UID " + uid);
-                } else if (newRequestCount == 0) {
-                    mUidToNetworkRequestCount.delete(uid);
-                } else {
-                    mUidToNetworkRequestCount.put(uid, newRequestCount);
-                }
-            }
-        }
-
-    }
-
-    /**
      * Dependencies of ConnectivityService, for injection in tests.
      */
     @VisibleForTesting
@@ -1473,8 +1400,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mNetIdManager = mDeps.makeNetIdManager();
         mContext = Objects.requireNonNull(context, "missing Context");
         mResources = deps.getResources(mContext);
-        mNetworkRequestCounter = new PerUidCounter(MAX_NETWORK_REQUESTS_PER_UID);
-        mSystemNetworkRequestCounter = new PerUidCounter(MAX_NETWORK_REQUESTS_PER_SYSTEM_UID);
+        // The legacy PerUidCounter is buggy and throwing exception at count == limit.
+        // Pass limit - 1 to maintain backward compatibility.
+        // TODO: Remove the workaround.
+        mNetworkRequestCounter =
+                new RequestInfoPerUidCounter(MAX_NETWORK_REQUESTS_PER_UID - 1);
+        mSystemNetworkRequestCounter =
+                new RequestInfoPerUidCounter(MAX_NETWORK_REQUESTS_PER_SYSTEM_UID - 1);
 
         mMetricsLog = logger;
         mNetworkRanker = new NetworkRanker();
@@ -4772,7 +4704,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 }
             }
         }
-        nri.decrementRequestCount();
+        nri.mPerUidCounter.decrementCount(nri.mUid);
         mNetworkRequestInfoLogs.log("RELEASE " + nri);
         checkNrisConsistency(nri);
 
@@ -4875,7 +4807,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private PerUidCounter getRequestCounter(NetworkRequestInfo nri) {
+    private RequestInfoPerUidCounter getRequestCounter(NetworkRequestInfo nri) {
         return checkAnyPermissionOf(
                 nri.mPid, nri.mUid, NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
                 ? mSystemNetworkRequestCounter : mNetworkRequestCounter;
@@ -5482,6 +5414,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public int getLastTetherError(String iface) {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getLastTetherError(iface);
@@ -5490,6 +5423,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableIfaces();
@@ -5498,6 +5432,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetheredIfaces();
@@ -5507,6 +5442,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheringErroredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5516,6 +5452,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableUsbRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5525,6 +5462,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableWifiRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableWifiRegexs();
@@ -6239,7 +6177,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final String mCallingAttributionTag;
 
         // Counter keeping track of this NRI.
-        final PerUidCounter mPerUidCounter;
+        final RequestInfoPerUidCounter mPerUidCounter;
 
         // Effective UID of this request. This is different from mUid when a privileged process
         // files a request on behalf of another UID. This UID is used to determine blocked status,
@@ -6405,10 +6343,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return Collections.unmodifiableList(tempRequests);
         }
 
-        void decrementRequestCount() {
-            mPerUidCounter.decrementCount(mUid);
-        }
-
         void linkDeathRecipient() {
             if (null != mBinder) {
                 try {
@@ -6467,6 +6401,38 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     + (mPendingIntent == null ? "" : " to trigger " + mPendingIntent)
                     + " callback flags: " + mCallbackFlags
                     + " order: " + mPreferenceOrder;
+        }
+    }
+
+    // Keep backward compatibility since the ServiceSpecificException is used by
+    // the API surface, see {@link ConnectivityManager#convertServiceException}.
+    public static class RequestInfoPerUidCounter extends PerUidCounter {
+        RequestInfoPerUidCounter(int maxCountPerUid) {
+            super(maxCountPerUid);
+        }
+
+        @Override
+        public synchronized void incrementCountOrThrow(int uid) {
+            try {
+                super.incrementCountOrThrow(uid);
+            } catch (IllegalStateException e) {
+                throw new ServiceSpecificException(
+                        ConnectivityManager.Errors.TOO_MANY_REQUESTS,
+                        "Uid " + uid + " exceeded its allotted requests limit");
+            }
+        }
+
+        @Override
+        public synchronized void decrementCountOrThrow(int uid) {
+            throw new UnsupportedOperationException("Use decrementCount instead.");
+        }
+
+        public synchronized void decrementCount(int uid) {
+            try {
+                super.decrementCountOrThrow(uid);
+            } catch (IllegalStateException e) {
+                logwtf("Exception when decrement per uid request count: ", e);
+            }
         }
     }
 
@@ -9966,7 +9932,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // Decrement the reference count for this NetworkRequestInfo. The reference count is
             // incremented when the NetworkRequestInfo is created as part of
             // enforceRequestCountLimit().
-            nri.decrementRequestCount();
+            nri.mPerUidCounter.decrementCount(nri.mUid);
             return;
         }
 
@@ -10032,7 +9998,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // Decrement the reference count for this NetworkRequestInfo. The reference count is
         // incremented when the NetworkRequestInfo is created as part of
         // enforceRequestCountLimit().
-        nri.decrementRequestCount();
+        nri.mPerUidCounter.decrementCount(nri.mUid);
 
         iCb.unlinkToDeath(cbInfo, 0);
     }
@@ -10864,6 +10830,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_PROFILE);
         addPerAppDefaultNetworkRequests(
                 createNrisFromProfileNetworkPreferences(mProfileNetworkPreferences));
+
         // Finally, rematch.
         rematchAllNetworksAndRequests();
 
