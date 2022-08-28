@@ -40,6 +40,7 @@ import android.os.ServiceSpecificException;
 import android.provider.DeviceConfig;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -51,10 +52,7 @@ import com.android.net.module.util.Struct.U8;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * BpfNetMaps is responsible for providing traffic controller relevant functionality.
@@ -83,6 +81,11 @@ public class BpfNetMaps {
     // This entry is not accessed by others.
     // BpfNetMaps acquires this lock while sequence of read, modify, and write.
     private static final Object sUidRulesConfigBpfMapLock = new Object();
+
+    // Lock for sConfigurationMap entry for CURRENT_STATS_MAP_CONFIGURATION_KEY.
+    // BpfNetMaps acquires this lock while sequence of read, modify, and write.
+    // BpfNetMaps is an only writer of this entry.
+    private static final Object sCurrentStatsMapConfigLock = new Object();
 
     private static final String CONFIGURATION_MAP_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_configuration_map";
@@ -235,6 +238,13 @@ public class BpfNetMaps {
          */
         public int getIfIndex(final String ifName) {
             return Os.if_nametoindex(ifName);
+        }
+
+        /**
+         * Call synchronize_rcu()
+         */
+        public int synchronizeKernelRCU() {
+            return native_synchronizeKernelRCU();
         }
     }
 
@@ -506,6 +516,14 @@ public class BpfNetMaps {
         }
     }
 
+    private Set<Integer> asSet(final int[] uids) {
+        final Set<Integer> uidSet = new ArraySet<>();
+        for (final int uid: uids) {
+            uidSet.add(uid);
+        }
+        return uidSet;
+    }
+
     /**
      * Replaces the contents of the specified UID-based firewall chain.
      * Enables the chain for specified uids and disables the chain for non-specified uids.
@@ -527,15 +545,17 @@ public class BpfNetMaps {
                 // ConnectivityManager#replaceFirewallChain API
                 throw new IllegalArgumentException("Invalid firewall chain: " + chain);
             }
-            final Set<Integer> uidSet = Arrays.stream(uids).boxed().collect(Collectors.toSet());
-            final Set<Integer> uidSetToRemoveRule = new HashSet<>();
+            final Set<Integer> uidSet = asSet(uids);
+            final Set<Integer> uidSetToRemoveRule = new ArraySet<>();
             try {
                 synchronized (sUidOwnerMap) {
                     sUidOwnerMap.forEach((uid, config) -> {
                         // config could be null if there is a concurrent entry deletion.
-                        // http://b/220084230.
-                        if (config != null
-                                && !uidSet.contains((int) uid.val) && (config.rule & match) != 0) {
+                        // http://b/220084230. But sUidOwnerMap update must be done while holding a
+                        // lock, so this should not happen.
+                        if (config == null) {
+                            Log.wtf(TAG, "sUidOwnerMap entry was deleted while holding a lock");
+                        } else if (!uidSet.contains((int) uid.val) && (config.rule & match) != 0) {
                             uidSetToRemoveRule.add((int) uid.val);
                         }
                     });
@@ -723,12 +743,40 @@ public class BpfNetMaps {
     /**
      * Request netd to change the current active network stats map.
      *
+     * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
     public void swapActiveStatsMap() {
-        final int err = native_swapActiveStatsMap();
-        maybeThrow(err, "Unable to swap active stats map");
+        throwIfPreT("swapActiveStatsMap is not available on pre-T devices");
+
+        if (sEnableJavaBpfMap) {
+            try {
+                synchronized (sCurrentStatsMapConfigLock) {
+                    final long config = sConfigurationMap.getValue(
+                            CURRENT_STATS_MAP_CONFIGURATION_KEY).val;
+                    final long newConfig = (config == STATS_SELECT_MAP_A)
+                            ? STATS_SELECT_MAP_B : STATS_SELECT_MAP_A;
+                    sConfigurationMap.updateEntry(CURRENT_STATS_MAP_CONFIGURATION_KEY,
+                            new U32(newConfig));
+                }
+            } catch (ErrnoException e) {
+                throw new ServiceSpecificException(e.errno, "Failed to swap active stats map");
+            }
+
+            // After changing the config, it's needed to make sure all the current running eBPF
+            // programs are finished and all the CPUs are aware of this config change before the old
+            // map is modified. So special hack is needed here to wait for the kernel to do a
+            // synchronize_rcu(). Once the kernel called synchronize_rcu(), the updated config will
+            // be available to all cores and the next eBPF programs triggered inside the kernel will
+            // use the new map configuration. So once this function returns it is safe to modify the
+            // old stats map without concerning about race between the kernel and userspace.
+            final int err = mDeps.synchronizeKernelRCU();
+            maybeThrow(err, "synchronizeKernelRCU failed");
+        } else {
+            final int err = native_swapActiveStatsMap();
+            maybeThrow(err, "Unable to swap active stats map");
+        }
     }
 
     /**
@@ -804,4 +852,5 @@ public class BpfNetMaps {
     private native int native_swapActiveStatsMap();
     private native void native_setPermissionForUids(int permissions, int[] uids);
     private native void native_dump(FileDescriptor fd, boolean verbose);
+    private static native int native_synchronizeKernelRCU();
 }
