@@ -21,7 +21,7 @@ import androidx.annotation.Nullable;
 /**
  * A Cryptor that returns the original data without actual encryption
  */
-public class CryptorImpFake implements Cryptor {
+public class CryptorImpFake extends Cryptor {
     // Lazily instantiated when {@link #getInstance()} is called.
     @Nullable
     private static CryptorImpFake sCryptor;

@@ -92,10 +92,9 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                                                     scanFilter.getType()
                                                             == SCAN_TYPE_NEARBY_PRESENCE)
                                     .collect(Collectors.toList());
-                    Log.i(
-                            TAG,
-                            String.format("match with filters size: %d", presenceFilters.size()));
                     if (!presenceFilterMatches(nearbyDevice, presenceFilters)) {
+                        Log.d(TAG, "presence filter does not match for "
+                                + "the scanned Presence Device");
                         continue;
                     }
                 }
@@ -119,14 +118,16 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         Executor executor = Executors.newSingleThreadExecutor();
         mChreDiscoveryProvider =
                 new ChreDiscoveryProvider(
-                        mContext, new ChreCommunication(injector, executor), executor);
+                        mContext, new ChreCommunication(injector, mContext, executor), executor);
         mScanTypeScanListenerRecordMap = new HashMap<>();
         mInjector = injector;
     }
 
     /** Called after boot completed. */
     public void init() {
-        mChreDiscoveryProvider.init();
+        if (mInjector.getContextHubManager() != null) {
+            mChreDiscoveryProvider.init();
+        }
         mChreDiscoveryProvider.getController().setListener(this);
     }
 
@@ -217,25 +218,33 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                     && scanRequest.getScanType() == SCAN_TYPE_NEARBY_PRESENCE) {
                 startChreProvider();
             } else {
-                startBleProvider(scanRequest);
+                startBleProvider();
             }
             return true;
         }
         return false;
     }
 
-    private void startBleProvider(ScanRequest scanRequest) {
+    private void startBleProvider() {
         if (!mBleDiscoveryProvider.getController().isStarted()) {
             Log.d(TAG, "DiscoveryProviderManager starts Ble scanning.");
-            mBleDiscoveryProvider.getController().start();
             mBleDiscoveryProvider.getController().setListener(this);
-            mBleDiscoveryProvider.getController().setProviderScanMode(scanRequest.getScanMode());
+            mBleDiscoveryProvider.getController().setProviderScanMode(mScanMode);
+            mBleDiscoveryProvider.getController().setProviderScanFilters(
+                    getPresenceScanFilters());
+            mBleDiscoveryProvider.getController().start();
         }
     }
 
     @VisibleForTesting
     void startChreProvider() {
         Log.d(TAG, "DiscoveryProviderManager starts CHRE scanning.");
+        mChreDiscoveryProvider.getController().setProviderScanFilters(getPresenceScanFilters());
+        mChreDiscoveryProvider.getController().setProviderScanMode(mScanMode);
+        mChreDiscoveryProvider.getController().start();
+    }
+
+    private List<ScanFilter> getPresenceScanFilters() {
         synchronized (mLock) {
             List<ScanFilter> scanFilters = new ArrayList();
             for (IBinder listenerBinder : mScanTypeScanListenerRecordMap.keySet()) {
@@ -248,9 +257,7 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                                 .collect(Collectors.toList());
                 scanFilters.addAll(presenceFilters);
             }
-            mChreDiscoveryProvider.getController().setProviderScanFilters(scanFilters);
-            mChreDiscoveryProvider.getController().setProviderScanMode(mScanMode);
-            mChreDiscoveryProvider.getController().start();
+            return scanFilters;
         }
     }
 
