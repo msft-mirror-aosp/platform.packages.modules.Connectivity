@@ -21,11 +21,15 @@ import android.Manifest.permission.WRITE_DEVICE_CONFIG
 import android.provider.DeviceConfig
 import android.util.Log
 import com.android.modules.utils.build.SdkLevel
+import com.android.testutils.FunctionalUtils.ThrowingRunnable
 import com.android.testutils.runAsShell
 import com.android.testutils.tryTest
 import org.junit.rules.TestRule
 import org.junit.runner.Description
 import org.junit.runners.model.Statement
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Executor
+import java.util.concurrent.TimeUnit
 
 private val TAG = DeviceConfigRule::class.simpleName
 
@@ -51,7 +55,7 @@ class DeviceConfigRule @JvmOverloads constructor(
     /**
      * Actions to be run after cleanup of the config, for the current test only.
      */
-    private val currentTestCleanupActions = mutableListOf<Runnable>()
+    private val currentTestCleanupActions = mutableListOf<ThrowingRunnable>()
 
     override fun apply(base: Statement, description: Description): Statement {
         return TestValidationUrlStatement(base, description)
@@ -93,8 +97,13 @@ class DeviceConfigRule @JvmOverloads constructor(
                     originalConfig.clear()
                     usedConfig.clear()
                 } cleanup {
-                    currentTestCleanupActions.forEach { it.run() }
-                    currentTestCleanupActions.clear()
+                    // Fold all cleanup actions into cleanup steps of an empty tryTest, so they are
+                    // all run even if exceptions are thrown, and exceptions are reported properly.
+                    currentTestCleanupActions.fold(tryTest { }) {
+                        tryBlock, action -> tryBlock.cleanupStep { action.run() }
+                    }.cleanup {
+                        currentTestCleanupActions.clear()
+                    }
                 }
             }
         }
@@ -104,21 +113,64 @@ class DeviceConfigRule @JvmOverloads constructor(
      * Set a configuration key/value. After the test case ends, it will be restored to the value it
      * had when this method was first called.
      */
-    fun setConfig(namespace: String, key: String, value: String?) {
-        runAsShell(READ_DEVICE_CONFIG, WRITE_DEVICE_CONFIG) {
-            val keyPair = Pair(namespace, key)
-            if (!originalConfig.containsKey(keyPair)) {
-                originalConfig[keyPair] = DeviceConfig.getProperty(namespace, key)
+    fun setConfig(namespace: String, key: String, value: String?): String? {
+        Log.i(TAG, "Setting config \"$key\" to \"$value\"")
+        val readWritePermissions = arrayOf(READ_DEVICE_CONFIG, WRITE_DEVICE_CONFIG)
+
+        val keyPair = Pair(namespace, key)
+        val existingValue = runAsShell(*readWritePermissions) {
+            DeviceConfig.getProperty(namespace, key)
+        }
+        if (!originalConfig.containsKey(keyPair)) {
+            originalConfig[keyPair] = existingValue
+        }
+        usedConfig[keyPair] = value
+        if (existingValue == value) {
+            // Already the correct value. There may be a race if a change is already in flight,
+            // but if multiple threads update the config there is no way to fix that anyway.
+            Log.i(TAG, "\"$key\" already had value \"$value\"")
+            return value
+        }
+
+        val future = CompletableFuture<String>()
+        val listener = DeviceConfig.OnPropertiesChangedListener {
+            // The listener receives updates for any change to any key, so don't react to
+            // changes that do not affect the relevant key
+            if (!it.keyset.contains(key)) return@OnPropertiesChangedListener
+            // "null" means absent in DeviceConfig : there is no such thing as a present but
+            // null value, so the following works even if |value| is null.
+            if (it.getString(key, null) == value) {
+                future.complete(value)
             }
-            usedConfig[keyPair] = value
-            DeviceConfig.setProperty(namespace, key, value, false /* makeDefault */)
+        }
+
+        return tryTest {
+            runAsShell(*readWritePermissions) {
+                DeviceConfig.addOnPropertiesChangedListener(
+                        DeviceConfig.NAMESPACE_CONNECTIVITY,
+                        inlineExecutor,
+                        listener)
+                DeviceConfig.setProperty(
+                        DeviceConfig.NAMESPACE_CONNECTIVITY,
+                        key,
+                        value,
+                        false /* makeDefault */)
+                // Don't drop the permission until the config is applied, just in case
+                future.get(NetworkValidationTestUtil.TIMEOUT_MS, TimeUnit.MILLISECONDS)
+            }.also {
+                Log.i(TAG, "Config \"$key\" successfully set to \"$value\"")
+            }
+        } cleanup {
+            DeviceConfig.removeOnPropertiesChangedListener(listener)
         }
     }
+
+    private val inlineExecutor get() = Executor { r -> r.run() }
 
     /**
      * Add an action to be run after config cleanup when the current test case ends.
      */
-    fun runAfterNextCleanup(action: Runnable) {
+    fun runAfterNextCleanup(action: ThrowingRunnable) {
         currentTestCleanupActions.add(action)
     }
 }
