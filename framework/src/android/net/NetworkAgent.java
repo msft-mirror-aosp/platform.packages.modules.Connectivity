@@ -25,7 +25,6 @@ import android.annotation.SystemApi;
 import android.annotation.TestApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
-import android.net.DscpPolicy.DscpPolicyStatus;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.ConditionVariable;
@@ -85,7 +84,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * the correct packets. Devices typically have a small number of slots
  * per radio technology, and the specific number of slots for each
  * technology is specified in configuration files.
- * {@see SocketKeepalive} for details.
+ * See {@link SocketKeepalive} for details.
  *
  * @hide
  */
@@ -433,6 +432,48 @@ public abstract class NetworkAgent {
      * @hide
      */
     public static final int CMD_DSCP_POLICY_STATUS = BASE + 28;
+
+    /**
+     * DSCP policy was successfully added.
+     */
+    public static final int DSCP_POLICY_STATUS_SUCCESS = 0;
+
+    /**
+     * DSCP policy was rejected for any reason besides invalid classifier or insufficient resources.
+     */
+    public static final int DSCP_POLICY_STATUS_REQUEST_DECLINED = 1;
+
+    /**
+     * Requested DSCP policy contained a classifier which is not supported.
+     */
+    public static final int DSCP_POLICY_STATUS_REQUESTED_CLASSIFIER_NOT_SUPPORTED = 2;
+
+    /**
+     * Requested DSCP policy was not added due to insufficient processing resources.
+     */
+    // TODO: should this error case be supported?
+    public static final int DSCP_POLICY_STATUS_INSUFFICIENT_PROCESSING_RESOURCES = 3;
+
+    /**
+     * DSCP policy was deleted.
+     */
+    public static final int DSCP_POLICY_STATUS_DELETED = 4;
+
+    /**
+     * DSCP policy was not found during deletion.
+     */
+    public static final int DSCP_POLICY_STATUS_POLICY_NOT_FOUND = 5;
+
+    /** @hide */
+    @IntDef(prefix = "DSCP_POLICY_STATUS_", value = {
+        DSCP_POLICY_STATUS_SUCCESS,
+        DSCP_POLICY_STATUS_REQUEST_DECLINED,
+        DSCP_POLICY_STATUS_REQUESTED_CLASSIFIER_NOT_SUPPORTED,
+        DSCP_POLICY_STATUS_INSUFFICIENT_PROCESSING_RESOURCES,
+        DSCP_POLICY_STATUS_DELETED
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface DscpPolicyStatus {}
 
     /**
      * Sent by the NetworkAgent to ConnectivityService to notify that this network is expected to be
@@ -872,7 +913,7 @@ public abstract class NetworkAgent {
      * Must be called by the agent when the network's {@link LinkProperties} change.
      * @param linkProperties the new LinkProperties.
      */
-    public final void sendLinkProperties(@NonNull LinkProperties linkProperties) {
+    public void sendLinkProperties(@NonNull LinkProperties linkProperties) {
         Objects.requireNonNull(linkProperties);
         final LinkProperties lp = new LinkProperties(linkProperties);
         queueOrSendMessage(reg -> reg.sendLinkProperties(lp));
@@ -897,7 +938,7 @@ public abstract class NetworkAgent {
      * @param underlyingNetworks the new list of underlying networks.
      * @see {@link VpnService.Builder#setUnderlyingNetworks(Network[])}
      */
-    public final void setUnderlyingNetworks(
+    public void setUnderlyingNetworks(
             @SuppressLint("NullableCollection") @Nullable List<Network> underlyingNetworks) {
         final ArrayList<Network> underlyingArray = (underlyingNetworks != null)
                 ? new ArrayList<>(underlyingNetworks) : null;
@@ -1035,18 +1076,19 @@ public abstract class NetworkAgent {
      */
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 115609023)
     public final void sendNetworkInfo(NetworkInfo networkInfo) {
-        queueOrSendNetworkInfo(new NetworkInfo(networkInfo));
+        queueOrSendNetworkInfo(networkInfo);
     }
 
     private void queueOrSendNetworkInfo(NetworkInfo networkInfo) {
-        queueOrSendMessage(reg -> reg.sendNetworkInfo(networkInfo));
+        final NetworkInfo ni = new NetworkInfo(networkInfo);
+        queueOrSendMessage(reg -> reg.sendNetworkInfo(ni));
     }
 
     /**
      * Must be called by the agent when the network's {@link NetworkCapabilities} change.
      * @param networkCapabilities the new NetworkCapabilities.
      */
-    public final void sendNetworkCapabilities(@NonNull NetworkCapabilities networkCapabilities) {
+    public void sendNetworkCapabilities(@NonNull NetworkCapabilities networkCapabilities) {
         Objects.requireNonNull(networkCapabilities);
         mBandwidthUpdatePending.set(false);
         mLastBwRefreshTime = System.currentTimeMillis();
@@ -1060,7 +1102,7 @@ public abstract class NetworkAgent {
      *
      * @param score the new score.
      */
-    public final void sendNetworkScore(@NonNull NetworkScore score) {
+    public void sendNetworkScore(@NonNull NetworkScore score) {
         Objects.requireNonNull(score);
         queueOrSendMessage(reg -> reg.sendScore(score));
     }
@@ -1071,7 +1113,7 @@ public abstract class NetworkAgent {
      * @param score the new score, between 0 and 99.
      * deprecated use sendNetworkScore(NetworkScore) TODO : remove in S.
      */
-    public final void sendNetworkScore(@IntRange(from = 0, to = 99) int score) {
+    public void sendNetworkScore(@IntRange(from = 0, to = 99) int score) {
         sendNetworkScore(new NetworkScore.Builder().setLegacyInt(score).build());
     }
 

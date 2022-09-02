@@ -42,7 +42,7 @@ import java.util.Map;
 
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 public class NsdServiceInfoTest {
 
     public final static InetAddress LOCALHOST;
@@ -125,6 +125,7 @@ public class NsdServiceInfoTest {
         fullInfo.setPort(4242);
         fullInfo.setHost(LOCALHOST);
         fullInfo.setNetwork(new Network(123));
+        fullInfo.setInterfaceIndex(456);
         checkParcelable(fullInfo);
 
         NsdServiceInfo noHostInfo = new NsdServiceInfo();
@@ -175,6 +176,7 @@ public class NsdServiceInfoTest {
         assertEquals(original.getHost(), result.getHost());
         assertTrue(original.getPort() == result.getPort());
         assertEquals(original.getNetwork(), result.getNetwork());
+        assertEquals(original.getInterfaceIndex(), result.getInterfaceIndex());
 
         // Assert equality of attribute map.
         Map<String, byte[]> originalMap = original.getAttributes();

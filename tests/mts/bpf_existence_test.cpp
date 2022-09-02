@@ -31,22 +31,22 @@ using std::find;
 using std::set;
 using std::string;
 
+using android::bpf::isAtLeastKernelVersion;
 using android::modules::sdklevel::IsAtLeastR;
 using android::modules::sdklevel::IsAtLeastS;
 using android::modules::sdklevel::IsAtLeastT;
 
-// Mainline development branches lack the constant for the current development OS.
-#ifndef __ANDROID_API_T__
-#define __ANDROID_API_T__ 33
-#endif
-
 #define PLATFORM "/sys/fs/bpf/"
 #define TETHERING "/sys/fs/bpf/tethering/"
+#define PRIVATE "/sys/fs/bpf/net_private/"
+#define SHARED "/sys/fs/bpf/net_shared/"
+#define NETD "/sys/fs/bpf/netd_shared/"
 
 class BpfExistenceTest : public ::testing::Test {
 };
 
-static const set<string> INTRODUCED_R = {
+// Part of Android R platform, but mainlined in S
+static const set<string> PLATFORM_ONLY_IN_R = {
     PLATFORM "map_offload_tether_ingress_map",
     PLATFORM "map_offload_tether_limit_map",
     PLATFORM "map_offload_tether_stats_map",
@@ -54,7 +54,8 @@ static const set<string> INTRODUCED_R = {
     PLATFORM "prog_offload_schedcls_ingress_tether_rawip",
 };
 
-static const set<string> INTRODUCED_S = {
+// Provided by *current* mainline module for S+ devices
+static const set<string> MAINLINE_FOR_S_PLUS = {
     TETHERING "map_offload_tether_dev_map",
     TETHERING "map_offload_tether_downstream4_map",
     TETHERING "map_offload_tether_downstream64_map",
@@ -64,6 +65,7 @@ static const set<string> INTRODUCED_S = {
     TETHERING "map_offload_tether_stats_map",
     TETHERING "map_offload_tether_upstream4_map",
     TETHERING "map_offload_tether_upstream6_map",
+    TETHERING "map_test_bitmap",
     TETHERING "map_test_tether_downstream6_map",
     TETHERING "prog_offload_schedcls_tether_downstream4_ether",
     TETHERING "prog_offload_schedcls_tether_downstream4_rawip",
@@ -75,61 +77,83 @@ static const set<string> INTRODUCED_S = {
     TETHERING "prog_offload_schedcls_tether_upstream6_rawip",
 };
 
-static const set<string> REMOVED_S = {
-    PLATFORM "map_offload_tether_ingress_map",
-    PLATFORM "map_offload_tether_limit_map",
-    PLATFORM "map_offload_tether_stats_map",
-    PLATFORM "prog_offload_schedcls_ingress_tether_ether",
-    PLATFORM "prog_offload_schedcls_ingress_tether_rawip",
+// Provided by *current* mainline module for S+ devices with 5.10+ kernels
+static const set<string> MAINLINE_FOR_S_5_10_PLUS = {
+    TETHERING "prog_test_xdp_drop_ipv4_udp_ether",
 };
 
-static const set<string> INTRODUCED_T = {
+// Provided by *current* mainline module for T+ devices
+static const set<string> MAINLINE_FOR_T_PLUS = {
+    SHARED "map_block_blocked_ports_map",
+    SHARED "map_clatd_clat_egress4_map",
+    SHARED "map_clatd_clat_ingress6_map",
+    SHARED "map_dscpPolicy_ipv4_dscp_policies_map",
+    SHARED "map_dscpPolicy_ipv6_dscp_policies_map",
+    SHARED "map_dscpPolicy_socket_policy_cache_map",
+    NETD "map_netd_app_uid_stats_map",
+    NETD "map_netd_configuration_map",
+    NETD "map_netd_cookie_tag_map",
+    NETD "map_netd_iface_index_name_map",
+    NETD "map_netd_iface_stats_map",
+    NETD "map_netd_stats_map_A",
+    NETD "map_netd_stats_map_B",
+    NETD "map_netd_uid_counterset_map",
+    NETD "map_netd_uid_owner_map",
+    NETD "map_netd_uid_permission_map",
+    SHARED "prog_clatd_schedcls_egress4_clat_ether",
+    SHARED "prog_clatd_schedcls_egress4_clat_rawip",
+    SHARED "prog_clatd_schedcls_ingress6_clat_ether",
+    SHARED "prog_clatd_schedcls_ingress6_clat_rawip",
+    NETD "prog_netd_cgroupskb_egress_stats",
+    NETD "prog_netd_cgroupskb_ingress_stats",
+    NETD "prog_netd_cgroupsock_inet_create",
+    NETD "prog_netd_schedact_ingress_account",
+    NETD "prog_netd_skfilter_allowlist_xtbpf",
+    NETD "prog_netd_skfilter_denylist_xtbpf",
+    NETD "prog_netd_skfilter_egress_xtbpf",
+    NETD "prog_netd_skfilter_ingress_xtbpf",
 };
 
-static const set<string> REMOVED_T = {
+// Provided by *current* mainline module for T+ devices with 5.4+ kernels
+static const set<string> MAINLINE_FOR_T_5_4_PLUS = {
+    SHARED "prog_block_bind4_block_port",
+    SHARED "prog_block_bind6_block_port",
+};
+
+// Provided by *current* mainline module for T+ devices with 5.15+ kernels
+static const set<string> MAINLINE_FOR_T_5_15_PLUS = {
+    SHARED "prog_dscpPolicy_schedcls_set_dscp_ether",
 };
 
 void addAll(set<string>* a, const set<string>& b) {
     a->insert(b.begin(), b.end());
 }
 
-void removeAll(set<string>* a, const set<string>& b) {
-    for (const auto& toRemove : b) {
-        a->erase(toRemove);
-    }
-}
+#define DO_EXPECT(B, V) do { \
+    if (B) addAll(expected, (V)); else addAll(unexpected, (V)); \
+} while (0)
 
 void getFileLists(set<string>* expected, set<string>* unexpected) {
     unexpected->clear();
     expected->clear();
 
-    addAll(unexpected, INTRODUCED_R);
-    addAll(unexpected, INTRODUCED_S);
-    addAll(unexpected, INTRODUCED_T);
+    // We do not actually check the platform P/Q (netd) and Q (clatd) things
+    // and only verify the mainline module relevant R+ offload maps & progs.
+    //
+    // The goal of this test is to verify compatibility with the tethering mainline module,
+    // and not to test the platform itself, which may have been modified by vendor or oems,
+    // so we should only test for the removal of stuff that was mainline'd,
+    // and for the presence of mainline stuff.
+    DO_EXPECT(IsAtLeastR() && !IsAtLeastS(), PLATFORM_ONLY_IN_R);
 
-    if (IsAtLeastR()) {
-        addAll(expected, INTRODUCED_R);
-        removeAll(unexpected, INTRODUCED_R);
-        // Nothing removed in R.
-    }
-
-    if (IsAtLeastS()) {
-        addAll(expected, INTRODUCED_S);
-        removeAll(expected, REMOVED_S);
-
-        addAll(unexpected, REMOVED_S);
-        removeAll(unexpected, INTRODUCED_S);
-    }
+    DO_EXPECT(IsAtLeastS(), MAINLINE_FOR_S_PLUS);
+    DO_EXPECT(IsAtLeastS() && isAtLeastKernelVersion(5, 10, 0), MAINLINE_FOR_S_5_10_PLUS);
 
     // Nothing added or removed in SCv2.
 
-    if (IsAtLeastT()) {
-        addAll(expected, INTRODUCED_T);
-        removeAll(expected, REMOVED_T);
-
-        addAll(unexpected, REMOVED_T);
-        removeAll(unexpected, INTRODUCED_T);
-    }
+    DO_EXPECT(IsAtLeastT(), MAINLINE_FOR_T_PLUS);
+    DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(5, 4, 0), MAINLINE_FOR_T_5_4_PLUS);
+    DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(5, 15, 0), MAINLINE_FOR_T_5_15_PLUS);
 }
 
 void checkFiles() {

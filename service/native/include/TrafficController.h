@@ -45,11 +45,6 @@ class TrafficController {
      */
     netdutils::Status swapActiveStatsMap() EXCLUDES(mMutex);
 
-    /*
-     * Add the interface name and index pair into the eBPF map.
-     */
-    int addInterface(const char* name, uint32_t ifaceIndex);
-
     int changeUidOwnerRule(ChildChain chain, const uid_t uid, FirewallRule rule, FirewallType type);
 
     int removeUidOwnerRule(const uid_t uid);
@@ -71,6 +66,8 @@ class TrafficController {
             EXCLUDES(mMutex);
     netdutils::Status removeUidInterfaceRules(const std::vector<int32_t>& uids) EXCLUDES(mMutex);
 
+    netdutils::Status updateUidLockdownRule(const uid_t uid, const bool add) EXCLUDES(mMutex);
+
     netdutils::Status updateUidOwnerMap(const uint32_t uid,
                                         UidOwnerMatchType matchType, IptOp op) EXCLUDES(mMutex);
 
@@ -88,6 +85,9 @@ class TrafficController {
     static const char* LOCAL_POWERSAVE;
     static const char* LOCAL_RESTRICTED;
     static const char* LOCAL_LOW_POWER_STANDBY;
+    static const char* LOCAL_OEM_DENY_1;
+    static const char* LOCAL_OEM_DENY_2;
+    static const char* LOCAL_OEM_DENY_3;
 
   private:
     /*
@@ -149,13 +149,13 @@ class TrafficController {
      * the map right now:
      * - Entry with UID_RULES_CONFIGURATION_KEY:
      *    Store the configuration for the current uid rules. It indicates the device
-     *    is in doze/powersave/standby/restricted/low power standby mode.
+     *    is in doze/powersave/standby/restricted/low power standby/oem deny mode.
      * - Entry with CURRENT_STATS_MAP_CONFIGURATION_KEY:
      *    Stores the current live stats map that kernel program is writing to.
      *    Userspace can do scraping and cleaning job on the other one depending on the
      *    current configs.
      */
-    bpf::BpfMap<uint32_t, uint8_t> mConfigurationMap GUARDED_BY(mMutex);
+    bpf::BpfMap<uint32_t, uint32_t> mConfigurationMap GUARDED_BY(mMutex);
 
     /*
      * mUidOwnerMap: Store uids that are used for bandwidth control uid match.
@@ -181,8 +181,6 @@ class TrafficController {
     // Keep track of uids that have permission UPDATE_DEVICE_STATS so we don't
     // need to call back to system server for permission check.
     std::set<uid_t> mPrivilegedUser GUARDED_BY(mMutex);
-
-    bool hasUpdateDeviceStatsPermission(uid_t uid) REQUIRES(mMutex);
 
     // For testing
     friend class TrafficControllerTest;

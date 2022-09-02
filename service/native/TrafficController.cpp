@@ -56,7 +56,6 @@ using base::unique_fd;
 using bpf::BpfMap;
 using bpf::synchronizeKernelRCU;
 using netdutils::DumpWriter;
-using netdutils::getIfaceList;
 using netdutils::NetlinkListener;
 using netdutils::NetlinkListenerInterface;
 using netdutils::ScopedIndent;
@@ -74,6 +73,9 @@ const char* TrafficController::LOCAL_STANDBY = "fw_standby";
 const char* TrafficController::LOCAL_POWERSAVE = "fw_powersave";
 const char* TrafficController::LOCAL_RESTRICTED = "fw_restricted";
 const char* TrafficController::LOCAL_LOW_POWER_STANDBY = "fw_low_power_standby";
+const char* TrafficController::LOCAL_OEM_DENY_1 = "fw_oem_deny_1";
+const char* TrafficController::LOCAL_OEM_DENY_2 = "fw_oem_deny_2";
+const char* TrafficController::LOCAL_OEM_DENY_3 = "fw_oem_deny_3";
 
 static_assert(BPF_PERMISSION_INTERNET == INetd::PERMISSION_INTERNET,
               "Mismatch between BPF and AIDL permissions: PERMISSION_INTERNET");
@@ -88,7 +90,7 @@ static_assert(BPF_PERMISSION_UPDATE_DEVICE_STATS == INetd::PERMISSION_UPDATE_DEV
         }                                   \
     } while (0)
 
-const std::string uidMatchTypeToString(uint8_t match) {
+const std::string uidMatchTypeToString(uint32_t match) {
     std::string matchType;
     FLAG_MSG_TRANS(matchType, HAPPY_BOX_MATCH, match);
     FLAG_MSG_TRANS(matchType, PENALTY_BOX_MATCH, match);
@@ -98,18 +100,14 @@ const std::string uidMatchTypeToString(uint8_t match) {
     FLAG_MSG_TRANS(matchType, RESTRICTED_MATCH, match);
     FLAG_MSG_TRANS(matchType, LOW_POWER_STANDBY_MATCH, match);
     FLAG_MSG_TRANS(matchType, IIF_MATCH, match);
+    FLAG_MSG_TRANS(matchType, LOCKDOWN_VPN_MATCH, match);
+    FLAG_MSG_TRANS(matchType, OEM_DENY_1_MATCH, match);
+    FLAG_MSG_TRANS(matchType, OEM_DENY_2_MATCH, match);
+    FLAG_MSG_TRANS(matchType, OEM_DENY_3_MATCH, match);
     if (match) {
         return StringPrintf("Unknown match: %u", match);
     }
     return matchType;
-}
-
-bool TrafficController::hasUpdateDeviceStatsPermission(uid_t uid) {
-    // This implementation is the same logic as method ActivityManager#checkComponentPermission.
-    // It implies that the calling uid can never be the same as PER_USER_RANGE.
-    uint32_t appId = uid % PER_USER_RANGE;
-    return ((appId == AID_ROOT) || (appId == AID_SYSTEM) ||
-            mPrivilegedUser.find(appId) != mPrivilegedUser.end());
 }
 
 const std::string UidPermissionTypeToString(int permission) {
@@ -175,30 +173,16 @@ Status TrafficController::initMaps() {
     RETURN_IF_NOT_OK(mIfaceStatsMap.init(IFACE_STATS_MAP_PATH));
 
     RETURN_IF_NOT_OK(mConfigurationMap.init(CONFIGURATION_MAP_PATH));
-    RETURN_IF_NOT_OK(
-            mConfigurationMap.writeValue(UID_RULES_CONFIGURATION_KEY, DEFAULT_CONFIG, BPF_ANY));
-    RETURN_IF_NOT_OK(mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY, SELECT_MAP_A,
-                                                  BPF_ANY));
 
     RETURN_IF_NOT_OK(mUidOwnerMap.init(UID_OWNER_MAP_PATH));
-    RETURN_IF_NOT_OK(mUidOwnerMap.clear());
     RETURN_IF_NOT_OK(mUidPermissionMap.init(UID_PERMISSION_MAP_PATH));
+    ALOGI("%s successfully", __func__);
 
     return netdutils::status::ok;
 }
 
 Status TrafficController::start() {
     RETURN_IF_NOT_OK(initMaps());
-
-    // Fetch the list of currently-existing interfaces. At this point NetlinkHandler is
-    // already running, so it will call addInterface() when any new interface appears.
-    // TODO: Clean-up addInterface() after interface monitoring is in
-    // NetworkStatsService.
-    std::map<std::string, uint32_t> ifacePairs;
-    ASSIGN_OR_RETURN(ifacePairs, getIfaceList());
-    for (const auto& ifacePair:ifacePairs) {
-        addInterface(ifacePair.first.c_str(), ifacePair.second);
-    }
 
     auto result = makeSkDestroyListener();
     if (!isOk(result)) {
@@ -237,22 +221,6 @@ Status TrafficController::start() {
     return netdutils::status::ok;
 }
 
-int TrafficController::addInterface(const char* name, uint32_t ifaceIndex) {
-    IfaceValue iface;
-    if (ifaceIndex == 0) {
-        ALOGE("Unknown interface %s(%d)", name, ifaceIndex);
-        return -1;
-    }
-
-    strlcpy(iface.name, name, sizeof(IfaceValue));
-    Status res = mIfaceIndexNameMap.writeValue(ifaceIndex, iface, BPF_ANY);
-    if (!isOk(res)) {
-        ALOGE("Failed to add iface %s(%d): %s", name, ifaceIndex, strerror(res.code()));
-        return -res.code();
-    }
-    return 0;
-}
-
 Status TrafficController::updateOwnerMapEntry(UidOwnerMatchType match, uid_t uid, FirewallRule rule,
                                               FirewallType type) {
     std::lock_guard guard(mMutex);
@@ -272,7 +240,7 @@ Status TrafficController::removeRule(uint32_t uid, UidOwnerMatchType match) {
     if (oldMatch.ok()) {
         UidOwnerValue newMatch = {
                 .iif = (match == IIF_MATCH) ? 0 : oldMatch.value().iif,
-                .rule = static_cast<uint8_t>(oldMatch.value().rule & ~match),
+                .rule = oldMatch.value().rule & ~match,
         };
         if (newMatch.rule == 0) {
             RETURN_IF_NOT_OK(mUidOwnerMap.deleteValue(uid));
@@ -286,23 +254,20 @@ Status TrafficController::removeRule(uint32_t uid, UidOwnerMatchType match) {
 }
 
 Status TrafficController::addRule(uint32_t uid, UidOwnerMatchType match, uint32_t iif) {
-    // iif should be non-zero if and only if match == MATCH_IIF
-    if (match == IIF_MATCH && iif == 0) {
-        return statusFromErrno(EINVAL, "Interface match must have nonzero interface index");
-    } else if (match != IIF_MATCH && iif != 0) {
+    if (match != IIF_MATCH && iif != 0) {
         return statusFromErrno(EINVAL, "Non-interface match must have zero interface index");
     }
     auto oldMatch = mUidOwnerMap.readValue(uid);
     if (oldMatch.ok()) {
         UidOwnerValue newMatch = {
-                .iif = iif ? iif : oldMatch.value().iif,
-                .rule = static_cast<uint8_t>(oldMatch.value().rule | match),
+                .iif = (match == IIF_MATCH) ? iif : oldMatch.value().iif,
+                .rule = oldMatch.value().rule | match,
         };
         RETURN_IF_NOT_OK(mUidOwnerMap.writeValue(uid, newMatch, BPF_ANY));
     } else {
         UidOwnerValue newMatch = {
                 .iif = iif,
-                .rule = static_cast<uint8_t>(match),
+                .rule = match,
         };
         RETURN_IF_NOT_OK(mUidOwnerMap.writeValue(uid, newMatch, BPF_ANY));
     }
@@ -335,6 +300,12 @@ FirewallType TrafficController::getFirewallType(ChildChain chain) {
             return ALLOWLIST;
         case LOW_POWER_STANDBY:
             return ALLOWLIST;
+        case OEM_DENY_1:
+            return DENYLIST;
+        case OEM_DENY_2:
+            return DENYLIST;
+        case OEM_DENY_3:
+            return DENYLIST;
         case NONE:
         default:
             return DENYLIST;
@@ -359,6 +330,15 @@ int TrafficController::changeUidOwnerRule(ChildChain chain, uid_t uid, FirewallR
             break;
         case LOW_POWER_STANDBY:
             res = updateOwnerMapEntry(LOW_POWER_STANDBY_MATCH, uid, rule, type);
+            break;
+        case OEM_DENY_1:
+            res = updateOwnerMapEntry(OEM_DENY_1_MATCH, uid, rule, type);
+            break;
+        case OEM_DENY_2:
+            res = updateOwnerMapEntry(OEM_DENY_2_MATCH, uid, rule, type);
+            break;
+        case OEM_DENY_3:
+            res = updateOwnerMapEntry(OEM_DENY_3_MATCH, uid, rule, type);
             break;
         case NONE:
         default:
@@ -399,9 +379,6 @@ Status TrafficController::replaceRulesInMap(const UidOwnerMatchType match,
 
 Status TrafficController::addUidInterfaceRules(const int iif,
                                                const std::vector<int32_t>& uidsToAdd) {
-    if (!iif) {
-        return statusFromErrno(EINVAL, "Interface rule must specify interface");
-    }
     std::lock_guard guard(mMutex);
 
     for (auto uid : uidsToAdd) {
@@ -425,6 +402,18 @@ Status TrafficController::removeUidInterfaceRules(const std::vector<int32_t>& ui
     return netdutils::status::ok;
 }
 
+Status TrafficController::updateUidLockdownRule(const uid_t uid, const bool add) {
+    std::lock_guard guard(mMutex);
+
+    netdutils::Status result = add ? addRule(uid, LOCKDOWN_VPN_MATCH)
+                               : removeRule(uid, LOCKDOWN_VPN_MATCH);
+    if (!isOk(result)) {
+        ALOGW("%s Lockdown rule failed(%d): uid=%d",
+              (add ? "add": "remove"), result.code(), uid);
+    }
+    return result;
+}
+
 int TrafficController::replaceUidOwnerMap(const std::string& name, bool isAllowlist __unused,
                                           const std::vector<int32_t>& uids) {
     // FirewallRule rule = isAllowlist ? ALLOW : DENY;
@@ -440,6 +429,12 @@ int TrafficController::replaceUidOwnerMap(const std::string& name, bool isAllowl
         res = replaceRulesInMap(RESTRICTED_MATCH, uids);
     } else if (!name.compare(LOCAL_LOW_POWER_STANDBY)) {
         res = replaceRulesInMap(LOW_POWER_STANDBY_MATCH, uids);
+    } else if (!name.compare(LOCAL_OEM_DENY_1)) {
+        res = replaceRulesInMap(OEM_DENY_1_MATCH, uids);
+    } else if (!name.compare(LOCAL_OEM_DENY_2)) {
+        res = replaceRulesInMap(OEM_DENY_2_MATCH, uids);
+    } else if (!name.compare(LOCAL_OEM_DENY_3)) {
+        res = replaceRulesInMap(OEM_DENY_3_MATCH, uids);
     } else {
         ALOGE("unknown chain name: %s", name.c_str());
         return -EINVAL;
@@ -454,15 +449,13 @@ int TrafficController::replaceUidOwnerMap(const std::string& name, bool isAllowl
 int TrafficController::toggleUidOwnerMap(ChildChain chain, bool enable) {
     std::lock_guard guard(mMutex);
     uint32_t key = UID_RULES_CONFIGURATION_KEY;
-    auto oldConfiguration = mConfigurationMap.readValue(key);
-    if (!oldConfiguration.ok()) {
+    auto oldConfigure = mConfigurationMap.readValue(key);
+    if (!oldConfigure.ok()) {
         ALOGE("Cannot read the old configuration from map: %s",
-              oldConfiguration.error().message().c_str());
-        return -oldConfiguration.error().code();
+              oldConfigure.error().message().c_str());
+        return -oldConfigure.error().code();
     }
-    Status res;
-    BpfConfig newConfiguration;
-    uint8_t match;
+    uint32_t match;
     switch (chain) {
         case DOZABLE:
             match = DOZABLE_MATCH;
@@ -479,12 +472,21 @@ int TrafficController::toggleUidOwnerMap(ChildChain chain, bool enable) {
         case LOW_POWER_STANDBY:
             match = LOW_POWER_STANDBY_MATCH;
             break;
+        case OEM_DENY_1:
+            match = OEM_DENY_1_MATCH;
+            break;
+        case OEM_DENY_2:
+            match = OEM_DENY_2_MATCH;
+            break;
+        case OEM_DENY_3:
+            match = OEM_DENY_3_MATCH;
+            break;
         default:
             return -EINVAL;
     }
-    newConfiguration =
-            enable ? (oldConfiguration.value() | match) : (oldConfiguration.value() & (~match));
-    res = mConfigurationMap.writeValue(key, newConfiguration, BPF_EXIST);
+    BpfConfig newConfiguration =
+            enable ? (oldConfigure.value() | match) : (oldConfigure.value() & ~match);
+    Status res = mConfigurationMap.writeValue(key, newConfiguration, BPF_EXIST);
     if (!isOk(res)) {
         ALOGE("Failed to toggleUidOwnerMap(%d): %s", chain, res.msg().c_str());
     }
@@ -495,17 +497,17 @@ Status TrafficController::swapActiveStatsMap() {
     std::lock_guard guard(mMutex);
 
     uint32_t key = CURRENT_STATS_MAP_CONFIGURATION_KEY;
-    auto oldConfiguration = mConfigurationMap.readValue(key);
-    if (!oldConfiguration.ok()) {
+    auto oldConfigure = mConfigurationMap.readValue(key);
+    if (!oldConfigure.ok()) {
         ALOGE("Cannot read the old configuration from map: %s",
-              oldConfiguration.error().message().c_str());
-        return Status(oldConfiguration.error().code(), oldConfiguration.error().message());
+              oldConfigure.error().message().c_str());
+        return Status(oldConfigure.error().code(), oldConfigure.error().message());
     }
 
     // Write to the configuration map to inform the kernel eBPF program to switch
     // from using one map to the other. Use flag BPF_EXIST here since the map should
     // be already populated in initMaps.
-    uint8_t newConfigure = (oldConfiguration.value() == SELECT_MAP_A) ? SELECT_MAP_B : SELECT_MAP_A;
+    uint32_t newConfigure = (oldConfigure.value() == SELECT_MAP_A) ? SELECT_MAP_B : SELECT_MAP_A;
     auto res = mConfigurationMap.writeValue(CURRENT_STATS_MAP_CONFIGURATION_KEY, newConfigure,
                                             BPF_EXIST);
     if (!res.ok()) {
@@ -570,17 +572,6 @@ void TrafficController::setPermissionForUids(int permission, const std::vector<u
     }
 }
 
-std::string getProgramStatus(const char *path) {
-    int ret = access(path, R_OK);
-    if (ret == 0) {
-        return StringPrintf("OK");
-    }
-    if (ret != 0 && errno == ENOENT) {
-        return StringPrintf("program is missing at: %s", path);
-    }
-    return StringPrintf("check Program %s error: %s", path, strerror(errno));
-}
-
 std::string getMapStatus(const base::unique_fd& map_fd, const char* path) {
     if (map_fd.get() < 0) {
         return StringPrintf("map fd lost");
@@ -629,19 +620,6 @@ void TrafficController::dump(int fd, bool verbose) {
     dw.println("mUidOwnerMap status: %s",
                getMapStatus(mUidOwnerMap.getMap(), UID_OWNER_MAP_PATH).c_str());
 
-    dw.blankline();
-    dw.println("Cgroup ingress program status: %s",
-               getProgramStatus(BPF_INGRESS_PROG_PATH).c_str());
-    dw.println("Cgroup egress program status: %s", getProgramStatus(BPF_EGRESS_PROG_PATH).c_str());
-    dw.println("xt_bpf ingress program status: %s",
-               getProgramStatus(XT_BPF_INGRESS_PROG_PATH).c_str());
-    dw.println("xt_bpf egress program status: %s",
-               getProgramStatus(XT_BPF_EGRESS_PROG_PATH).c_str());
-    dw.println("xt_bpf bandwidth allowlist program status: %s",
-               getProgramStatus(XT_BPF_ALLOWLIST_PROG_PATH).c_str());
-    dw.println("xt_bpf bandwidth denylist program status: %s",
-               getProgramStatus(XT_BPF_DENYLIST_PROG_PATH).c_str());
-
     if (!verbose) {
         return;
     }
@@ -652,6 +630,8 @@ void TrafficController::dump(int fd, bool verbose) {
     ScopedIndent indentForMapContent(dw);
 
     // Print CookieTagMap content.
+    // TagSocketTest in CTS was using the output of mCookieTagMap dump.
+    // So, mCookieTagMap dump can not be removed until the previous CTS support period is over.
     dumpBpfMap("mCookieTagMap", dw, "");
     const auto printCookieTagInfo = [&dw](const uint64_t& key, const UidTagValue& value,
                                           const BpfMap<uint64_t, UidTagValue>&) {
@@ -663,31 +643,6 @@ void TrafficController::dump(int fd, bool verbose) {
         dw.println("mCookieTagMap print end with error: %s", res.error().message().c_str());
     }
 
-    // Print UidCounterSetMap content.
-    dumpBpfMap("mUidCounterSetMap", dw, "");
-    const auto printUidInfo = [&dw](const uint32_t& key, const uint8_t& value,
-                                    const BpfMap<uint32_t, uint8_t>&) {
-        dw.println("%u %u", key, value);
-        return base::Result<void>();
-    };
-    res = mUidCounterSetMap.iterateWithValue(printUidInfo);
-    if (!res.ok()) {
-        dw.println("mUidCounterSetMap print end with error: %s", res.error().message().c_str());
-    }
-
-    // Print AppUidStatsMap content.
-    std::string appUidStatsHeader = StringPrintf("uid rxBytes rxPackets txBytes txPackets");
-    dumpBpfMap("mAppUidStatsMap:", dw, appUidStatsHeader);
-    auto printAppUidStatsInfo = [&dw](const uint32_t& key, const StatsValue& value,
-                                      const BpfMap<uint32_t, StatsValue>&) {
-        dw.println("%u %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64, key, value.rxBytes,
-                   value.rxPackets, value.txBytes, value.txPackets);
-        return base::Result<void>();
-    };
-    res = mAppUidStatsMap.iterateWithValue(printAppUidStatsInfo);
-    if (!res.ok()) {
-        dw.println("mAppUidStatsMap print end with error: %s", res.error().message().c_str());
-    }
 
     // Print uidStatsMap content.
     std::string statsHeader = StringPrintf("ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes"

@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import static android.net.TestNetworkManager.CLAT_INTERFACE_PREFIX;
 import static android.net.TestNetworkManager.TEST_TAP_PREFIX;
 import static android.net.TestNetworkManager.TEST_TUN_PREFIX;
 
@@ -46,9 +47,9 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.NetworkStackConstants;
 
+import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -75,7 +76,13 @@ class TestNetworkService extends ITestNetworkManager.Stub {
     @NonNull private final NetworkProvider mNetworkProvider;
 
     // Native method stubs
-    private static native int jniCreateTunTap(boolean isTun, @NonNull String iface);
+    private static native int nativeCreateTunTap(boolean isTun, boolean hasCarrier,
+            boolean setIffMulticast, @NonNull String iface);
+
+    private static native void nativeSetTunTapCarrierEnabled(@NonNull String iface, int tunFd,
+            boolean enabled);
+
+    private static native void nativeBringUpInterface(String iface);
 
     @VisibleForTesting
     protected TestNetworkService(@NonNull Context context) {
@@ -98,6 +105,14 @@ class TestNetworkService extends ITestNetworkManager.Stub {
         }
     }
 
+    // TODO: find a way to allow the caller to pass in non-clat interface names, ensuring that
+    // those names do not conflict with names created by callers that do not pass in an interface
+    // name.
+    private static boolean isValidInterfaceName(@NonNull final String iface) {
+        return iface.startsWith(CLAT_INTERFACE_PREFIX + TEST_TUN_PREFIX)
+                || iface.startsWith(CLAT_INTERFACE_PREFIX + TEST_TAP_PREFIX);
+    }
+
     /**
      * Create a TUN or TAP interface with the specified parameters.
      *
@@ -105,30 +120,50 @@ class TestNetworkService extends ITestNetworkManager.Stub {
      * interface.
      */
     @Override
-    public TestNetworkInterface createInterface(boolean isTun, boolean bringUp,
-            LinkAddress[] linkAddrs) {
+    public TestNetworkInterface createInterface(boolean isTun, boolean hasCarrier, boolean bringUp,
+            boolean disableIpv6ProvisioningDelay, LinkAddress[] linkAddrs, @Nullable String iface) {
         enforceTestNetworkPermissions(mContext);
 
         Objects.requireNonNull(linkAddrs, "missing linkAddrs");
 
-        String ifacePrefix = isTun ? TEST_TUN_PREFIX : TEST_TAP_PREFIX;
-        String iface = ifacePrefix + sTestTunIndex.getAndIncrement();
+        String interfaceName = iface;
+        if (iface == null) {
+            String ifacePrefix = isTun ? TEST_TUN_PREFIX : TEST_TAP_PREFIX;
+            interfaceName = ifacePrefix + sTestTunIndex.getAndIncrement();
+        } else if (!isValidInterfaceName(iface)) {
+            throw new IllegalArgumentException("invalid interface name requested: " + iface);
+        }
+
         final long token = Binder.clearCallingIdentity();
         try {
-            ParcelFileDescriptor tunIntf =
-                    ParcelFileDescriptor.adoptFd(jniCreateTunTap(isTun, iface));
+            // Note: if the interface is brought up by ethernet, setting IFF_MULTICAST
+            // races NetUtils#setInterfaceUp(). This flag is not necessary for ethernet
+            // tests, so let's not set it when bringUp is false. See also b/242343156.
+            // In the future, we could use RTM_SETLINK with ifi_change set to set the
+            // flags atomically.
+            final boolean setIffMulticast = bringUp;
+            ParcelFileDescriptor tunIntf = ParcelFileDescriptor.adoptFd(
+                    nativeCreateTunTap(isTun, hasCarrier, setIffMulticast, interfaceName));
+
+            // Disable DAD and remove router_solicitation_delay before assigning link addresses.
+            if (disableIpv6ProvisioningDelay) {
+                mNetd.setProcSysNet(
+                        INetd.IPV6, INetd.CONF, interfaceName, "router_solicitation_delay", "0");
+                mNetd.setProcSysNet(INetd.IPV6, INetd.CONF, interfaceName, "dad_transmits", "0");
+            }
+
             for (LinkAddress addr : linkAddrs) {
                 mNetd.interfaceAddAddress(
-                        iface,
+                        interfaceName,
                         addr.getAddress().getHostAddress(),
                         addr.getPrefixLength());
             }
 
             if (bringUp) {
-                NetdUtils.setInterfaceUp(mNetd, iface);
+                nativeBringUpInterface(interfaceName);
             }
 
-            return new TestNetworkInterface(tunIntf, iface);
+            return new TestNetworkInterface(tunIntf, interfaceName);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         } finally {
@@ -231,6 +266,7 @@ class TestNetworkService extends ITestNetworkManager.Stub {
         nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED);
         nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED);
         nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED);
+        nc.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN);
         nc.setNetworkSpecifier(new TestNetworkSpecifier(iface));
         nc.setAdministratorUids(administratorUids);
         if (!isMetered) {
@@ -358,5 +394,21 @@ class TestNetworkService extends ITestNetworkManager.Stub {
 
     public static void enforceTestNetworkPermissions(@NonNull Context context) {
         context.enforceCallingOrSelfPermission(PERMISSION_NAME, "TestNetworkService");
+    }
+
+    /** Enable / disable TestNetworkInterface carrier */
+    @Override
+    public void setCarrierEnabled(@NonNull TestNetworkInterface iface, boolean enabled) {
+        enforceTestNetworkPermissions(mContext);
+        nativeSetTunTapCarrierEnabled(iface.getInterfaceName(), iface.getFileDescriptor().getFd(),
+                enabled);
+        // Explicitly close fd after use to prevent StrictMode from complaining.
+        // Also, explicitly referencing iface guarantees that the object is not garbage collected
+        // before nativeSetTunTapCarrierEnabled() executes.
+        try {
+            iface.getFileDescriptor().close();
+        } catch (IOException e) {
+            // if the close fails, there is not much that can be done -- move on.
+        }
     }
 }

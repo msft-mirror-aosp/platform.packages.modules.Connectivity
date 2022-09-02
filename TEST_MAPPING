@@ -3,6 +3,10 @@
     {
       "name": "ConnectivityCoverageTests"
     },
+    {
+      // In addition to ConnectivityCoverageTests, runs non-connectivity-module tests
+      "name": "FrameworksNetTests"
+    },
     // Run in addition to mainline-presubmit as mainline-presubmit is not
     // supported in every branch.
     // CtsNetTestCasesLatestSdk uses stable API shims, so does not exercise
@@ -18,8 +22,49 @@
         }
       ]
     },
+    // Also run CtsNetTestCasesLatestSdk to ensure tests using older shims pass.
+    {
+      "name": "CtsNetTestCasesLatestSdk",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    // CTS tests that target older SDKs.
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk30",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk31",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
     {
       "name": "bpf_existence_test"
+    },
+    {
+      "name": "connectivity_native_test"
+    },
+    {
+      "name": "libclat_test"
     },
     {
       "name": "netd_updatable_unit_test"
@@ -49,14 +94,8 @@
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
     },
     {
-      "name": "libclat_test"
-    },
-    {
       "name": "traffic_controller_unit_test",
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
-    },
-    {
-      "name": "libnetworkstats_test"
     },
     {
       "name": "FrameworksNetDeflakeTest"
@@ -75,7 +114,32 @@
       ]
     },
     {
+      "name": "CtsNetTestCasesMaxTargetSdk30[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk31[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
       "name": "bpf_existence_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
+    },
+    {
+      "name": "connectivity_native_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
     },
     {
       "name": "netd_updatable_unit_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
@@ -127,26 +191,6 @@
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
         }
       ]
-    },
-    {
-      "name": "TetheringCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
-    }
-  ],
-  "auto-postsubmit": [
-    // Test tag for automotive targets. These are only running in postsubmit so as to harden the
-    // automotive targets to avoid introducing additional test flake and build time. The plan for
-    // presubmit testing for auto is to augment the existing tests to cover auto use cases as well.
-    // Additionally, this tag is used in targeted test suites to limit resource usage on the test
-    // infra during the hardening phase.
-    // TODO: this tag to be removed once the above is no longer an issue.
-    {
-      "name": "FrameworksNetTests"
-    },
-    {
-      "name": "FrameworksNetIntegrationTests"
-    },
-    {
-      "name": "FrameworksNetDeflakeTest"
     }
   ],
   "imports": [

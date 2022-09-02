@@ -192,7 +192,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Bitfield representing the network's enterprise capability identifier.  If any are specified
      * they will be satisfied by any Network that matches all of them.
-     * {@see addEnterpriseId} for details on how masks are added
+     * See {@link #addEnterpriseId(int)} for details on how masks are added
      */
     private int mEnterpriseId;
 
@@ -863,8 +863,11 @@ public final class NetworkCapabilities implements Parcelable {
     }
 
     /**
-     * Get the underlying networks of this network. If the caller is not system privileged, this is
-     * always redacted to null and it will be never useful to the caller.
+     * Get the underlying networks of this network. If the caller doesn't have one of
+     * {@link android.Manifest.permission.NETWORK_FACTORY},
+     * {@link android.Manifest.permission.NETWORK_SETTINGS} and
+     * {@link NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}, this is always redacted to null and
+     * it will be never useful to the caller.
      *
      * @return <li>If the list is null, this network hasn't declared underlying networks.</li>
      *         <li>If the list is empty, this network has declared that it has no underlying
@@ -1457,7 +1460,7 @@ public final class NetworkCapabilities implements Parcelable {
      * Sets the upstream bandwidth for this network in Kbps.  This always only refers to
      * the estimated first hop transport bandwidth.
      * <p>
-     * {@see Builder#setLinkUpstreamBandwidthKbps}
+     * @see Builder#setLinkUpstreamBandwidthKbps
      *
      * @param upKbps the estimated first hop upstream (device to network) bandwidth.
      * @hide
@@ -1481,7 +1484,7 @@ public final class NetworkCapabilities implements Parcelable {
      * Sets the downstream bandwidth for this network in Kbps.  This always only refers to
      * the estimated first hop transport bandwidth.
      * <p>
-     * {@see Builder#setLinkUpstreamBandwidthKbps}
+     * @see Builder#setLinkUpstreamBandwidthKbps
      *
      * @param downKbps the estimated first hop downstream (network to device) bandwidth.
      * @hide
@@ -2531,7 +2534,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Set the uid and package name of the app causing this network to exist.
      *
-     * {@see #setRequestorUid} and {@link #setRequestorPackageName}
+     * See {@link #setRequestorUid} and {@link #setRequestorPackageName}
      *
      * @param uid UID of the app.
      * @param packageName package name of the app.
@@ -2650,7 +2653,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Builder class for NetworkCapabilities.
      *
-     * This class is mainly for for {@link NetworkAgent} instances to use. Many fields in
+     * This class is mainly for {@link NetworkAgent} instances to use. Many fields in
      * the built class require holding a signature permission to use - mostly
      * {@link android.Manifest.permission.NETWORK_FACTORY}, but refer to the specific
      * description of each setter. As this class lives entirely in app space it does not
@@ -2716,7 +2719,7 @@ public final class NetworkCapabilities implements Parcelable {
         /**
          * Removes the given transport type.
          *
-         * {@see #addTransportType}.
+         * @see #addTransportType
          *
          * @param transportType the transport type to be added or removed.
          * @return this builder
@@ -3040,7 +3043,7 @@ public final class NetworkCapabilities implements Parcelable {
          * <p>
          * This list cannot be null, but it can be empty to mean that no UID without the
          * {@link android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS} permission
-         * gets to access this network.
+         * can access this network.
          *
          * @param uids the list of UIDs that can always access this network
          * @return this builder
@@ -3058,9 +3061,20 @@ public final class NetworkCapabilities implements Parcelable {
         /**
          * Set the underlying networks of this network.
          *
+         * <p>This API is mainly for {@link NetworkAgent}s who hold
+         * {@link android.Manifest.permission.NETWORK_FACTORY} to set its underlying networks.
+         *
+         * <p>The underlying networks are only visible for the receiver who has one of
+         * {@link android.Manifest.permission.NETWORK_FACTORY},
+         * {@link android.Manifest.permission.NETWORK_SETTINGS} and
+         * {@link NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}.
+         * If the receiver doesn't have required permissions, the field will be cleared before
+         * sending to the caller.</p>
+         *
          * @param networks The underlying networks of this network.
          */
         @NonNull
+        @RequiresPermission(android.Manifest.permission.NETWORK_FACTORY)
         public Builder setUnderlyingNetworks(@Nullable List<Network> networks) {
             mCaps.setUnderlyingNetworks(networks);
             return this;

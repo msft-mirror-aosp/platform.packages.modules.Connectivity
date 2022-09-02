@@ -104,12 +104,6 @@ package android.net {
     field @NonNull public static final android.os.Parcelable.Creator<android.net.DscpPolicy> CREATOR;
     field public static final int PROTOCOL_ANY = -1; // 0xffffffff
     field public static final int SOURCE_PORT_ANY = -1; // 0xffffffff
-    field public static final int STATUS_DELETED = 4; // 0x4
-    field public static final int STATUS_INSUFFICIENT_PROCESSING_RESOURCES = 3; // 0x3
-    field public static final int STATUS_POLICY_NOT_FOUND = 5; // 0x5
-    field public static final int STATUS_REQUESTED_CLASSIFIER_NOT_SUPPORTED = 2; // 0x2
-    field public static final int STATUS_REQUEST_DECLINED = 1; // 0x1
-    field public static final int STATUS_SUCCESS = 0; // 0x0
   }
 
   public static final class DscpPolicy.Builder {
@@ -255,10 +249,10 @@ package android.net {
     method public void onValidationStatus(int, @Nullable android.net.Uri);
     method @NonNull public android.net.Network register();
     method public void sendAddDscpPolicy(@NonNull android.net.DscpPolicy);
-    method public final void sendLinkProperties(@NonNull android.net.LinkProperties);
-    method public final void sendNetworkCapabilities(@NonNull android.net.NetworkCapabilities);
-    method public final void sendNetworkScore(@NonNull android.net.NetworkScore);
-    method public final void sendNetworkScore(@IntRange(from=0, to=99) int);
+    method public void sendLinkProperties(@NonNull android.net.LinkProperties);
+    method public void sendNetworkCapabilities(@NonNull android.net.NetworkCapabilities);
+    method public void sendNetworkScore(@NonNull android.net.NetworkScore);
+    method public void sendNetworkScore(@IntRange(from=0, to=99) int);
     method public final void sendQosCallbackError(int, int);
     method public final void sendQosSessionAvailable(int, int, @NonNull android.net.QosSessionAttributes);
     method public final void sendQosSessionLost(int, int, int);
@@ -268,9 +262,15 @@ package android.net {
     method @Deprecated public void setLegacySubtype(int, @NonNull String);
     method public void setLingerDuration(@NonNull java.time.Duration);
     method public void setTeardownDelayMillis(@IntRange(from=0, to=0x1388) int);
-    method public final void setUnderlyingNetworks(@Nullable java.util.List<android.net.Network>);
+    method public void setUnderlyingNetworks(@Nullable java.util.List<android.net.Network>);
     method public void unregister();
     method public void unregisterAfterReplacement(@IntRange(from=0, to=0x1388) int);
+    field public static final int DSCP_POLICY_STATUS_DELETED = 4; // 0x4
+    field public static final int DSCP_POLICY_STATUS_INSUFFICIENT_PROCESSING_RESOURCES = 3; // 0x3
+    field public static final int DSCP_POLICY_STATUS_POLICY_NOT_FOUND = 5; // 0x5
+    field public static final int DSCP_POLICY_STATUS_REQUESTED_CLASSIFIER_NOT_SUPPORTED = 2; // 0x2
+    field public static final int DSCP_POLICY_STATUS_REQUEST_DECLINED = 1; // 0x1
+    field public static final int DSCP_POLICY_STATUS_SUCCESS = 0; // 0x0
     field public static final int VALIDATION_STATUS_NOT_VALID = 2; // 0x2
     field public static final int VALIDATION_STATUS_VALID = 1; // 0x1
   }
@@ -340,7 +340,7 @@ package android.net {
     method @NonNull @RequiresPermission(android.Manifest.permission.NETWORK_FACTORY) public android.net.NetworkCapabilities.Builder setSsid(@Nullable String);
     method @NonNull public android.net.NetworkCapabilities.Builder setSubscriptionIds(@NonNull java.util.Set<java.lang.Integer>);
     method @NonNull public android.net.NetworkCapabilities.Builder setTransportInfo(@Nullable android.net.TransportInfo);
-    method @NonNull public android.net.NetworkCapabilities.Builder setUnderlyingNetworks(@Nullable java.util.List<android.net.Network>);
+    method @NonNull @RequiresPermission(android.Manifest.permission.NETWORK_FACTORY) public android.net.NetworkCapabilities.Builder setUnderlyingNetworks(@Nullable java.util.List<android.net.Network>);
     method @NonNull public static android.net.NetworkCapabilities.Builder withoutDefaultCapabilities();
   }
 

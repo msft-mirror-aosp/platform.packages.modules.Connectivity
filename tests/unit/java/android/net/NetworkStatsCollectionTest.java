@@ -18,6 +18,10 @@ package android.net;
 
 import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.NetworkIdentity.OEM_NONE;
+import static android.net.NetworkStats.DEFAULT_NETWORK_NO;
+import static android.net.NetworkStats.IFACE_ALL;
+import static android.net.NetworkStats.METERED_NO;
+import static android.net.NetworkStats.ROAMING_NO;
 import static android.net.NetworkStats.SET_ALL;
 import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.TAG_NONE;
@@ -37,6 +41,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
 
+import android.annotation.NonNull;
 import android.content.res.Resources;
 import android.net.NetworkStatsCollection.Key;
 import android.os.Process;
@@ -76,6 +81,7 @@ import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Tests for {@link NetworkStatsCollection}.
@@ -478,7 +484,8 @@ public class NetworkStatsCollectionTest {
         ident.add(new NetworkIdentity(ConnectivityManager.TYPE_MOBILE, -1, TEST_IMSI, null,
                 false, true, true, OEM_NONE, TEST_SUBID));
         large.recordData(ident, UID_ALL, SET_ALL, TAG_NONE, TIME_A, TIME_B,
-                new NetworkStats.Entry(12_730_893_164L, 1, 0, 0, 0));
+                new NetworkStats.Entry(IFACE_ALL, UID_ALL, SET_DEFAULT, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, 12_730_893_164L, 1, 0, 0, 0));
 
         // Verify untouched total
         assertEquals(12_730_893_164L, getHistory(large, null, TIME_A, TIME_C).getTotalBytes());
@@ -534,50 +541,84 @@ public class NetworkStatsCollectionTest {
         assertThrows(ArithmeticException.class, () -> multiplySafeByRational(30, 3, 0));
     }
 
+    private static void assertCollectionEntries(
+            @NonNull Map<Key, NetworkStatsHistory> expectedEntries,
+            @NonNull NetworkStatsCollection collection) {
+        final Map<Key, NetworkStatsHistory> actualEntries = collection.getEntries();
+        assertEquals(expectedEntries.size(), actualEntries.size());
+        for (Key expectedKey : expectedEntries.keySet()) {
+            final NetworkStatsHistory expectedHistory = expectedEntries.get(expectedKey);
+            final NetworkStatsHistory actualHistory = actualEntries.get(expectedKey);
+            assertNotNull(actualHistory);
+            assertEquals(expectedHistory.getEntries(), actualHistory.getEntries());
+            actualEntries.remove(expectedKey);
+        }
+        assertEquals(0, actualEntries.size());
+    }
+
     @Test
-    public void testBuilder() {
-        final Map<Key, NetworkStatsHistory> expectedEntries = new ArrayMap<>();
-        final NetworkStats.Entry entry = new NetworkStats.Entry();
-        final NetworkIdentitySet ident = new NetworkIdentitySet();
-        final Key key1 = new Key(ident, 0, 0, 0);
-        final Key key2 = new Key(ident, 1, 0, 0);
+    public void testRemoveHistoryBefore() {
+        final NetworkIdentity testIdent = new NetworkIdentity.Builder()
+                .setSubscriberId(TEST_IMSI).build();
+        final Key key1 = new Key(Set.of(testIdent), 0, 0, 0);
+        final Key key2 = new Key(Set.of(testIdent), 1, 0, 0);
         final long bucketDuration = 10;
 
+        // Prepare entries for testing, with different bucket start timestamps.
         final NetworkStatsHistory.Entry entry1 = new NetworkStatsHistory.Entry(10, 10, 40,
                 4, 50, 5, 60);
-        final NetworkStatsHistory.Entry entry2 = new NetworkStatsHistory.Entry(30, 10, 3,
+        final NetworkStatsHistory.Entry entry2 = new NetworkStatsHistory.Entry(20, 10, 3,
                 41, 7, 1, 0);
+        final NetworkStatsHistory.Entry entry3 = new NetworkStatsHistory.Entry(30, 10, 1,
+                21, 70, 4, 1);
 
         NetworkStatsHistory history1 = new NetworkStatsHistory.Builder(10, 5)
                 .addEntry(entry1)
                 .addEntry(entry2)
                 .build();
-
-        NetworkStatsHistory history2 = new NetworkStatsHistory(10, 5);
-
-        NetworkStatsCollection actualCollection = new NetworkStatsCollection.Builder(bucketDuration)
+        NetworkStatsHistory history2 = new NetworkStatsHistory.Builder(10, 5)
+                .addEntry(entry2)
+                .addEntry(entry3)
+                .build();
+        NetworkStatsCollection collection = new NetworkStatsCollection.Builder(bucketDuration)
                 .addEntry(key1, history1)
                 .addEntry(key2, history2)
                 .build();
 
-        // The builder will omit any entry with empty history. Thus, history2
-        // is not expected in the result collection.
+        // Verify nothing is removed if the cutoff time is equal to bucketStart.
+        collection.removeHistoryBefore(10);
+        final Map<Key, NetworkStatsHistory> expectedEntries = new ArrayMap<>();
         expectedEntries.put(key1, history1);
+        expectedEntries.put(key2, history2);
+        assertCollectionEntries(expectedEntries, collection);
 
-        final Map<Key, NetworkStatsHistory> actualEntries = actualCollection.getEntries();
+        // Verify entry1 will be removed if its bucket start before to cutoff timestamp.
+        collection.removeHistoryBefore(11);
+        history1 = new NetworkStatsHistory.Builder(10, 5)
+                .addEntry(entry2)
+                .build();
+        history2 = new NetworkStatsHistory.Builder(10, 5)
+                .addEntry(entry2)
+                .addEntry(entry3)
+                .build();
+        final Map<Key, NetworkStatsHistory> cutoff1Entries1 = new ArrayMap<>();
+        cutoff1Entries1.put(key1, history1);
+        cutoff1Entries1.put(key2, history2);
+        assertCollectionEntries(cutoff1Entries1, collection);
 
-        assertEquals(expectedEntries.size(), actualEntries.size());
-        for (Key expectedKey : expectedEntries.keySet()) {
-            final NetworkStatsHistory expectedHistory = expectedEntries.get(expectedKey);
+        // Verify entry2 will be removed if its bucket start covers by cutoff timestamp.
+        collection.removeHistoryBefore(22);
+        history2 = new NetworkStatsHistory.Builder(10, 5)
+                .addEntry(entry3)
+                .build();
+        final Map<Key, NetworkStatsHistory> cutoffEntries2 = new ArrayMap<>();
+        // History1 is not expected since the collection will omit empty entries.
+        cutoffEntries2.put(key2, history2);
+        assertCollectionEntries(cutoffEntries2, collection);
 
-            final NetworkStatsHistory actualHistory = actualEntries.get(expectedKey);
-            assertNotNull(actualHistory);
-
-            assertEquals(expectedHistory.getEntries(), actualHistory.getEntries());
-
-            actualEntries.remove(expectedKey);
-        }
-        assertEquals(0, actualEntries.size());
+        // Verify all entries will be removed if cutoff timestamp covers all.
+        collection.removeHistoryBefore(Long.MAX_VALUE);
+        assertEquals(0, collection.getEntries().size());
     }
 
     /**
@@ -623,26 +664,33 @@ public class NetworkStatsCollectionTest {
 
     private static void assertEntry(long rxBytes, long rxPackets, long txBytes, long txPackets,
             NetworkStats.Entry actual) {
-        assertEntry(new NetworkStats.Entry(rxBytes, rxPackets, txBytes, txPackets, 0L), actual);
+        assertEntry(new NetworkStats.Entry(IFACE_ALL, UID_ALL, SET_DEFAULT, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, rxBytes, rxPackets, txBytes, txPackets, 0L),
+                actual);
     }
 
     private static void assertEntry(long rxBytes, long rxPackets, long txBytes, long txPackets,
             NetworkStatsHistory.Entry actual) {
-        assertEntry(new NetworkStats.Entry(rxBytes, rxPackets, txBytes, txPackets, 0L), actual);
+        assertEntry(new NetworkStats.Entry(IFACE_ALL, UID_ALL, SET_DEFAULT, TAG_NONE, METERED_NO,
+                ROAMING_NO, DEFAULT_NETWORK_NO, rxBytes, rxPackets, txBytes, txPackets, 0L),
+                actual);
     }
 
     private static void assertEntry(NetworkStats.Entry expected,
             NetworkStatsHistory.Entry actual) {
-        assertEntry(expected, new NetworkStats.Entry(actual.rxBytes, actual.rxPackets,
+        assertEntry(expected, new NetworkStats.Entry(IFACE_ALL, UID_ALL, SET_DEFAULT, TAG_NONE,
+                METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO, actual.rxBytes, actual.rxPackets,
                 actual.txBytes, actual.txPackets, 0L));
     }
 
     private static void assertEntry(NetworkStatsHistory.Entry expected,
             NetworkStatsHistory.Entry actual) {
-        assertEntry(new NetworkStats.Entry(actual.rxBytes, actual.rxPackets,
-                actual.txBytes, actual.txPackets, 0L),
-                new NetworkStats.Entry(actual.rxBytes, actual.rxPackets,
-                actual.txBytes, actual.txPackets, 0L));
+        assertEntry(new NetworkStats.Entry(IFACE_ALL, UID_ALL, SET_DEFAULT, TAG_NONE, METERED_NO,
+                        ROAMING_NO, DEFAULT_NETWORK_NO, actual.rxBytes, actual.rxPackets,
+                       actual.txBytes, actual.txPackets, 0L),
+                new NetworkStats.Entry(IFACE_ALL, UID_ALL, SET_DEFAULT, TAG_NONE, METERED_NO,
+                        ROAMING_NO, DEFAULT_NETWORK_NO, actual.rxBytes, actual.rxPackets,
+                        actual.txBytes, actual.txPackets, 0L));
     }
 
     private static void assertEntry(NetworkStats.Entry expected,

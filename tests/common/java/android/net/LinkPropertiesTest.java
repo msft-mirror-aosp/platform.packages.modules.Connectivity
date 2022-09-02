@@ -30,23 +30,29 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import android.compat.testing.PlatformCompatChangeRule;
 import android.net.LinkProperties.ProvisioningChange;
 import android.os.Build;
 import android.system.OsConstants;
 import android.util.ArraySet;
 
-import androidx.core.os.BuildCompat;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
 import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.filters.CtsNetTestCasesMaxTargetSdk31;
+
+import libcore.junit.util.compat.CoreCompatChangeRule.DisableCompatChanges;
+import libcore.junit.util.compat.CoreCompatChangeRule.EnableCompatChanges;
 
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 
 import java.net.Inet4Address;
@@ -62,8 +68,13 @@ import java.util.Set;
 @SmallTest
 @ConnectivityModuleTest
 public class LinkPropertiesTest {
+    // Use a RuleChain to explicitly specify the order of rules. DevSdkIgnoreRule must run before
+    // PlatformCompatChange rule, because otherwise tests with that should be skipped when targeting
+    // target SDK 33 will still attempt to override compat changes (which on user builds will crash)
+    // before being skipped.
     @Rule
-    public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
+    public final RuleChain chain = RuleChain.outerRule(
+            new DevSdkIgnoreRule()).around(new PlatformCompatChangeRule());
 
     private static final InetAddress ADDRV4 = address("75.208.6.1");
     private static final InetAddress ADDRV6 = address("2001:0db8:85a3:0000:0000:8a2e:0370:7334");
@@ -103,11 +114,6 @@ public class LinkPropertiesTest {
         return InetAddresses.parseNumericAddress(addrString);
     }
 
-    private static boolean isAtLeastR() {
-        // BuildCompat.isAtLeastR is documented to return false on release SDKs (including R)
-        return Build.VERSION.SDK_INT > Build.VERSION_CODES.Q || BuildCompat.isAtLeastR();
-    }
-
     private void checkEmpty(final LinkProperties lp) {
         assertEquals(0, lp.getAllInterfaceNames().size());
         assertEquals(0, lp.getAllAddresses().size());
@@ -128,7 +134,7 @@ public class LinkPropertiesTest {
         assertFalse(lp.isIpv6Provisioned());
         assertFalse(lp.isPrivateDnsActive());
 
-        if (isAtLeastR()) {
+        if (SdkLevel.isAtLeastR()) {
             assertNull(lp.getDhcpServerAddress());
             assertFalse(lp.isWakeOnLanSupported());
             assertNull(lp.getCaptivePortalApiUrl());
@@ -155,7 +161,7 @@ public class LinkPropertiesTest {
         lp.setMtu(MTU);
         lp.setTcpBufferSizes(TCP_BUFFER_SIZES);
         lp.setNat64Prefix(new IpPrefix("2001:db8:0:64::/96"));
-        if (isAtLeastR()) {
+        if (SdkLevel.isAtLeastR()) {
             lp.setDhcpServerAddress(DHCPSERVER);
             lp.setWakeOnLanSupported(true);
             lp.setCaptivePortalApiUrl(CAPPORT_API_URL);
@@ -199,7 +205,7 @@ public class LinkPropertiesTest {
         assertTrue(source.isIdenticalTcpBufferSizes(target));
         assertTrue(target.isIdenticalTcpBufferSizes(source));
 
-        if (isAtLeastR()) {
+        if (SdkLevel.isAtLeastR()) {
             assertTrue(source.isIdenticalDhcpServerAddress(target));
             assertTrue(source.isIdenticalDhcpServerAddress(source));
 
@@ -1253,7 +1259,22 @@ public class LinkPropertiesTest {
         assertFalse(lp.hasIpv4UnreachableDefaultRoute());
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @CtsNetTestCasesMaxTargetSdk31(reason = "Compat change cannot be overridden when targeting T+")
+    @EnableCompatChanges({LinkProperties.EXCLUDED_ROUTES})
+    public void testHasExcludeRoute() {
+        LinkProperties lp = new LinkProperties();
+        lp.setInterfaceName("tun0");
+        lp.addRoute(new RouteInfo(new IpPrefix(ADDRV4, 24), RTN_UNICAST));
+        lp.addRoute(new RouteInfo(new IpPrefix(ADDRV6, 0), RTN_UNICAST));
+        assertFalse(lp.hasExcludeRoute());
+        lp.addRoute(new RouteInfo(new IpPrefix(ADDRV6, 32), RTN_THROW));
+        assertTrue(lp.hasExcludeRoute());
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @CtsNetTestCasesMaxTargetSdk31(reason = "Compat change cannot be overridden when targeting T+")
+    @EnableCompatChanges({LinkProperties.EXCLUDED_ROUTES})
     public void testRouteAddWithSameKey() throws Exception {
         LinkProperties lp = new LinkProperties();
         lp.setInterfaceName("wlan0");
@@ -1267,5 +1288,75 @@ public class LinkPropertiesTest {
         assertEquals(2, lp.getRoutes().size());
         lp.addRoute(new RouteInfo(v4, address("192.0.2.1"), "wlan0", RTN_THROW, 1460));
         assertEquals(2, lp.getRoutes().size());
+    }
+
+    private void assertExcludeRoutesVisible() {
+        final LinkProperties lp = new LinkProperties();
+        assertEquals(0, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(new IpPrefix(ADDRV4, 31), RTN_UNREACHABLE));
+        assertEquals(1, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(new IpPrefix(ADDRV6, 127), RTN_THROW));
+        assertEquals(2, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(GATEWAY1));
+        assertEquals(3, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(new IpPrefix(DNS6, 127), RTN_UNICAST));
+        assertEquals(4, lp.getRoutes().size());
+    }
+
+    private void assertExcludeRoutesNotVisible() {
+        final LinkProperties lp = new LinkProperties();
+        assertEquals(0, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(new IpPrefix(ADDRV4, 31), RTN_UNREACHABLE));
+        assertEquals(0, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(new IpPrefix(ADDRV6, 127), RTN_THROW));
+        assertEquals(0, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(GATEWAY1));
+        assertEquals(1, lp.getRoutes().size());
+
+        lp.addRoute(new RouteInfo(new IpPrefix(DNS6, 127), RTN_UNICAST));
+        assertEquals(2, lp.getRoutes().size());
+    }
+
+    private void checkExcludeRoutesNotVisibleAfterS() {
+        if (!SdkLevel.isAtLeastT()) {
+            // RTN_THROW routes are visible on R and S when added by the caller (but they are not
+            // added by the system except for legacy VPN).
+            // This is uncommon usage but was tested by CTSr12.
+            assertExcludeRoutesVisible();
+        } else {
+            assertExcludeRoutesNotVisible();
+        }
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @CtsNetTestCasesMaxTargetSdk31(reason = "Testing behaviour for target SDK 31")
+    public void testExcludedRoutesNotVisibleOnTargetSdk31() {
+        checkExcludeRoutesNotVisibleAfterS();
+    }
+
+    @Test
+    public void testExcludedRoutesVisibleOnTargetSdk33AndAbove() {
+        assertExcludeRoutesVisible();
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @CtsNetTestCasesMaxTargetSdk31(reason = "Compat change cannot be overridden when targeting T+")
+    @EnableCompatChanges({LinkProperties.EXCLUDED_ROUTES})
+    public void testExcludedRoutesEnabledByCompatChange() {
+        assertExcludeRoutesVisible();
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.R)
+    @CtsNetTestCasesMaxTargetSdk31(reason = "Compat change cannot be overridden when targeting T+")
+    @DisableCompatChanges({LinkProperties.EXCLUDED_ROUTES})
+    public void testExcludedRoutesDisabledByCompatChange() {
+        checkExcludeRoutesNotVisibleAfterS();
     }
 }

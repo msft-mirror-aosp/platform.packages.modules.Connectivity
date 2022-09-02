@@ -19,7 +19,10 @@ package android.net
 import android.app.usage.NetworkStatsManager.NETWORK_TYPE_5G_NSA
 import android.content.Context
 import android.net.ConnectivityManager.TYPE_MOBILE
+import android.net.ConnectivityManager.TYPE_TEST
 import android.net.ConnectivityManager.TYPE_WIFI
+import android.net.NetworkCapabilities.TRANSPORT_TEST
+import android.net.NetworkCapabilities.TRANSPORT_WIFI
 import android.net.NetworkIdentity.OEM_NONE
 import android.net.NetworkIdentity.OEM_PAID
 import android.net.NetworkIdentity.OEM_PRIVATE
@@ -29,12 +32,9 @@ import android.net.NetworkStats.METERED_ALL
 import android.net.NetworkStats.METERED_NO
 import android.net.NetworkStats.METERED_YES
 import android.net.NetworkStats.ROAMING_ALL
-import android.net.NetworkTemplate.MATCH_BLUETOOTH
-import android.net.NetworkTemplate.MATCH_CARRIER
-import android.net.NetworkTemplate.MATCH_ETHERNET
 import android.net.NetworkTemplate.MATCH_MOBILE
 import android.net.NetworkTemplate.MATCH_MOBILE_WILDCARD
-import android.net.NetworkTemplate.MATCH_PROXY
+import android.net.NetworkTemplate.MATCH_TEST
 import android.net.NetworkTemplate.MATCH_WIFI
 import android.net.NetworkTemplate.MATCH_WIFI_WILDCARD
 import android.net.NetworkTemplate.NETWORK_TYPE_ALL
@@ -52,11 +52,9 @@ import android.net.NetworkTemplate.normalize
 import android.net.wifi.WifiInfo
 import android.os.Build
 import android.telephony.TelephonyManager
-import com.android.net.module.util.NetworkStatsUtils.SUBSCRIBER_ID_MATCH_RULE_ALL
 import com.android.net.module.util.NetworkStatsUtils.SUBSCRIBER_ID_MATCH_RULE_EXACT
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRunner
-import com.android.testutils.SC_V2
 import com.android.testutils.assertParcelSane
 import org.junit.Before
 import org.junit.Test
@@ -65,7 +63,6 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import org.mockito.MockitoAnnotations
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
@@ -77,7 +74,7 @@ private const val TEST_WIFI_KEY1 = "wifiKey1"
 private const val TEST_WIFI_KEY2 = "wifiKey2"
 
 @RunWith(DevSdkIgnoreRunner::class)
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 class NetworkTemplateTest {
     private val mockContext = mock(Context::class.java)
     private val mockWifiInfo = mock(WifiInfo::class.java)
@@ -104,6 +101,14 @@ class NetworkTemplateTest {
                     (oemManaged and OEM_PAID) == OEM_PAID)
             setCapability(NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE,
                     (oemManaged and OEM_PRIVATE) == OEM_PRIVATE)
+            if (type == TYPE_TEST) {
+                wifiKey?.let { TestNetworkSpecifier(it) }?.let {
+                    // Must have a single non-test transport specified to use setNetworkSpecifier.
+                    // Put an arbitrary transport type which is not used in this test.
+                    addTransportType(TRANSPORT_TEST)
+                    addTransportType(TRANSPORT_WIFI)
+                    setNetworkSpecifier(it) }
+            }
             setTransportInfo(mockWifiInfo)
         }
         return NetworkStateSnapshot(mock(Network::class.java), caps, lp, subscriberId, type)
@@ -237,6 +242,32 @@ class NetworkTemplateTest {
         // Verify that the different type does not match.
         templateMobileWildcard.assertDoesNotMatch(identWifiImsi1Key1)
         templateMobileNullImsiWithRatType.assertDoesNotMatch(identWifiImsi1Key1)
+    }
+
+    @Test
+    fun testTestNetworkTemplateMatches() {
+        val templateTestKey1 = NetworkTemplate.Builder(MATCH_TEST)
+            .setWifiNetworkKeys(setOf(TEST_WIFI_KEY1)).build()
+        val templateTestKey2 = NetworkTemplate.Builder(MATCH_TEST)
+            .setWifiNetworkKeys(setOf(TEST_WIFI_KEY2)).build()
+        val templateTestAll = NetworkTemplate.Builder(MATCH_TEST).build()
+
+        val stateWifiKey1 = buildNetworkState(TYPE_WIFI, null /* subscriberId */, TEST_WIFI_KEY1,
+            OEM_NONE, true /* metered */)
+        val stateTestKey1 = buildNetworkState(TYPE_TEST, null /* subscriberId */, TEST_WIFI_KEY1,
+            OEM_NONE, true /* metered */)
+        val identWifi1 = buildNetworkIdentity(mockContext, stateWifiKey1,
+            false /* defaultNetwork */, NetworkTemplate.NETWORK_TYPE_ALL)
+        val identTest1 = buildNetworkIdentity(mockContext, stateTestKey1,
+            false /* defaultNetwork */, NETWORK_TYPE_ALL)
+
+        // Verify that the template matches corresponding type and the subscriberId.
+        templateTestKey1.assertDoesNotMatch(identWifi1)
+        templateTestKey1.assertMatches(identTest1)
+        templateTestKey2.assertDoesNotMatch(identWifi1)
+        templateTestKey2.assertDoesNotMatch(identTest1)
+        templateTestAll.assertDoesNotMatch(identWifi1)
+        templateTestAll.assertMatches(identTest1)
     }
 
     @Test
@@ -553,142 +584,6 @@ class NetworkTemplateTest {
             it.assertMatches(identMobileImsi1)
             it.assertMatches(identMobileImsi2)
             it.assertMatches(identMobileImsi3)
-        }
-    }
-
-    @DevSdkIgnoreRule.IgnoreUpTo(SC_V2) // TODO: Use to Build.VERSION_CODES.SC_V2 when available
-    @Test
-    fun testBuilderMatchRules() {
-        // Verify unknown match rules cannot construct templates.
-        listOf(Integer.MIN_VALUE, -1, Integer.MAX_VALUE).forEach {
-            assertFailsWith<IllegalArgumentException> {
-                NetworkTemplate.Builder(it).build()
-            }
-        }
-
-        // Verify hidden match rules cannot construct templates.
-        listOf(MATCH_WIFI_WILDCARD, MATCH_MOBILE_WILDCARD, MATCH_PROXY).forEach {
-            assertFailsWith<IllegalArgumentException> {
-                NetworkTemplate.Builder(it).build()
-            }
-        }
-
-        // Verify template which matches metered cellular and carrier networks with
-        // the given IMSI. See buildTemplateMobileAll and buildTemplateCarrierMetered.
-        listOf(MATCH_MOBILE, MATCH_CARRIER).forEach { matchRule ->
-            NetworkTemplate.Builder(matchRule).setSubscriberIds(setOf(TEST_IMSI1))
-                    .setMeteredness(METERED_YES).build().let {
-                        val expectedTemplate = NetworkTemplate(matchRule, TEST_IMSI1,
-                                arrayOf(TEST_IMSI1), arrayOf<String>(), METERED_YES,
-                                ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
-                                OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_EXACT)
-                        assertEquals(expectedTemplate, it)
-                    }
-        }
-
-        // Verify carrier template cannot be created without IMSI.
-        assertFailsWith<IllegalArgumentException> {
-            NetworkTemplate.Builder(MATCH_CARRIER).build()
-        }
-
-        // Verify template which matches metered cellular networks,
-        // regardless of IMSI. See buildTemplateMobileWildcard.
-        NetworkTemplate.Builder(MATCH_MOBILE).setMeteredness(METERED_YES).build().let {
-            val expectedTemplate = NetworkTemplate(MATCH_MOBILE_WILDCARD, null /*subscriberId*/,
-                    null /*subscriberIds*/, arrayOf<String>(),
-                    METERED_YES, ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
-                    OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_ALL)
-            assertEquals(expectedTemplate, it)
-        }
-
-        // Verify template which matches metered cellular networks and ratType.
-        // See NetworkTemplate#buildTemplateMobileWithRatType.
-        NetworkTemplate.Builder(MATCH_MOBILE).setSubscriberIds(setOf(TEST_IMSI1))
-                .setMeteredness(METERED_YES).setRatType(TelephonyManager.NETWORK_TYPE_UMTS)
-                .build().let {
-                    val expectedTemplate = NetworkTemplate(MATCH_MOBILE, TEST_IMSI1,
-                            arrayOf(TEST_IMSI1), arrayOf<String>(), METERED_YES,
-                            ROAMING_ALL, DEFAULT_NETWORK_ALL, TelephonyManager.NETWORK_TYPE_UMTS,
-                            OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_EXACT)
-                    assertEquals(expectedTemplate, it)
-                }
-
-        // Verify template which matches all wifi networks,
-        // regardless of Wifi Network Key. See buildTemplateWifiWildcard and buildTemplateWifi.
-        NetworkTemplate.Builder(MATCH_WIFI).build().let {
-            val expectedTemplate = NetworkTemplate(MATCH_WIFI_WILDCARD, null /*subscriberId*/,
-                    null /*subscriberIds*/, arrayOf<String>(),
-                    METERED_ALL, ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
-                    OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_ALL)
-            assertEquals(expectedTemplate, it)
-        }
-
-        // Verify template which matches wifi networks with the given Wifi Network Key.
-        // See buildTemplateWifi(wifiNetworkKey).
-        NetworkTemplate.Builder(MATCH_WIFI).setWifiNetworkKeys(setOf(TEST_WIFI_KEY1)).build().let {
-            val expectedTemplate = NetworkTemplate(MATCH_WIFI, null /*subscriberId*/,
-                    null /*subscriberIds*/, arrayOf(TEST_WIFI_KEY1),
-                    METERED_ALL, ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
-                    OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_ALL)
-            assertEquals(expectedTemplate, it)
-        }
-
-        // Verify template which matches all wifi networks with the
-        // given Wifi Network Key, and IMSI. See buildTemplateWifi(wifiNetworkKey, subscriberId).
-        NetworkTemplate.Builder(MATCH_WIFI).setSubscriberIds(setOf(TEST_IMSI1))
-                .setWifiNetworkKeys(setOf(TEST_WIFI_KEY1)).build().let {
-                    val expectedTemplate = NetworkTemplate(MATCH_WIFI, TEST_IMSI1,
-                            arrayOf(TEST_IMSI1), arrayOf(TEST_WIFI_KEY1),
-                            METERED_ALL, ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
-                            OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_EXACT)
-                    assertEquals(expectedTemplate, it)
-                }
-
-        // Verify template which matches ethernet and bluetooth networks.
-        // See buildTemplateEthernet and buildTemplateBluetooth.
-        listOf(MATCH_ETHERNET, MATCH_BLUETOOTH).forEach { matchRule ->
-            NetworkTemplate.Builder(matchRule).build().let {
-                val expectedTemplate = NetworkTemplate(matchRule, null /*subscriberId*/,
-                        null /*subscriberIds*/, arrayOf<String>(),
-                        METERED_ALL, ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
-                        OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_ALL)
-                assertEquals(expectedTemplate, it)
-            }
-        }
-    }
-
-    @DevSdkIgnoreRule.IgnoreUpTo(SC_V2) // TODO: Use to Build.VERSION_CODES.SC_V2 when available
-    @Test
-    fun testBuilderWifiNetworkKeys() {
-        // Verify template builder which generates same template with the given different
-        // sequence keys.
-        NetworkTemplate.Builder(MATCH_WIFI).setWifiNetworkKeys(
-                setOf(TEST_WIFI_KEY1, TEST_WIFI_KEY2)).build().let {
-            val expectedTemplate = NetworkTemplate.Builder(MATCH_WIFI).setWifiNetworkKeys(
-                    setOf(TEST_WIFI_KEY2, TEST_WIFI_KEY1)).build()
-            assertEquals(expectedTemplate, it)
-        }
-
-        // Verify template which matches non-wifi networks with the given key is invalid.
-        listOf(MATCH_MOBILE, MATCH_CARRIER, MATCH_ETHERNET, MATCH_BLUETOOTH, -1,
-                Integer.MAX_VALUE).forEach { matchRule ->
-            assertFailsWith<IllegalArgumentException> {
-                NetworkTemplate.Builder(matchRule).setWifiNetworkKeys(setOf(TEST_WIFI_KEY1)).build()
-            }
-        }
-
-        // Verify template which matches wifi networks with the given null key is invalid.
-        assertFailsWith<IllegalArgumentException> {
-            NetworkTemplate.Builder(MATCH_WIFI).setWifiNetworkKeys(setOf(null)).build()
-        }
-
-        // Verify template which matches wifi wildcard with the given empty key set.
-        NetworkTemplate.Builder(MATCH_WIFI).setWifiNetworkKeys(setOf<String>()).build().let {
-            val expectedTemplate = NetworkTemplate(MATCH_WIFI_WILDCARD, null /*subscriberId*/,
-                    arrayOf<String>() /*subscriberIds*/, arrayOf<String>(),
-                    METERED_ALL, ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
-                    OEM_MANAGED_ALL, SUBSCRIBER_ID_MATCH_RULE_ALL)
-            assertEquals(expectedTemplate, it)
         }
     }
 }

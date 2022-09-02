@@ -30,9 +30,13 @@
 #define __kernel_udphdr udphdr
 #include <linux/udp.h>
 
+// The resulting .o needs to load on the Android T beta 3 bpfloader
+#define BPFLOADER_MIN_VER BPFLOADER_T_BETA3_VERSION
+
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
 #include "bpf_shared.h"
+#include "clat_mark.h"
 
 // From kernel:include/net/ip.h
 #define IP_DF 0x4000  // Flag: "Don't Fragment"
@@ -40,17 +44,23 @@
 DEFINE_BPF_MAP_GRW(clat_ingress6_map, HASH, ClatIngress6Key, ClatIngress6Value, 16, AID_SYSTEM)
 
 static inline __always_inline int nat64(struct __sk_buff* skb, bool is_ethernet) {
-    const int l2_header_size = is_ethernet ? sizeof(struct ethhdr) : 0;
-    void* data = (void*)(long)skb->data;
-    const void* data_end = (void*)(long)skb->data_end;
-    const struct ethhdr* const eth = is_ethernet ? data : NULL;  // used iff is_ethernet
-    const struct ipv6hdr* const ip6 = is_ethernet ? (void*)(eth + 1) : data;
-
     // Require ethernet dst mac address to be our unicast address.
     if (is_ethernet && (skb->pkt_type != PACKET_HOST)) return TC_ACT_PIPE;
 
     // Must be meta-ethernet IPv6 frame
     if (skb->protocol != htons(ETH_P_IPV6)) return TC_ACT_PIPE;
+
+    const int l2_header_size = is_ethernet ? sizeof(struct ethhdr) : 0;
+
+    // Not clear if this is actually necessary considering we use DPA (Direct Packet Access),
+    // but we need to make sure we can read the IPv6 header reliably so that we can set
+    // skb->mark = 0xDeadC1a7 for packets we fail to offload.
+    try_make_writable(skb, l2_header_size + sizeof(struct ipv6hdr));
+
+    void* data = (void*)(long)skb->data;
+    const void* data_end = (void*)(long)skb->data_end;
+    const struct ethhdr* const eth = is_ethernet ? data : NULL;  // used iff is_ethernet
+    const struct ipv6hdr* const ip6 = is_ethernet ? (void*)(eth + 1) : data;
 
     // Must have (ethernet and) ipv6 header
     if (data + l2_header_size + sizeof(*ip6) > data_end) return TC_ACT_PIPE;
@@ -63,17 +73,6 @@ static inline __always_inline int nat64(struct __sk_buff* skb, bool is_ethernet)
 
     // Maximum IPv6 payload length that can be translated to IPv4
     if (ntohs(ip6->payload_len) > 0xFFFF - sizeof(struct iphdr)) return TC_ACT_PIPE;
-
-    switch (ip6->nexthdr) {
-        case IPPROTO_TCP:  // For TCP & UDP the checksum neutrality of the chosen IPv6
-        case IPPROTO_UDP:  // address means there is no need to update their checksums.
-        case IPPROTO_GRE:  // We do not need to bother looking at GRE/ESP headers,
-        case IPPROTO_ESP:  // since there is never a checksum to update.
-            break;
-
-        default:  // do not know how to handle anything else
-            return TC_ACT_PIPE;
-    }
 
     ClatIngress6Key k = {
             .iif = skb->ifindex,
@@ -89,6 +88,21 @@ static inline __always_inline int nat64(struct __sk_buff* skb, bool is_ethernet)
     ClatIngress6Value* v = bpf_clat_ingress6_map_lookup_elem(&k);
 
     if (!v) return TC_ACT_PIPE;
+
+    switch (ip6->nexthdr) {
+        case IPPROTO_TCP:  // For TCP & UDP the checksum neutrality of the chosen IPv6
+        case IPPROTO_UDP:  // address means there is no need to update their checksums.
+        case IPPROTO_GRE:  // We do not need to bother looking at GRE/ESP headers,
+        case IPPROTO_ESP:  // since there is never a checksum to update.
+            break;
+
+        default:  // do not know how to handle anything else
+            // Mark ingress non-offloaded clat packet for dropping in ip6tables bw_raw_PREROUTING.
+            // Non-offloaded clat packet is going to be handled by clat daemon and ip6tables. The
+            // duplicate one in ip6tables is not necessary.
+            skb->mark = CLAT_MARK;
+            return TC_ACT_PIPE;
+    }
 
     struct ethhdr eth2;  // used iff is_ethernet
     if (is_ethernet) {
@@ -132,7 +146,13 @@ static inline __always_inline int nat64(struct __sk_buff* skb, bool is_ethernet)
 
     // Packet mutations begin - point of no return, but if this first modification fails
     // the packet is probably still pristine, so let clatd handle it.
-    if (bpf_skb_change_proto(skb, htons(ETH_P_IP), 0)) return TC_ACT_PIPE;
+    if (bpf_skb_change_proto(skb, htons(ETH_P_IP), 0)) {
+        // Mark ingress non-offloaded clat packet for dropping in ip6tables bw_raw_PREROUTING.
+        // Non-offloaded clat packet is going to be handled by clat daemon and ip6tables. The
+        // duplicate one in ip6tables is not necessary.
+        skb->mark = CLAT_MARK;
+        return TC_ACT_PIPE;
+    }
 
     // This takes care of updating the skb->csum field for a CHECKSUM_COMPLETE packet.
     //
@@ -198,12 +218,15 @@ DEFINE_BPF_PROG("schedcls/egress4/clat_ether", AID_ROOT, AID_SYSTEM, sched_cls_e
 
 DEFINE_BPF_PROG("schedcls/egress4/clat_rawip", AID_ROOT, AID_SYSTEM, sched_cls_egress4_clat_rawip)
 (struct __sk_buff* skb) {
+    // Must be meta-ethernet IPv4 frame
+    if (skb->protocol != htons(ETH_P_IP)) return TC_ACT_PIPE;
+
+    // Possibly not needed, but for consistency with nat64 up above
+    try_make_writable(skb, sizeof(struct iphdr));
+
     void* data = (void*)(long)skb->data;
     const void* data_end = (void*)(long)skb->data_end;
     const struct iphdr* const ip4 = data;
-
-    // Must be meta-ethernet IPv4 frame
-    if (skb->protocol != htons(ETH_P_IP)) return TC_ACT_PIPE;
 
     // Must have ipv4 header
     if (data + sizeof(*ip4) > data_end) return TC_ACT_PIPE;
@@ -319,4 +342,4 @@ DEFINE_BPF_PROG("schedcls/egress4/clat_rawip", AID_ROOT, AID_SYSTEM, sched_cls_e
 }
 
 LICENSE("Apache 2.0");
-CRITICAL("netd");
+CRITICAL("Connectivity");

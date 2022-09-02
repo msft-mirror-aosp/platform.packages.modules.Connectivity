@@ -83,10 +83,7 @@ import android.net.dhcp.DhcpServingParamsParcel;
 import android.net.dhcp.IDhcpEventCallbacks;
 import android.net.dhcp.IDhcpServer;
 import android.net.dhcp.IDhcpServerCallbacks;
-import android.net.ip.IpNeighborMonitor.NeighborEvent;
-import android.net.ip.IpNeighborMonitor.NeighborEventConsumer;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
-import android.net.util.SharedLog;
 import android.os.Build;
 import android.os.Handler;
 import android.os.RemoteException;
@@ -101,8 +98,15 @@ import androidx.test.runner.AndroidJUnit4;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
+import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
+import com.android.net.module.util.bpf.TetherStatsKey;
+import com.android.net.module.util.bpf.TetherStatsValue;
+import com.android.net.module.util.ip.ConntrackMonitor;
+import com.android.net.module.util.ip.IpNeighborMonitor;
+import com.android.net.module.util.ip.IpNeighborMonitor.NeighborEvent;
+import com.android.net.module.util.ip.IpNeighborMonitor.NeighborEventConsumer;
 import com.android.networkstack.tethering.BpfCoordinator;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
 import com.android.networkstack.tethering.PrivateAddressCoordinator;
@@ -112,10 +116,9 @@ import com.android.networkstack.tethering.TetherDevValue;
 import com.android.networkstack.tethering.TetherDownstream6Key;
 import com.android.networkstack.tethering.TetherLimitKey;
 import com.android.networkstack.tethering.TetherLimitValue;
-import com.android.networkstack.tethering.TetherStatsKey;
-import com.android.networkstack.tethering.TetherStatsValue;
 import com.android.networkstack.tethering.TetherUpstream6Key;
 import com.android.networkstack.tethering.TetheringConfiguration;
+import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
 import com.android.testutils.DevSdkIgnoreRule;
@@ -156,6 +159,8 @@ public class IpServerTest {
     private static final int BLUETOOTH_DHCP_PREFIX_LENGTH = 24;
     private static final int DHCP_LEASE_TIME_SECS = 3600;
     private static final boolean DEFAULT_USING_BPF_OFFLOAD = true;
+    private static final int DEFAULT_SUBNET_PREFIX_LENGTH = 0;
+    private static final int P2P_SUBNET_PREFIX_LENGTH = 25;
 
     private static final InterfaceParams TEST_IFACE_PARAMS = new InterfaceParams(
             IFACE_NAME, 42 /* index */, MacAddress.ALL_ZEROS_ADDRESS, 1500 /* defaultMtu */);
@@ -184,6 +189,7 @@ public class IpServerTest {
     @Mock private NetworkStatsManager mStatsManager;
     @Mock private TetheringConfiguration mTetherConfig;
     @Mock private ConntrackMonitor mConntrackMonitor;
+    @Mock private TetheringMetrics mTetheringMetrics;
     @Mock private BpfMap<Tether4Key, Tether4Value> mBpfDownstream4Map;
     @Mock private BpfMap<Tether4Key, Tether4Value> mBpfUpstream4Map;
     @Mock private BpfMap<TetherDownstream6Key, Tether6Value> mBpfDownstream6Map;
@@ -230,9 +236,10 @@ public class IpServerTest {
 
         when(mTetherConfig.isBpfOffloadEnabled()).thenReturn(usingBpfOffload);
         when(mTetherConfig.useLegacyDhcpServer()).thenReturn(usingLegacyDhcp);
+        when(mTetherConfig.getP2pLeasesSubnetPrefixLength()).thenReturn(P2P_SUBNET_PREFIX_LENGTH);
         mIpServer = new IpServer(
                 IFACE_NAME, mLooper.getLooper(), interfaceType, mSharedLog, mNetd, mBpfCoordinator,
-                mCallback, mTetherConfig, mAddressCoordinator, mDependencies);
+                mCallback, mTetherConfig, mAddressCoordinator, mTetheringMetrics, mDependencies);
         mIpServer.start();
         mNeighborEventConsumer = neighborCaptor.getValue();
 
@@ -364,7 +371,7 @@ public class IpServerTest {
                 .thenReturn(mIpNeighborMonitor);
         mIpServer = new IpServer(IFACE_NAME, mLooper.getLooper(), TETHERING_BLUETOOTH, mSharedLog,
                 mNetd, mBpfCoordinator, mCallback, mTetherConfig, mAddressCoordinator,
-                mDependencies);
+                mTetheringMetrics, mDependencies);
         mIpServer.start();
         mLooper.dispatchAll();
         verify(mCallback).updateInterfaceState(
@@ -448,6 +455,9 @@ public class IpServerTest {
                 mIpServer, STATE_AVAILABLE, TETHER_ERROR_NO_ERROR);
         inOrder.verify(mCallback).updateLinkProperties(
                 eq(mIpServer), any(LinkProperties.class));
+        verify(mTetheringMetrics).updateErrorCode(eq(TETHERING_BLUETOOTH),
+                eq(TETHER_ERROR_NO_ERROR));
+        verify(mTetheringMetrics).sendReport(eq(TETHERING_BLUETOOTH));
         verifyNoMoreInteractions(mNetd, mCallback, mAddressCoordinator);
     }
 
@@ -655,6 +665,9 @@ public class IpServerTest {
         usbTeardownOrder.verify(mCallback).updateLinkProperties(
                 eq(mIpServer), mLinkPropertiesCaptor.capture());
         assertNoAddressesNorRoutes(mLinkPropertiesCaptor.getValue());
+        verify(mTetheringMetrics).updateErrorCode(eq(TETHERING_USB),
+                eq(TETHER_ERROR_TETHER_IFACE_ERROR));
+        verify(mTetheringMetrics).sendReport(eq(TETHERING_USB));
     }
 
     @Test
@@ -673,6 +686,9 @@ public class IpServerTest {
         usbTeardownOrder.verify(mCallback).updateLinkProperties(
                 eq(mIpServer), mLinkPropertiesCaptor.capture());
         assertNoAddressesNorRoutes(mLinkPropertiesCaptor.getValue());
+        verify(mTetheringMetrics).updateErrorCode(eq(TETHERING_USB),
+                eq(TETHER_ERROR_ENABLE_FORWARDING_ERROR));
+        verify(mTetheringMetrics).sendReport(eq(TETHERING_USB));
     }
 
     @Test
@@ -1311,6 +1327,12 @@ public class IpServerTest {
         assertEquals(DHCP_LEASE_TIME_SECS, params.dhcpLeaseTimeSecs);
         if (mIpServer.interfaceType() == TETHERING_NCM) {
             assertTrue(params.changePrefixOnDecline);
+        }
+
+        if (mIpServer.interfaceType() == TETHERING_WIFI_P2P) {
+            assertEquals(P2P_SUBNET_PREFIX_LENGTH, params.leasesSubnetPrefixLength);
+        } else {
+            assertEquals(DEFAULT_SUBNET_PREFIX_LENGTH, params.leasesSubnetPrefixLength);
         }
     }
 

@@ -44,9 +44,7 @@ import android.net.dhcp.DhcpServingParamsParcel;
 import android.net.dhcp.DhcpServingParamsParcelExt;
 import android.net.dhcp.IDhcpEventCallbacks;
 import android.net.dhcp.IDhcpServer;
-import android.net.ip.IpNeighborMonitor.NeighborEvent;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
-import android.net.util.SharedLog;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
@@ -64,11 +62,16 @@ import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetdUtils;
+import com.android.net.module.util.SharedLog;
+import com.android.net.module.util.ip.InterfaceController;
+import com.android.net.module.util.ip.IpNeighborMonitor;
+import com.android.net.module.util.ip.IpNeighborMonitor.NeighborEvent;
 import com.android.networkstack.tethering.BpfCoordinator;
 import com.android.networkstack.tethering.BpfCoordinator.ClientInfo;
 import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
 import com.android.networkstack.tethering.PrivateAddressCoordinator;
 import com.android.networkstack.tethering.TetheringConfiguration;
+import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
 
@@ -241,6 +244,7 @@ public class IpServer extends StateMachine {
     private final LinkProperties mLinkProperties;
     private final boolean mUsingLegacyDhcp;
     private final boolean mUsingBpfOffload;
+    private final int mP2pLeasesSubnetPrefixLength;
 
     private final Dependencies mDeps;
 
@@ -281,13 +285,15 @@ public class IpServer extends StateMachine {
 
     private LinkAddress mIpv4Address;
 
+    private final TetheringMetrics mTetheringMetrics;
+
     // TODO: Add a dependency object to pass the data members or variables from the tethering
     // object. It helps to reduce the arguments of the constructor.
     public IpServer(
             String ifaceName, Looper looper, int interfaceType, SharedLog log,
             INetd netd, @NonNull BpfCoordinator coordinator, Callback callback,
             TetheringConfiguration config, PrivateAddressCoordinator addressCoordinator,
-            Dependencies deps) {
+            TetheringMetrics tetheringMetrics, Dependencies deps) {
         super(ifaceName, looper);
         mLog = log.forSubComponent(ifaceName);
         mNetd = netd;
@@ -299,8 +305,10 @@ public class IpServer extends StateMachine {
         mLinkProperties = new LinkProperties();
         mUsingLegacyDhcp = config.useLegacyDhcpServer();
         mUsingBpfOffload = config.isBpfOffloadEnabled();
+        mP2pLeasesSubnetPrefixLength = config.getP2pLeasesSubnetPrefixLength();
         mPrivateAddressCoordinator = addressCoordinator;
         mDeps = deps;
+        mTetheringMetrics = tetheringMetrics;
         resetLinkProperties();
         mLastError = TetheringManager.TETHER_ERROR_NO_ERROR;
         mServingMode = STATE_AVAILABLE;
@@ -527,6 +535,9 @@ public class IpServer extends StateMachine {
             @Nullable Inet4Address clientAddr) {
         final boolean changePrefixOnDecline =
                 (mInterfaceType == TetheringManager.TETHERING_NCM && clientAddr == null);
+        final int subnetPrefixLength = mInterfaceType == TetheringManager.TETHERING_WIFI_P2P
+                ? mP2pLeasesSubnetPrefixLength : 0 /* default value */;
+
         return new DhcpServingParamsParcelExt()
             .setDefaultRouters(defaultRouter)
             .setDhcpLeaseTimeSecs(DHCP_LEASE_TIME_SECS)
@@ -534,7 +545,8 @@ public class IpServer extends StateMachine {
             .setServerAddr(serverAddr)
             .setMetered(true)
             .setSingleClientAddr(clientAddr)
-            .setChangePrefixOnDecline(changePrefixOnDecline);
+            .setChangePrefixOnDecline(changePrefixOnDecline)
+            .setLeasesSubnetPrefixLength(subnetPrefixLength);
             // TODO: also advertise link MTU
     }
 
@@ -1195,6 +1207,9 @@ public class IpServer extends StateMachine {
             stopConntrackMonitoring();
 
             resetLinkProperties();
+
+            mTetheringMetrics.updateErrorCode(mInterfaceType, mLastError);
+            mTetheringMetrics.sendReport(mInterfaceType);
         }
 
         @Override
