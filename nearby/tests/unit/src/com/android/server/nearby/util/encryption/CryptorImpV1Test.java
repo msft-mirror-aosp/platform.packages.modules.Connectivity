@@ -47,6 +47,12 @@ public final class CryptorImpV1Test {
     }
 
     @Test
+    public void test_encryption_invalidInput() {
+        Cryptor v1Cryptor = CryptorImpV1.getInstance();
+        assertThat(v1Cryptor.encrypt(DATA, SALT, new byte[]{1, 2, 3, 4, 6})).isNull();
+    }
+
+    @Test
     public void test_decryption() {
         Cryptor v1Cryptor = CryptorImpV1.getInstance();
         byte[] decryptedData =
@@ -55,6 +61,12 @@ public final class CryptorImpV1Test {
         Log.d(TAG, "decrypted data is: " + Arrays.toString(decryptedData));
 
         assertThat(decryptedData).isEqualTo(DATA);
+    }
+
+    @Test
+    public void test_decryption_invalidInput() {
+        Cryptor v1Cryptor = CryptorImpV1.getInstance();
+        assertThat(v1Cryptor.decrypt(getEncryptedData(), SALT, new byte[]{1, 2, 3, 4, 6})).isNull();
     }
 
     @Test
@@ -77,18 +89,23 @@ public final class CryptorImpV1Test {
     }
 
     @Test
-    public void test_computeHkdf() {
-        int outputSize = 16;
-        byte[] res1 = CryptorImpV1.computeHkdf(DATA, AUTHENTICITY_KEY, outputSize);
-        byte[] res2 = CryptorImpV1.computeHkdf(DATA,
-                new byte[] {-89, 88, -50, -42, -99, 57, 84, -24, 121, 1, -104, -8, -26},
-                outputSize);
-
-        assertThat(res1).hasLength(outputSize);
-        assertThat(res2).hasLength(outputSize);
-        assertThat(res1).isNotEqualTo(res2);
+    public void test_generateHmacTag_sameResult() {
+        CryptorImpV1 v1Cryptor = CryptorImpV1.getInstance();
+        byte[] res1 = v1Cryptor.generateHmacTag(DATA, AUTHENTICITY_KEY);
         assertThat(res1)
-                .isEqualTo(CryptorImpV1.computeHkdf(DATA, AUTHENTICITY_KEY, outputSize));
+                .isEqualTo(v1Cryptor.generateHmacTag(DATA, AUTHENTICITY_KEY));
+    }
+
+    @Test
+    public void test_generateHmacTag_nullData() {
+        CryptorImpV1 v1Cryptor = CryptorImpV1.getInstance();
+        assertThat(v1Cryptor.generateHmacTag(/* data= */ null, AUTHENTICITY_KEY)).isNull();
+    }
+
+    @Test
+    public void test_generateHmacTag_nullKey() {
+        CryptorImpV1 v1Cryptor = CryptorImpV1.getInstance();
+        assertThat(v1Cryptor.generateHmacTag(DATA, /* authenticityKey= */ null)).isNull();
     }
 
     private static byte[] getEncryptedData() {

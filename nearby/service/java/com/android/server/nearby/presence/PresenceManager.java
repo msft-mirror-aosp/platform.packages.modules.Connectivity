@@ -35,6 +35,7 @@ import android.util.Log;
 
 import androidx.annotation.NonNull;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.nearby.common.locator.Locator;
 import com.android.server.nearby.common.locator.LocatorContextWrapper;
 
@@ -50,14 +51,15 @@ public class PresenceManager {
     final Locator mLocator;
     private final IntentFilter mIntentFilter;
 
-    private final ScanCallback mScanCallback =
+    @VisibleForTesting
+    final ScanCallback mScanCallback =
             new ScanCallback() {
                 @Override
                 public void onDiscovered(@NonNull NearbyDevice device) {
                     Log.i(TAG, "[PresenceManager] discovered Device.");
                     PresenceDevice presenceDevice = (PresenceDevice) device;
                     List<DataElement> dataElements = presenceDevice.getExtendedProperties();
-                    for (DataElement dataElement : presenceDevice.getExtendedProperties()) {
+                    for (DataElement dataElement : dataElements) {
                         Log.i(TAG, "[PresenceManager] Data Element key "
                                 + dataElement.getKey());
                         Log.i(TAG, "[PresenceManager] Data Element value "
@@ -92,7 +94,8 @@ public class PresenceManager {
                                         .addCredential(publicCredential)
                                         .addPresenceAction(1)
                                         .addExtendedProperty(new DataElement(
-                                                DataElement.DataType.ACCOUNT_KEY, new byte[16]))
+                                                DataElement.DataType.ACCOUNT_KEY_DATA,
+                                                new byte[16]))
                                         .build();
                         ScanRequest scanRequest =
                                 new ScanRequest.Builder()
