@@ -163,8 +163,7 @@ class DscpPolicyTest {
 
             // Only statically configure the IPv4 address; for IPv6, use the SLAAC generated
             // address.
-            iface = tnm.createTapInterface(true /* disableIpv6ProvisioningDelay */,
-                    arrayOf(LinkAddress(LOCAL_IPV4_ADDRESS, IP4_PREFIX_LEN)))
+            iface = tnm.createTapInterface(arrayOf(LinkAddress(LOCAL_IPV4_ADDRESS, IP4_PREFIX_LEN)))
             assertNotNull(iface)
         }
 
@@ -224,7 +223,7 @@ class DscpPolicyTest {
         val onLinkPrefix = raResponder.prefix
         val startTime = SystemClock.elapsedRealtime()
         while (SystemClock.elapsedRealtime() - startTime < PACKET_TIMEOUT_MS) {
-            SystemClock.sleep(1 /* ms */)
+            SystemClock.sleep(50 /* ms */)
             val sock = Os.socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
             try {
                 network.bindSocket(sock)
@@ -273,7 +272,6 @@ class DscpPolicyTest {
         val lp = LinkProperties().apply {
             addLinkAddress(LinkAddress(LOCAL_IPV4_ADDRESS, IP4_PREFIX_LEN))
             addRoute(RouteInfo(IpPrefix("0.0.0.0/0"), null, null))
-            addRoute(RouteInfo(IpPrefix("::/0"), TEST_ROUTER_IPV6_ADDR))
             setInterfaceName(specifier)
         }
         val config = NetworkAgentConfig.Builder().build()
@@ -318,6 +316,7 @@ class DscpPolicyTest {
     fun parseV4PacketDscp(buffer: ByteBuffer): Int {
         // Validate checksum before parsing packet.
         val calCheck = IpUtils.ipChecksum(buffer, Struct.getSize(EthernetHeader::class.java))
+        assertEquals(0, calCheck, "Invalid IPv4 header checksum")
 
         val ip_ver = buffer.get()
         val tos = buffer.get()
@@ -328,7 +327,11 @@ class DscpPolicyTest {
         val ipType = buffer.get()
         val checksum = buffer.getShort()
 
-        assertEquals(0, calCheck, "Invalid IPv4 header checksum")
+        if (ipType.toInt() == 2 /* IPPROTO_IGMP */ && ip_ver.toInt() == 0x46) {
+            // Need to ignore 'igmp v3 report' with 'router alert' option
+        } else {
+            assertEquals(0x45, ip_ver.toInt(), "Invalid IPv4 version or IPv4 options present")
+        }
         return tos.toInt().shr(2)
     }
 
@@ -339,6 +342,9 @@ class DscpPolicyTest {
         val length = buffer.getShort()
         val proto = buffer.get()
         val hop = buffer.get()
+
+        assertEquals(6, ip_ver.toInt().shr(4), "Invalid IPv6 version")
+
         // DSCP is bottom 4 bits of ip_ver and top 2 of tc.
         val ip_ver_bottom = ip_ver.toInt().and(0xf)
         val tc_dscp = tc.toInt().shr(6)
