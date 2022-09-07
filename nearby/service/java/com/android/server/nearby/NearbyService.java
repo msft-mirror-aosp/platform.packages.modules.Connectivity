@@ -29,6 +29,7 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.hardware.location.ContextHubManager;
 import android.nearby.BroadcastRequestParcelable;
 import android.nearby.IBroadcastListener;
@@ -41,7 +42,6 @@ import android.util.Log;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.nearby.common.locator.LocatorContextWrapper;
 import com.android.server.nearby.fastpair.FastPairManager;
-import com.android.server.nearby.injector.ContextHubManagerAdapter;
 import com.android.server.nearby.injector.Injector;
 import com.android.server.nearby.presence.PresenceManager;
 import com.android.server.nearby.provider.BroadcastProviderManager;
@@ -165,11 +165,12 @@ public class NearbyService extends INearbyManager.Stub {
                 FastPairDataProvider.init(mContext);
                 break;
             case PHASE_BOOT_COMPLETED:
+                // mInjector needs to be initialized before mProviderManager.
                 if (mInjector instanceof SystemInjector) {
                     // The nearby service must be functioning after this boot phase.
                     ((SystemInjector) mInjector).initializeBluetoothAdapter();
                     // Initialize ContextManager for CHRE scan.
-                    ((SystemInjector) mInjector).initializeContextHubManagerAdapter();
+                    ((SystemInjector) mInjector).initializeContextHubManager();
                 }
                 mProviderManager.init();
                 mContext.registerReceiver(
@@ -201,7 +202,7 @@ public class NearbyService extends INearbyManager.Stub {
     private static final class SystemInjector implements Injector {
         private final Context mContext;
         @Nullable private BluetoothAdapter mBluetoothAdapter;
-        @Nullable private ContextHubManagerAdapter mContextHubManagerAdapter;
+        @Nullable private ContextHubManager mContextHubManager;
         @Nullable private AppOpsManager mAppOpsManager;
 
         SystemInjector(Context context) {
@@ -216,8 +217,8 @@ public class NearbyService extends INearbyManager.Stub {
 
         @Override
         @Nullable
-        public ContextHubManagerAdapter getContextHubManagerAdapter() {
-            return mContextHubManagerAdapter;
+        public ContextHubManager getContextHubManager() {
+            return mContextHubManager;
         }
 
         @Override
@@ -237,15 +238,13 @@ public class NearbyService extends INearbyManager.Stub {
             mBluetoothAdapter = manager.getAdapter();
         }
 
-        synchronized void initializeContextHubManagerAdapter() {
-            if (mContextHubManagerAdapter != null) {
+        synchronized void initializeContextHubManager() {
+            if (mContextHubManager != null) {
                 return;
             }
-            ContextHubManager manager = mContext.getSystemService(ContextHubManager.class);
-            if (manager == null) {
-                return;
+            if (mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_CONTEXT_HUB)) {
+                mContextHubManager = mContext.getSystemService(ContextHubManager.class);
             }
-            mContextHubManagerAdapter = new ContextHubManagerAdapter(manager);
         }
 
         synchronized void initializeAppOpsManager() {
