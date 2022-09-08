@@ -139,6 +139,9 @@ public class EthernetTetheringTest {
     // Kernel treats a confirmed UDP connection which active after two seconds as stream mode.
     // See upstream commit b7b1d02fc43925a4d569ec221715db2dfa1ce4f5.
     private static final int UDP_STREAM_TS_MS = 2000;
+    // Give slack time for waiting UDP stream mode because handling conntrack event in user space
+    // may not in precise time. Used to reduce the flaky rate.
+    private static final int UDP_STREAM_SLACK_MS = 500;
     // Per RX UDP packet size: iphdr (20) + udphdr (8) + payload (2) = 30 bytes.
     private static final int RX_UDP_PACKET_SIZE = 30;
     private static final int RX_UDP_PACKET_COUNT = 456;
@@ -1171,6 +1174,9 @@ public class EthernetTetheringTest {
             Thread.sleep(UDP_STREAM_TS_MS);
             sendUploadPacketUdp(srcMac, dstMac, clientIp, remoteIp, tester, false /* is4To6 */);
 
+            // Give a slack time for handling conntrack event in user space.
+            Thread.sleep(UDP_STREAM_SLACK_MS);
+
             // [1] Verify IPv4 upstream rule map.
             final HashMap<Tether4Key, Tether4Value> upstreamMap = pollRawMapFromDump(
                     Tether4Key.class, Tether4Value.class, DUMPSYS_RAWMAP_ARG_UPSTREAM4);
@@ -1512,7 +1518,7 @@ public class EthernetTetheringTest {
         final TestDnsPacket dnsQuery = TestDnsPacket.getTestDnsPacket(buf);
         assertNotNull(dnsQuery);
         Log.d(TAG, "Forwarded UDP source port: " + udpHeader.srcPort + ", DNS query id: "
-                + dnsQuery.getHeader().id);
+                + dnsQuery.getHeader().getId());
 
         // [2] Send DNS reply.
         // DNS server --> upstream --> dnsmasq forwarding --> downstream --> tethered device
@@ -1522,7 +1528,7 @@ public class EthernetTetheringTest {
         final Inet4Address remoteIp = (Inet4Address) TEST_IP4_DNS;
         final Inet4Address tetheringUpstreamIp = (Inet4Address) TEST_IP4_ADDR.getAddress();
         sendDownloadPacketDnsV4(remoteIp, tetheringUpstreamIp, DNS_PORT,
-                (short) udpHeader.srcPort, (short) dnsQuery.getHeader().id, tester);
+                (short) udpHeader.srcPort, (short) dnsQuery.getHeader().getId(), tester);
     }
 
     private <T> List<T> toList(T... array) {
