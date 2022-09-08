@@ -40,21 +40,22 @@ import android.os.ServiceSpecificException;
 import android.provider.DeviceConfig;
 import android.system.ErrnoException;
 import android.system.Os;
+import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Set;
-import java.util.stream.Collectors;
 
 /**
  * BpfNetMaps is responsible for providing traffic controller relevant functionality.
@@ -95,16 +96,19 @@ public class BpfNetMaps {
             "/sys/fs/bpf/netd_shared/map_netd_uid_owner_map";
     private static final String UID_PERMISSION_MAP_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_uid_permission_map";
+    private static final String COOKIE_TAG_MAP_PATH =
+            "/sys/fs/bpf/netd_shared/map_netd_cookie_tag_map";
     private static final U32 UID_RULES_CONFIGURATION_KEY = new U32(0);
     private static final U32 CURRENT_STATS_MAP_CONFIGURATION_KEY = new U32(1);
     private static final long UID_RULES_DEFAULT_CONFIGURATION = 0;
     private static final long STATS_SELECT_MAP_A = 0;
     private static final long STATS_SELECT_MAP_B = 1;
 
-    private static BpfMap<U32, U32> sConfigurationMap = null;
+    private static IBpfMap<U32, U32> sConfigurationMap = null;
     // BpfMap for UID_OWNER_MAP_PATH. This map is not accessed by others.
-    private static BpfMap<U32, UidOwnerValue> sUidOwnerMap = null;
-    private static BpfMap<U32, U8> sUidPermissionMap = null;
+    private static IBpfMap<U32, UidOwnerValue> sUidOwnerMap = null;
+    private static IBpfMap<U32, U8> sUidPermissionMap = null;
+    private static IBpfMap<CookieTagMapKey, CookieTagMapValue> sCookieTagMap = null;
 
     // LINT.IfChange(match_type)
     @VisibleForTesting public static final long NO_MATCH = 0;
@@ -134,7 +138,7 @@ public class BpfNetMaps {
      * Set configurationMap for test.
      */
     @VisibleForTesting
-    public static void setConfigurationMapForTest(BpfMap<U32, U32> configurationMap) {
+    public static void setConfigurationMapForTest(IBpfMap<U32, U32> configurationMap) {
         sConfigurationMap = configurationMap;
     }
 
@@ -142,7 +146,7 @@ public class BpfNetMaps {
      * Set uidOwnerMap for test.
      */
     @VisibleForTesting
-    public static void setUidOwnerMapForTest(BpfMap<U32, UidOwnerValue> uidOwnerMap) {
+    public static void setUidOwnerMapForTest(IBpfMap<U32, UidOwnerValue> uidOwnerMap) {
         sUidOwnerMap = uidOwnerMap;
     }
 
@@ -150,11 +154,20 @@ public class BpfNetMaps {
      * Set uidPermissionMap for test.
      */
     @VisibleForTesting
-    public static void setUidPermissionMapForTest(BpfMap<U32, U8> uidPermissionMap) {
+    public static void setUidPermissionMapForTest(IBpfMap<U32, U8> uidPermissionMap) {
         sUidPermissionMap = uidPermissionMap;
     }
 
-    private static BpfMap<U32, U32> getConfigurationMap() {
+    /**
+     * Set cookieTagMap for test.
+     */
+    @VisibleForTesting
+    public static void setCookieTagMapForTest(
+            IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap) {
+        sCookieTagMap = cookieTagMap;
+    }
+
+    private static IBpfMap<U32, U32> getConfigurationMap() {
         try {
             return new BpfMap<>(
                     CONFIGURATION_MAP_PATH, BpfMap.BPF_F_RDWR, U32.class, U32.class);
@@ -163,7 +176,7 @@ public class BpfNetMaps {
         }
     }
 
-    private static BpfMap<U32, UidOwnerValue> getUidOwnerMap() {
+    private static IBpfMap<U32, UidOwnerValue> getUidOwnerMap() {
         try {
             return new BpfMap<>(
                     UID_OWNER_MAP_PATH, BpfMap.BPF_F_RDWR, U32.class, UidOwnerValue.class);
@@ -172,12 +185,21 @@ public class BpfNetMaps {
         }
     }
 
-    private static BpfMap<U32, U8> getUidPermissionMap() {
+    private static IBpfMap<U32, U8> getUidPermissionMap() {
         try {
             return new BpfMap<>(
                     UID_PERMISSION_MAP_PATH, BpfMap.BPF_F_RDWR, U32.class, U8.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open uid permission map", e);
+        }
+    }
+
+    private static IBpfMap<CookieTagMapKey, CookieTagMapValue> getCookieTagMap() {
+        try {
+            return new BpfMap<>(COOKIE_TAG_MAP_PATH, BpfMap.BPF_F_RDWR,
+                    CookieTagMapKey.class, CookieTagMapValue.class);
+        } catch (ErrnoException e) {
+            throw new IllegalStateException("Cannot open cookie tag map", e);
         }
     }
 
@@ -209,6 +231,10 @@ public class BpfNetMaps {
 
         if (sUidPermissionMap == null) {
             sUidPermissionMap = getUidPermissionMap();
+        }
+
+        if (sCookieTagMap == null) {
+            sCookieTagMap = getCookieTagMap();
         }
     }
 
@@ -518,6 +544,14 @@ public class BpfNetMaps {
         }
     }
 
+    private Set<Integer> asSet(final int[] uids) {
+        final Set<Integer> uidSet = new ArraySet<>();
+        for (final int uid: uids) {
+            uidSet.add(uid);
+        }
+        return uidSet;
+    }
+
     /**
      * Replaces the contents of the specified UID-based firewall chain.
      * Enables the chain for specified uids and disables the chain for non-specified uids.
@@ -539,15 +573,17 @@ public class BpfNetMaps {
                 // ConnectivityManager#replaceFirewallChain API
                 throw new IllegalArgumentException("Invalid firewall chain: " + chain);
             }
-            final Set<Integer> uidSet = Arrays.stream(uids).boxed().collect(Collectors.toSet());
-            final Set<Integer> uidSetToRemoveRule = new HashSet<>();
+            final Set<Integer> uidSet = asSet(uids);
+            final Set<Integer> uidSetToRemoveRule = new ArraySet<>();
             try {
                 synchronized (sUidOwnerMap) {
                     sUidOwnerMap.forEach((uid, config) -> {
                         // config could be null if there is a concurrent entry deletion.
-                        // http://b/220084230.
-                        if (config != null
-                                && !uidSet.contains((int) uid.val) && (config.rule & match) != 0) {
+                        // http://b/220084230. But sUidOwnerMap update must be done while holding a
+                        // lock, so this should not happen.
+                        if (config == null) {
+                            Log.wtf(TAG, "sUidOwnerMap entry was deleted while holding a lock");
+                        } else if (!uidSet.contains((int) uid.val) && (config.rule & match) != 0) {
                             uidSetToRemoveRule.add((int) uid.val);
                         }
                     });
