@@ -118,7 +118,7 @@ public abstract class NetworkStatsProvider {
      *
      * @param token the token under which these stats were gathered. Providers can call this method
      *              with the current token as often as they want, until the token changes.
-     *              See {@link NetworkStatsProvider#onRequestStatsUpdate(int)}
+     *              {@see NetworkStatsProvider#onRequestStatsUpdate()}
      * @param ifaceStats the {@link NetworkStats} per interface to be reported.
      *                   The provider should not include any traffic that is already counted by
      *                   kernel interface counters.

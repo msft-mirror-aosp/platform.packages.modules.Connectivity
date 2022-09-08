@@ -23,11 +23,9 @@ import static com.android.server.nearby.common.bluetooth.fastpair.FastPairDualCo
 
 import static com.google.common.truth.Truth.assertThat;
 
-import static org.junit.Assert.assertThrows;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyShort;
 import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.when;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
@@ -47,7 +45,6 @@ import com.google.protobuf.ByteString;
 
 import junit.framework.TestCase;
 
-import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -78,8 +75,6 @@ public class FastPairDualConnectionTest extends TestCase {
     private TestEventLogger mEventLogger;
     @Mock private TimingLogger mTimingLogger;
     @Mock private BluetoothAudioPairer mBluetoothAudioPairer;
-    @Mock private android.bluetooth.BluetoothAdapter mBluetoothAdapter;
-    @Mock FastPairDualConnection mFastPairDualConnection;
 
     @Override
     public void setUp() throws Exception {
@@ -292,23 +287,6 @@ public class FastPairDualConnectionTest extends TestCase {
         }
     }
 
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void testReflectionException()
-            throws BluetoothException, ReflectionException, ExecutionException,
-            InterruptedException, PairingException, TimeoutException {
-        when(mFastPairDualConnection.pair())
-                .thenThrow(new ReflectionException(
-                        new NoSuchMethodException("testReflectionException")));
-        ReflectionException exception =
-                assertThrows(
-                        ReflectionException.class,
-                        () -> mFastPairDualConnection.pair());
-        assertThat(exception)
-                .hasMessageThat()
-                .contains("testReflectionException");
-    }
-
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testHistoryItem() {
         FastPairDualConnection connection = new FastPairDualConnection(
@@ -327,11 +305,6 @@ public class FastPairDualConnectionTest extends TestCase {
         connection.setFastPairHistory(historyBuilder.build());
         assertThat(connection.mPairedHistoryFinder.isInPairedHistory("11:22:33:44:55:88"))
                 .isFalse();
-    }
-
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void testGetLeState() throws ReflectionException {
-        FastPairDualConnection.getLeState(mBluetoothAdapter);
     }
 
     static class TestEventLogger implements EventLogger {

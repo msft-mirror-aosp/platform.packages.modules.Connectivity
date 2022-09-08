@@ -17,7 +17,6 @@
 package com.android.server.nearby.common.bluetooth.fastpair;
 
 import androidx.annotation.Nullable;
-import androidx.annotation.VisibleForTesting;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -52,8 +51,7 @@ public abstract class Bytes {
             return this.mByteOrder.equals(byteOrder) ? getBytes() : reverse(getBytes());
         }
 
-        @VisibleForTesting
-        static byte[] reverse(byte[] bytes) {
+        private static byte[] reverse(byte[] bytes) {
             byte[] reversedBytes = new byte[bytes.length];
             for (int i = 0; i < bytes.length; i++) {
                 reversedBytes[i] = bytes[bytes.length - i - 1];

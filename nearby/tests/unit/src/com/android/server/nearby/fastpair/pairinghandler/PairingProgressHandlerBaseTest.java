@@ -22,7 +22,6 @@ import static org.mockito.Mockito.when;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
-import android.bluetooth.BluetoothManager;
 
 import androidx.annotation.Nullable;
 
@@ -49,7 +48,6 @@ import java.time.Clock;
 import service.proto.Cache;
 import service.proto.Rpcs;
 public class PairingProgressHandlerBaseTest {
-
     @Mock
     Locator mLocator;
     @Mock
@@ -62,10 +60,7 @@ public class PairingProgressHandlerBaseTest {
     FootprintsDeviceManager mFootprintsDeviceManager;
     @Mock
     FastPairConnection mFastPairConnection;
-    @Mock
-    BluetoothManager mBluetoothManager;
 
-    private static final String MAC_ADDRESS = "00:11:22:33:44:55";
     private static final byte[] ACCOUNT_KEY = new byte[]{0x01, 0x02};
     private static final int PASSKEY = 1234;
     private static DiscoveryItem sDiscoveryItem;
@@ -75,8 +70,6 @@ public class PairingProgressHandlerBaseTest {
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
-        when(mContextWrapper.getSystemService(BluetoothManager.class))
-                .thenReturn(mBluetoothManager);
         when(mContextWrapper.getLocator()).thenReturn(mLocator);
         mLocator.overrideBindingForTest(FastPairCacheManager.class,
                 mFastPairCacheManager);
@@ -173,12 +166,6 @@ public class PairingProgressHandlerBaseTest {
                 FastPairConnection.SharedSecret.create(ACCOUNT_KEY, sDiscoveryItem.getMacAddress());
         sPairingProgressHandlerBase
                 .getKeyForLocalCache(ACCOUNT_KEY, mFastPairConnection, sharedSecret);
-    }
-
-    @Test
-    public void onPairedCallbackCalled() {
-        sPairingProgressHandlerBase.onPairedCallbackCalled(mFastPairConnection,
-                ACCOUNT_KEY, mFootprintsDeviceManager, MAC_ADDRESS);
     }
 
     @Test

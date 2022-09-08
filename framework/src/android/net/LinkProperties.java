@@ -29,8 +29,6 @@ import android.os.Parcelable;
 import android.text.TextUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.modules.utils.build.SdkLevel;
-import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.LinkPropertiesUtils;
 
 import java.net.Inet4Address;
@@ -44,6 +42,7 @@ import java.util.Hashtable;
 import java.util.List;
 import java.util.Objects;
 import java.util.StringJoiner;
+import java.util.stream.Collectors;
 
 /**
  * Describes the properties of a network link.
@@ -760,15 +759,9 @@ public final class LinkProperties implements Parcelable {
      * @return An unmodifiable {@link List} of {@link RouteInfo} for this link.
      */
     public @NonNull List<RouteInfo> getRoutes() {
-        // Before T, there's no throw routes because VpnService is not updatable, so no need to
-        // filter them out.
-        if (CompatChanges.isChangeEnabled(EXCLUDED_ROUTES) || !SdkLevel.isAtLeastT()) {
+        if (CompatChanges.isChangeEnabled(EXCLUDED_ROUTES)) {
             return Collections.unmodifiableList(mRoutes);
         } else {
-            // Apps that added a throw route themselves (not obtaining LinkProperties from the
-            // system) will not see it in getRoutes on T+ if they do not have the compat change
-            // enabled (target SDK < T); but this is expected to be rare and typically only affect
-            // tests creating LinkProperties themselves (like CTS v12, which is only running on S).
             return Collections.unmodifiableList(getUnicastRoutes());
         }
     }
@@ -777,7 +770,9 @@ public final class LinkProperties implements Parcelable {
      * Returns all the {@link RouteInfo} of type {@link RouteInfo#RTN_UNICAST} set on this link.
      */
     private @NonNull List<RouteInfo> getUnicastRoutes() {
-        return CollectionUtils.filter(mRoutes, route -> route.getType() == RouteInfo.RTN_UNICAST);
+        return mRoutes.stream()
+                .filter(route -> route.getType() == RouteInfo.RTN_UNICAST)
+                .collect(Collectors.toList());
     }
 
     /**

@@ -164,17 +164,16 @@ public class NetworkStatsFactory {
     }
 
     public NetworkStatsFactory(@NonNull Context ctx) {
-        this(ctx, new File("/proc/"), true, new BpfNetMaps());
+        this(ctx, new File("/proc/"), true);
     }
 
     @VisibleForTesting
-    public NetworkStatsFactory(@NonNull Context ctx, File procRoot, boolean useBpfStats,
-            BpfNetMaps bpfNetMaps) {
+    public NetworkStatsFactory(@NonNull Context ctx, File procRoot, boolean useBpfStats) {
         mStatsXtIfaceAll = new File(procRoot, "net/xt_qtaguid/iface_stat_all");
         mStatsXtIfaceFmt = new File(procRoot, "net/xt_qtaguid/iface_stat_fmt");
         mStatsXtUid = new File(procRoot, "net/xt_qtaguid/stats");
         mUseBpfStats = useBpfStats;
-        mBpfNetMaps = bpfNetMaps;
+        mBpfNetMaps = new BpfNetMaps();
         synchronized (mPersistentDataLock) {
             mPersistSnapshot = new NetworkStats(SystemClock.elapsedRealtime(), -1);
             mTunAnd464xlatAdjustedStats = new NetworkStats(SystemClock.elapsedRealtime(), -1);

@@ -16,10 +16,6 @@
 
 package android.app.usage;
 
-import static android.net.NetworkStats.METERED_YES;
-import static android.net.NetworkTemplate.MATCH_MOBILE;
-import static android.net.NetworkTemplate.MATCH_WIFI;
-
 import static junit.framework.Assert.assertEquals;
 import static junit.framework.Assert.assertFalse;
 import static junit.framework.Assert.assertTrue;
@@ -55,8 +51,6 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
-
-import java.util.Set;
 
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
@@ -210,20 +204,20 @@ public class NetworkStatsManagerTest {
     @Test
     public void testNetworkTemplateWhenRunningQueryDetails_NoSubscriberId() throws RemoteException {
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_MOBILE,
-                null /* subscriberId */, new NetworkTemplate.Builder(MATCH_MOBILE)
-                        .setMeteredness(METERED_YES).build());
+                null /* subscriberId */, NetworkTemplate.buildTemplateMobileWildcard());
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_WIFI,
-                "" /* subscriberId */, new NetworkTemplate.Builder(MATCH_WIFI).build());
+                "" /* subscriberId */, NetworkTemplate.buildTemplateWifiWildcard());
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_WIFI,
-                null /* subscriberId */, new NetworkTemplate.Builder(MATCH_WIFI).build());
+                null /* subscriberId */, NetworkTemplate.buildTemplateWifiWildcard());
     }
 
     @Test
     public void testNetworkTemplateWhenRunningQueryDetails_MergedCarrierWifi()
             throws RemoteException {
         runQueryDetailsAndCheckTemplate(ConnectivityManager.TYPE_WIFI,
-                TEST_SUBSCRIBER_ID, new NetworkTemplate.Builder(MATCH_WIFI)
-                        .setSubscriberIds(Set.of(TEST_SUBSCRIBER_ID)).build());
+                TEST_SUBSCRIBER_ID,
+                NetworkTemplate.buildTemplateWifi(NetworkTemplate.WIFI_NETWORKID_ALL,
+                        TEST_SUBSCRIBER_ID));
     }
 
     @Test

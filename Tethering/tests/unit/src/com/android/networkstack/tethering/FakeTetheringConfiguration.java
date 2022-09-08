@@ -18,8 +18,7 @@ package com.android.networkstack.tethering;
 
 import android.content.Context;
 import android.content.res.Resources;
-
-import com.android.net.module.util.SharedLog;
+import android.net.util.SharedLog;
 
 /** FakeTetheringConfiguration is used to override static method for testing. */
 public class FakeTetheringConfiguration extends TetheringConfiguration {

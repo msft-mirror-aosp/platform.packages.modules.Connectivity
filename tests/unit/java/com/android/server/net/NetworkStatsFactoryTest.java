@@ -44,7 +44,6 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
 
 import com.android.frameworks.tests.net.R;
-import com.android.server.BpfNetMaps;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 
@@ -75,7 +74,6 @@ public class NetworkStatsFactoryTest extends NetworkStatsBaseTest {
     private File mTestProc;
     private NetworkStatsFactory mFactory;
     @Mock private Context mContext;
-    @Mock private BpfNetMaps mBpfNetMaps;
 
     @Before
     public void setUp() throws Exception {
@@ -86,7 +84,7 @@ public class NetworkStatsFactoryTest extends NetworkStatsBaseTest {
         // applications. So in order to have a test support native library, the native code
         // related to networkStatsFactory is compiled to a minimal native library and loaded here.
         System.loadLibrary("networkstatsfactorytestjni");
-        mFactory = new NetworkStatsFactory(mContext, mTestProc, false, mBpfNetMaps);
+        mFactory = new NetworkStatsFactory(mContext, mTestProc, false);
         mFactory.updateUnderlyingNetworkInfos(new UnderlyingNetworkInfo[0]);
     }
 

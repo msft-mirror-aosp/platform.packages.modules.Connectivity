@@ -132,7 +132,7 @@ public final class PresenceScanFilter extends ScanFilter implements Parcelable {
         }
         dest.writeInt(mExtendedProperties.size());
         if (!mExtendedProperties.isEmpty()) {
-            dest.writeParcelableList(mExtendedProperties, 0);
+            dest.writeList(mExtendedProperties);
         }
     }
 

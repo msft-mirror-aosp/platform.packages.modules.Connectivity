@@ -28,6 +28,7 @@ import static com.android.networkstack.tethering.OffloadHardwareInterface.NF_NET
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
+import android.net.util.SharedLog;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
@@ -37,7 +38,6 @@ import android.system.Os;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
-import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.netlink.StructNlMsgHdr;
 
 import org.junit.Before;

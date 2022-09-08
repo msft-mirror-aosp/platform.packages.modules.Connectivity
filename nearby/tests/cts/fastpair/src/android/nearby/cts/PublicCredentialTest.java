@@ -135,7 +135,6 @@ public class PublicCredentialTest {
                         .setIdentityType(IDENTITY_TYPE_PRIVATE)
                         .build();
         assertThat(credentialOne.equals((Object) credentialTwo)).isTrue();
-        assertThat(credentialOne.equals(null)).isFalse();
     }
 
     @Test

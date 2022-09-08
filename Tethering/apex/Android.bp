@@ -18,20 +18,6 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-prebuilt_etc {
-    name: "TetheringInProcessFlag",
-    src: "in-process",
-    filename_from_src: true,
-    sub_dir: "flag",
-}
-
-prebuilt_etc {
-    name: "TetheringOutOfProcessFlag",
-    src: "out-of-process",
-    filename_from_src: true,
-    sub_dir: "flag",
-}
-
 // Defaults to enable/disable java targets which uses development APIs. "enabled" may have a
 // different value depending on the branch.
 java_defaults {
@@ -88,9 +74,7 @@ apex {
         "dscp_policy.o",
         "netd.o",
         "offload.o",
-        "offload@btf.o",
         "test.o",
-        "test@btf.o",
     ],
     apps: [
         "ServiceConnectivityResources",
@@ -99,7 +83,6 @@ apex {
     prebuilts: [
         "current_sdkinfo",
         "privapp_allowlist_com.android.tethering",
-        "TetheringOutOfProcessFlag",
     ],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
@@ -121,12 +104,6 @@ apex_key {
 android_app_certificate {
     name: "com.android.tethering.certificate",
     certificate: "com.android.tethering",
-}
-
-filegroup {
-    name: "connectivity-hiddenapi-files",
-    srcs: ["hiddenapi/*.txt"],
-    visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
 // Encapsulate the contributions made by the com.android.tethering to the bootclasspath.
@@ -209,21 +186,8 @@ override_apex {
     base: "com.android.tethering",
     package_name: "com.android.tethering.inprocess",
     enabled: enable_tethering_next_apex,
-    bpfs: [
-        "block.o",
-        "clatd.o",
-        "dscp_policy.o",
-        "netd.o",
-        "offload@inprocess.o",
-        "test@inprocess.o",
-    ],
     apps: [
         "ServiceConnectivityResources",
         "InProcessTethering",
-    ],
-    prebuilts: [
-        "current_sdkinfo",
-        "privapp_allowlist_com.android.tethering",
-        "TetheringInProcessFlag",
     ],
 }

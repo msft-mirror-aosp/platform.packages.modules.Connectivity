@@ -84,7 +84,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * the correct packets. Devices typically have a small number of slots
  * per radio technology, and the specific number of slots for each
  * technology is specified in configuration files.
- * See {@link SocketKeepalive} for details.
+ * {@see SocketKeepalive} for details.
  *
  * @hide
  */

@@ -44,6 +44,7 @@ public class FastPairCacheManagerTest {
     private static final ByteString ACCOUNT_KEY = ByteString.copyFromUtf8("axgs");
     private static final String MAC_ADDRESS_B = "00:11:22:44";
     private static final ByteString ACCOUNT_KEY_B = ByteString.copyFromUtf8("axgb");
+    private static final String ITEM_ID = "ITEM_ID";
 
     @Mock
     DiscoveryItem mDiscoveryItem;
@@ -85,19 +86,30 @@ public class FastPairCacheManagerTest {
     public void saveRetrieveInfo() {
         when(mDiscoveryItem.getCopyOfStoredItem()).thenReturn(mStoredDiscoveryItem);
         when(mDiscoveryItem.getTriggerId()).thenReturn(MODEL_ID);
-        when(mDiscoveryItem2.getCopyOfStoredItem()).thenReturn(mStoredDiscoveryItem2);
-        when(mDiscoveryItem2.getTriggerId()).thenReturn(MODEL_ID2);
 
         FastPairCacheManager fastPairCacheManager = new FastPairCacheManager(mContext);
         fastPairCacheManager.saveDiscoveryItem(mDiscoveryItem);
         assertThat(fastPairCacheManager.getStoredDiscoveryItem(MODEL_ID).getAppName())
                 .isEqualTo(APP_NAME);
-        assertThat(fastPairCacheManager.getAllSavedStoreDiscoveryItem()).hasSize(1);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = 32, codeName = "T")
+    public void getAllInfo() {
+        when(mDiscoveryItem.getCopyOfStoredItem()).thenReturn(mStoredDiscoveryItem);
+        when(mDiscoveryItem.getTriggerId()).thenReturn(MODEL_ID);
+        when(mDiscoveryItem2.getCopyOfStoredItem()).thenReturn(mStoredDiscoveryItem2);
+        when(mDiscoveryItem2.getTriggerId()).thenReturn(MODEL_ID2);
+
+        FastPairCacheManager fastPairCacheManager = new FastPairCacheManager(mContext);
+        fastPairCacheManager.saveDiscoveryItem(mDiscoveryItem);
+
+        assertThat(fastPairCacheManager.getAllSavedStoreDiscoveryItem()).hasSize(2);
 
         fastPairCacheManager.saveDiscoveryItem(mDiscoveryItem2);
-        assertThat(fastPairCacheManager.getStoredDiscoveryItem(MODEL_ID2).getAppName())
-                .isEqualTo(APP_NAME);
-        assertThat(fastPairCacheManager.getAllSavedStoreDiscoveryItem()).hasSize(2);
+
+        assertThat(fastPairCacheManager.getAllSavedStoreDiscoveryItem()).hasSize(3);
+
         fastPairCacheManager.cleanUp();
     }
 

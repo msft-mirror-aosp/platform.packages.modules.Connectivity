@@ -81,8 +81,6 @@ public class BluetoothAdapterTest {
     public void testEnable_callsWrapped() {
         when(mBluetoothAdapter.enable()).thenReturn(true);
         assertThat(mTestabilityBluetoothAdapter.enable()).isTrue();
-        when(mBluetoothAdapter.isEnabled()).thenReturn(true);
-        assertThat(mTestabilityBluetoothAdapter.isEnabled()).isTrue();
     }
 
     @Test

@@ -244,7 +244,5 @@ interface IConnectivityManager
 
     void setFirewallChainEnabled(int chain, boolean enable);
 
-    boolean getFirewallChainEnabled(int chain);
-
     void replaceFirewallChain(int chain, in int[] uids);
 }

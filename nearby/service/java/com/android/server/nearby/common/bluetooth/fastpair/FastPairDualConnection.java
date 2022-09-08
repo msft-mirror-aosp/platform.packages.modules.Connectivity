@@ -1993,8 +1993,7 @@ public class FastPairDualConnection extends FastPairConnection {
         return getLeState(bluetoothAdapter);
     }
 
-    @VisibleForTesting
-    static int getLeState(android.bluetooth.BluetoothAdapter adapter) {
+    private static int getLeState(android.bluetooth.BluetoothAdapter adapter) {
         try {
             return (Integer) Reflect.on(adapter).withMethod("getLeState").get();
         } catch (ReflectionException e) {

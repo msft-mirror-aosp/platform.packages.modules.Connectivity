@@ -98,9 +98,6 @@ import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
-import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
-import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermission;
-import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermissionOr;
 
 import static java.util.Map.Entry;
 
@@ -453,7 +450,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * direct device-originated data traffic of the specific UIDs to the correct
      * default network for each app.
      * Order ints passed to netd must be in the 0~999 range. Larger values code for
-     * a lower priority, see {@link NativeUidRangeConfig}.
+     * a lower priority, {@see NativeUidRangeConfig}
      *
      * Requests that don't code for a per-app preference use PREFERENCE_ORDER_INVALID.
      * The default request uses PREFERENCE_ORDER_DEFAULT.
@@ -1959,7 +1956,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     @Override
     public Network getActiveNetworkForUid(int uid, boolean ignoreBlocked) {
-        enforceNetworkStackPermission(mContext);
+        PermissionUtils.enforceNetworkStackPermission(mContext);
         return getActiveNetworkForUidInternal(uid, ignoreBlocked);
     }
 
@@ -1982,7 +1979,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     @Override
     public NetworkInfo getActiveNetworkInfoForUid(int uid, boolean ignoreBlocked) {
-        enforceNetworkStackPermission(mContext);
+        PermissionUtils.enforceNetworkStackPermission(mContext);
         final NetworkAgentInfo nai = getNetworkAgentInfoForUid(uid);
         if (nai == null) return null;
         return getFilteredNetworkInfo(nai, uid, ignoreBlocked);
@@ -2521,7 +2518,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     public NetworkState[] getAllNetworkState() {
         // This contains IMSI details, so make sure the caller is privileged.
-        enforceNetworkStackPermission(mContext);
+        PermissionUtils.enforceNetworkStackPermission(mContext);
 
         final ArrayList<NetworkState> result = new ArrayList<>();
         for (NetworkStateSnapshot snapshot : getAllNetworkStateSnapshots()) {
@@ -2786,6 +2783,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
         setUidBlockedReasons(uid, blockedReasons);
     }
 
+    private boolean checkAnyPermissionOf(String... permissions) {
+        for (String permission : permissions) {
+            if (mContext.checkCallingOrSelfPermission(permission) == PERMISSION_GRANTED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean checkAnyPermissionOf(int pid, int uid, String... permissions) {
         for (String permission : permissions) {
             if (mContext.checkPermission(permission, pid, uid) == PERMISSION_GRANTED) {
@@ -2793,6 +2799,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
         }
         return false;
+    }
+
+    private void enforceAnyPermissionOf(String... permissions) {
+        if (!checkAnyPermissionOf(permissions)) {
+            throw new SecurityException("Requires one of the following permissions: "
+                    + String.join(", ", permissions) + ".");
+        }
     }
 
     private void enforceInternetPermission() {
@@ -2854,7 +2867,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceSettingsPermission() {
-        enforceAnyPermissionOf(mContext,
+        enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_SETTINGS,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
@@ -2862,7 +2875,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void enforceNetworkFactoryPermission() {
         // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
         if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
-        enforceAnyPermissionOf(mContext,
+        enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
@@ -2870,7 +2883,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void enforceNetworkFactoryOrSettingsPermission() {
         // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
         if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
-        enforceAnyPermissionOf(mContext,
+        enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_SETTINGS,
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
@@ -2879,7 +2892,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void enforceNetworkFactoryOrTestNetworksPermission() {
         // TODO: Check for the BLUETOOTH_STACK permission once that is in the API surface.
         if (UserHandle.getAppId(getCallingUid()) == Process.BLUETOOTH_UID) return;
-        enforceAnyPermissionOf(mContext,
+        enforceAnyPermissionOf(
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_FACTORY,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
@@ -2896,7 +2909,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean checkSettingsPermission() {
-        return PermissionUtils.checkAnyPermissionOf(mContext,
+        return checkAnyPermissionOf(
                 android.Manifest.permission.NETWORK_SETTINGS,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
@@ -2909,21 +2922,27 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void enforceNetworkStackOrSettingsPermission() {
-        enforceNetworkStackPermissionOr(mContext,
-                android.Manifest.permission.NETWORK_SETTINGS);
+        enforceAnyPermissionOf(
+                android.Manifest.permission.NETWORK_SETTINGS,
+                android.Manifest.permission.NETWORK_STACK,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
     private void enforceNetworkStackSettingsOrSetup() {
-        enforceNetworkStackPermissionOr(mContext,
+        enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_SETTINGS,
-                android.Manifest.permission.NETWORK_SETUP_WIZARD);
+                android.Manifest.permission.NETWORK_SETUP_WIZARD,
+                android.Manifest.permission.NETWORK_STACK,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
     private void enforceAirplaneModePermission() {
-        enforceNetworkStackPermissionOr(mContext,
+        enforceAnyPermissionOf(
                 android.Manifest.permission.NETWORK_AIRPLANE_MODE,
                 android.Manifest.permission.NETWORK_SETTINGS,
-                android.Manifest.permission.NETWORK_SETUP_WIZARD);
+                android.Manifest.permission.NETWORK_SETUP_WIZARD,
+                android.Manifest.permission.NETWORK_STACK,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
     private void enforceOemNetworkPreferencesPermission() {
@@ -2939,7 +2958,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean checkNetworkStackPermission() {
-        return PermissionUtils.checkAnyPermissionOf(mContext,
+        return checkAnyPermissionOf(
                 android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
@@ -3403,17 +3422,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.increaseIndent();
         mNetworkActivityTracker.dump(pw);
         pw.decreaseIndent();
-
-        // pre-T is logged by netd.
-        if (SdkLevel.isAtLeastT()) {
-            pw.println();
-            pw.println("BPF programs & maps:");
-            pw.increaseIndent();
-            // Flush is required. Otherwise, the traces in fd can interleave with traces in pw.
-            pw.flush();
-            dumpTrafficController(pw, fd, /*verbose=*/ true);
-            pw.decreaseIndent();
-        }
     }
 
     private void dumpNetworks(IndentingPrintWriter pw) {
@@ -5479,6 +5487,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public int getLastTetherError(String iface) {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getLastTetherError(iface);
@@ -5487,6 +5496,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableIfaces();
@@ -5495,6 +5505,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetheredIfaces();
@@ -5504,6 +5515,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetheringErroredIfaces() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5513,6 +5525,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableUsbRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
 
@@ -5522,6 +5535,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     @Deprecated
     public String[] getTetherableWifiRegexs() {
+        enforceAccessPermission();
         final TetheringManager tm = (TetheringManager) mContext.getSystemService(
                 Context.TETHERING_SERVICE);
         return tm.getTetherableWifiRegexs();
@@ -5727,7 +5741,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     @Override
     public void setGlobalProxy(@Nullable final ProxyInfo proxyProperties) {
-        enforceNetworkStackPermission(mContext);
+        PermissionUtils.enforceNetworkStackPermission(mContext);
         mProxyTracker.setGlobalProxy(proxyProperties);
     }
 
@@ -6344,7 +6358,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (null != satisfier) {
                 // If the old NRI was satisfied by an NAI, then it may have had an active request.
                 // The active request is necessary to figure out what callbacks to send, in
-                // particular when a network updates its capabilities.
+                // particular then a network updates its capabilities.
                 // As this code creates a new NRI with a new set of requests, figure out which of
                 // the list of requests should be the active request. It is always the first
                 // request of the list that can be satisfied by the satisfier since the order of
@@ -7275,7 +7289,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         Objects.requireNonNull(initialScore, "initialScore must not be null");
         Objects.requireNonNull(networkAgentConfig, "networkAgentConfig must not be null");
         if (networkCapabilities.hasTransport(TRANSPORT_TEST)) {
-            enforceAnyPermissionOf(mContext, Manifest.permission.MANAGE_TEST_NETWORKS);
+            enforceAnyPermissionOf(Manifest.permission.MANAGE_TEST_NETWORKS);
         } else {
             enforceNetworkFactoryPermission();
         }
@@ -8328,7 +8342,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mPendingIntentWakeLock.acquire();
         try {
             if (DBG) log("Sending " + pendingIntent);
-            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */);
+            final BroadcastOptions options = BroadcastOptions.makeBasic();
+            if (SdkLevel.isAtLeastT()) {
+                // Explicitly disallow the receiver from starting activities, to prevent apps from
+                // utilizing the PendingIntent as a backdoor to do this.
+                options.setPendingIntentBackgroundActivityLaunchAllowed(false);
+            }
+            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */,
+                    null /* requiredPermission */,
+                    SdkLevel.isAtLeastT() ? options.toBundle() : null);
         } catch (PendingIntent.CanceledException e) {
             if (DBG) log(pendingIntent + " was not sent, it had been canceled.");
             mPendingIntentWakeLock.release();
@@ -10288,8 +10310,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         Objects.requireNonNull(network, "network must not be null");
         Objects.requireNonNull(extras, "extras must not be null");
 
-        enforceAnyPermissionOf(mContext,
-                android.Manifest.permission.MANAGE_TEST_NETWORKS,
+        enforceAnyPermissionOf(android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_STACK);
         final NetworkCapabilities nc = getNetworkCapabilitiesInternal(network);
         if (!nc.hasTransport(TRANSPORT_TEST)) {
@@ -10697,7 +10718,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             preferences.add(pref);
         }
 
-        enforceNetworkStackPermission(mContext);
+        PermissionUtils.enforceNetworkStackPermission(mContext);
         if (DBG) {
             log("setProfileNetworkPreferences " + profile + " to " + preferences);
         }
@@ -11374,13 +11395,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
-    }
-
-    @Override
-    public boolean getFirewallChainEnabled(final int chain) {
-        enforceNetworkStackOrSettingsPermission();
-
-        return mBpfNetMaps.isChainEnabled(chain);
     }
 
     @Override

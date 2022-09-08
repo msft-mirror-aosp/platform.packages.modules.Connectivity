@@ -56,9 +56,4 @@ public class BytesTest extends TestCase {
     public void testToString()  {
         assertThat(VALUE1.toString()).isEqualTo("0102");
     }
-
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void testReverse()  {
-        assertThat(VALUE1.reverse(new byte[]{1, 2})).isEqualTo(new byte[]{2, 1});
-    }
 }
