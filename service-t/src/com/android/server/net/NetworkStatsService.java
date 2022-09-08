@@ -154,6 +154,7 @@ import com.android.internal.util.FileRotator;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.BestClock;
 import com.android.net.module.util.BinderUtils;
+import com.android.net.module.util.BpfDump;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
@@ -2468,13 +2469,13 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mUidRecorder.removeUidsLocked(uids);
         mUidTagRecorder.removeUidsLocked(uids);
 
+        mStatsFactory.removeUidsLocked(uids);
         // Clear kernel stats associated with UID
         for (int uid : uids) {
             deleteKernelTagData(uid);
         }
-
-       // TODO: Remove the UID's entries from mOpenSessionCallsPerUid and
-       // mOpenSessionCallsPerCaller
+        // TODO: Remove the UID's entries from mOpenSessionCallsPerUid and
+        // mOpenSessionCallsPerCaller
     }
 
     /**
@@ -2532,6 +2533,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         // usage: dumpsys netstats --full --uid --tag --poll --checkin
         final boolean poll = argSet.contains("--poll") || argSet.contains("poll");
         final boolean checkin = argSet.contains("--checkin");
+        final boolean bpfRawMap = argSet.contains("--bpfRawMap");
         final boolean fullHistory = argSet.contains("--full") || argSet.contains("full");
         final boolean includeUid = argSet.contains("--uid") || argSet.contains("detail");
         final boolean includeTag = argSet.contains("--tag") || argSet.contains("detail");
@@ -2570,6 +2572,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                     pw.println("tag");
                     mUidTagRecorder.dumpCheckin(rawWriter, start, end);
                 }
+                return;
+            }
+
+            if (bpfRawMap) {
+                dumpRawMapLocked(pw, args);
                 return;
             }
 
@@ -2743,6 +2750,38 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         proto.flush();
     }
 
+    private <K extends Struct, V extends Struct> void dumpRawMap(IBpfMap<K, V> map,
+            IndentingPrintWriter pw) throws ErrnoException {
+        if (map == null) {
+            pw.println("Map is null");
+            return;
+        }
+        if (map.isEmpty()) {
+            pw.println("No entries");
+            return;
+        }
+        // If there is a concurrent entry deletion, value could be null. http://b/220084230.
+        // Also, map.forEach could restart iteration from the beginning and dump could contain
+        // duplicated entries. User of this dump needs to take care of the duplicated entries.
+        map.forEach((k, v) -> {
+            if (v != null) {
+                pw.println(BpfDump.toBase64EncodedString(k, v));
+            }
+        });
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpRawMapLocked(final IndentingPrintWriter pw, final String[] args) {
+        if (CollectionUtils.contains(args, "--cookieTagMap")) {
+            try {
+                dumpRawMap(mCookieTagMap, pw);
+            } catch (ErrnoException e) {
+                pw.println("Error dumping cookieTag map: " + e);
+            }
+            return;
+        }
+    }
+
     private static void dumpInterfaces(ProtoOutputStream proto, long tag,
             ArrayMap<String, NetworkIdentitySet> ifaces) {
         for (int i = 0; i < ifaces.size(); i++) {
@@ -2780,24 +2819,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         if (mCookieTagMap == null) {
             return;
         }
-        pw.println("mCookieTagMap:");
-        pw.increaseIndent();
-        try {
-            mCookieTagMap.forEach((key, value) -> {
-                // value could be null if there is a concurrent entry deletion.
-                // http://b/220084230.
-                if (value != null) {
-                    pw.println("cookie=" + key.socketCookie
-                            + " tag=0x" + Long.toHexString(value.tag)
-                            + " uid=" + value.uid);
-                } else {
-                    pw.println("Entry is deleted while dumping, iterating from first entry");
-                }
-            });
-        } catch (ErrnoException e) {
-            pw.println("mCookieTagMap dump end with error: " + Os.strerror(e.errno));
-        }
-        pw.decreaseIndent();
+        BpfDump.dumpMap(mCookieTagMap, pw, "mCookieTagMap",
+                (key, value) -> "cookie=" + key.socketCookie
+                        + " tag=0x" + Long.toHexString(value.tag)
+                        + " uid=" + value.uid);
     }
 
     @GuardedBy("mStatsLock")
@@ -2805,22 +2830,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         if (mUidCounterSetMap == null) {
             return;
         }
-        pw.println("mUidCounterSetMap:");
-        pw.increaseIndent();
-        try {
-            mUidCounterSetMap.forEach((uid, set) -> {
-                // set could be null if there is a concurrent entry deletion.
-                // http://b/220084230.
-                if (set != null) {
-                    pw.println("uid=" + uid.val + " set=" + set.val);
-                } else {
-                    pw.println("Entry is deleted while dumping, iterating from first entry");
-                }
-            });
-        } catch (ErrnoException e) {
-            pw.println("mUidCounterSetMap dump end with error: " + Os.strerror(e.errno));
-        }
-        pw.decreaseIndent();
+        BpfDump.dumpMap(mUidCounterSetMap, pw, "mUidCounterSetMap",
+                (uid, set) -> "uid=" + uid.val + " set=" + set.val);
     }
 
     @GuardedBy("mStatsLock")
@@ -2828,27 +2839,13 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         if (mAppUidStatsMap == null) {
             return;
         }
-        pw.println("mAppUidStatsMap:");
-        pw.increaseIndent();
-        pw.println("uid rxBytes rxPackets txBytes txPackets");
-        try {
-            mAppUidStatsMap.forEach((key, value) -> {
-                // value could be null if there is a concurrent entry deletion.
-                // http://b/220084230.
-                if (value != null) {
-                    pw.println(key.uid + " "
-                            + value.rxBytes + " "
-                            + value.rxPackets + " "
-                            + value.txBytes + " "
-                            + value.txPackets);
-                } else {
-                    pw.println("Entry is deleted while dumping, iterating from first entry");
-                }
-            });
-        } catch (ErrnoException e) {
-            pw.println("mAppUidStatsMap dump end with error: " + Os.strerror(e.errno));
-        }
-        pw.decreaseIndent();
+        BpfDump.dumpMap(mAppUidStatsMap, pw, "mAppUidStatsMap",
+                "uid rxBytes rxPackets txBytes txPackets",
+                (key, value) -> key.uid + " "
+                        + value.rxBytes + " "
+                        + value.rxPackets + " "
+                        + value.txBytes + " "
+                        + value.txPackets);
     }
 
     private NetworkStats readNetworkStatsSummaryDev() {
