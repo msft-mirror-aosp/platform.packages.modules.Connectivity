@@ -3040,6 +3040,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (!ConnectivitySettingsManager.getMobileDataPreferredUids(mContext).isEmpty()) {
             updateMobileDataPreferredUids();
         }
+
+        // On T+ devices, register callback for statsd to pull NETWORK_BPF_MAP_INFO atom
+        if (SdkLevel.isAtLeastT()) {
+            mBpfNetMaps.setPullAtomCallback(mContext);
+        }
     }
 
     /**
@@ -4579,7 +4584,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (req.isListen() || req.isListenForBest()) {
                 continue;
             }
-            // If this Network is already the highest scoring Network for a request, or if
+            // If this Network is already the best Network for a request, or if
             // there is hope for it to become one if it validated, then it is needed.
             if (candidate.satisfies(req)) {
                 // As soon as a network is found that satisfies a request, return. Specifically for
