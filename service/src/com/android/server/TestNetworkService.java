@@ -47,7 +47,6 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.NetworkStackConstants;
 
 import java.io.IOException;
@@ -78,10 +77,12 @@ class TestNetworkService extends ITestNetworkManager.Stub {
 
     // Native method stubs
     private static native int nativeCreateTunTap(boolean isTun, boolean hasCarrier,
-            @NonNull String iface);
+            boolean setIffMulticast, @NonNull String iface);
 
     private static native void nativeSetTunTapCarrierEnabled(@NonNull String iface, int tunFd,
             boolean enabled);
+
+    private static native void nativeBringUpInterface(String iface);
 
     @VisibleForTesting
     protected TestNetworkService(@NonNull Context context) {
@@ -120,7 +121,7 @@ class TestNetworkService extends ITestNetworkManager.Stub {
      */
     @Override
     public TestNetworkInterface createInterface(boolean isTun, boolean hasCarrier, boolean bringUp,
-            LinkAddress[] linkAddrs, @Nullable String iface) {
+            boolean disableIpv6ProvisioningDelay, LinkAddress[] linkAddrs, @Nullable String iface) {
         enforceTestNetworkPermissions(mContext);
 
         Objects.requireNonNull(linkAddrs, "missing linkAddrs");
@@ -135,8 +136,22 @@ class TestNetworkService extends ITestNetworkManager.Stub {
 
         final long token = Binder.clearCallingIdentity();
         try {
+            // Note: if the interface is brought up by ethernet, setting IFF_MULTICAST
+            // races NetUtils#setInterfaceUp(). This flag is not necessary for ethernet
+            // tests, so let's not set it when bringUp is false. See also b/242343156.
+            // In the future, we could use RTM_SETLINK with ifi_change set to set the
+            // flags atomically.
+            final boolean setIffMulticast = bringUp;
             ParcelFileDescriptor tunIntf = ParcelFileDescriptor.adoptFd(
-                    nativeCreateTunTap(isTun, hasCarrier, interfaceName));
+                    nativeCreateTunTap(isTun, hasCarrier, setIffMulticast, interfaceName));
+
+            // Disable DAD and remove router_solicitation_delay before assigning link addresses.
+            if (disableIpv6ProvisioningDelay) {
+                mNetd.setProcSysNet(
+                        INetd.IPV6, INetd.CONF, interfaceName, "router_solicitation_delay", "0");
+                mNetd.setProcSysNet(INetd.IPV6, INetd.CONF, interfaceName, "dad_transmits", "0");
+            }
+
             for (LinkAddress addr : linkAddrs) {
                 mNetd.interfaceAddAddress(
                         interfaceName,
@@ -145,7 +160,7 @@ class TestNetworkService extends ITestNetworkManager.Stub {
             }
 
             if (bringUp) {
-                NetdUtils.setInterfaceUp(mNetd, interfaceName);
+                nativeBringUpInterface(interfaceName);
             }
 
             return new TestNetworkInterface(tunIntf, interfaceName);

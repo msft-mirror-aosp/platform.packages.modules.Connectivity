@@ -26,6 +26,7 @@ import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_SETUP_WIZARD;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.Manifest.permission.READ_DEVICE_CONFIG;
+import static android.Manifest.permission.TETHER_PRIVILEGED;
 import static android.content.pm.PackageManager.FEATURE_BLUETOOTH;
 import static android.content.pm.PackageManager.FEATURE_ETHERNET;
 import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
@@ -37,9 +38,14 @@ import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.EXTRA_NETWORK;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_REQUEST;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_POWERSAVE;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_RESTRICTED;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE;
@@ -75,8 +81,6 @@ import static android.net.cts.util.CtsNetUtils.NETWORK_CALLBACK_ACTION;
 import static android.net.cts.util.CtsNetUtils.TEST_HOST;
 import static android.net.cts.util.CtsNetUtils.TestNetworkCallback;
 import static android.net.cts.util.CtsTetheringUtils.TestTetheringEventCallback;
-import static android.net.util.NetworkStackUtils.TEST_CAPTIVE_PORTAL_HTTPS_URL;
-import static android.net.util.NetworkStackUtils.TEST_CAPTIVE_PORTAL_HTTP_URL;
 import static android.os.MessageQueue.OnFileDescriptorEventListener.EVENT_INPUT;
 import static android.os.Process.INVALID_UID;
 import static android.provider.Settings.Global.NETWORK_METERED_MULTIPATH_PREFERENCE;
@@ -88,6 +92,8 @@ import static com.android.compatibility.common.util.SystemUtil.callWithShellPerm
 import static com.android.compatibility.common.util.SystemUtil.runShellCommand;
 import static com.android.compatibility.common.util.SystemUtil.runWithShellPermissionIdentity;
 import static com.android.modules.utils.build.SdkLevel.isAtLeastS;
+import static com.android.net.module.util.NetworkStackConstants.TEST_CAPTIVE_PORTAL_HTTPS_URL;
+import static com.android.net.module.util.NetworkStackConstants.TEST_CAPTIVE_PORTAL_HTTP_URL;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_LOCKDOWN_VPN;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_NONE;
 import static com.android.testutils.Cleanup.testAndCleanup;
@@ -184,9 +190,9 @@ import com.android.networkstack.apishim.ConstantsShim;
 import com.android.networkstack.apishim.NetworkInformationShimImpl;
 import com.android.networkstack.apishim.common.ConnectivityManagerShim;
 import com.android.testutils.CompatUtil;
+import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
-import com.android.testutils.DevSdkIgnoreRuleKt;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
@@ -331,11 +337,10 @@ public class ConnectivityManagerTest {
         mCtsNetUtils = new CtsNetUtils(mContext);
         mTm = mContext.getSystemService(TelephonyManager.class);
 
-        if (DevSdkIgnoreRuleKt.isDevSdkInRange(null /* minExclusive */,
-                Build.VERSION_CODES.R /* maxInclusive */)) {
-            addLegacySupportedNetworkTypes();
-        } else {
+        if (isAtLeastS()) {
             addSupportedNetworkTypes();
+        } else {
+            addLegacySupportedNetworkTypes();
         }
 
         mUiAutomation = mInstrumentation.getUiAutomation();
@@ -409,14 +414,17 @@ public class ConnectivityManagerTest {
 
         // All tests in this class require a working Internet connection as they start. Make
         // sure there is still one as they end that's ready to use for the next test to use.
-        final TestNetworkCallback callback = new TestNetworkCallback();
-        registerDefaultNetworkCallback(callback);
-        try {
-            assertNotNull("Couldn't restore Internet connectivity", callback.waitForAvailable());
-        } finally {
-            // Unregister all registered callbacks.
-            unregisterRegisteredCallbacks();
-        }
+        mTestValidationConfigRule.runAfterNextCleanup(() -> {
+            final TestNetworkCallback callback = new TestNetworkCallback();
+            registerDefaultNetworkCallback(callback);
+            try {
+                assertNotNull("Couldn't restore Internet connectivity",
+                        callback.waitForAvailable());
+            } finally {
+                // Unregister all registered callbacks.
+                unregisterRegisteredCallbacks();
+            }
+        });
     }
 
     @Test
@@ -2092,25 +2100,15 @@ public class ConnectivityManagerTest {
 
         try {
             // Verify we cannot set Airplane Mode without correct permission:
-            try {
-                setAndVerifyAirplaneMode(true);
-                fail("SecurityException should have been thrown when setAirplaneMode was called"
-                        + "without holding permission NETWORK_AIRPLANE_MODE.");
-            } catch (SecurityException expected) {}
+            assertThrows(SecurityException.class, () -> setAndVerifyAirplaneMode(true));
 
             // disable airplane mode again to reach a known state
             runShellCommand("cmd connectivity airplane-mode disable");
 
-            // adopt shell permission which holds NETWORK_AIRPLANE_MODE
-            mUiAutomation.adoptShellPermissionIdentity();
+            // Verify we can enable Airplane Mode with correct permission.
+            // TODO: test that NETWORK_AIRPLANE_MODE works as well, once the shell has it.
+            runAsShell(NETWORK_SETTINGS, () -> setAndVerifyAirplaneMode(true));
 
-            // Verify we can enable Airplane Mode with correct permission:
-            try {
-                setAndVerifyAirplaneMode(true);
-            } catch (SecurityException e) {
-                fail("SecurityException should not have been thrown when setAirplaneMode(true) was"
-                        + "called whilst holding the NETWORK_AIRPLANE_MODE permission.");
-            }
             // Verify that the enabling airplane mode takes effect as expected to prevent flakiness
             // caused by fast airplane mode switches. Ensure network lost before turning off
             // airplane mode.
@@ -2118,12 +2116,8 @@ public class ConnectivityManagerTest {
             if (supportTelephony) waitForLost(telephonyCb);
 
             // Verify we can disable Airplane Mode with correct permission:
-            try {
-                setAndVerifyAirplaneMode(false);
-            } catch (SecurityException e) {
-                fail("SecurityException should not have been thrown when setAirplaneMode(false) was"
-                        + "called whilst holding the NETWORK_AIRPLANE_MODE permission.");
-            }
+            runAsShell(NETWORK_SETTINGS, () -> setAndVerifyAirplaneMode(false));
+
             // Verify that turning airplane mode off takes effect as expected.
             // connectToCell only registers a request, it cannot / does not need to be called twice
             mCtsNetUtils.ensureWifiConnected();
@@ -2133,7 +2127,6 @@ public class ConnectivityManagerTest {
             // Restore the previous state of airplane mode and permissions:
             runShellCommand("cmd connectivity airplane-mode "
                     + (isAirplaneModeEnabled ? "enable" : "disable"));
-            mUiAutomation.dropShellPermissionIdentity();
         }
     }
 
@@ -2496,17 +2489,24 @@ public class ConnectivityManagerTest {
                 ConnectivitySettingsManager.getNetworkAvoidBadWifi(mContext);
         final int curPrivateDnsMode = ConnectivitySettingsManager.getPrivateDnsMode(mContext);
 
-        TestTetheringEventCallback tetherEventCallback = null;
         final CtsTetheringUtils tetherUtils = new CtsTetheringUtils(mContext);
+        final TestTetheringEventCallback tetherEventCallback =
+                tetherUtils.registerTetheringEventCallback();
         try {
-            tetherEventCallback = tetherUtils.registerTetheringEventCallback();
-            // Adopt for NETWORK_SETTINGS permission.
-            mUiAutomation.adoptShellPermissionIdentity();
-            // start tethering
             tetherEventCallback.assumeWifiTetheringSupported(mContext);
-            tetherUtils.startWifiTethering(tetherEventCallback);
+
+            final TestableNetworkCallback wifiCb = new TestableNetworkCallback();
+            mCtsNetUtils.ensureWifiConnected();
+            registerCallbackAndWaitForAvailable(makeWifiNetworkRequest(), wifiCb);
             // Update setting to verify the behavior.
-            mCm.setAirplaneMode(true);
+            setAirplaneMode(true);
+            // Verify wifi lost to make sure airplane mode takes effect. This could
+            // prevent the race condition between airplane mode enabled and the followed
+            // up wifi tethering enabled.
+            waitForLost(wifiCb);
+            // start wifi tethering
+            tetherUtils.startWifiTethering(tetherEventCallback);
+
             ConnectivitySettingsManager.setPrivateDnsMode(mContext,
                     ConnectivitySettingsManager.PRIVATE_DNS_MODE_OFF);
             ConnectivitySettingsManager.setNetworkAvoidBadWifi(mContext,
@@ -2514,23 +2514,25 @@ public class ConnectivityManagerTest {
             assertEquals(AIRPLANE_MODE_ON, Settings.Global.getInt(
                     mContext.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON));
             // Verify factoryReset
-            mCm.factoryReset();
+            runAsShell(NETWORK_SETTINGS, TETHER_PRIVILEGED, () -> {
+                mCm.factoryReset();
+                tetherEventCallback.expectNoTetheringActive();
+            });
             verifySettings(AIRPLANE_MODE_OFF,
                     ConnectivitySettingsManager.PRIVATE_DNS_MODE_OPPORTUNISTIC,
                     ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI_PROMPT);
-
-            tetherEventCallback.expectNoTetheringActive();
         } finally {
             // Restore settings.
-            mCm.setAirplaneMode(false);
+            setAirplaneMode(false);
             ConnectivitySettingsManager.setNetworkAvoidBadWifi(mContext, curAvoidBadWifi);
             ConnectivitySettingsManager.setPrivateDnsMode(mContext, curPrivateDnsMode);
-            if (tetherEventCallback != null) {
-                tetherUtils.unregisterTetheringEventCallback(tetherEventCallback);
-            }
+            tetherUtils.unregisterTetheringEventCallback(tetherEventCallback);
             tetherUtils.stopAllTethering();
-            mUiAutomation.dropShellPermissionIdentity();
         }
+    }
+
+    private void setAirplaneMode(boolean enable) {
+        runAsShell(NETWORK_SETTINGS, () -> mCm.setAirplaneMode(enable));
     }
 
     /**
@@ -3313,84 +3315,76 @@ public class ConnectivityManagerTest {
 
     private static final boolean EXPECT_PASS = false;
     private static final boolean EXPECT_BLOCK = true;
+    private static final boolean ALLOWLIST = true;
+    private static final boolean DENYLIST = false;
 
-    private void doTestFirewallBlockingDenyRule(final int chain) {
+    private void doTestFirewallBlocking(final int chain, final boolean isAllowList) {
+        final int myUid = Process.myUid();
+        final int ruleToAddMatch = isAllowList ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DENY;
+        final int ruleToRemoveMatch = isAllowList ? FIREWALL_RULE_DENY : FIREWALL_RULE_ALLOW;
+
         runWithShellPermissionIdentity(() -> {
-            try (DatagramSocket srcSock = new DatagramSocket();
-                 DatagramSocket dstSock = new DatagramSocket()) {
+            // Firewall chain status will be restored after the test.
+            final boolean wasChainEnabled = mCm.getFirewallChainEnabled(chain);
+            final DatagramSocket srcSock = new DatagramSocket();
+            final DatagramSocket dstSock = new DatagramSocket();
+            testAndCleanup(() -> {
+                if (wasChainEnabled) {
+                    mCm.setFirewallChainEnabled(chain, false /* enable */);
+                }
                 dstSock.setSoTimeout(SOCKET_TIMEOUT_MS);
 
-                // No global config, No uid config
+                // Chain disabled, UID not on chain.
                 checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
 
-                // Has global config, No uid config
+                // Chain enabled, UID not on chain.
                 mCm.setFirewallChainEnabled(chain, true /* enable */);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+                assertTrue(mCm.getFirewallChainEnabled(chain));
+                checkFirewallBlocking(srcSock, dstSock, isAllowList ? EXPECT_BLOCK : EXPECT_PASS);
 
-                // Has global config, Has uid config
-                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_DENY);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_BLOCK);
+                // Chain enabled, UID on chain.
+                mCm.setUidFirewallRule(chain, myUid, ruleToAddMatch);
+                checkFirewallBlocking(srcSock, dstSock, isAllowList ?  EXPECT_PASS : EXPECT_BLOCK);
 
-                // No global config, Has uid config
+                // Chain disabled, UID on chain.
                 mCm.setFirewallChainEnabled(chain, false /* enable */);
+                assertFalse(mCm.getFirewallChainEnabled(chain));
                 checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
 
-                // No global config, No uid config
-                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_ALLOW);
+                // Chain disabled, UID not on chain.
+                mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
                 checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
-            } finally {
-                mCm.setFirewallChainEnabled(chain, false /* enable */);
-                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_ALLOW);
-            }
+            }, /* cleanup */ () -> {
+                    srcSock.close();
+                    dstSock.close();
+                }, /* cleanup */ () -> {
+                    // Restore the global chain status
+                    mCm.setFirewallChainEnabled(chain, wasChainEnabled);
+                }, /* cleanup */ () -> {
+                    try {
+                        mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
+                    } catch (IllegalStateException ignored) {
+                        // Removing match causes an exception when the rule entry for the uid does
+                        // not exist. But this is fine and can be ignored.
+                    }
+                });
         }, NETWORK_SETTINGS);
     }
 
-    private void doTestFirewallBlockingAllowRule(final int chain) {
-        runWithShellPermissionIdentity(() -> {
-            try (DatagramSocket srcSock = new DatagramSocket();
-                 DatagramSocket dstSock = new DatagramSocket()) {
-                dstSock.setSoTimeout(SOCKET_TIMEOUT_MS);
-
-                // No global config, No uid config
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
-
-                // Has global config, No uid config
-                mCm.setFirewallChainEnabled(chain, true /* enable */);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_BLOCK);
-
-                // Has global config, Has uid config
-                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_ALLOW);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
-
-                // No global config, Has uid config
-                mCm.setFirewallChainEnabled(chain, false /* enable */);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
-
-                // No global config, No uid config
-                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_DENY);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
-            } finally {
-                mCm.setFirewallChainEnabled(chain, false /* enable */);
-                mCm.setUidFirewallRule(chain, Process.myUid(), FIREWALL_RULE_DENY);
-            }
-        }, NETWORK_SETTINGS);
-    }
-
-    @Test @IgnoreUpTo(SC_V2)
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
     @AppModeFull(reason = "Socket cannot bind in instant app mode")
     public void testFirewallBlocking() {
-        // Following tests affect the actual state of networking on the device after the test.
-        // This might cause unexpected behaviour of the device. So, we skip them for now.
-        // We will enable following tests after adding the logic of firewall state restoring.
-        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_DOZABLE);
-        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_POWERSAVE);
-        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_RESTRICTED);
-        // doTestFirewallBlockingAllowRule(FIREWALL_CHAIN_LOW_POWER_STANDBY);
+        // ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+        doTestFirewallBlocking(FIREWALL_CHAIN_DOZABLE, ALLOWLIST);
+        doTestFirewallBlocking(FIREWALL_CHAIN_POWERSAVE, ALLOWLIST);
+        doTestFirewallBlocking(FIREWALL_CHAIN_RESTRICTED, ALLOWLIST);
+        doTestFirewallBlocking(FIREWALL_CHAIN_LOW_POWER_STANDBY, ALLOWLIST);
 
-        // doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_STANDBY);
-        doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_OEM_DENY_1);
-        doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_OEM_DENY_2);
-        doTestFirewallBlockingDenyRule(FIREWALL_CHAIN_OEM_DENY_3);
+        // DENYLIST means the firewall allows all by default, uids must be explicitly denyed
+        doTestFirewallBlocking(FIREWALL_CHAIN_STANDBY, DENYLIST);
+        doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_1, DENYLIST);
+        doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_2, DENYLIST);
+        doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_3, DENYLIST);
     }
 
     private void assumeTestSApis() {

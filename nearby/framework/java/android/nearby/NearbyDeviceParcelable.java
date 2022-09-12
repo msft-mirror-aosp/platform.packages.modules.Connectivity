@@ -76,6 +76,17 @@ public final class NearbyDeviceParcelable implements Parcelable {
                         in.readByteArray(salt);
                         builder.setData(salt);
                     }
+                    if (in.readInt() == 1) {
+                        builder.setPresenceDevice(in.readParcelable(
+                                PresenceDevice.class.getClassLoader(),
+                                PresenceDevice.class));
+                    }
+                    if (in.readInt() == 1) {
+                        int encryptionKeyTagLength = in.readInt();
+                        byte[] keyTag = new byte[encryptionKeyTagLength];
+                        in.readByteArray(keyTag);
+                        builder.setData(keyTag);
+                    }
                     return builder.build();
                 }
 
@@ -96,6 +107,8 @@ public final class NearbyDeviceParcelable implements Parcelable {
     @Nullable private final String mFastPairModelId;
     @Nullable private final byte[] mData;
     @Nullable private final byte[] mSalt;
+    @Nullable private final PresenceDevice mPresenceDevice;
+    @Nullable private final byte[] mEncryptionKeyTag;
 
     private NearbyDeviceParcelable(
             @ScanRequest.ScanType int scanType,
@@ -108,7 +121,9 @@ public final class NearbyDeviceParcelable implements Parcelable {
             @Nullable String fastPairModelId,
             @Nullable String bluetoothAddress,
             @Nullable byte[] data,
-            @Nullable byte[] salt) {
+            @Nullable byte[] salt,
+            @Nullable PresenceDevice presenceDevice,
+            @Nullable byte[] encryptionKeyTag) {
         mScanType = scanType;
         mName = name;
         mMedium = medium;
@@ -120,6 +135,8 @@ public final class NearbyDeviceParcelable implements Parcelable {
         mBluetoothAddress = bluetoothAddress;
         mData = data;
         mSalt = salt;
+        mPresenceDevice = presenceDevice;
+        mEncryptionKeyTag = encryptionKeyTag;
     }
 
     /** No special parcel contents. */
@@ -164,6 +181,15 @@ public final class NearbyDeviceParcelable implements Parcelable {
             dest.writeInt(mSalt.length);
             dest.writeByteArray(mSalt);
         }
+        dest.writeInt(mPresenceDevice == null ? 0 : 1);
+        if (mPresenceDevice != null) {
+            dest.writeParcelable(mPresenceDevice, /* parcelableFlags= */ 0);
+        }
+        dest.writeInt(mEncryptionKeyTag == null ? 0 : 1);
+        if (mEncryptionKeyTag != null) {
+            dest.writeInt(mEncryptionKeyTag.length);
+            dest.writeByteArray(mEncryptionKeyTag);
+        }
     }
 
     /** Returns a string representation of this ScanRequest. */
@@ -190,6 +216,10 @@ public final class NearbyDeviceParcelable implements Parcelable {
                 + Arrays.toString(mData)
                 + ", salt="
                 + Arrays.toString(mSalt)
+                + ", presenceDevice="
+                + mPresenceDevice
+                + ", encryptionKeyTag="
+                + Arrays.toString(mEncryptionKeyTag)
                 + "]";
     }
 
@@ -210,7 +240,11 @@ public final class NearbyDeviceParcelable implements Parcelable {
                     && (Objects.equals(
                             mFastPairModelId, otherNearbyDeviceParcelable.mFastPairModelId))
                     && (Arrays.equals(mData, otherNearbyDeviceParcelable.mData))
-                    && (Arrays.equals(mSalt, otherNearbyDeviceParcelable.mSalt));
+                    && (Arrays.equals(mSalt, otherNearbyDeviceParcelable.mSalt))
+                    && (Objects.equals(
+                            mPresenceDevice, otherNearbyDeviceParcelable.mPresenceDevice))
+                    && (Arrays.equals(
+                            mEncryptionKeyTag, otherNearbyDeviceParcelable.mEncryptionKeyTag));
         }
         return false;
     }
@@ -227,7 +261,9 @@ public final class NearbyDeviceParcelable implements Parcelable {
                 mBluetoothAddress,
                 mFastPairModelId,
                 Arrays.hashCode(mData),
-                Arrays.hashCode(mSalt));
+                Arrays.hashCode(mSalt),
+                mPresenceDevice,
+                Arrays.hashCode(mEncryptionKeyTag));
     }
 
     /**
@@ -351,6 +387,26 @@ public final class NearbyDeviceParcelable implements Parcelable {
         return mSalt;
     }
 
+    /**
+     * Gets the {@link PresenceDevice} Nearby Presence device. This field is
+     * for Fast Pair client only.
+     */
+    @Nullable
+    public PresenceDevice getPresenceDevice() {
+        return mPresenceDevice;
+    }
+
+    /**
+     * Gets the encryption key tag calculated from advertisement
+     * Returns {@code null} if the data is not encrypted or this is not a Presence device.
+     *
+     * Used in Presence.
+     */
+    @Nullable
+    public byte[] getEncryptionKeyTag() {
+        return mEncryptionKeyTag;
+    }
+
     /** Builder class for {@link NearbyDeviceParcelable}. */
     public static final class Builder {
         @Nullable private String mName;
@@ -364,6 +420,8 @@ public final class NearbyDeviceParcelable implements Parcelable {
         @Nullable private String mBluetoothAddress;
         @Nullable private byte[] mData;
         @Nullable private byte[] mSalt;
+        @Nullable private PresenceDevice mPresenceDevice;
+        @Nullable private byte[] mEncryptionKeyTag;
 
         /**
          * Sets the scan type of the NearbyDeviceParcelable.
@@ -469,12 +527,23 @@ public final class NearbyDeviceParcelable implements Parcelable {
         /**
          * Sets the scanned raw data.
          *
-         * @param data Data the scan. For example, {@link ScanRecord#getServiceData()} if scanned by
+         * @param data raw data scanned, like {@link ScanRecord#getServiceData()} if scanned by
          *             Bluetooth.
          */
         @NonNull
         public Builder setData(@Nullable byte[] data) {
             mData = data;
+            return this;
+        }
+
+        /**
+         * Sets the encryption key tag calculated from the advertisement.
+         *
+         * @param encryptionKeyTag calculated from identity scanned from the advertisement
+         */
+        @NonNull
+        public Builder setEncryptionKeyTag(@Nullable byte[] encryptionKeyTag) {
+            mEncryptionKeyTag = encryptionKeyTag;
             return this;
         }
 
@@ -486,6 +555,17 @@ public final class NearbyDeviceParcelable implements Parcelable {
         @NonNull
         public Builder setSalt(@Nullable byte[] salt) {
             mSalt = salt;
+            return this;
+        }
+
+        /**
+         * Sets the {@link PresenceDevice} if there is any.
+         * The current {@link NearbyDeviceParcelable} can be seen as the wrapper of the
+         * {@link PresenceDevice}.
+         */
+        @Nullable
+        public Builder setPresenceDevice(@Nullable PresenceDevice presenceDevice) {
+            mPresenceDevice = presenceDevice;
             return this;
         }
 
@@ -503,7 +583,9 @@ public final class NearbyDeviceParcelable implements Parcelable {
                     mFastPairModelId,
                     mBluetoothAddress,
                     mData,
-                    mSalt);
+                    mSalt,
+                    mPresenceDevice,
+                    mEncryptionKeyTag);
         }
     }
 }

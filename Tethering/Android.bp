@@ -26,17 +26,32 @@ java_defaults {
 }
 
 java_defaults {
+    name: "TetheringExternalLibs",
+    // Libraries not including Tethering's own framework-tethering (different flavors of that one
+    // are needed depending on the build rule)
+    libs: [
+        "framework-connectivity.stubs.module_lib",
+        "framework-connectivity-t.stubs.module_lib",
+        "framework-statsd.stubs.module_lib",
+        "framework-wifi",
+        "framework-bluetooth",
+        "unsupportedappusage",
+    ],
+    defaults_visibility: ["//visibility:private"],
+}
+
+java_defaults {
     name: "TetheringAndroidLibraryDefaults",
     srcs: [
         "apishim/**/*.java",
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
-        ":tethering-module-utils-srcs",
         ":services-tethering-shared-srcs",
         ":statslog-tethering-java-gen",
     ],
     static_libs: [
         "androidx.annotation_annotation",
+        "connectivity-net-module-utils-bpf",
         "modules-utils-build",
         "modules-utils-statemachine",
         "networkstack-client",
@@ -46,18 +61,14 @@ java_defaults {
         "net-utils-framework-common",
         "net-utils-device-common",
         "net-utils-device-common-bpf",
+        "net-utils-device-common-ip",
         "net-utils-device-common-netlink",
         "netd-client",
         "tetheringstatsprotos",
     ],
+    defaults: ["TetheringExternalLibs"],
     libs: [
-        "framework-connectivity",
-        "framework-connectivity-t.stubs.module_lib",
-        "framework-statsd.stubs.module_lib",
         "framework-tethering.impl",
-        "framework-wifi",
-        "framework-bluetooth",
-        "unsupportedappusage",
     ],
     plugins: ["java_api_finder"],
     manifest: "AndroidManifestBase.xml",
@@ -147,9 +158,17 @@ java_defaults {
     resource_dirs: [
         "res",
     ],
+    // Libs are not actually needed to build here since build rules using these defaults are just
+    // packaging the TetheringApiXLibs in APKs, but they are necessary so that R8 has the right
+    // references to optimize the code. Without these, there will be missing class warnings and code
+    // may be wrongly optimized.
+    // R8 runs after jarjar, so the framework-X libraries need to be the post-jarjar artifacts
+    // (framework-tethering.impl), if they are not just stubs, so that the name of jarjared
+    // classes match.
+    // TODO(b/229727645): ensure R8 fails the build fully if libraries are missing
+    defaults: ["TetheringExternalLibs"],
     libs: [
-        "framework-tethering",
-        "framework-wifi",
+        "framework-tethering.impl",
     ],
     jarjar_rules: "jarjar-rules.txt",
     optimize: {
@@ -210,8 +229,11 @@ android_app {
 
 sdk {
     name: "tethering-module-sdk",
-    bootclasspath_fragments: ["com.android.tethering-bootclasspath-fragment"],
-    systemserverclasspath_fragments: ["com.android.tethering-systemserverclasspath-fragment"],
+    apexes: [
+        // Adds exportable dependencies of the APEX to the sdk,
+        // e.g. *classpath_fragments.
+        "com.android.tethering",
+    ],
 }
 
 java_library_static {
