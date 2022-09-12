@@ -1,11 +1,11 @@
-/**
- * Copyright (c) 2022, The Android Open Source Project
+/*
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ *      http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -14,24 +14,12 @@
  * limitations under the License.
  */
 
-#pragma once
+package jarjar.prefix;
 
-#include "BpfHandler.h"
-
-namespace android {
-namespace net {
-
-class NetdUpdatable {
-  public:
-    NetdUpdatable() = default;
-    NetdUpdatable(const NetdUpdatable&) = delete;
-    NetdUpdatable& operator=(const NetdUpdatable&) = delete;
-    static NetdUpdatable* getInstance();
-
-    BpfHandler mBpfHandler;
-};
-
-extern NetdUpdatable* gNetdUpdatable;
-
-}  // namespace net
-}  // namespace android
+/**
+ * Sample class to test jarjar rules, already in the "jarjar.prefix" package.
+ */
+public class AlreadyInTargetPackageClass {
+    /** Test inner class that should not be jarjared either */
+    public static class TestInnerClass {}
+}
