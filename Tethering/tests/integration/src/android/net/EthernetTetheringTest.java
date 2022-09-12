@@ -139,6 +139,9 @@ public class EthernetTetheringTest {
     // Kernel treats a confirmed UDP connection which active after two seconds as stream mode.
     // See upstream commit b7b1d02fc43925a4d569ec221715db2dfa1ce4f5.
     private static final int UDP_STREAM_TS_MS = 2000;
+    // Give slack time for waiting UDP stream mode because handling conntrack event in user space
+    // may not in precise time. Used to reduce the flaky rate.
+    private static final int UDP_STREAM_SLACK_MS = 500;
     // Per RX UDP packet size: iphdr (20) + udphdr (8) + payload (2) = 30 bytes.
     private static final int RX_UDP_PACKET_SIZE = 30;
     private static final int RX_UDP_PACKET_COUNT = 456;
@@ -148,7 +151,7 @@ public class EthernetTetheringTest {
     private static final long WAIT_RA_TIMEOUT_MS = 2000;
 
     private static final MacAddress TEST_MAC = MacAddress.fromString("1:2:3:4:5:6");
-    private static final LinkAddress TEST_IP4_ADDR = new LinkAddress("10.0.0.1/8");
+    private static final LinkAddress TEST_IP4_ADDR = new LinkAddress("10.0.0.1/24");
     private static final LinkAddress TEST_IP6_ADDR = new LinkAddress("2001:db8:1::101/64");
     private static final InetAddress TEST_IP4_DNS = parseNumericAddress("8.8.8.8");
     private static final InetAddress TEST_IP6_DNS = parseNumericAddress("2001:db8:1::888");
@@ -1170,6 +1173,9 @@ public class EthernetTetheringTest {
             // nf_conntrack_udp_packet in net/netfilter/nf_conntrack_proto_udp.c
             Thread.sleep(UDP_STREAM_TS_MS);
             sendUploadPacketUdp(srcMac, dstMac, clientIp, remoteIp, tester, false /* is4To6 */);
+
+            // Give a slack time for handling conntrack event in user space.
+            Thread.sleep(UDP_STREAM_SLACK_MS);
 
             // [1] Verify IPv4 upstream rule map.
             final HashMap<Tether4Key, Tether4Value> upstreamMap = pollRawMapFromDump(
