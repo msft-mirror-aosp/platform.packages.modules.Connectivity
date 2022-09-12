@@ -33,6 +33,9 @@ import static android.system.OsConstants.ENODEV;
 import static android.system.OsConstants.ENOENT;
 import static android.system.OsConstants.EOPNOTSUPP;
 
+import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
+
+import android.app.StatsManager;
 import android.content.Context;
 import android.net.INetd;
 import android.os.RemoteException;
@@ -42,17 +45,23 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.util.ArraySet;
 import android.util.Log;
+import android.util.StatsEvent;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.BackgroundThread;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.IBpfMap;
+import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -94,6 +103,8 @@ public class BpfNetMaps {
             "/sys/fs/bpf/netd_shared/map_netd_uid_owner_map";
     private static final String UID_PERMISSION_MAP_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_uid_permission_map";
+    private static final String COOKIE_TAG_MAP_PATH =
+            "/sys/fs/bpf/netd_shared/map_netd_cookie_tag_map";
     private static final U32 UID_RULES_CONFIGURATION_KEY = new U32(0);
     private static final U32 CURRENT_STATS_MAP_CONFIGURATION_KEY = new U32(1);
     private static final long UID_RULES_DEFAULT_CONFIGURATION = 0;
@@ -104,6 +115,7 @@ public class BpfNetMaps {
     // BpfMap for UID_OWNER_MAP_PATH. This map is not accessed by others.
     private static IBpfMap<U32, UidOwnerValue> sUidOwnerMap = null;
     private static IBpfMap<U32, U8> sUidPermissionMap = null;
+    private static IBpfMap<CookieTagMapKey, CookieTagMapValue> sCookieTagMap = null;
 
     // LINT.IfChange(match_type)
     @VisibleForTesting public static final long NO_MATCH = 0;
@@ -153,6 +165,15 @@ public class BpfNetMaps {
         sUidPermissionMap = uidPermissionMap;
     }
 
+    /**
+     * Set cookieTagMap for test.
+     */
+    @VisibleForTesting
+    public static void setCookieTagMapForTest(
+            IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap) {
+        sCookieTagMap = cookieTagMap;
+    }
+
     private static IBpfMap<U32, U32> getConfigurationMap() {
         try {
             return new BpfMap<>(
@@ -177,6 +198,15 @@ public class BpfNetMaps {
                     UID_PERMISSION_MAP_PATH, BpfMap.BPF_F_RDWR, U32.class, U8.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open uid permission map", e);
+        }
+    }
+
+    private static IBpfMap<CookieTagMapKey, CookieTagMapValue> getCookieTagMap() {
+        try {
+            return new BpfMap<>(COOKIE_TAG_MAP_PATH, BpfMap.BPF_F_RDWR,
+                    CookieTagMapKey.class, CookieTagMapValue.class);
+        } catch (ErrnoException e) {
+            throw new IllegalStateException("Cannot open cookie tag map", e);
         }
     }
 
@@ -209,6 +239,10 @@ public class BpfNetMaps {
         if (sUidPermissionMap == null) {
             sUidPermissionMap = getUidPermissionMap();
         }
+
+        if (sCookieTagMap == null) {
+            sCookieTagMap = getCookieTagMap();
+        }
     }
 
     /**
@@ -225,8 +259,12 @@ public class BpfNetMaps {
         Log.d(TAG, "BpfNetMaps is initialized with sEnableJavaBpfMap=" + sEnableJavaBpfMap);
 
         initBpfMaps();
-        native_init();
+        native_init(!sEnableJavaBpfMap /* startSkDestroyListener */);
         sInitialized = true;
+    }
+
+    public boolean isSkDestroyListenerRunning() {
+        return !sEnableJavaBpfMap;
     }
 
     /**
@@ -246,6 +284,15 @@ public class BpfNetMaps {
          */
         public int synchronizeKernelRCU() {
             return native_synchronizeKernelRCU();
+        }
+
+        /**
+         * Build Stats Event for NETWORK_BPF_MAP_INFO atom
+         */
+        public StatsEvent buildStatsEvent(final int cookieTagMapSize, final int uidOwnerMapSize,
+                final int uidPermissionMapSize) {
+            return ConnectivityStatsLog.buildStatsEvent(NETWORK_BPF_MAP_INFO, cookieTagMapSize,
+                    uidOwnerMapSize, uidPermissionMapSize);
         }
     }
 
@@ -822,6 +869,43 @@ public class BpfNetMaps {
         }
     }
 
+    /** Register callback for statsd to pull atom. */
+    public void setPullAtomCallback(final Context context) {
+        throwIfPreT("setPullAtomCallback is not available on pre-T devices");
+
+        final StatsManager statsManager = context.getSystemService(StatsManager.class);
+        statsManager.setPullAtomCallback(NETWORK_BPF_MAP_INFO, null /* metadata */,
+                BackgroundThread.getExecutor(), this::pullBpfMapInfoAtom);
+    }
+
+    private <K extends Struct, V extends Struct> int getMapSize(IBpfMap<K, V> map)
+            throws ErrnoException {
+        // forEach could restart iteration from the beginning if there is a concurrent entry
+        // deletion. netd and skDestroyListener could delete CookieTagMap entry concurrently.
+        // So using Set to count the number of entry in the map.
+        Set<K> keySet = new ArraySet<>();
+        map.forEach((k, v) -> keySet.add(k));
+        return keySet.size();
+    }
+
+    /** Callback for StatsManager#setPullAtomCallback */
+    @VisibleForTesting
+    public int pullBpfMapInfoAtom(final int atomTag, final List<StatsEvent> data) {
+        if (atomTag != NETWORK_BPF_MAP_INFO) {
+            Log.e(TAG, "Unexpected atom tag: " + atomTag);
+            return StatsManager.PULL_SKIP;
+        }
+
+        try {
+            data.add(mDeps.buildStatsEvent(getMapSize(sCookieTagMap), getMapSize(sUidOwnerMap),
+                    getMapSize(sUidPermissionMap)));
+        } catch (ErrnoException e) {
+            Log.e(TAG, "Failed to pull NETWORK_BPF_MAP_INFO atom: " + e);
+            return StatsManager.PULL_SKIP;
+        }
+        return StatsManager.PULL_SUCCESS;
+    }
+
     /**
      * Dump BPF maps
      *
@@ -839,7 +923,7 @@ public class BpfNetMaps {
         native_dump(fd, verbose);
     }
 
-    private static native void native_init();
+    private static native void native_init(boolean startSkDestroyListener);
     private native int native_addNaughtyApp(int uid);
     private native int native_removeNaughtyApp(int uid);
     private native int native_addNiceApp(int uid);
