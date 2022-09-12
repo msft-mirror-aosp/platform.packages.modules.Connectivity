@@ -29,7 +29,6 @@ import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.INetd;
-import android.net.INetworkInterfaceOutcomeReceiver;
 import android.net.ITetheredInterfaceCallback;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpConfiguration;
@@ -271,7 +270,7 @@ public class EthernetTracker {
         }
         writeIpConfiguration(iface, ipConfiguration);
         mHandler.post(() -> {
-            mFactory.updateInterface(iface, ipConfiguration, null, null);
+            mFactory.updateInterface(iface, ipConfiguration, null);
             broadcastInterfaceStateChange(iface);
         });
     }
@@ -335,7 +334,7 @@ public class EthernetTracker {
     protected void updateConfiguration(@NonNull final String iface,
             @Nullable final IpConfiguration ipConfig,
             @Nullable final NetworkCapabilities capabilities,
-            @Nullable final INetworkInterfaceOutcomeReceiver listener) {
+            @Nullable final EthernetCallback cb) {
         if (DBG) {
             Log.i(TAG, "updateConfiguration, iface: " + iface + ", capabilities: " + capabilities
                     + ", ipConfig: " + ipConfig);
@@ -353,21 +352,29 @@ public class EthernetTracker {
             mNetworkCapabilities.put(iface, capabilities);
         }
         mHandler.post(() -> {
-            mFactory.updateInterface(iface, localIpConfig, capabilities, listener);
-            broadcastInterfaceStateChange(iface);
+            mFactory.updateInterface(iface, localIpConfig, capabilities);
+
+            // only broadcast state change when the ip configuration is updated.
+            if (ipConfig != null) {
+                broadcastInterfaceStateChange(iface);
+            }
+            // Always return success. Even if the interface does not currently exist, the
+            // IpConfiguration and NetworkCapabilities were saved and will be applied if an
+            // interface with the given name is ever added.
+            cb.onResult(iface);
         });
     }
 
     @VisibleForTesting(visibility = PACKAGE)
     protected void enableInterface(@NonNull final String iface,
-            @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        mHandler.post(() -> updateInterfaceState(iface, true, listener));
+            @Nullable final EthernetCallback cb) {
+        mHandler.post(() -> updateInterfaceState(iface, true, cb));
     }
 
     @VisibleForTesting(visibility = PACKAGE)
     protected void disableInterface(@NonNull final String iface,
-            @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        mHandler.post(() -> updateInterfaceState(iface, false, listener));
+            @Nullable final EthernetCallback cb) {
+        mHandler.post(() -> updateInterfaceState(iface, false, cb));
     }
 
     IpConfiguration getIpConfiguration(String iface) {
@@ -571,8 +578,14 @@ public class EthernetTracker {
         // Bring up the interface so we get link status indications.
         try {
             PermissionUtils.enforceNetworkStackPermission(mContext);
-            NetdUtils.setInterfaceUp(mNetd, iface);
+            // Read the flags before attempting to bring up the interface. If the interface is
+            // already running an UP event is created after adding the interface.
             config = NetdUtils.getInterfaceConfigParcel(mNetd, iface);
+            if (NetdUtils.hasFlag(config, INetd.IF_STATE_DOWN)) {
+                // As a side-effect, NetdUtils#setInterfaceUp() also clears the interface's IPv4
+                // address and readds it which *could* lead to unexpected behavior in the future.
+                NetdUtils.setInterfaceUp(mNetd, iface);
+            }
         } catch (IllegalStateException e) {
             // Either the system is crashing or the interface has disappeared. Just ignore the
             // error; we haven't modified any state because we only do that if our calls succeed.
@@ -581,6 +594,11 @@ public class EthernetTracker {
 
         if (config == null) {
             Log.e(TAG, "Null interface config parcelable for " + iface + ". Bailing out.");
+            return;
+        }
+
+        if (getInterfaceMode(iface) == INTERFACE_MODE_SERVER) {
+            maybeUpdateServerModeInterfaceState(iface, true);
             return;
         }
 
@@ -596,35 +614,38 @@ public class EthernetTracker {
             }
         }
 
-        final int mode = getInterfaceMode(iface);
-        if (mode == INTERFACE_MODE_CLIENT) {
-            IpConfiguration ipConfiguration = getOrCreateIpConfiguration(iface);
-            Log.d(TAG, "Tracking interface in client mode: " + iface);
-            mFactory.addInterface(iface, hwAddress, ipConfiguration, nc);
-        } else {
-            maybeUpdateServerModeInterfaceState(iface, true);
-        }
+        IpConfiguration ipConfiguration = getOrCreateIpConfiguration(iface);
+        Log.d(TAG, "Tracking interface in client mode: " + iface);
+        mFactory.addInterface(iface, hwAddress, ipConfiguration, nc);
 
         // Note: if the interface already has link (e.g., if we crashed and got
         // restarted while it was running), we need to fake a link up notification so we
         // start configuring it.
-        if (NetdUtils.hasFlag(config, "running")) {
+        if (NetdUtils.hasFlag(config, INetd.IF_FLAG_RUNNING)) {
             updateInterfaceState(iface, true);
         }
     }
 
     private void updateInterfaceState(String iface, boolean up) {
-        updateInterfaceState(iface, up, null /* listener */);
+        // TODO: pull EthernetCallbacks out of EthernetNetworkFactory.
+        updateInterfaceState(iface, up, new EthernetCallback(null /* cb */));
     }
 
     private void updateInterfaceState(@NonNull final String iface, final boolean up,
-            @Nullable final INetworkInterfaceOutcomeReceiver listener) {
+            @Nullable final EthernetCallback cb) {
         final int mode = getInterfaceMode(iface);
         final boolean factoryLinkStateUpdated = (mode == INTERFACE_MODE_CLIENT)
-                && mFactory.updateInterfaceLinkState(iface, up, listener);
+                && mFactory.updateInterfaceLinkState(iface, up);
 
         if (factoryLinkStateUpdated) {
             broadcastInterfaceStateChange(iface);
+            cb.onResult(iface);
+        } else {
+            // The interface may already be in the correct state. While usually this should not be
+            // an error, since updateInterfaceState is used in setInterfaceEnabled() /
+            // setInterfaceDisabled() it has to be reported as such.
+            // It is also possible that the interface disappeared or is in server mode.
+            cb.onError("Failed to set link state " + (up ? "up" : "down") + " for " + iface);
         }
     }
 

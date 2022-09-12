@@ -27,12 +27,12 @@ import android.bluetooth.BluetoothManager;
 import android.bluetooth.le.AdvertiseSettings;
 import android.bluetooth.le.AdvertisingSetCallback;
 import android.content.Context;
+import android.hardware.location.ContextHubManager;
 import android.nearby.BroadcastCallback;
 import android.nearby.BroadcastRequest;
 
 import androidx.test.core.app.ApplicationProvider;
 
-import com.android.server.nearby.injector.ContextHubManagerAdapter;
 import com.android.server.nearby.injector.Injector;
 
 import com.google.common.util.concurrent.MoreExecutors;
@@ -124,7 +124,7 @@ public class BleBroadcastProviderTest {
         }
 
         @Override
-        public ContextHubManagerAdapter getContextHubManagerAdapter() {
+        public ContextHubManager getContextHubManager() {
             return null;
         }
 
