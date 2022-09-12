@@ -392,6 +392,9 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
     // URL, Terms & Conditions URL, and network friendly name.
     public CaptivePortalData networkAgentPortalData;
 
+    // Indicate whether this device has the automotive feature.
+    private final boolean mHasAutomotiveFeature;
+
     /**
      * Sets the capabilities sent by the agent for later retrieval.
      *
@@ -433,9 +436,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
                     + networkCapabilities.getOwnerUid() + " to " + nc.getOwnerUid());
             nc.setOwnerUid(networkCapabilities.getOwnerUid());
         }
-        restrictCapabilitiesFromNetworkAgent(nc, creatorUid,
-                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE),
-                carrierPrivilegeAuthenticator);
+        restrictCapabilitiesFromNetworkAgent(
+                nc, creatorUid, mHasAutomotiveFeature, carrierPrivilegeAuthenticator);
         return nc;
     }
 
@@ -604,6 +606,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
                 ? nc.getUnderlyingNetworks().toArray(new Network[0])
                 : null;
         mCreationTime = System.currentTimeMillis();
+        mHasAutomotiveFeature =
+                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE);
     }
 
     private class AgentDeathMonitor implements IBinder.DeathRecipient {
@@ -970,8 +974,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
             @NonNull final NetworkCapabilities nc) {
         final NetworkCapabilities oldNc = networkCapabilities;
         networkCapabilities = nc;
-        mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig, everValidatedForYield(),
-                yieldToBadWiFi(), isDestroyed());
+        mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig, everValidated(),
+                0L != getAvoidUnvalidated(), yieldToBadWiFi(), isDestroyed());
         final NetworkMonitorManager nm = mNetworkMonitor;
         if (nm != null) {
             nm.notifyNetworkCapabilitiesChanged(nc);
@@ -1174,7 +1178,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      */
     public void setScore(final NetworkScore score) {
         mScore = FullScore.fromNetworkScore(score, networkCapabilities, networkAgentConfig,
-                everValidatedForYield(), yieldToBadWiFi(), isDestroyed());
+                everValidated(), 0L == getAvoidUnvalidated(), yieldToBadWiFi(), isDestroyed());
     }
 
     /**
@@ -1184,11 +1188,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      */
     public void updateScoreForNetworkAgentUpdate() {
         mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig,
-                everValidatedForYield(), yieldToBadWiFi(), isDestroyed());
-    }
-
-    private boolean everValidatedForYield() {
-        return everValidated() && 0L == mAvoidUnvalidated;
+                everValidated(), 0L != getAvoidUnvalidated(), yieldToBadWiFi(), isDestroyed());
     }
 
     /**
