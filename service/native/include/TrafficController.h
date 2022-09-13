@@ -38,7 +38,7 @@ class TrafficController {
     /*
      * Initialize the whole controller
      */
-    netdutils::Status start(bool startSkDestroyListener);
+    netdutils::Status start();
 
     /*
      * Swap the stats map config from current active stats map to the idle one.

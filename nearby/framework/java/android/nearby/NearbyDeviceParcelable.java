@@ -216,6 +216,10 @@ public final class NearbyDeviceParcelable implements Parcelable {
                 + Arrays.toString(mData)
                 + ", salt="
                 + Arrays.toString(mSalt)
+                + ", presenceDevice="
+                + mPresenceDevice
+                + ", encryptionKeyTag="
+                + Arrays.toString(mEncryptionKeyTag)
                 + "]";
     }
 
