@@ -27,6 +27,11 @@ import static android.net.ConnectivityManager.FIREWALL_CHAIN_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.INetd.PERMISSION_INTERNET;
+import static android.net.INetd.PERMISSION_NONE;
+import static android.net.INetd.PERMISSION_UNINSTALLED;
+import static android.net.INetd.PERMISSION_UPDATE_DEVICE_STATS;
+import static android.system.OsConstants.EINVAL;
+import static android.system.OsConstants.EPERM;
 
 import static com.android.server.BpfNetMaps.DOZABLE_MATCH;
 import static com.android.server.BpfNetMaps.HAPPY_BOX_MATCH;
@@ -36,6 +41,7 @@ import static com.android.server.BpfNetMaps.NO_MATCH;
 import static com.android.server.BpfNetMaps.PENALTY_BOX_MATCH;
 import static com.android.server.BpfNetMaps.POWERSAVE_MATCH;
 import static com.android.server.BpfNetMaps.RESTRICTED_MATCH;
+import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -43,19 +49,27 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeFalse;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 
+import android.app.StatsManager;
 import android.content.Context;
 import android.net.INetd;
 import android.os.Build;
 import android.os.ServiceSpecificException;
+import android.system.ErrnoException;
 
 import androidx.test.filters.SmallTest;
 
 import com.android.modules.utils.build.SdkLevel;
-import com.android.net.module.util.BpfMap;
+import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
@@ -69,6 +83,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @RunWith(DevSdkIgnoreRunner.class)
@@ -88,6 +103,7 @@ public final class BpfNetMapsTest {
     private static final int NULL_IIF = 0;
     private static final String CHAINNAME = "fw_dozable";
     private static final U32 UID_RULES_CONFIGURATION_KEY = new U32(0);
+    private static final U32 CURRENT_STATS_MAP_CONFIGURATION_KEY = new U32(1);
     private static final List<Integer> FIREWALL_CHAINS = List.of(
             FIREWALL_CHAIN_DOZABLE,
             FIREWALL_CHAIN_STANDBY,
@@ -99,22 +115,31 @@ public final class BpfNetMapsTest {
             FIREWALL_CHAIN_OEM_DENY_3
     );
 
+    private static final long STATS_SELECT_MAP_A = 0;
+    private static final long STATS_SELECT_MAP_B = 1;
+
     private BpfNetMaps mBpfNetMaps;
 
     @Mock INetd mNetd;
     @Mock BpfNetMaps.Dependencies mDeps;
     @Mock Context mContext;
-    private final BpfMap<U32, U32> mConfigurationMap = new TestBpfMap<>(U32.class, U32.class);
-    private final BpfMap<U32, UidOwnerValue> mUidOwnerMap =
+    private final IBpfMap<U32, U32> mConfigurationMap = new TestBpfMap<>(U32.class, U32.class);
+    private final IBpfMap<U32, UidOwnerValue> mUidOwnerMap =
             new TestBpfMap<>(U32.class, UidOwnerValue.class);
+    private final IBpfMap<U32, U8> mUidPermissionMap = new TestBpfMap<>(U32.class, U8.class);
+    private final IBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap =
+            spy(new TestBpfMap<>(CookieTagMapKey.class, CookieTagMapValue.class));
 
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
         doReturn(TEST_IF_INDEX).when(mDeps).getIfIndex(TEST_IF_NAME);
+        doReturn(0).when(mDeps).synchronizeKernelRCU();
         BpfNetMaps.setEnableJavaBpfMapForTest(true /* enable */);
         BpfNetMaps.setConfigurationMapForTest(mConfigurationMap);
         BpfNetMaps.setUidOwnerMapForTest(mUidOwnerMap);
+        BpfNetMaps.setUidPermissionMapForTest(mUidPermissionMap);
+        BpfNetMaps.setCookieTagMapForTest(mCookieTagMap);
         mBpfNetMaps = new BpfNetMaps(mContext, mNetd, mDeps);
     }
 
@@ -728,4 +753,177 @@ public final class BpfNetMapsTest {
                 () -> mBpfNetMaps.replaceUidChain(FIREWALL_CHAIN_DOZABLE, TEST_UIDS));
     }
 
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsGrantInternetPermission() throws Exception {
+        mBpfNetMaps.setNetPermForUids(PERMISSION_INTERNET, TEST_UIDS);
+
+        assertTrue(mUidPermissionMap.isEmpty());
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsGrantUpdateStatsPermission() throws Exception {
+        mBpfNetMaps.setNetPermForUids(PERMISSION_UPDATE_DEVICE_STATS, TEST_UIDS);
+
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        assertEquals(PERMISSION_UPDATE_DEVICE_STATS, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(PERMISSION_UPDATE_DEVICE_STATS, mUidPermissionMap.getValue(new U32(uid1)).val);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsGrantMultiplePermissions() throws Exception {
+        final int permission = PERMISSION_INTERNET | PERMISSION_UPDATE_DEVICE_STATS;
+        mBpfNetMaps.setNetPermForUids(permission, TEST_UIDS);
+
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid1)).val);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsRevokeInternetPermission() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        mBpfNetMaps.setNetPermForUids(PERMISSION_INTERNET, TEST_UIDS);
+        mBpfNetMaps.setNetPermForUids(PERMISSION_NONE, new int[]{uid0});
+
+        assertEquals(PERMISSION_NONE, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertNull(mUidPermissionMap.getValue(new U32(uid1)));
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsRevokeUpdateDeviceStatsPermission() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        mBpfNetMaps.setNetPermForUids(PERMISSION_UPDATE_DEVICE_STATS, TEST_UIDS);
+        mBpfNetMaps.setNetPermForUids(PERMISSION_NONE, new int[]{uid0});
+
+        assertEquals(PERMISSION_NONE, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(PERMISSION_UPDATE_DEVICE_STATS, mUidPermissionMap.getValue(new U32(uid1)).val);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsRevokeMultiplePermissions() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        final int permission = PERMISSION_INTERNET | PERMISSION_UPDATE_DEVICE_STATS;
+        mBpfNetMaps.setNetPermForUids(permission, TEST_UIDS);
+        mBpfNetMaps.setNetPermForUids(PERMISSION_NONE, new int[]{uid0});
+
+        assertEquals(PERMISSION_NONE, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid1)).val);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsPermissionUninstalled() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        final int permission = PERMISSION_INTERNET | PERMISSION_UPDATE_DEVICE_STATS;
+        mBpfNetMaps.setNetPermForUids(permission, TEST_UIDS);
+        mBpfNetMaps.setNetPermForUids(PERMISSION_UNINSTALLED, new int[]{uid0});
+
+        assertNull(mUidPermissionMap.getValue(new U32(uid0)));
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid1)).val);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetNetPermForUidsDuplicatedRequestSilentlyIgnored() throws Exception {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        final int permission = PERMISSION_INTERNET | PERMISSION_UPDATE_DEVICE_STATS;
+
+        mBpfNetMaps.setNetPermForUids(permission, TEST_UIDS);
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid1)).val);
+
+        mBpfNetMaps.setNetPermForUids(permission, TEST_UIDS);
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(permission, mUidPermissionMap.getValue(new U32(uid1)).val);
+
+        mBpfNetMaps.setNetPermForUids(PERMISSION_NONE, TEST_UIDS);
+        assertEquals(PERMISSION_NONE, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(PERMISSION_NONE, mUidPermissionMap.getValue(new U32(uid1)).val);
+
+        mBpfNetMaps.setNetPermForUids(PERMISSION_NONE, TEST_UIDS);
+        assertEquals(PERMISSION_NONE, mUidPermissionMap.getValue(new U32(uid0)).val);
+        assertEquals(PERMISSION_NONE, mUidPermissionMap.getValue(new U32(uid1)).val);
+
+        mBpfNetMaps.setNetPermForUids(PERMISSION_UNINSTALLED, TEST_UIDS);
+        assertNull(mUidPermissionMap.getValue(new U32(uid0)));
+        assertNull(mUidPermissionMap.getValue(new U32(uid1)));
+
+        mBpfNetMaps.setNetPermForUids(PERMISSION_UNINSTALLED, TEST_UIDS);
+        assertNull(mUidPermissionMap.getValue(new U32(uid0)));
+        assertNull(mUidPermissionMap.getValue(new U32(uid1)));
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSwapActiveStatsMap() throws Exception {
+        mConfigurationMap.updateEntry(
+                CURRENT_STATS_MAP_CONFIGURATION_KEY, new U32(STATS_SELECT_MAP_A));
+
+        mBpfNetMaps.swapActiveStatsMap();
+        assertEquals(STATS_SELECT_MAP_B,
+                mConfigurationMap.getValue(CURRENT_STATS_MAP_CONFIGURATION_KEY).val);
+
+        mBpfNetMaps.swapActiveStatsMap();
+        assertEquals(STATS_SELECT_MAP_A,
+                mConfigurationMap.getValue(CURRENT_STATS_MAP_CONFIGURATION_KEY).val);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSwapActiveStatsMapSynchronizeKernelRCUFail() throws Exception {
+        doReturn(EPERM).when(mDeps).synchronizeKernelRCU();
+        mConfigurationMap.updateEntry(
+                CURRENT_STATS_MAP_CONFIGURATION_KEY, new U32(STATS_SELECT_MAP_A));
+
+        assertThrows(ServiceSpecificException.class, () -> mBpfNetMaps.swapActiveStatsMap());
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testPullBpfMapInfo() throws Exception {
+        // mCookieTagMap has 1 entry
+        mCookieTagMap.updateEntry(new CookieTagMapKey(0), new CookieTagMapValue(0, 0));
+
+        // mUidOwnerMap has 2 entries
+        mUidOwnerMap.updateEntry(new U32(0), new UidOwnerValue(0, 0));
+        mUidOwnerMap.updateEntry(new U32(1), new UidOwnerValue(0, 0));
+
+        // mUidPermissionMap has 3 entries
+        mUidPermissionMap.updateEntry(new U32(0), new U8((short) 0));
+        mUidPermissionMap.updateEntry(new U32(1), new U8((short) 0));
+        mUidPermissionMap.updateEntry(new U32(2), new U8((short) 0));
+
+        final int ret = mBpfNetMaps.pullBpfMapInfoAtom(NETWORK_BPF_MAP_INFO, new ArrayList<>());
+        assertEquals(StatsManager.PULL_SUCCESS, ret);
+        verify(mDeps).buildStatsEvent(
+                1 /* cookieTagMapSize */, 2 /* uidOwnerMapSize */, 3 /* uidPermissionMapSize */);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testPullBpfMapInfoGetMapSizeFailure() throws Exception {
+        doThrow(new ErrnoException("", EINVAL)).when(mCookieTagMap).forEach(any());
+        final int ret = mBpfNetMaps.pullBpfMapInfoAtom(NETWORK_BPF_MAP_INFO, new ArrayList<>());
+        assertEquals(StatsManager.PULL_SKIP, ret);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testPullBpfMapInfoUnexpectedAtomTag() {
+        final int ret = mBpfNetMaps.pullBpfMapInfoAtom(-1 /* atomTag */, new ArrayList<>());
+        assertEquals(StatsManager.PULL_SKIP, ret);
+    }
 }

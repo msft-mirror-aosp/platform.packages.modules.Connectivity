@@ -92,10 +92,9 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                                                     scanFilter.getType()
                                                             == SCAN_TYPE_NEARBY_PRESENCE)
                                     .collect(Collectors.toList());
-                    Log.i(
-                            TAG,
-                            String.format("match with filters size: %d", presenceFilters.size()));
                     if (!presenceFilterMatches(nearbyDevice, presenceFilters)) {
+                        Log.d(TAG, "presence filter does not match for "
+                                + "the scanned Presence Device");
                         continue;
                     }
                 }
@@ -119,14 +118,16 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         Executor executor = Executors.newSingleThreadExecutor();
         mChreDiscoveryProvider =
                 new ChreDiscoveryProvider(
-                        mContext, new ChreCommunication(injector, executor), executor);
+                        mContext, new ChreCommunication(injector, mContext, executor), executor);
         mScanTypeScanListenerRecordMap = new HashMap<>();
         mInjector = injector;
     }
 
     /** Called after boot completed. */
     public void init() {
-        mChreDiscoveryProvider.init();
+        if (mInjector.getContextHubManager() != null) {
+            mChreDiscoveryProvider.init();
+        }
         mChreDiscoveryProvider.getController().setListener(this);
     }
 
