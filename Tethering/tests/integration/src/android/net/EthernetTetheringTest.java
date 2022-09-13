@@ -151,7 +151,7 @@ public class EthernetTetheringTest {
     private static final long WAIT_RA_TIMEOUT_MS = 2000;
 
     private static final MacAddress TEST_MAC = MacAddress.fromString("1:2:3:4:5:6");
-    private static final LinkAddress TEST_IP4_ADDR = new LinkAddress("10.0.0.1/8");
+    private static final LinkAddress TEST_IP4_ADDR = new LinkAddress("10.0.0.1/24");
     private static final LinkAddress TEST_IP6_ADDR = new LinkAddress("2001:db8:1::101/64");
     private static final InetAddress TEST_IP4_DNS = parseNumericAddress("8.8.8.8");
     private static final InetAddress TEST_IP6_DNS = parseNumericAddress("2001:db8:1::888");
@@ -1518,7 +1518,7 @@ public class EthernetTetheringTest {
         final TestDnsPacket dnsQuery = TestDnsPacket.getTestDnsPacket(buf);
         assertNotNull(dnsQuery);
         Log.d(TAG, "Forwarded UDP source port: " + udpHeader.srcPort + ", DNS query id: "
-                + dnsQuery.getHeader().getId());
+                + dnsQuery.getHeader().id);
 
         // [2] Send DNS reply.
         // DNS server --> upstream --> dnsmasq forwarding --> downstream --> tethered device
@@ -1528,7 +1528,7 @@ public class EthernetTetheringTest {
         final Inet4Address remoteIp = (Inet4Address) TEST_IP4_DNS;
         final Inet4Address tetheringUpstreamIp = (Inet4Address) TEST_IP4_ADDR.getAddress();
         sendDownloadPacketDnsV4(remoteIp, tetheringUpstreamIp, DNS_PORT,
-                (short) udpHeader.srcPort, (short) dnsQuery.getHeader().getId(), tester);
+                (short) udpHeader.srcPort, (short) dnsQuery.getHeader().id, tester);
     }
 
     private <T> List<T> toList(T... array) {
