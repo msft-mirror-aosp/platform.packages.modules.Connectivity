@@ -97,11 +97,13 @@ public final class TestNetworkInterface implements Parcelable {
         return mInterfaceName;
     }
 
+    /** @hide */
     @Nullable
     public MacAddress getMacAddress() {
         return mMacAddress;
     }
 
+    /** @hide */
     public int getMtu() {
         return mMtu;
     }
