@@ -30,6 +30,7 @@ import static android.net.INetd.PERMISSION_INTERNET;
 import static android.net.INetd.PERMISSION_NONE;
 import static android.net.INetd.PERMISSION_UNINSTALLED;
 import static android.net.INetd.PERMISSION_UPDATE_DEVICE_STATS;
+import static android.system.OsConstants.EINVAL;
 import static android.system.OsConstants.EPERM;
 
 import static com.android.server.BpfNetMaps.DOZABLE_MATCH;
@@ -40,6 +41,7 @@ import static com.android.server.BpfNetMaps.NO_MATCH;
 import static com.android.server.BpfNetMaps.PENALTY_BOX_MATCH;
 import static com.android.server.BpfNetMaps.POWERSAVE_MATCH;
 import static com.android.server.BpfNetMaps.RESTRICTED_MATCH;
+import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -47,13 +49,18 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeFalse;
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 
+import android.app.StatsManager;
 import android.content.Context;
 import android.net.INetd;
 import android.os.Build;
 import android.os.ServiceSpecificException;
+import android.system.ErrnoException;
 
 import androidx.test.filters.SmallTest;
 
@@ -61,6 +68,8 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
@@ -74,6 +83,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.util.ArrayList;
 import java.util.List;
 
 @RunWith(DevSdkIgnoreRunner.class)
@@ -117,6 +127,8 @@ public final class BpfNetMapsTest {
     private final IBpfMap<U32, UidOwnerValue> mUidOwnerMap =
             new TestBpfMap<>(U32.class, UidOwnerValue.class);
     private final IBpfMap<U32, U8> mUidPermissionMap = new TestBpfMap<>(U32.class, U8.class);
+    private final IBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap =
+            spy(new TestBpfMap<>(CookieTagMapKey.class, CookieTagMapValue.class));
 
     @Before
     public void setUp() throws Exception {
@@ -127,6 +139,7 @@ public final class BpfNetMapsTest {
         BpfNetMaps.setConfigurationMapForTest(mConfigurationMap);
         BpfNetMaps.setUidOwnerMapForTest(mUidOwnerMap);
         BpfNetMaps.setUidPermissionMapForTest(mUidPermissionMap);
+        BpfNetMaps.setCookieTagMapForTest(mCookieTagMap);
         mBpfNetMaps = new BpfNetMaps(mContext, mNetd, mDeps);
     }
 
@@ -876,5 +889,41 @@ public final class BpfNetMapsTest {
                 CURRENT_STATS_MAP_CONFIGURATION_KEY, new U32(STATS_SELECT_MAP_A));
 
         assertThrows(ServiceSpecificException.class, () -> mBpfNetMaps.swapActiveStatsMap());
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testPullBpfMapInfo() throws Exception {
+        // mCookieTagMap has 1 entry
+        mCookieTagMap.updateEntry(new CookieTagMapKey(0), new CookieTagMapValue(0, 0));
+
+        // mUidOwnerMap has 2 entries
+        mUidOwnerMap.updateEntry(new U32(0), new UidOwnerValue(0, 0));
+        mUidOwnerMap.updateEntry(new U32(1), new UidOwnerValue(0, 0));
+
+        // mUidPermissionMap has 3 entries
+        mUidPermissionMap.updateEntry(new U32(0), new U8((short) 0));
+        mUidPermissionMap.updateEntry(new U32(1), new U8((short) 0));
+        mUidPermissionMap.updateEntry(new U32(2), new U8((short) 0));
+
+        final int ret = mBpfNetMaps.pullBpfMapInfoAtom(NETWORK_BPF_MAP_INFO, new ArrayList<>());
+        assertEquals(StatsManager.PULL_SUCCESS, ret);
+        verify(mDeps).buildStatsEvent(
+                1 /* cookieTagMapSize */, 2 /* uidOwnerMapSize */, 3 /* uidPermissionMapSize */);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testPullBpfMapInfoGetMapSizeFailure() throws Exception {
+        doThrow(new ErrnoException("", EINVAL)).when(mCookieTagMap).forEach(any());
+        final int ret = mBpfNetMaps.pullBpfMapInfoAtom(NETWORK_BPF_MAP_INFO, new ArrayList<>());
+        assertEquals(StatsManager.PULL_SKIP, ret);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testPullBpfMapInfoUnexpectedAtomTag() {
+        final int ret = mBpfNetMaps.pullBpfMapInfoAtom(-1 /* atomTag */, new ArrayList<>());
+        assertEquals(StatsManager.PULL_SKIP, ret);
     }
 }
