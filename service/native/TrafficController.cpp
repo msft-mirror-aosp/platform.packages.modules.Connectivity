@@ -181,8 +181,12 @@ Status TrafficController::initMaps() {
     return netdutils::status::ok;
 }
 
-Status TrafficController::start() {
+Status TrafficController::start(bool startSkDestroyListener) {
     RETURN_IF_NOT_OK(initMaps());
+
+    if (!startSkDestroyListener) {
+        return netdutils::status::ok;
+    }
 
     auto result = makeSkDestroyListener();
     if (!isOk(result)) {
@@ -641,48 +645,6 @@ void TrafficController::dump(int fd, bool verbose) {
     base::Result<void> res = mCookieTagMap.iterateWithValue(printCookieTagInfo);
     if (!res.ok()) {
         dw.println("mCookieTagMap print end with error: %s", res.error().message().c_str());
-    }
-
-
-    // Print uidStatsMap content.
-    std::string statsHeader = StringPrintf("ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes"
-                                           " rxPackets txBytes txPackets");
-    dumpBpfMap("mStatsMapA", dw, statsHeader);
-    const auto printStatsInfo = [&dw, this](const StatsKey& key, const StatsValue& value,
-                                            const BpfMap<StatsKey, StatsValue>&) {
-        uint32_t ifIndex = key.ifaceIndex;
-        auto ifname = mIfaceIndexNameMap.readValue(ifIndex);
-        if (!ifname.ok()) {
-            ifname = IfaceValue{"unknown"};
-        }
-        dw.println("%u %s 0x%x %u %u %" PRIu64 " %" PRIu64 " %" PRIu64 " %" PRIu64, ifIndex,
-                   ifname.value().name, key.tag, key.uid, key.counterSet, value.rxBytes,
-                   value.rxPackets, value.txBytes, value.txPackets);
-        return base::Result<void>();
-    };
-    res = mStatsMapA.iterateWithValue(printStatsInfo);
-    if (!res.ok()) {
-        dw.println("mStatsMapA print end with error: %s", res.error().message().c_str());
-    }
-
-    // Print TagStatsMap content.
-    dumpBpfMap("mStatsMapB", dw, statsHeader);
-    res = mStatsMapB.iterateWithValue(printStatsInfo);
-    if (!res.ok()) {
-        dw.println("mStatsMapB print end with error: %s", res.error().message().c_str());
-    }
-
-    // Print ifaceIndexToNameMap content.
-    dumpBpfMap("mIfaceIndexNameMap", dw, "");
-    const auto printIfaceNameInfo = [&dw](const uint32_t& key, const IfaceValue& value,
-                                          const BpfMap<uint32_t, IfaceValue>&) {
-        const char* ifname = value.name;
-        dw.println("ifaceIndex=%u ifaceName=%s", key, ifname);
-        return base::Result<void>();
-    };
-    res = mIfaceIndexNameMap.iterateWithValue(printIfaceNameInfo);
-    if (!res.ok()) {
-        dw.println("mIfaceIndexNameMap print end with error: %s", res.error().message().c_str());
     }
 
     // Print ifaceStatsMap content

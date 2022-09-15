@@ -162,11 +162,13 @@ import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.NetworkStatsUtils;
 import com.android.net.module.util.PermissionUtils;
+import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
 import com.android.net.module.util.bpf.CookieTagMapKey;
 import com.android.net.module.util.bpf.CookieTagMapValue;
+import com.android.server.BpfNetMaps;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -454,6 +456,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @NonNull
     private final BpfInterfaceMapUpdater mInterfaceMapUpdater;
 
+    @Nullable
+    private final SkDestroyListener mSkDestroyListener;
+
     private static @NonNull Clock getDefaultClock() {
         return new BestClock(ZoneOffset.UTC, SystemClock.currentNetworkTimeClock(),
                 Clock.systemUTC());
@@ -587,6 +592,18 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mStatsMapA = mDeps.getStatsMapA();
         mStatsMapB = mDeps.getStatsMapB();
         mAppUidStatsMap = mDeps.getAppUidStatsMap();
+
+        // TODO: Remove bpfNetMaps creation and always start SkDestroyListener
+        // Following code is for the experiment to verify the SkDestroyListener refactoring. Based
+        // on the experiment flag, BpfNetMaps starts C SkDestroyListener (existing code) or
+        // NetworkStatsService starts Java SkDestroyListener (new code).
+        final BpfNetMaps bpfNetMaps = mDeps.makeBpfNetMaps(mContext);
+        if (bpfNetMaps.isSkDestroyListenerRunning()) {
+            mSkDestroyListener = null;
+        } else {
+            mSkDestroyListener = mDeps.makeSkDestroyListener(mCookieTagMap, mHandler);
+            mHandler.post(mSkDestroyListener::start);
+        }
     }
 
     /**
@@ -781,6 +798,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets whether the build is userdebug. */
         public boolean isDebuggable() {
             return Build.isDebuggable();
+        }
+
+        /** Create a new BpfNetMaps. */
+        public BpfNetMaps makeBpfNetMaps(Context ctx) {
+            return new BpfNetMaps(ctx);
+        }
+
+        /** Create a new SkDestroyListener. */
+        public SkDestroyListener makeSkDestroyListener(
+                IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap, Handler handler) {
+            return new SkDestroyListener(cookieTagMap, handler, new SharedLog(TAG));
         }
     }
 
@@ -1293,7 +1321,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             mNetd.bandwidthSetGlobalAlert(mGlobalAlertBytes);
         } catch (IllegalStateException e) {
             Log.w(TAG, "problem registering for global alert: " + e);
-        } catch (RemoteException e) {
+        } catch (RemoteException | ServiceSpecificException e) {
             // ignored; service lives in system_server
         }
         invokeForAllStatsProviderCallbacks((cb) -> cb.mProvider.onSetAlert(mGlobalAlertBytes));
@@ -2713,6 +2741,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             }
 
             pw.println();
+            pw.println("InterfaceMapUpdater:");
+            pw.increaseIndent();
+            mInterfaceMapUpdater.dump(pw);
+            pw.decreaseIndent();
+
+            pw.println();
             pw.println("BPF map status:");
             pw.increaseIndent();
             dumpMapStatus(pw);
@@ -2727,6 +2761,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             dumpCookieTagMapLocked(pw);
             dumpUidCounterSetMapLocked(pw);
             dumpAppUidStatsMapLocked(pw);
+            dumpStatsMapLocked(mStatsMapA, pw, "mStatsMapA");
+            dumpStatsMapLocked(mStatsMapB, pw, "mStatsMapB");
             pw.decreaseIndent();
         }
     }
@@ -2812,6 +2848,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         pw.println("mUidCounterSetMap: "
                 + getMapStatus(mUidCounterSetMap, UID_COUNTERSET_MAP_PATH));
         pw.println("mAppUidStatsMap: " + getMapStatus(mAppUidStatsMap, APP_UID_STATS_MAP_PATH));
+        pw.println("mStatsMapA: " + getMapStatus(mStatsMapA, STATS_MAP_A_PATH));
+        pw.println("mStatsMapB: " + getMapStatus(mStatsMapB, STATS_MAP_B_PATH));
     }
 
     @GuardedBy("mStatsLock")
@@ -2846,6 +2884,30 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                         + value.rxPackets + " "
                         + value.txBytes + " "
                         + value.txPackets);
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpStatsMapLocked(final IBpfMap<StatsMapKey, StatsMapValue> statsMap,
+            final IndentingPrintWriter pw, final String mapName) {
+        if (statsMap == null) {
+            return;
+        }
+
+        BpfDump.dumpMap(statsMap, pw, mapName,
+                "ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets",
+                (key, value) -> {
+                    final long ifIndex = key.ifaceIndex;
+                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(ifIndex);
+                    return ifIndex + " "
+                            + (ifName != null ? ifName : "unknown") + " "
+                            + "0x" + Long.toHexString(key.tag) + " "
+                            + key.uid + " "
+                            + key.counterSet + " "
+                            + value.rxBytes + " "
+                            + value.rxPackets + " "
+                            + value.txBytes + " "
+                            + value.txPackets;
+                });
     }
 
     private NetworkStats readNetworkStatsSummaryDev() {

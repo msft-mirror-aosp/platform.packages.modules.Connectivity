@@ -365,9 +365,9 @@ import com.android.server.ConnectivityServiceTest.ConnectivityServiceDependencie
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
 import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
-import com.android.server.connectivity.MockableSystemProperties;
 import com.android.server.connectivity.Nat464Xlat;
 import com.android.server.connectivity.NetworkAgentInfo;
+import com.android.server.connectivity.NetworkNotificationManager;
 import com.android.server.connectivity.NetworkNotificationManager.NotificationType;
 import com.android.server.connectivity.ProxyTracker;
 import com.android.server.connectivity.QosCallbackTracker;
@@ -1845,18 +1845,9 @@ public class ConnectivityServiceTest {
 
     class ConnectivityServiceDependencies extends ConnectivityService.Dependencies {
         final ConnectivityResources mConnRes;
-        @Mock final MockableSystemProperties mSystemProperties;
 
         ConnectivityServiceDependencies(final Context mockResContext) {
-            mSystemProperties = mock(MockableSystemProperties.class);
-            doReturn(false).when(mSystemProperties).getBoolean("ro.radio.noril", false);
-
             mConnRes = new ConnectivityResources(mockResContext);
-        }
-
-        @Override
-        public MockableSystemProperties getSystemProperties() {
-            return mSystemProperties;
         }
 
         @Override
@@ -3533,6 +3524,54 @@ public class ConnectivityServiceTest {
         mCm.unregisterNetworkCallback(callback);
     }
 
+    /** Expects the specified notification and returns the notification ID. */
+    private int expectNotification(TestNetworkAgentWrapper agent, NotificationType type) {
+        verify(mNotificationManager).notify(
+                eq(NetworkNotificationManager.tagFor(agent.getNetwork().netId)),
+                eq(type.eventId), any());
+        return type.eventId;
+    }
+
+    /**
+     * Expects the specified notification happens when the unvalidated prompt message arrives
+     *
+     * @return the notification ID.
+     **/
+    private int expectUnvalidationCheckWillNotify(TestNetworkAgentWrapper agent,
+            NotificationType type) {
+        mService.scheduleUnvalidatedPrompt(agent.getNetwork(), 0 /* delayMs */);
+        waitForIdle();
+        return expectNotification(agent, type);
+    }
+
+    /**
+     * Expects that the notification for the specified network is cleared.
+     *
+     * This generally happens when the network disconnects or when the newtwork validates. During
+     * normal usage the notification is also cleared by the system when the notification is tapped.
+     */
+    private void expectClearNotification(TestNetworkAgentWrapper agent, int expectedId) {
+        verify(mNotificationManager).cancel(
+                eq(NetworkNotificationManager.tagFor(agent.getNetwork().netId)), eq(expectedId));
+    }
+
+    /**
+     * Expects that no notification happens when the unvalidated prompt message arrives
+     *
+     * @return the notification ID.
+     **/
+    private void expectUnvalidationCheckWillNotNotify(TestNetworkAgentWrapper agent) {
+        mService.scheduleUnvalidatedPrompt(agent.getNetwork(), 0 /*delayMs */);
+        waitForIdle();
+        verify(mNotificationManager, never()).notifyAsUser(anyString(), anyInt(), any(), any());
+    }
+
+    private void expectDisconnectAndClearNotifications(TestNetworkCallback callback,
+            TestNetworkAgentWrapper agent, int id) {
+        callback.expectCallback(CallbackEntry.LOST, agent);
+        expectClearNotification(agent, id);
+    }
+
     private NativeNetworkConfig nativeNetworkConfigPhysical(int netId, int permission) {
         return new NativeNetworkConfig(netId, NativeNetworkType.PHYSICAL, permission,
                 /*secure=*/ false, VpnManager.TYPE_VPN_NONE, /*excludeLocalRoutes=*/ false);
@@ -3653,10 +3692,13 @@ public class ConnectivityServiceTest {
         mWiFiNetworkAgent.connect(false);
         callback.expectAvailableCallbacksUnvalidated(mWiFiNetworkAgent);
 
-        // Cell Remains the default.
+        // Cell remains the default.
         assertEquals(mCellNetworkAgent.getNetwork(), mCm.getActiveNetwork());
 
-        // Lower wifi's score to below than cell, and check that it doesn't disconnect because
+        // Expect a high-priority NO_INTERNET notification.
+        expectUnvalidationCheckWillNotify(mWiFiNetworkAgent, NotificationType.NO_INTERNET);
+
+        // Lower WiFi's score to lower than cell, and check that it doesn't disconnect because
         // it's explicitly selected.
         mWiFiNetworkAgent.adjustScore(-40);
         mWiFiNetworkAgent.adjustScore(40);
@@ -3670,18 +3712,26 @@ public class ConnectivityServiceTest {
 
         // Disconnect wifi, and then reconnect, again with explicitlySelected=true.
         mWiFiNetworkAgent.disconnect();
-        callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
+        expectDisconnectAndClearNotifications(callback, mWiFiNetworkAgent,
+                NotificationType.NO_INTERNET.eventId);
+
         mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
         mWiFiNetworkAgent.explicitlySelected(true, false);
         mWiFiNetworkAgent.connect(false);
         callback.expectAvailableCallbacksUnvalidated(mWiFiNetworkAgent);
 
+        // Expect a high-priority NO_INTERNET notification.
+        expectUnvalidationCheckWillNotify(mWiFiNetworkAgent, NotificationType.NO_INTERNET);
+
         // If the user chooses no on the "No Internet access, stay connected?" dialog, we ask the
         // network to disconnect.
         mCm.setAcceptUnvalidated(mWiFiNetworkAgent.getNetwork(), false, false);
-        callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
+        expectDisconnectAndClearNotifications(callback, mWiFiNetworkAgent,
+                NotificationType.NO_INTERNET.eventId);
+        reset(mNotificationManager);
 
         // Reconnect, again with explicitlySelected=true, but this time validate.
+        // Expect no notifications.
         mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
         mWiFiNetworkAgent.explicitlySelected(true, false);
         mWiFiNetworkAgent.connect(true);
@@ -3689,6 +3739,7 @@ public class ConnectivityServiceTest {
         callback.expectCallback(CallbackEntry.LOSING, mCellNetworkAgent);
         callback.expectCapabilitiesWith(NET_CAPABILITY_VALIDATED, mWiFiNetworkAgent);
         assertEquals(mWiFiNetworkAgent.getNetwork(), mCm.getActiveNetwork());
+        expectUnvalidationCheckWillNotNotify(mWiFiNetworkAgent);
 
         mEthernetNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_ETHERNET);
         mEthernetNetworkAgent.connect(true);
@@ -3711,16 +3762,19 @@ public class ConnectivityServiceTest {
         assertEquals(mWiFiNetworkAgent.getNetwork(), mCm.getActiveNetwork());
         mEthernetNetworkAgent.disconnect();
         callback.expectCallback(CallbackEntry.LOST, mEthernetNetworkAgent);
+        expectUnvalidationCheckWillNotNotify(mWiFiNetworkAgent);
 
         // Disconnect and reconnect with explicitlySelected=false and acceptUnvalidated=true.
         // Check that the network is not scored specially and that the device prefers cell data.
         mWiFiNetworkAgent.disconnect();
         callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
+
         mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
         mWiFiNetworkAgent.explicitlySelected(false, true);
         mWiFiNetworkAgent.connect(false);
         callback.expectAvailableCallbacksUnvalidated(mWiFiNetworkAgent);
         assertEquals(mCellNetworkAgent.getNetwork(), mCm.getActiveNetwork());
+        expectUnvalidationCheckWillNotNotify(mWiFiNetworkAgent);
 
         // Clean up.
         mWiFiNetworkAgent.disconnect();
@@ -4088,6 +4142,12 @@ public class ConnectivityServiceTest {
         assertEquals(mCellNetworkAgent.getNetwork(), mCm.getActiveNetwork());
         callback.assertNoCallback();
 
+        // Expect a PARTIAL_CONNECTIVITY notification. The notification appears as soon as partial
+        // connectivity is detected, and is low priority because the network was not explicitly
+        // selected by the user. This happens if we reconnect to a network where the user previously
+        // accepted partial connectivity without checking "always".
+        expectNotification(mWiFiNetworkAgent, NotificationType.PARTIAL_CONNECTIVITY);
+
         // With HTTPS probe disabled, NetworkMonitor should pass the network validation with http
         // probe.
         mWiFiNetworkAgent.setNetworkPartialValid(false /* isStrictMode */);
@@ -4100,7 +4160,7 @@ public class ConnectivityServiceTest {
         waitForIdle();
         verify(mWiFiNetworkAgent.mNetworkMonitor, times(1)).setAcceptPartialConnectivity();
 
-        // Need a trigger point to let NetworkMonitor tell ConnectivityService that network is
+        // Need a trigger point to let NetworkMonitor tell ConnectivityService that the network is
         // validated.
         mCm.reportNetworkConnectivity(mWiFiNetworkAgent.getNetwork(), true);
         callback.expectCallback(CallbackEntry.LOSING, mCellNetworkAgent);
@@ -4109,9 +4169,13 @@ public class ConnectivityServiceTest {
         assertTrue(nc.hasCapability(NET_CAPABILITY_PARTIAL_CONNECTIVITY));
         assertEquals(mWiFiNetworkAgent.getNetwork(), mCm.getActiveNetwork());
 
+        // Once the network validates, the notification disappears.
+        expectClearNotification(mWiFiNetworkAgent, NotificationType.PARTIAL_CONNECTIVITY.eventId);
+
         // Disconnect and reconnect wifi with partial connectivity again.
         mWiFiNetworkAgent.disconnect();
         callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
+
         mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
         mWiFiNetworkAgent.connectWithPartialConnectivity();
         callback.expectAvailableCallbacksUnvalidated(mWiFiNetworkAgent);
@@ -4119,20 +4183,28 @@ public class ConnectivityServiceTest {
 
         // Mobile data should be the default network.
         assertEquals(mCellNetworkAgent.getNetwork(), mCm.getActiveNetwork());
+        waitForIdle();
+
+        // Expect a low-priority PARTIAL_CONNECTIVITY notification as soon as partial connectivity
+        // is detected.
+        expectNotification(mWiFiNetworkAgent, NotificationType.PARTIAL_CONNECTIVITY);
 
         // If the user chooses no, disconnect wifi immediately.
-        mCm.setAcceptPartialConnectivity(mWiFiNetworkAgent.getNetwork(), false/* accept */,
+        mCm.setAcceptPartialConnectivity(mWiFiNetworkAgent.getNetwork(), false /* accept */,
                 false /* always */);
         callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
+        expectClearNotification(mWiFiNetworkAgent, NotificationType.PARTIAL_CONNECTIVITY.eventId);
+        reset(mNotificationManager);
 
-        // If user accepted partial connectivity before, and device reconnects to that network
-        // again, but now the network has full connectivity. The network shouldn't contain
+        // If the user accepted partial connectivity before, and the device connects to that network
+        // again, but now the network has full connectivity, then the network shouldn't contain
         // NET_CAPABILITY_PARTIAL_CONNECTIVITY.
         mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
         // acceptUnvalidated is also used as setting for accepting partial networks.
         mWiFiNetworkAgent.explicitlySelected(true /* explicitlySelected */,
                 true /* acceptUnvalidated */);
         mWiFiNetworkAgent.connect(true);
+        expectUnvalidationCheckWillNotNotify(mWiFiNetworkAgent);
 
         // If user accepted partial connectivity network before,
         // NetworkMonitor#setAcceptPartialConnectivity() will be called in
@@ -4163,9 +4235,11 @@ public class ConnectivityServiceTest {
         callback.expectCallback(CallbackEntry.LOSING, mCellNetworkAgent);
         assertEquals(mWiFiNetworkAgent.getNetwork(), mCm.getActiveNetwork());
         callback.expectCapabilitiesWith(NET_CAPABILITY_PARTIAL_CONNECTIVITY, mWiFiNetworkAgent);
+        expectUnvalidationCheckWillNotNotify(mWiFiNetworkAgent);
+
         mWiFiNetworkAgent.setNetworkValid(false /* isStrictMode */);
 
-        // Need a trigger point to let NetworkMonitor tell ConnectivityService that network is
+        // Need a trigger point to let NetworkMonitor tell ConnectivityService that the network is
         // validated.
         mCm.reportNetworkConnectivity(mWiFiNetworkAgent.getNetwork(), true);
         callback.expectCapabilitiesWith(NET_CAPABILITY_VALIDATED, mWiFiNetworkAgent);
@@ -4187,8 +4261,10 @@ public class ConnectivityServiceTest {
         callback.expectCallback(CallbackEntry.LOSING, mCellNetworkAgent);
         callback.expectCapabilitiesWith(
                 NET_CAPABILITY_PARTIAL_CONNECTIVITY | NET_CAPABILITY_VALIDATED, mWiFiNetworkAgent);
+        expectUnvalidationCheckWillNotNotify(mWiFiNetworkAgent);
         mWiFiNetworkAgent.disconnect();
         callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
+        verifyNoMoreInteractions(mNotificationManager);
     }
 
     @Test
@@ -15594,11 +15670,19 @@ public class ConnectivityServiceTest {
         mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_GRANTED);
         mServiceContext.setPermission(MANAGE_TEST_NETWORKS, PERMISSION_GRANTED);
 
-        // In this test the automotive feature will be enabled.
-        mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, true);
+        // Has automotive feature.
+        validateAutomotiveEthernetAllowedUids(true);
+
+        // No automotive feature.
+        validateAutomotiveEthernetAllowedUids(false);
+    }
+
+    private void validateAutomotiveEthernetAllowedUids(final boolean hasAutomotiveFeature)
+            throws Exception {
+        mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, hasAutomotiveFeature);
 
         // Simulate a restricted ethernet network.
-        final NetworkCapabilities.Builder agentNetCaps = new NetworkCapabilities.Builder()
+        final NetworkCapabilities.Builder ncb = new NetworkCapabilities.Builder()
                 .addTransportType(TRANSPORT_ETHERNET)
                 .addCapability(NET_CAPABILITY_INTERNET)
                 .addCapability(NET_CAPABILITY_NOT_SUSPENDED)
@@ -15606,8 +15690,34 @@ public class ConnectivityServiceTest {
                 .removeCapability(NET_CAPABILITY_NOT_RESTRICTED);
 
         mEthernetNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_ETHERNET,
-                new LinkProperties(), agentNetCaps.build());
-        validateAllowedUids(mEthernetNetworkAgent, TRANSPORT_ETHERNET, agentNetCaps, true);
+                new LinkProperties(), ncb.build());
+
+        final ArraySet<Integer> serviceUidSet = new ArraySet<>();
+        serviceUidSet.add(TEST_PACKAGE_UID);
+
+        final TestNetworkCallback cb = new TestNetworkCallback();
+
+        mCm.requestNetwork(new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_ETHERNET)
+                .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
+                .build(), cb);
+        mEthernetNetworkAgent.connect(true);
+        cb.expectAvailableThenValidatedCallbacks(mEthernetNetworkAgent);
+
+        // Cell gets to set the service UID as access UID
+        ncb.setAllowedUids(serviceUidSet);
+        mEthernetNetworkAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        if (SdkLevel.isAtLeastT() && hasAutomotiveFeature) {
+            cb.expectCapabilitiesThat(mEthernetNetworkAgent,
+                    caps -> caps.getAllowedUids().equals(serviceUidSet));
+        } else {
+            // S and no automotive feature must ignore access UIDs.
+            cb.assertNoCallback(TEST_CALLBACK_TIMEOUT_MS);
+        }
+
+        mEthernetNetworkAgent.disconnect();
+        cb.expectCallback(CallbackEntry.LOST, mEthernetNetworkAgent);
+        mCm.unregisterNetworkCallback(cb);
     }
 
     @Test
@@ -15621,7 +15731,7 @@ public class ConnectivityServiceTest {
 
         // Simulate a restricted telephony network. The telephony factory is entitled to set
         // the access UID to the service package on any of its restricted networks.
-        final NetworkCapabilities.Builder agentNetCaps = new NetworkCapabilities.Builder()
+        final NetworkCapabilities.Builder ncb = new NetworkCapabilities.Builder()
                 .addTransportType(TRANSPORT_CELLULAR)
                 .addCapability(NET_CAPABILITY_INTERNET)
                 .addCapability(NET_CAPABILITY_NOT_SUSPENDED)
@@ -15630,13 +15740,8 @@ public class ConnectivityServiceTest {
                 .setNetworkSpecifier(new TelephonyNetworkSpecifier(1 /* subid */));
 
         mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR,
-                new LinkProperties(), agentNetCaps.build());
-        validateAllowedUids(mCellNetworkAgent, TRANSPORT_CELLULAR, agentNetCaps, false);
-    }
+                new LinkProperties(), ncb.build());
 
-    private void validateAllowedUids(final TestNetworkAgentWrapper testAgent,
-            @NetworkCapabilities.Transport final int transportUnderTest,
-            final NetworkCapabilities.Builder ncb, final boolean forAutomotive) throws Exception {
         final ArraySet<Integer> serviceUidSet = new ArraySet<>();
         serviceUidSet.add(TEST_PACKAGE_UID);
         final ArraySet<Integer> nonServiceUidSet = new ArraySet<>();
@@ -15647,34 +15752,28 @@ public class ConnectivityServiceTest {
 
         final TestNetworkCallback cb = new TestNetworkCallback();
 
-        /* Test setting UIDs */
         // Cell gets to set the service UID as access UID
         mCm.requestNetwork(new NetworkRequest.Builder()
-                .addTransportType(transportUnderTest)
+                .addTransportType(TRANSPORT_CELLULAR)
                 .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
                 .build(), cb);
-        testAgent.connect(true);
-        cb.expectAvailableThenValidatedCallbacks(testAgent);
+        mCellNetworkAgent.connect(true);
+        cb.expectAvailableThenValidatedCallbacks(mCellNetworkAgent);
         ncb.setAllowedUids(serviceUidSet);
-        testAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        mCellNetworkAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
         if (SdkLevel.isAtLeastT()) {
-            cb.expectCapabilitiesThat(testAgent,
+            cb.expectCapabilitiesThat(mCellNetworkAgent,
                     caps -> caps.getAllowedUids().equals(serviceUidSet));
         } else {
             // S must ignore access UIDs.
             cb.assertNoCallback(TEST_CALLBACK_TIMEOUT_MS);
         }
 
-        /* Test setting UIDs is rejected when expected */
-        if (forAutomotive) {
-            mockHasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE, false);
-        }
-
         // ...but not to some other UID. Rejection sets UIDs to the empty set
         ncb.setAllowedUids(nonServiceUidSet);
-        testAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        mCellNetworkAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
         if (SdkLevel.isAtLeastT()) {
-            cb.expectCapabilitiesThat(testAgent,
+            cb.expectCapabilitiesThat(mCellNetworkAgent,
                     caps -> caps.getAllowedUids().isEmpty());
         } else {
             // S must ignore access UIDs.
@@ -15683,18 +15782,18 @@ public class ConnectivityServiceTest {
 
         // ...and also not to multiple UIDs even including the service UID
         ncb.setAllowedUids(serviceUidSetPlus);
-        testAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        mCellNetworkAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
         cb.assertNoCallback(TEST_CALLBACK_TIMEOUT_MS);
 
-        testAgent.disconnect();
-        cb.expectCallback(CallbackEntry.LOST, testAgent);
+        mCellNetworkAgent.disconnect();
+        cb.expectCallback(CallbackEntry.LOST, mCellNetworkAgent);
         mCm.unregisterNetworkCallback(cb);
 
         // Must be unset before touching the transports, because remove and add transport types
         // check the specifier on the builder immediately, contradicting normal builder semantics
         // TODO : fix the builder
         ncb.setNetworkSpecifier(null);
-        ncb.removeTransportType(transportUnderTest);
+        ncb.removeTransportType(TRANSPORT_CELLULAR);
         ncb.addTransportType(TRANSPORT_WIFI);
         // Wifi does not get to set access UID, even to the correct UID
         mCm.requestNetwork(new NetworkRequest.Builder()
