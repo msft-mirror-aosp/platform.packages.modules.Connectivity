@@ -138,7 +138,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     private static final int BATTERY_STATE_TIMEOUT_MS = 5000;
     private static final int BATTERY_STATE_CHECK_INTERVAL_MS = 500;
 
-    private static final int ACTIVITY_NETWORK_STATE_TIMEOUT_MS = 6_000;
+    private static final long ACTIVITY_NETWORK_STATE_TIMEOUT_MS = 20_000;
     private static final int JOB_NETWORK_STATE_TIMEOUT_MS = 10_000;
 
     // Must be higher than NETWORK_TIMEOUT_MS
