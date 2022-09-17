@@ -14,24 +14,10 @@
  * limitations under the License.
  */
 
-package com.android.net.module.util.bpf;
-
-import com.android.net.module.util.Struct;
-import com.android.net.module.util.Struct.Field;
-import com.android.net.module.util.Struct.Type;
+package android.net;
 
 /**
- * Value for cookie tag map.
+ * Test class with a name matching a public API in a secondary (framework-connectivity-t) stubs jar.
  */
-public class CookieTagMapValue extends Struct {
-    @Field(order = 0, type = Type.S32)
-    public final int uid;
-
-    @Field(order = 1, type = Type.U32)
-    public final long tag;
-
-    public CookieTagMapValue(final int uid, final long tag) {
-        this.uid = uid;
-        this.tag = tag;
-    }
+public class IpSecTransform {
 }
