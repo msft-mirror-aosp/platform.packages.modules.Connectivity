@@ -17,9 +17,16 @@
 package android.net;
 
 import static android.net.InetAddresses.parseNumericAddress;
+import static android.system.OsConstants.IPPROTO_ICMP;
 import static android.system.OsConstants.IPPROTO_ICMPV6;
+import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
+import static com.android.net.module.util.DnsPacket.ANSECTION;
+import static com.android.net.module.util.DnsPacket.ARSECTION;
+import static com.android.net.module.util.DnsPacket.NSSECTION;
+import static com.android.net.module.util.DnsPacket.QDSECTION;
+import static com.android.net.module.util.HexDump.dumpHexString;
 import static com.android.net.module.util.NetworkStackConstants.ARP_REPLY;
 import static com.android.net.module.util.NetworkStackConstants.ARP_REQUEST;
 import static com.android.net.module.util.NetworkStackConstants.ETHER_ADDR_LEN;
@@ -34,6 +41,7 @@ import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ROUTER_AD
 import static com.android.net.module.util.NetworkStackConstants.IPV6_ADDR_ALL_NODES_MULTICAST;
 import static com.android.net.module.util.NetworkStackConstants.NEIGHBOR_ADVERTISEMENT_FLAG_OVERRIDE;
 import static com.android.net.module.util.NetworkStackConstants.NEIGHBOR_ADVERTISEMENT_FLAG_SOLICITED;
+import static com.android.net.module.util.NetworkStackConstants.TCPHDR_SYN;
 
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
@@ -41,15 +49,18 @@ import static org.junit.Assert.fail;
 import android.net.dhcp.DhcpAckPacket;
 import android.net.dhcp.DhcpOfferPacket;
 import android.net.dhcp.DhcpPacket;
+import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.android.net.module.util.DnsPacket;
 import com.android.net.module.util.Ipv6Utils;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.EthernetHeader;
+import com.android.net.module.util.structs.Icmpv4Header;
 import com.android.net.module.util.structs.Icmpv6Header;
 import com.android.net.module.util.structs.Ipv4Header;
 import com.android.net.module.util.structs.Ipv6Header;
@@ -57,6 +68,7 @@ import com.android.net.module.util.structs.LlaOption;
 import com.android.net.module.util.structs.NsHeader;
 import com.android.net.module.util.structs.PrefixInformationOption;
 import com.android.net.module.util.structs.RaHeader;
+import com.android.net.module.util.structs.TcpHeader;
 import com.android.net.module.util.structs.UdpHeader;
 import com.android.networkstack.arp.ArpPacket;
 import com.android.testutils.TapPacketReader;
@@ -79,7 +91,7 @@ import java.util.function.Predicate;
  */
 public final class TetheringTester {
     private static final String TAG = TetheringTester.class.getSimpleName();
-    private static final int PACKET_READ_TIMEOUT_MS = 100;
+    private static final int PACKET_READ_TIMEOUT_MS = 500;
     private static final int DHCP_DISCOVER_ATTEMPTS = 10;
     private static final int READ_RA_ATTEMPTS = 10;
     private static final byte[] DHCP_REQUESTED_PARAMS = new byte[] {
@@ -124,12 +136,14 @@ public final class TetheringTester {
         public final MacAddress macAddr;
         public final MacAddress routerMacAddr;
         public final Inet4Address ipv4Addr;
+        public final Inet4Address ipv4Gatway;
         public final Inet6Address ipv6Addr;
 
         private TetheredDevice(MacAddress mac, boolean hasIpv6) throws Exception {
             macAddr = mac;
             DhcpResults dhcpResults = runDhcp(macAddr.toByteArray());
             ipv4Addr = (Inet4Address) dhcpResults.ipAddress.getAddress();
+            ipv4Gatway = (Inet4Address) dhcpResults.gateway;
             routerMacAddr = getRouterMacAddressFromArp(ipv4Addr, macAddr,
                     dhcpResults.serverAddress);
             ipv6Addr = hasIpv6 ? runSlaac(macAddr, routerMacAddr) : null;
@@ -259,7 +273,8 @@ public final class TetheringTester {
 
     private List<PrefixInformationOption> getRaPrefixOptions(byte[] packet) {
         ByteBuffer buf = ByteBuffer.wrap(packet);
-        if (!isExpectedIcmpv6Packet(buf, true /* hasEth */, ICMPV6_ROUTER_ADVERTISEMENT)) {
+        if (!isExpectedIcmpPacket(buf, true /* hasEth */, false /* isIpv4 */,
+                ICMPV6_ROUTER_ADVERTISEMENT)) {
             fail("Parsing RA packet fail");
         }
 
@@ -289,7 +304,8 @@ public final class TetheringTester {
         sendRsPacket(srcMac, dstMac);
 
         final byte[] raPacket = verifyPacketNotNull("Receive RA fail", getDownloadPacket(p -> {
-            return isExpectedIcmpv6Packet(p, true /* hasEth */, ICMPV6_ROUTER_ADVERTISEMENT);
+            return isExpectedIcmpPacket(p, true /* hasEth */, false /* isIpv4 */,
+                    ICMPV6_ROUTER_ADVERTISEMENT);
         }));
 
         final List<PrefixInformationOption> options = getRaPrefixOptions(raPacket);
@@ -351,20 +367,27 @@ public final class TetheringTester {
         }
     }
 
-    public static boolean isExpectedIcmpv6Packet(byte[] packet, boolean hasEth, int type) {
+    public static boolean isExpectedIcmpPacket(byte[] packet, boolean hasEth, boolean isIpv4,
+            int type) {
         final ByteBuffer buf = ByteBuffer.wrap(packet);
-        return isExpectedIcmpv6Packet(buf, hasEth, type);
+        return isExpectedIcmpPacket(buf, hasEth, isIpv4, type);
     }
 
-    private static boolean isExpectedIcmpv6Packet(ByteBuffer buf, boolean hasEth, int type) {
+    private static boolean isExpectedIcmpPacket(ByteBuffer buf, boolean hasEth, boolean isIpv4,
+            int type) {
         try {
-            if (hasEth && !hasExpectedEtherHeader(buf, false /* isIpv4 */)) return false;
+            if (hasEth && !hasExpectedEtherHeader(buf, isIpv4)) return false;
 
-            if (!hasExpectedIpHeader(buf, false /* isIpv4 */, IPPROTO_ICMPV6)) return false;
+            final int ipProto = isIpv4 ? IPPROTO_ICMP : IPPROTO_ICMPV6;
+            if (!hasExpectedIpHeader(buf, isIpv4, ipProto)) return false;
 
-            return Struct.parse(Icmpv6Header.class, buf).type == (short) type;
+            if (isIpv4) {
+                return Struct.parse(Icmpv4Header.class, buf).type == (short) type;
+            } else {
+                return Struct.parse(Icmpv6Header.class, buf).type == (short) type;
+            }
         } catch (Exception e) {
-            // Parsing packet fail means it is not icmpv6 packet.
+            // Parsing packet fail means it is not icmp packet.
         }
 
         return false;
@@ -386,8 +409,8 @@ public final class TetheringTester {
         }
     }
 
-    public static boolean isExpectedUdpPacket(@NonNull final byte[] rawPacket, boolean hasEth,
-            boolean isIpv4, @NonNull final ByteBuffer payload) {
+    private static boolean isExpectedUdpPacket(@NonNull final byte[] rawPacket, boolean hasEth,
+            boolean isIpv4, Predicate<ByteBuffer> payloadVerifier) {
         final ByteBuffer buf = ByteBuffer.wrap(rawPacket);
         try {
             if (hasEth && !hasExpectedEtherHeader(buf, isIpv4)) return false;
@@ -395,15 +418,214 @@ public final class TetheringTester {
             if (!hasExpectedIpHeader(buf, isIpv4, IPPROTO_UDP)) return false;
 
             if (Struct.parse(UdpHeader.class, buf) == null) return false;
+
+            if (!payloadVerifier.test(buf)) return false;
         } catch (Exception e) {
             // Parsing packet fail means it is not udp packet.
             return false;
         }
+        return true;
+    }
 
-        if (buf.remaining() != payload.limit()) return false;
+    // Returns remaining bytes in the ByteBuffer in a new byte array of the right size. The
+    // ByteBuffer will be empty upon return. Used to avoid lint warning.
+    // See https://errorprone.info/bugpattern/ByteBufferBackingArray
+    private static byte[] getRemaining(final ByteBuffer buf) {
+        final byte[] bytes = new byte[buf.remaining()];
+        buf.get(bytes);
+        Log.d(TAG, "Get remaining bytes: " + dumpHexString(bytes));
+        return bytes;
+    }
 
-        return Arrays.equals(Arrays.copyOfRange(buf.array(), buf.position(), buf.limit()),
-                payload.array());
+    // |expectedPayload| is copied as read-only because the caller may reuse it.
+    public static boolean isExpectedUdpPacket(@NonNull final byte[] rawPacket, boolean hasEth,
+            boolean isIpv4, @NonNull final ByteBuffer expectedPayload) {
+        return isExpectedUdpPacket(rawPacket, hasEth, isIpv4, p -> {
+            if (p.remaining() != expectedPayload.limit()) return false;
+
+            return Arrays.equals(getRemaining(p), getRemaining(
+                    expectedPayload.asReadOnlyBuffer()));
+        });
+    }
+
+    // |expectedPayload| is copied as read-only because the caller may reuse it.
+    // See hasExpectedDnsMessage.
+    public static boolean isExpectedUdpDnsPacket(@NonNull final byte[] rawPacket, boolean hasEth,
+            boolean isIpv4, @NonNull final ByteBuffer expectedPayload) {
+        return isExpectedUdpPacket(rawPacket, hasEth, isIpv4, p -> {
+            return hasExpectedDnsMessage(p, expectedPayload);
+        });
+    }
+
+    public static class TestDnsPacket extends DnsPacket {
+        TestDnsPacket(byte[] data) throws DnsPacket.ParseException {
+            super(data);
+        }
+
+        @Nullable
+        public static TestDnsPacket getTestDnsPacket(final ByteBuffer buf) {
+            try {
+                // The ByteBuffer will be empty upon return.
+                return new TestDnsPacket(getRemaining(buf));
+            } catch (DnsPacket.ParseException e) {
+                return null;
+            }
+        }
+
+        public DnsHeader getHeader() {
+            return mHeader;
+        }
+
+        public List<DnsRecord> getRecordList(int secType) {
+            return mRecords[secType];
+        }
+
+        public int getANCount() {
+            return mHeader.getRecordCount(ANSECTION);
+        }
+
+        public int getQDCount() {
+            return mHeader.getRecordCount(QDSECTION);
+        }
+
+        public int getNSCount() {
+            return mHeader.getRecordCount(NSSECTION);
+        }
+
+        public int getARCount() {
+            return mHeader.getRecordCount(ARSECTION);
+        }
+
+        private boolean isRecordsEquals(int type, @NonNull final TestDnsPacket other) {
+            List<DnsRecord> records = getRecordList(type);
+            List<DnsRecord> otherRecords = other.getRecordList(type);
+
+            if (records.size() != otherRecords.size()) return false;
+
+            // Expect that two compared resource records are in the same order. For current tests
+            // in EthernetTetheringTest, it is okay because dnsmasq doesn't reorder the forwarded
+            // resource records.
+            // TODO: consider allowing that compare records out of order.
+            for (int i = 0; i < records.size(); i++) {
+                // TODO: use DnsRecord.equals once aosp/1387135 is merged.
+                if (!TextUtils.equals(records.get(i).dName, otherRecords.get(i).dName)
+                        || records.get(i).nsType != otherRecords.get(i).nsType
+                        || records.get(i).nsClass != otherRecords.get(i).nsClass
+                        || records.get(i).ttl != otherRecords.get(i).ttl
+                        || !Arrays.equals(records.get(i).getRR(), otherRecords.get(i).getRR())) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        public boolean isQDRecordsEquals(@NonNull final TestDnsPacket other) {
+            return isRecordsEquals(QDSECTION, other);
+        }
+
+        public boolean isANRecordsEquals(@NonNull final TestDnsPacket other) {
+            return isRecordsEquals(ANSECTION, other);
+        }
+    }
+
+    // The ByteBuffer |actual| will be empty upon return. The ByteBuffer |excepted| will be copied
+    // as read-only because the caller may reuse it.
+    private static boolean hasExpectedDnsMessage(@NonNull final ByteBuffer actual,
+            @NonNull final ByteBuffer excepted) {
+        // Forwarded DNS message is extracted from remaining received packet buffer which has
+        // already parsed ethernet header, if any, IP header and UDP header.
+        final TestDnsPacket forwardedDns = TestDnsPacket.getTestDnsPacket(actual);
+        if (forwardedDns == null) return false;
+
+        // Original DNS message is the payload of the sending test UDP packet. It is used to check
+        // that the forwarded DNS query and reply have corresponding contents.
+        final TestDnsPacket originalDns = TestDnsPacket.getTestDnsPacket(
+                excepted.asReadOnlyBuffer());
+        assertNotNull(originalDns);
+
+        // Compare original DNS message which is sent to dnsmasq and forwarded DNS message which
+        // is forwarded by dnsmasq. The original message and forwarded message may be not identical
+        // because dnsmasq may change the header flags or even recreate the DNS query message and
+        // so on. We only simple check on forwarded packet and monitor if test will be broken by
+        // vendor dnsmasq customization. See forward_query() in external/dnsmasq/src/forward.c.
+        //
+        // DNS message format. See rfc1035 section 4.1.
+        // +---------------------+
+        // |        Header       |
+        // +---------------------+
+        // |       Question      | the question for the name server
+        // +---------------------+
+        // |        Answer       | RRs answering the question
+        // +---------------------+
+        // |      Authority      | RRs pointing toward an authority
+        // +---------------------+
+        // |      Additional     | RRs holding additional information
+        // +---------------------+
+
+        // [1] Header section. See rfc1035 section 4.1.1.
+        // Verify QR flag bit, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT.
+        if (originalDns.getHeader().isResponse() != forwardedDns.getHeader().isResponse()) {
+            return false;
+        }
+        if (originalDns.getQDCount() != forwardedDns.getQDCount()) return false;
+        if (originalDns.getANCount() != forwardedDns.getANCount()) return false;
+        if (originalDns.getNSCount() != forwardedDns.getNSCount()) return false;
+        if (originalDns.getARCount() != forwardedDns.getARCount()) return false;
+
+        // [2] Question section. See rfc1035 section 4.1.2.
+        // Question section has at least one entry either DNS query or DNS reply.
+        if (forwardedDns.getRecordList(QDSECTION).isEmpty()) return false;
+        // Expect that original and forwarded message have the same question records (usually 1).
+        if (!originalDns.isQDRecordsEquals(forwardedDns)) return false;
+
+        // [3] Answer section. See rfc1035 section 4.1.3.
+        if (forwardedDns.getHeader().isResponse()) {
+            // DNS reply has at least have one answer in our tests.
+            // See EthernetTetheringTest#testTetherUdpV4Dns.
+            if (forwardedDns.getRecordList(ANSECTION).isEmpty()) return false;
+            // Expect that original and forwarded message have the same answer records.
+            if (!originalDns.isANRecordsEquals(forwardedDns)) return false;
+        }
+
+        // Ignore checking {Authority, Additional} sections because they are not tested
+        // in EthernetTetheringTest.
+        return true;
+    }
+
+
+    private static boolean isTcpSynPacket(@NonNull final TcpHeader tcpHeader) {
+        return (tcpHeader.dataOffsetAndControlBits & TCPHDR_SYN) != 0;
+    }
+
+    public static boolean isExpectedTcpPacket(@NonNull final byte[] rawPacket, boolean hasEth,
+            boolean isIpv4, int seq, @NonNull final ByteBuffer payload) {
+        final ByteBuffer buf = ByteBuffer.wrap(rawPacket);
+        try {
+            if (hasEth && !hasExpectedEtherHeader(buf, isIpv4)) return false;
+
+            if (!hasExpectedIpHeader(buf, isIpv4, IPPROTO_TCP)) return false;
+
+            final TcpHeader tcpHeader = Struct.parse(TcpHeader.class, buf);
+            if (tcpHeader.seq != seq) return false;
+
+            // Don't try to parse the payload if it is a TCP SYN segment because additional TCP
+            // option MSS may be added in the SYN segment. Currently, TetherController uses
+            // iptables to limit downstream MSS for IPv4. The additional TCP options will be
+            // misunderstood as payload because parsing TCP options are not supported by class
+            // TcpHeader for now. See TetherController::setupIptablesHooks.
+            // TODO: remove once TcpHeader supports parsing TCP options.
+            if (isTcpSynPacket(tcpHeader)) {
+                Log.d(TAG, "Found SYN segment. Ignore parsing the remaining part of packet.");
+                return true;
+            }
+
+            if (payload.limit() != buf.remaining()) return false;
+            return Arrays.equals(getRemaining(buf), getRemaining(payload.asReadOnlyBuffer()));
+        } catch (Exception e) {
+            // Parsing packet fail means it is not tcp packet.
+        }
+
+        return false;
     }
 
     private void sendUploadPacket(ByteBuffer packet) throws Exception {
