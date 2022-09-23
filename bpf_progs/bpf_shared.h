@@ -21,6 +21,11 @@
 #include <linux/in.h>
 #include <linux/in6.h>
 
+#ifdef __cplusplus
+#include <string_view>
+#include "XtBpfProgLocations.h"
+#endif
+
 // This header file is shared by eBPF kernel programs (C) and netd (C++) and
 // some of the maps are also accessed directly from Java mainline module code.
 //
@@ -98,14 +103,33 @@ static const int IFACE_STATS_MAP_SIZE = 1000;
 static const int CONFIGURATION_MAP_SIZE = 2;
 static const int UID_OWNER_MAP_SIZE = 2000;
 
+#ifdef __cplusplus
+
 #define BPF_NETD_PATH "/sys/fs/bpf/netd_shared/"
 
 #define BPF_EGRESS_PROG_PATH BPF_NETD_PATH "prog_netd_cgroupskb_egress_stats"
 #define BPF_INGRESS_PROG_PATH BPF_NETD_PATH "prog_netd_cgroupskb_ingress_stats"
-#define XT_BPF_INGRESS_PROG_PATH BPF_NETD_PATH "prog_netd_skfilter_ingress_xtbpf"
-#define XT_BPF_EGRESS_PROG_PATH BPF_NETD_PATH "prog_netd_skfilter_egress_xtbpf"
-#define XT_BPF_ALLOWLIST_PROG_PATH BPF_NETD_PATH "prog_netd_skfilter_allowlist_xtbpf"
-#define XT_BPF_DENYLIST_PROG_PATH BPF_NETD_PATH "prog_netd_skfilter_denylist_xtbpf"
+
+#define ASSERT_STRING_EQUAL(s1, s2) \
+    static_assert(std::string_view(s1) == std::string_view(s2), "mismatch vs Android T netd")
+
+/* -=-=-=-=- WARNING -=-=-=-=-
+ *
+ * These 4 xt_bpf program paths are actually defined by:
+ *   //system/netd/include/mainline/XtBpfProgLocations.h
+ * which is intentionally a non-automerged location.
+ *
+ * They are *UNCHANGEABLE* due to being hard coded in Android T's netd binary
+ * as such we have compile time asserts that things match.
+ * (which will be validated during build on mainline-prod branch against old system/netd)
+ *
+ * If you break this, netd on T will fail to start with your tethering mainline module.
+ */
+ASSERT_STRING_EQUAL(XT_BPF_INGRESS_PROG_PATH,   BPF_NETD_PATH "prog_netd_skfilter_ingress_xtbpf");
+ASSERT_STRING_EQUAL(XT_BPF_EGRESS_PROG_PATH,    BPF_NETD_PATH "prog_netd_skfilter_egress_xtbpf");
+ASSERT_STRING_EQUAL(XT_BPF_ALLOWLIST_PROG_PATH, BPF_NETD_PATH "prog_netd_skfilter_allowlist_xtbpf");
+ASSERT_STRING_EQUAL(XT_BPF_DENYLIST_PROG_PATH,  BPF_NETD_PATH "prog_netd_skfilter_denylist_xtbpf");
+
 #define CGROUP_SOCKET_PROG_PATH BPF_NETD_PATH "prog_netd_cgroupsock_inet_create"
 
 #define TC_BPF_INGRESS_ACCOUNT_PROG_NAME "prog_netd_schedact_ingress_account"
@@ -122,6 +146,9 @@ static const int UID_OWNER_MAP_SIZE = 2000;
 #define UID_OWNER_MAP_PATH BPF_NETD_PATH "map_netd_uid_owner_map"
 #define UID_PERMISSION_MAP_PATH BPF_NETD_PATH "map_netd_uid_permission_map"
 
+#endif // __cplusplus
+
+// LINT.IfChange(match_type)
 enum UidOwnerMatchType {
     NO_MATCH = 0,
     HAPPY_BOX_MATCH = (1 << 0),
@@ -133,7 +160,11 @@ enum UidOwnerMatchType {
     LOW_POWER_STANDBY_MATCH = (1 << 6),
     IIF_MATCH = (1 << 7),
     LOCKDOWN_VPN_MATCH = (1 << 8),
+    OEM_DENY_1_MATCH = (1 << 9),
+    OEM_DENY_2_MATCH = (1 << 10),
+    OEM_DENY_3_MATCH = (1 << 11),
 };
+// LINT.ThenChange(packages/modules/Connectivity/service/src/com/android/server/BpfNetMaps.java)
 
 enum BpfPermissionMatch {
     BPF_PERMISSION_INTERNET = 1 << 2,
@@ -147,9 +178,9 @@ enum StatsMapType {
     SELECT_MAP_B,
 };
 
-// TODO: change the configuration object from an 8-bit bitmask to an object with clearer
+// TODO: change the configuration object from a bitmask to an object with clearer
 // semantics, like a struct.
-typedef uint8_t BpfConfig;
+typedef uint32_t BpfConfig;
 static const BpfConfig DEFAULT_CONFIG = 0;
 
 typedef struct {
@@ -160,18 +191,10 @@ typedef struct {
 } UidOwnerValue;
 STRUCT_SIZE(UidOwnerValue, 2 * 4);  // 8
 
-#define UID_RULES_CONFIGURATION_KEY 1
-#define CURRENT_STATS_MAP_CONFIGURATION_KEY 2
-
-#define BPF_CLATD_PATH "/sys/fs/bpf/net_shared/"
-
-#define CLAT_INGRESS6_PROG_RAWIP_NAME "prog_clatd_schedcls_ingress6_clat_rawip"
-#define CLAT_INGRESS6_PROG_ETHER_NAME "prog_clatd_schedcls_ingress6_clat_ether"
-
-#define CLAT_INGRESS6_PROG_RAWIP_PATH BPF_CLATD_PATH CLAT_INGRESS6_PROG_RAWIP_NAME
-#define CLAT_INGRESS6_PROG_ETHER_PATH BPF_CLATD_PATH CLAT_INGRESS6_PROG_ETHER_NAME
-
-#define CLAT_INGRESS6_MAP_PATH BPF_CLATD_PATH "map_clatd_clat_ingress6_map"
+// Entry in the configuration map that stores which UID rules are enabled.
+#define UID_RULES_CONFIGURATION_KEY 0
+// Entry in the configuration map that stores which stats map is currently in use.
+#define CURRENT_STATS_MAP_CONFIGURATION_KEY 1
 
 typedef struct {
     uint32_t iif;            // The input interface index
@@ -185,14 +208,6 @@ typedef struct {
     struct in_addr local4;  // The destination IPv4 address
 } ClatIngress6Value;
 STRUCT_SIZE(ClatIngress6Value, 4 + 4);  // 8
-
-#define CLAT_EGRESS4_PROG_RAWIP_NAME "prog_clatd_schedcls_egress4_clat_rawip"
-#define CLAT_EGRESS4_PROG_ETHER_NAME "prog_clatd_schedcls_egress4_clat_ether"
-
-#define CLAT_EGRESS4_PROG_RAWIP_PATH BPF_CLATD_PATH CLAT_EGRESS4_PROG_RAWIP_NAME
-#define CLAT_EGRESS4_PROG_ETHER_PATH BPF_CLATD_PATH CLAT_EGRESS4_PROG_ETHER_NAME
-
-#define CLAT_EGRESS4_MAP_PATH BPF_CLATD_PATH "map_clatd_clat_egress4_map"
 
 typedef struct {
     uint32_t iif;           // The input interface index

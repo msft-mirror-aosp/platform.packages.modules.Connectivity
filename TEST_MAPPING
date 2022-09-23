@@ -34,11 +34,37 @@
         }
       ]
     },
+    // CTS tests that target older SDKs.
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk30",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk31",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
     {
       "name": "bpf_existence_test"
     },
     {
       "name": "connectivity_native_test"
+    },
+    {
+      "name": "libclat_test"
     },
     {
       "name": "netd_updatable_unit_test"
@@ -68,14 +94,8 @@
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
     },
     {
-      "name": "libclat_test"
-    },
-    {
       "name": "traffic_controller_unit_test",
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
-    },
-    {
-      "name": "libnetworkstats_test"
     },
     {
       "name": "FrameworksNetDeflakeTest"
@@ -84,6 +104,28 @@
   "mainline-presubmit": [
     {
       "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk30[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk31[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
@@ -151,23 +193,6 @@
       ]
     }
   ],
-  "auto-postsubmit": [
-    // Test tag for automotive targets. These are only running in postsubmit so as to harden the
-    // automotive targets to avoid introducing additional test flake and build time. The plan for
-    // presubmit testing for auto is to augment the existing tests to cover auto use cases as well.
-    // Additionally, this tag is used in targeted test suites to limit resource usage on the test
-    // infra during the hardening phase.
-    // TODO: this tag to be removed once the above is no longer an issue.
-    {
-      "name": "FrameworksNetTests"
-    },
-    {
-      "name": "FrameworksNetIntegrationTests"
-    },
-    {
-      "name": "FrameworksNetDeflakeTest"
-    }
-  ],
   "imports": [
     {
       "path": "frameworks/base/core/java/android/net"
@@ -180,6 +205,9 @@
     },
     {
       "path": "packages/modules/CaptivePortalLogin"
+    },
+    {
+      "path": "vendor/xts/gts-tests/hostsidetests/networkstack"
     }
   ]
 }

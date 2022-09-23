@@ -28,11 +28,10 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -40,7 +39,6 @@ import android.content.Context;
 import android.net.EthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.INetd;
-import android.net.INetworkInterfaceOutcomeReceiver;
 import android.net.InetAddresses;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpConfiguration;
@@ -49,32 +47,35 @@ import android.net.IpConfiguration.ProxySettings;
 import android.net.LinkAddress;
 import android.net.NetworkCapabilities;
 import android.net.StaticIpConfiguration;
+import android.os.Build;
 import android.os.HandlerThread;
 import android.os.RemoteException;
 
 import androidx.test.filters.SmallTest;
-import androidx.test.runner.AndroidJUnit4;
 
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.net.InetAddress;
 import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @SmallTest
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 public class EthernetTrackerTest {
     private static final String TEST_IFACE = "test123";
     private static final int TIMEOUT_MS = 1_000;
     private static final String THREAD_NAME = "EthernetServiceThread";
-    private static final INetworkInterfaceOutcomeReceiver NULL_LISTENER = null;
+    private static final EthernetCallback NULL_CB = new EthernetCallback(null);
     private EthernetTracker tracker;
     private HandlerThread mHandlerThread;
     @Mock private Context mContext;
@@ -86,8 +87,8 @@ public class EthernetTrackerTest {
     public void setUp() throws RemoteException {
         MockitoAnnotations.initMocks(this);
         initMockResources();
-        when(mFactory.updateInterfaceLinkState(anyString(), anyBoolean(), any())).thenReturn(false);
-        when(mNetd.interfaceGetList()).thenReturn(new String[0]);
+        doReturn(false).when(mFactory).updateInterfaceLinkState(anyString(), anyBoolean());
+        doReturn(new String[0]).when(mNetd).interfaceGetList();
         mHandlerThread = new HandlerThread(THREAD_NAME);
         mHandlerThread.start();
         tracker = new EthernetTracker(mContext, mHandlerThread.getThreadHandler(), mFactory, mNetd,
@@ -100,8 +101,8 @@ public class EthernetTrackerTest {
     }
 
     private void initMockResources() {
-        when(mDeps.getInterfaceRegexFromResource(eq(mContext))).thenReturn("");
-        when(mDeps.getInterfaceConfigFromResource(eq(mContext))).thenReturn(new String[0]);
+        doReturn("").when(mDeps).getInterfaceRegexFromResource(eq(mContext));
+        doReturn(new String[0]).when(mDeps).getInterfaceConfigFromResource(eq(mContext));
     }
 
     private void waitForIdle() {
@@ -342,31 +343,13 @@ public class EthernetTrackerTest {
                 new StaticIpConfiguration.Builder().setIpAddress(linkAddr).build();
         final IpConfiguration ipConfig =
                 new IpConfiguration.Builder().setStaticIpConfiguration(staticIpConfig).build();
-        final INetworkInterfaceOutcomeReceiver listener = null;
+        final EthernetCallback listener = new EthernetCallback(null);
 
         tracker.updateConfiguration(TEST_IFACE, ipConfig, capabilities, listener);
         waitForIdle();
 
         verify(mFactory).updateInterface(
-                eq(TEST_IFACE), eq(ipConfig), eq(capabilities), eq(listener));
-    }
-
-    @Test
-    public void testConnectNetworkCorrectlyCallsFactory() {
-        tracker.connectNetwork(TEST_IFACE, NULL_LISTENER);
-        waitForIdle();
-
-        verify(mFactory).updateInterfaceLinkState(eq(TEST_IFACE), eq(true /* up */),
-                eq(NULL_LISTENER));
-    }
-
-    @Test
-    public void testDisconnectNetworkCorrectlyCallsFactory() {
-        tracker.disconnectNetwork(TEST_IFACE, NULL_LISTENER);
-        waitForIdle();
-
-        verify(mFactory).updateInterfaceLinkState(eq(TEST_IFACE), eq(false /* up */),
-                eq(NULL_LISTENER));
+                eq(TEST_IFACE), eq(ipConfig), eq(capabilities));
     }
 
     @Test
@@ -432,7 +415,20 @@ public class EthernetTrackerTest {
         when(mNetd.interfaceGetList()).thenReturn(new String[] {testIface});
         when(mNetd.interfaceGetCfg(eq(testIface))).thenReturn(ifaceParcel);
         doReturn(new String[] {testIface}).when(mFactory).getAvailableInterfaces(anyBoolean());
-        doReturn(EthernetManager.STATE_LINK_UP).when(mFactory).getInterfaceState(eq(testIface));
+
+        final AtomicBoolean ifaceUp = new AtomicBoolean(true);
+        doAnswer(inv -> ifaceUp.get()).when(mFactory).hasInterface(testIface);
+        doAnswer(inv ->
+                ifaceUp.get() ? EthernetManager.STATE_LINK_UP : EthernetManager.STATE_ABSENT)
+                .when(mFactory).getInterfaceState(testIface);
+        doAnswer(inv -> {
+            ifaceUp.set(true);
+            return null;
+        }).when(mFactory).addInterface(eq(testIface), eq(testHwAddr), any(), any());
+        doAnswer(inv -> {
+            ifaceUp.set(false);
+            return null;
+        }).when(mFactory).removeInterface(testIface);
 
         final EthernetStateListener listener = spy(new EthernetStateListener());
         tracker.addListener(listener, true /* canUseRestrictedNetworks */);
@@ -443,7 +439,6 @@ public class EthernetTrackerTest {
         verify(listener).onEthernetStateChanged(eq(EthernetManager.ETHERNET_STATE_ENABLED));
         reset(listener);
 
-        doReturn(EthernetManager.STATE_ABSENT).when(mFactory).getInterfaceState(eq(testIface));
         tracker.setEthernetEnabled(false);
         waitForIdle();
         verify(mFactory).removeInterface(eq(testIface));
@@ -452,51 +447,11 @@ public class EthernetTrackerTest {
                 anyInt(), any());
         reset(listener);
 
-        doReturn(EthernetManager.STATE_LINK_UP).when(mFactory).getInterfaceState(eq(testIface));
         tracker.setEthernetEnabled(true);
         waitForIdle();
         verify(mFactory).addInterface(eq(testIface), eq(testHwAddr), any(), any());
         verify(listener).onEthernetStateChanged(eq(EthernetManager.ETHERNET_STATE_ENABLED));
         verify(listener).onInterfaceStateChanged(eq(testIface), eq(EthernetManager.STATE_LINK_UP),
                 anyInt(), any());
-    }
-
-    @Test
-    public void testListenEthernetStateChange_unsolicitedEventListener() throws Exception {
-        when(mNetd.interfaceGetList()).thenReturn(new String[] {});
-        doReturn(new String[] {}).when(mFactory).getAvailableInterfaces(anyBoolean());
-
-        tracker.setIncludeTestInterfaces(true);
-        tracker.start();
-
-        final ArgumentCaptor<EthernetTracker.InterfaceObserver> captor =
-                ArgumentCaptor.forClass(EthernetTracker.InterfaceObserver.class);
-        verify(mNetd, timeout(TIMEOUT_MS)).registerUnsolicitedEventListener(captor.capture());
-        final EthernetTracker.InterfaceObserver observer = captor.getValue();
-
-        tracker.setEthernetEnabled(false);
-        waitForIdle();
-        reset(mFactory);
-        reset(mNetd);
-
-        final String testIface = "testtap1";
-        observer.onInterfaceAdded(testIface);
-        verify(mFactory, never()).addInterface(eq(testIface), anyString(), any(), any());
-        observer.onInterfaceRemoved(testIface);
-        verify(mFactory, never()).removeInterface(eq(testIface));
-
-        final String testHwAddr = "11:22:33:44:55:66";
-        final InterfaceConfigurationParcel testIfaceParce =
-                createMockedIfaceParcel(testIface, testHwAddr);
-        when(mNetd.interfaceGetList()).thenReturn(new String[] {testIface});
-        when(mNetd.interfaceGetCfg(eq(testIface))).thenReturn(testIfaceParce);
-        doReturn(new String[] {testIface}).when(mFactory).getAvailableInterfaces(anyBoolean());
-        tracker.setEthernetEnabled(true);
-        waitForIdle();
-        reset(mFactory);
-
-        final String testIface2 = "testtap2";
-        observer.onInterfaceRemoved(testIface2);
-        verify(mFactory, timeout(TIMEOUT_MS)).removeInterface(eq(testIface2));
     }
 }
