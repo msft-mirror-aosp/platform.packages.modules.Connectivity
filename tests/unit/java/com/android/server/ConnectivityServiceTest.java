@@ -1838,7 +1838,10 @@ public class ConnectivityServiceTest {
                 .getIdentifier(eq("network_switch_type_name"), eq("array"), any());
         doReturn(R.integer.config_networkAvoidBadWifi).when(mResources)
                 .getIdentifier(eq("config_networkAvoidBadWifi"), eq("integer"), any());
+        doReturn(R.integer.config_activelyPreferBadWifi).when(mResources)
+                .getIdentifier(eq("config_activelyPreferBadWifi"), eq("integer"), any());
         doReturn(1).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
+        doReturn(0).when(mResources).getInteger(R.integer.config_activelyPreferBadWifi);
         doReturn(true).when(mResources)
                 .getBoolean(R.bool.config_cellular_radio_timesharing_capable);
     }
@@ -3539,7 +3542,7 @@ public class ConnectivityServiceTest {
      **/
     private int expectUnvalidationCheckWillNotify(TestNetworkAgentWrapper agent,
             NotificationType type) {
-        mService.scheduleUnvalidatedPrompt(agent.getNetwork(), 0 /* delayMs */);
+        mService.scheduleEvaluationTimeout(agent.getNetwork(), 0 /* delayMs */);
         waitForIdle();
         return expectNotification(agent, type);
     }
@@ -3561,7 +3564,7 @@ public class ConnectivityServiceTest {
      * @return the notification ID.
      **/
     private void expectUnvalidationCheckWillNotNotify(TestNetworkAgentWrapper agent) {
-        mService.scheduleUnvalidatedPrompt(agent.getNetwork(), 0 /*delayMs */);
+        mService.scheduleEvaluationTimeout(agent.getNetwork(), 0 /*delayMs */);
         waitForIdle();
         verify(mNotificationManager, never()).notifyAsUser(anyString(), anyInt(), any(), any());
     }
@@ -3782,6 +3785,63 @@ public class ConnectivityServiceTest {
 
         callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
         callback.expectCallback(CallbackEntry.LOST, mCellNetworkAgent);
+    }
+
+    private void doTestFirstEvaluation(
+            @NonNull final Consumer<TestNetworkAgentWrapper> doConnect,
+            final boolean waitForSecondCaps,
+            final boolean evaluatedByValidation)
+            throws Exception {
+        final NetworkRequest request = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_WIFI)
+                .build();
+        TestNetworkCallback callback = new TestNetworkCallback();
+        mCm.registerNetworkCallback(request, callback);
+
+        mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+        doConnect.accept(mWiFiNetworkAgent);
+        // Expect the available callbacks, but don't require specific values for their arguments
+        // since this method doesn't know how the network was connected.
+        callback.expectCallback(CallbackEntry.AVAILABLE, mWiFiNetworkAgent);
+        callback.expectCallback(CallbackEntry.NETWORK_CAPS_UPDATED, mWiFiNetworkAgent);
+        callback.expectCallback(CallbackEntry.LINK_PROPERTIES_CHANGED, mWiFiNetworkAgent);
+        callback.expectCallback(CallbackEntry.BLOCKED_STATUS, mWiFiNetworkAgent);
+        if (waitForSecondCaps) {
+            // This is necessary because of b/245893397, the same bug that happens where we use
+            // expectAvailableDoubleValidatedCallbacks.
+            callback.expectCallback(CallbackEntry.NETWORK_CAPS_UPDATED, mWiFiNetworkAgent);
+        }
+        final NetworkAgentInfo nai =
+                mService.getNetworkAgentInfoForNetwork(mWiFiNetworkAgent.getNetwork());
+        final long firstEvaluation = nai.getFirstEvaluationConcludedTime();
+        if (evaluatedByValidation) {
+            assertNotEquals(0L, firstEvaluation);
+        } else {
+            assertEquals(0L, firstEvaluation);
+        }
+        mService.scheduleEvaluationTimeout(mWiFiNetworkAgent.getNetwork(), 0L /* timeout */);
+        waitForIdle();
+        if (evaluatedByValidation) {
+            assertEquals(firstEvaluation, nai.getFirstEvaluationConcludedTime());
+        } else {
+            assertNotEquals(0L, nai.getFirstEvaluationConcludedTime());
+        }
+        mWiFiNetworkAgent.disconnect();
+        callback.expectCallback(CallbackEntry.LOST, mWiFiNetworkAgent);
+
+        mCm.unregisterNetworkCallback(callback);
+    }
+
+    @Test
+    public void testEverEvaluated() throws Exception {
+        doTestFirstEvaluation(naw -> naw.connect(true /* validated */),
+                true /* waitForSecondCaps */, true /* immediatelyEvaluated */);
+        doTestFirstEvaluation(naw -> naw.connectWithPartialConnectivity(),
+                true /* waitForSecondCaps */, true /* immediatelyEvaluated */);
+        doTestFirstEvaluation(naw -> naw.connectWithCaptivePortal(TEST_REDIRECT_URL, false),
+                true /* waitForSecondCaps */, true /* immediatelyEvaluated */);
+        doTestFirstEvaluation(naw -> naw.connect(false /* validated */),
+                false /* waitForSecondCaps */, false /* immediatelyEvaluated */);
     }
 
     private void tryNetworkFactoryRequests(int capability) throws Exception {
@@ -5561,6 +5621,24 @@ public class ConnectivityServiceTest {
 
         doReturn(0).when(mResources).getInteger(R.integer.config_networkAvoidBadWifi);
         testAvoidBadWifiConfig_controlledBySettings();
+    }
+
+    @Test
+    public void testActivelyPreferBadWifiSetting() throws Exception {
+        doReturn(1).when(mResources).getInteger(R.integer.config_activelyPreferBadWifi);
+        mPolicyTracker.reevaluate();
+        waitForIdle();
+        assertTrue(mService.mNetworkRanker.getConfiguration().activelyPreferBadWifi());
+
+        doReturn(0).when(mResources).getInteger(R.integer.config_activelyPreferBadWifi);
+        mPolicyTracker.reevaluate();
+        waitForIdle();
+        if (SdkLevel.isAtLeastU()) {
+            // U+ ignore the setting and always actively prefers bad wifi
+            assertTrue(mService.mNetworkRanker.getConfiguration().activelyPreferBadWifi());
+        } else {
+            assertFalse(mService.mNetworkRanker.getConfiguration().activelyPreferBadWifi());
+        }
     }
 
     @Test
