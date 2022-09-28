@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package android.net.util;
+package com.android.server.connectivity;
 
 import static android.net.ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI;
 import static android.net.ConnectivitySettingsManager.NETWORK_METERED_MULTIPATH_PREFERENCE;
@@ -100,7 +100,6 @@ public class MultinetworkPolicyTracker {
      * doesn't provide internet access, unless there is a captive portal on that wifi.
      * This is the behavior in U and above.
      */
-    // TODO : implement the behavior.
     private boolean mActivelyPreferBadWifi;
 
     // Mainline module can't use internal HandlerExecutor, so add an identical executor here.
