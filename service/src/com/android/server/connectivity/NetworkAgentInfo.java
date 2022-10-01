@@ -61,6 +61,7 @@ import android.util.Log;
 import android.util.Pair;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.WakeupMessage;
 import com.android.modules.utils.build.SdkLevel;
@@ -377,6 +378,34 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         return 0L != mPartialConnectivityTime;
     }
 
+    // Timestamp (SystemClock.elapsedRealTime()) at which the first validation attempt concluded,
+    // or timed out after {@link ConnectivityService#PROMPT_UNVALIDATED_DELAY_MS}. 0 if not yet.
+    private long mFirstEvaluationConcludedTime;
+
+    /**
+     * Notify this NAI that this network has been evaluated.
+     *
+     * The stack considers that any result finding some working connectivity (valid, partial,
+     * captive portal) is an initial validation. Negative result (not valid), however, is not
+     * considered initial validation until {@link ConnectivityService#PROMPT_UNVALIDATED_DELAY_MS}
+     * have elapsed. This is because some networks may spuriously fail for a short time immediately
+     * after associating. If no positive result is found after the timeout has elapsed, then
+     * the network has been evaluated once.
+     *
+     * @return true the first time this is called on this object, then always returns false.
+     */
+    public boolean setEvaluated() {
+        if (0L != mFirstEvaluationConcludedTime) return false;
+        mFirstEvaluationConcludedTime = SystemClock.elapsedRealtime();
+        return true;
+    }
+
+    /** When this network ever concluded its first evaluation, or 0 if this never happened. */
+    @VisibleForTesting
+    public long getFirstEvaluationConcludedTime() {
+        return mFirstEvaluationConcludedTime;
+    }
+
     // Delay between when the network is disconnected and when the native network is destroyed.
     public int teardownDelayMs;
 
@@ -391,6 +420,9 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
     // non-RFC8908 sources, such as Wi-Fi Passpoint, which can provide information such as Venue
     // URL, Terms & Conditions URL, and network friendly name.
     public CaptivePortalData networkAgentPortalData;
+
+    // Indicate whether this device has the automotive feature.
+    private final boolean mHasAutomotiveFeature;
 
     /**
      * Sets the capabilities sent by the agent for later retrieval.
@@ -433,9 +465,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
                     + networkCapabilities.getOwnerUid() + " to " + nc.getOwnerUid());
             nc.setOwnerUid(networkCapabilities.getOwnerUid());
         }
-        restrictCapabilitiesFromNetworkAgent(nc, creatorUid,
-                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE),
-                carrierPrivilegeAuthenticator);
+        restrictCapabilitiesFromNetworkAgent(
+                nc, creatorUid, mHasAutomotiveFeature, carrierPrivilegeAuthenticator);
         return nc;
     }
 
@@ -604,6 +635,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
                 ? nc.getUnderlyingNetworks().toArray(new Network[0])
                 : null;
         mCreationTime = System.currentTimeMillis();
+        mHasAutomotiveFeature =
+                mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_AUTOMOTIVE);
     }
 
     private class AgentDeathMonitor implements IBinder.DeathRecipient {
@@ -971,7 +1004,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         final NetworkCapabilities oldNc = networkCapabilities;
         networkCapabilities = nc;
         mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig, everValidated(),
-                0L != getAvoidUnvalidated(), yieldToBadWiFi(), isDestroyed());
+                0L != getAvoidUnvalidated(), yieldToBadWiFi(),
+                0L != mFirstEvaluationConcludedTime, isDestroyed());
         final NetworkMonitorManager nm = mNetworkMonitor;
         if (nm != null) {
             nm.notifyNetworkCapabilitiesChanged(nc);
@@ -1174,7 +1208,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      */
     public void setScore(final NetworkScore score) {
         mScore = FullScore.fromNetworkScore(score, networkCapabilities, networkAgentConfig,
-                everValidated(), 0L == getAvoidUnvalidated(), yieldToBadWiFi(), isDestroyed());
+                everValidated(), 0L == getAvoidUnvalidated(), yieldToBadWiFi(),
+                0L != mFirstEvaluationConcludedTime, isDestroyed());
     }
 
     /**
@@ -1184,7 +1219,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      */
     public void updateScoreForNetworkAgentUpdate() {
         mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig,
-                everValidated(), 0L != getAvoidUnvalidated(), yieldToBadWiFi(), isDestroyed());
+                everValidated(), 0L != getAvoidUnvalidated(), yieldToBadWiFi(),
+                0L != mFirstEvaluationConcludedTime, isDestroyed());
     }
 
     /**

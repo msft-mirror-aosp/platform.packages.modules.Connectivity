@@ -14,24 +14,12 @@
  * limitations under the License.
  */
 
-package com.android.net.module.util.bpf;
+package test.unsupportedappusage;
 
-import com.android.net.module.util.Struct;
-import com.android.net.module.util.Struct.Field;
-import com.android.net.module.util.Struct.Type;
+import android.compat.annotation.UnsupportedAppUsage;
 
-/**
- * Value for cookie tag map.
- */
-public class CookieTagMapValue extends Struct {
-    @Field(order = 0, type = Type.S32)
-    public final int uid;
-
-    @Field(order = 1, type = Type.U32)
-    public final long tag;
-
-    public CookieTagMapValue(final int uid, final long tag) {
-        this.uid = uid;
-        this.tag = tag;
-    }
+public class OtherUnsupportedUsageClass {
+    // The annotation is just for completeness, what matters is the unsupportedappusage.txt file
+    @UnsupportedAppUsage
+    public void testSecondMethod() {}
 }

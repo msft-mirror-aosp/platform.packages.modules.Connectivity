@@ -54,6 +54,7 @@ import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.Struct;
+import com.android.net.module.util.Struct.S32;
 import com.android.net.module.util.Struct.U32;
 import com.android.net.module.util.Struct.U8;
 import com.android.net.module.util.bpf.CookieTagMapKey;
@@ -105,16 +106,16 @@ public class BpfNetMaps {
             "/sys/fs/bpf/netd_shared/map_netd_uid_permission_map";
     private static final String COOKIE_TAG_MAP_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_cookie_tag_map";
-    private static final U32 UID_RULES_CONFIGURATION_KEY = new U32(0);
-    private static final U32 CURRENT_STATS_MAP_CONFIGURATION_KEY = new U32(1);
+    private static final S32 UID_RULES_CONFIGURATION_KEY = new S32(0);
+    private static final S32 CURRENT_STATS_MAP_CONFIGURATION_KEY = new S32(1);
     private static final long UID_RULES_DEFAULT_CONFIGURATION = 0;
     private static final long STATS_SELECT_MAP_A = 0;
     private static final long STATS_SELECT_MAP_B = 1;
 
-    private static IBpfMap<U32, U32> sConfigurationMap = null;
+    private static IBpfMap<S32, U32> sConfigurationMap = null;
     // BpfMap for UID_OWNER_MAP_PATH. This map is not accessed by others.
-    private static IBpfMap<U32, UidOwnerValue> sUidOwnerMap = null;
-    private static IBpfMap<U32, U8> sUidPermissionMap = null;
+    private static IBpfMap<S32, UidOwnerValue> sUidOwnerMap = null;
+    private static IBpfMap<S32, U8> sUidPermissionMap = null;
     private static IBpfMap<CookieTagMapKey, CookieTagMapValue> sCookieTagMap = null;
 
     // LINT.IfChange(match_type)
@@ -145,7 +146,7 @@ public class BpfNetMaps {
      * Set configurationMap for test.
      */
     @VisibleForTesting
-    public static void setConfigurationMapForTest(IBpfMap<U32, U32> configurationMap) {
+    public static void setConfigurationMapForTest(IBpfMap<S32, U32> configurationMap) {
         sConfigurationMap = configurationMap;
     }
 
@@ -153,7 +154,7 @@ public class BpfNetMaps {
      * Set uidOwnerMap for test.
      */
     @VisibleForTesting
-    public static void setUidOwnerMapForTest(IBpfMap<U32, UidOwnerValue> uidOwnerMap) {
+    public static void setUidOwnerMapForTest(IBpfMap<S32, UidOwnerValue> uidOwnerMap) {
         sUidOwnerMap = uidOwnerMap;
     }
 
@@ -161,7 +162,7 @@ public class BpfNetMaps {
      * Set uidPermissionMap for test.
      */
     @VisibleForTesting
-    public static void setUidPermissionMapForTest(IBpfMap<U32, U8> uidPermissionMap) {
+    public static void setUidPermissionMapForTest(IBpfMap<S32, U8> uidPermissionMap) {
         sUidPermissionMap = uidPermissionMap;
     }
 
@@ -174,28 +175,28 @@ public class BpfNetMaps {
         sCookieTagMap = cookieTagMap;
     }
 
-    private static IBpfMap<U32, U32> getConfigurationMap() {
+    private static IBpfMap<S32, U32> getConfigurationMap() {
         try {
             return new BpfMap<>(
-                    CONFIGURATION_MAP_PATH, BpfMap.BPF_F_RDWR, U32.class, U32.class);
+                    CONFIGURATION_MAP_PATH, BpfMap.BPF_F_RDWR, S32.class, U32.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open netd configuration map", e);
         }
     }
 
-    private static IBpfMap<U32, UidOwnerValue> getUidOwnerMap() {
+    private static IBpfMap<S32, UidOwnerValue> getUidOwnerMap() {
         try {
             return new BpfMap<>(
-                    UID_OWNER_MAP_PATH, BpfMap.BPF_F_RDWR, U32.class, UidOwnerValue.class);
+                    UID_OWNER_MAP_PATH, BpfMap.BPF_F_RDWR, S32.class, UidOwnerValue.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open uid owner map", e);
         }
     }
 
-    private static IBpfMap<U32, U8> getUidPermissionMap() {
+    private static IBpfMap<S32, U8> getUidPermissionMap() {
         try {
             return new BpfMap<>(
-                    UID_PERMISSION_MAP_PATH, BpfMap.BPF_F_RDWR, U32.class, U8.class);
+                    UID_PERMISSION_MAP_PATH, BpfMap.BPF_F_RDWR, S32.class, U8.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open uid permission map", e);
         }
@@ -259,8 +260,12 @@ public class BpfNetMaps {
         Log.d(TAG, "BpfNetMaps is initialized with sEnableJavaBpfMap=" + sEnableJavaBpfMap);
 
         initBpfMaps();
-        native_init();
+        native_init(!sEnableJavaBpfMap /* startSkDestroyListener */);
         sInitialized = true;
+    }
+
+    public boolean isSkDestroyListenerRunning() {
+        return !sEnableJavaBpfMap;
     }
 
     /**
@@ -289,6 +294,13 @@ public class BpfNetMaps {
                 final int uidPermissionMapSize) {
             return ConnectivityStatsLog.buildStatsEvent(NETWORK_BPF_MAP_INFO, cookieTagMapSize,
                     uidOwnerMapSize, uidPermissionMapSize);
+        }
+
+        /**
+         * Call native_dump
+         */
+        public void nativeDump(final FileDescriptor fd, final boolean verbose) {
+            native_dump(fd, verbose);
         }
     }
 
@@ -378,7 +390,7 @@ public class BpfNetMaps {
     private void removeRule(final int uid, final long match, final String caller) {
         try {
             synchronized (sUidOwnerMap) {
-                final UidOwnerValue oldMatch = sUidOwnerMap.getValue(new U32(uid));
+                final UidOwnerValue oldMatch = sUidOwnerMap.getValue(new S32(uid));
 
                 if (oldMatch == null) {
                     throw new ServiceSpecificException(ENOENT,
@@ -391,9 +403,9 @@ public class BpfNetMaps {
                 );
 
                 if (newMatch.rule == 0) {
-                    sUidOwnerMap.deleteEntry(new U32(uid));
+                    sUidOwnerMap.deleteEntry(new S32(uid));
                 } else {
-                    sUidOwnerMap.updateEntry(new U32(uid), newMatch);
+                    sUidOwnerMap.updateEntry(new S32(uid), newMatch);
                 }
             }
         } catch (ErrnoException e) {
@@ -402,7 +414,7 @@ public class BpfNetMaps {
         }
     }
 
-    private void addRule(final int uid, final long match, final long iif, final String caller) {
+    private void addRule(final int uid, final long match, final int iif, final String caller) {
         if (match != IIF_MATCH && iif != 0) {
             throw new ServiceSpecificException(EINVAL,
                     "Non-interface match must have zero interface index");
@@ -410,7 +422,7 @@ public class BpfNetMaps {
 
         try {
             synchronized (sUidOwnerMap) {
-                final UidOwnerValue oldMatch = sUidOwnerMap.getValue(new U32(uid));
+                final UidOwnerValue oldMatch = sUidOwnerMap.getValue(new S32(uid));
 
                 final UidOwnerValue newMatch;
                 if (oldMatch != null) {
@@ -424,7 +436,7 @@ public class BpfNetMaps {
                             match
                     );
                 }
-                sUidOwnerMap.updateEntry(new U32(uid), newMatch);
+                sUidOwnerMap.updateEntry(new S32(uid), newMatch);
             }
         } catch (ErrnoException e) {
             throw new ServiceSpecificException(e.errno,
@@ -844,7 +856,7 @@ public class BpfNetMaps {
             if (permissions == PERMISSION_UNINSTALLED || permissions == PERMISSION_INTERNET) {
                 for (final int uid : uids) {
                     try {
-                        sUidPermissionMap.deleteEntry(new U32(uid));
+                        sUidPermissionMap.deleteEntry(new S32(uid));
                     } catch (ErrnoException e) {
                         Log.e(TAG, "Failed to remove uid " + uid + " from permission map: " + e);
                     }
@@ -854,7 +866,7 @@ public class BpfNetMaps {
 
             for (final int uid : uids) {
                 try {
-                    sUidPermissionMap.updateEntry(new U32(uid), new U8((short) permissions));
+                    sUidPermissionMap.updateEntry(new S32(uid), new U8((short) permissions));
                 } catch (ErrnoException e) {
                     Log.e(TAG, "Failed to set permission "
                             + permissions + " to uid " + uid + ": " + e);
@@ -916,10 +928,10 @@ public class BpfNetMaps {
                     EOPNOTSUPP, "dumpsys connectivity trafficcontroller dump not available on pre-T"
                     + " devices, use dumpsys netd trafficcontroller instead.");
         }
-        native_dump(fd, verbose);
+        mDeps.nativeDump(fd, verbose);
     }
 
-    private static native void native_init();
+    private static native void native_init(boolean startSkDestroyListener);
     private native int native_addNaughtyApp(int uid);
     private native int native_removeNaughtyApp(int uid);
     private native int native_addNiceApp(int uid);
@@ -932,6 +944,6 @@ public class BpfNetMaps {
     private native int native_updateUidLockdownRule(int uid, boolean add);
     private native int native_swapActiveStatsMap();
     private native void native_setPermissionForUids(int permissions, int[] uids);
-    private native void native_dump(FileDescriptor fd, boolean verbose);
+    private static native void native_dump(FileDescriptor fd, boolean verbose);
     private static native int native_synchronizeKernelRCU();
 }
