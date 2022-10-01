@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package android.net.util
+package com.android.server.connectivity
 
 import android.content.Context
 import android.content.res.Resources
@@ -24,7 +24,7 @@ import android.net.ConnectivityManager.MULTIPATH_PREFERENCE_RELIABILITY
 import android.net.ConnectivityResources
 import android.net.ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI
 import android.net.ConnectivitySettingsManager.NETWORK_METERED_MULTIPATH_PREFERENCE
-import android.net.util.MultinetworkPolicyTracker.ActiveDataSubscriptionIdListener
+import com.android.server.connectivity.MultinetworkPolicyTracker.ActiveDataSubscriptionIdListener
 import android.os.Build
 import android.os.Handler
 import android.provider.Settings
@@ -48,7 +48,6 @@ import org.junit.runner.RunWith
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.ArgumentMatchers.argThat
-import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.any
 import org.mockito.Mockito.doCallRealMethod
 import org.mockito.Mockito.doReturn
@@ -60,17 +59,13 @@ import org.mockito.Mockito.verify
  * Tests for [MultinetworkPolicyTracker].
  *
  * Build, install and run with:
- * atest android.net.util.MultinetworkPolicyTrackerTest
+ * atest FrameworksNetTest:MultinetworkPolicyTrackerTest
  */
 @RunWith(DevSdkIgnoreRunner::class)
 @SmallTest
 @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 class MultinetworkPolicyTrackerTest {
     private val resources = mock(Resources::class.java).also {
-        doReturn(R.integer.config_networkAvoidBadWifi).`when`(it).getIdentifier(
-                eq("config_networkAvoidBadWifi"), eq("integer"), any())
-        doReturn(R.integer.config_activelyPreferBadWifi).`when`(it).getIdentifier(
-                eq("config_activelyPreferBadWifi"), eq("integer"), any())
         doReturn(0).`when`(it).getInteger(R.integer.config_networkAvoidBadWifi)
         doReturn(0).`when`(it).getInteger(R.integer.config_activelyPreferBadWifi)
     }
