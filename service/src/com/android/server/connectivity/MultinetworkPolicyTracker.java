@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package android.net.util;
+package com.android.server.connectivity;
 
 import static android.net.ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI;
 import static android.net.ConnectivitySettingsManager.NETWORK_METERED_MULTIPATH_PREFERENCE;
@@ -38,6 +38,7 @@ import android.telephony.TelephonyCallback;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 
+import com.android.connectivity.resources.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.build.SdkLevel;
 
@@ -100,7 +101,6 @@ public class MultinetworkPolicyTracker {
      * doesn't provide internet access, unless there is a captive portal on that wifi.
      * This is the behavior in U and above.
      */
-    // TODO : implement the behavior.
     private boolean mActivelyPreferBadWifi;
 
     // Mainline module can't use internal HandlerExecutor, so add an identical executor here.
@@ -201,10 +201,8 @@ public class MultinetworkPolicyTracker {
         // NETWORK_AVOID_BAD_WIFI setting.
         if (allowBadWifi) return true;
 
-        // TODO: use R.integer.config_networkAvoidBadWifi directly
-        final int id = mResources.get().getIdentifier("config_networkAvoidBadWifi",
-                "integer", mResources.getResourcesContext().getPackageName());
-        return (getResourcesForActiveSubId().getInteger(id) == 0);
+        return getResourcesForActiveSubId()
+                .getInteger(R.integer.config_networkAvoidBadWifi) == 0;
     }
 
     /**
@@ -220,14 +218,13 @@ public class MultinetworkPolicyTracker {
         // See the definition of config_activelyPreferBadWifi for a description of its meaning.
         // On U and above, the config is ignored, and bad wifi is always actively preferred.
         if (SdkLevel.isAtLeastU()) return true;
-        // TODO: use R.integer.config_activelyPreferBadWifi directly
-        final int id = mResources.get().getIdentifier("config_activelyPreferBadWifi",
-                "integer", mResources.getResourcesContext().getPackageName());
+
         // On T and below, 1 means to actively prefer bad wifi, 0 means not to prefer
         // bad wifi (only stay stuck on it if already on there). This implementation treats
         // any non-0 value like 1, on the assumption that anybody setting it non-zero wants
         // the newer behavior.
-        return 0 != getResourcesForActiveSubId().getInteger(id);
+        return 0 != getResourcesForActiveSubId()
+                .getInteger(R.integer.config_activelyPreferBadWifi);
     }
 
     /**
