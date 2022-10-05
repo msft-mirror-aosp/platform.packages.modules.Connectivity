@@ -27,6 +27,7 @@ import android.net.ConnectivitySettingsManager.NETWORK_METERED_MULTIPATH_PREFERE
 import com.android.server.connectivity.MultinetworkPolicyTracker.ActiveDataSubscriptionIdListener
 import android.os.Build
 import android.os.Handler
+import android.os.test.TestLooper
 import android.provider.Settings
 import android.telephony.SubscriptionInfo
 import android.telephony.SubscriptionManager
@@ -47,14 +48,14 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.anyInt
-import org.mockito.ArgumentMatchers.argThat
-import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.any
 import org.mockito.Mockito.doCallRealMethod
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+
+const val HANDLER_TIMEOUT_MS = 400
 
 /**
  * Tests for [MultinetworkPolicyTracker].
@@ -67,10 +68,6 @@ import org.mockito.Mockito.verify
 @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 class MultinetworkPolicyTrackerTest {
     private val resources = mock(Resources::class.java).also {
-        doReturn(R.integer.config_networkAvoidBadWifi).`when`(it).getIdentifier(
-                eq("config_networkAvoidBadWifi"), eq("integer"), any())
-        doReturn(R.integer.config_activelyPreferBadWifi).`when`(it).getIdentifier(
-                eq("config_activelyPreferBadWifi"), eq("integer"), any())
         doReturn(0).`when`(it).getInteger(R.integer.config_networkAvoidBadWifi)
         doReturn(0).`when`(it).getInteger(R.integer.config_activelyPreferBadWifi)
     }
@@ -96,8 +93,11 @@ class MultinetworkPolicyTrackerTest {
         Settings.Global.putString(resolver, NETWORK_AVOID_BAD_WIFI, "1")
         ConnectivityResources.setResourcesContextForTest(it)
     }
-    private val handler = mock(Handler::class.java)
-    private val tracker = MultinetworkPolicyTracker(context, handler)
+    private val csLooper = TestLooper()
+    private val handler = Handler(csLooper.looper)
+    private val trackerDependencies = MultinetworkPolicyTrackerTestDependencies(resources)
+    private val tracker = MultinetworkPolicyTracker(context, handler,
+            null /* avoidBadWifiCallback */, trackerDependencies)
 
     private fun assertMultipathPreference(preference: Int) {
         Settings.Global.putString(resolver, NETWORK_METERED_MULTIPATH_PREFERENCE,
@@ -151,6 +151,18 @@ class MultinetworkPolicyTrackerTest {
         }
         // In all cases, now the system actively prefers bad wifi
         assertTrue(tracker.activelyPreferBadWifi)
+
+        // Remaining tests are only useful on T-, which support both the old and new mode.
+        if (SdkLevel.isAtLeastU()) return
+
+        doReturn(0).`when`(resources).getInteger(R.integer.config_activelyPreferBadWifi)
+        assertTrue(tracker.updateAvoidBadWifi())
+        assertFalse(tracker.activelyPreferBadWifi)
+
+        // Simulate update of device config
+        trackerDependencies.putConfigActivelyPreferBadWifi(1)
+        csLooper.dispatchAll()
+        assertTrue(tracker.activelyPreferBadWifi)
     }
 
     @Test
@@ -169,16 +181,14 @@ class MultinetworkPolicyTrackerTest {
         Settings.Global.putString(resolver, NETWORK_METERED_MULTIPATH_PREFERENCE,
                 MULTIPATH_PREFERENCE_PERFORMANCE.toString())
 
+        assertTrue(tracker.avoidBadWifi)
+
         val listenerCaptor = ArgumentCaptor.forClass(
                 ActiveDataSubscriptionIdListener::class.java)
         verify(telephonyManager, times(1))
                 .registerTelephonyCallback(any(), listenerCaptor.capture())
         val listener = listenerCaptor.value
         listener.onActiveDataSubscriptionIdChanged(testSubId)
-
-        // Check it get resource value with test sub id.
-        verify(subscriptionManager, times(1)).getActiveSubscriptionInfo(testSubId)
-        verify(context).createConfigurationContext(argThat { it.mcc == 310 && it.mnc == 210 })
 
         // Check if avoidBadWifi and meteredMultipathPreference values have been updated.
         assertFalse(tracker.avoidBadWifi)
