@@ -29,7 +29,6 @@ import static android.Manifest.permission.NETWORK_FACTORY;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.Manifest.permission.PACKET_KEEPALIVE_OFFLOAD;
-import static android.Manifest.permission.READ_DEVICE_CONFIG;
 import static android.app.PendingIntent.FLAG_IMMUTABLE;
 import static android.content.Intent.ACTION_PACKAGE_ADDED;
 import static android.content.Intent.ACTION_PACKAGE_REMOVED;
@@ -366,6 +365,7 @@ import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
 import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
 import com.android.server.connectivity.MultinetworkPolicyTracker;
+import com.android.server.connectivity.MultinetworkPolicyTrackerTestDependencies;
 import com.android.server.connectivity.Nat464Xlat;
 import com.android.server.connectivity.NetworkAgentInfo;
 import com.android.server.connectivity.NetworkNotificationManager;
@@ -1068,38 +1068,41 @@ public class ConnectivityServiceTest {
          * @param hasInternet Indicate if network should pretend to have NET_CAPABILITY_INTERNET.
          */
         public void connect(boolean validated, boolean hasInternet, boolean isStrictMode) {
-            ConnectivityManager.NetworkCallback callback = null;
             final ConditionVariable validatedCv = new ConditionVariable();
+            final ConditionVariable capsChangedCv = new ConditionVariable();
+            final NetworkRequest request = new NetworkRequest.Builder()
+                    .addTransportType(getNetworkCapabilities().getTransportTypes()[0])
+                    .clearCapabilities()
+                    .build();
             if (validated) {
                 setNetworkValid(isStrictMode);
-                NetworkRequest request = new NetworkRequest.Builder()
-                        .addTransportType(getNetworkCapabilities().getTransportTypes()[0])
-                        .clearCapabilities()
-                        .build();
-                callback = new ConnectivityManager.NetworkCallback() {
-                    public void onCapabilitiesChanged(Network network,
-                            NetworkCapabilities networkCapabilities) {
-                        if (network.equals(getNetwork()) &&
-                                networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)) {
+            }
+            final NetworkCallback callback = new NetworkCallback() {
+                public void onCapabilitiesChanged(Network network,
+                        NetworkCapabilities networkCapabilities) {
+                    if (network.equals(getNetwork())) {
+                        capsChangedCv.open();
+                        if (networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED)) {
                             validatedCv.open();
                         }
                     }
-                };
-                mCm.registerNetworkCallback(request, callback);
-            }
+                }
+            };
+            mCm.registerNetworkCallback(request, callback);
+
             if (hasInternet) {
                 addCapability(NET_CAPABILITY_INTERNET);
             }
 
             connectWithoutInternet();
+            waitFor(capsChangedCv);
 
             if (validated) {
                 // Wait for network to validate.
                 waitFor(validatedCv);
                 setNetworkInvalid(isStrictMode);
             }
-
-            if (callback != null) mCm.unregisterNetworkCallback(callback);
+            mCm.unregisterNetworkCallback(callback);
         }
 
         public void connectWithCaptivePortal(String redirectUrl, boolean isStrictMode) {
@@ -1605,9 +1608,9 @@ public class ConnectivityServiceTest {
         mMockVpn = new MockVpn(userId);
     }
 
-    private void mockUidNetworkingBlocked() {
+    private void mockUidNetworkingBlocked(int uid) {
         doAnswer(i -> isUidBlocked(mBlockedReasons, i.getArgument(1))
-        ).when(mNetworkPolicyManager).isUidNetworkingBlocked(anyInt(), anyBoolean());
+        ).when(mNetworkPolicyManager).isUidNetworkingBlocked(eq(uid), anyBoolean());
     }
 
     private boolean isUidBlocked(int blockedReasons, boolean meteredNetwork) {
@@ -1634,12 +1637,7 @@ public class ConnectivityServiceTest {
         volatile int mConfigMeteredMultipathPreference;
 
         WrappedMultinetworkPolicyTracker(Context c, Handler h, Runnable r) {
-            super(c, h, r);
-        }
-
-        @Override
-        protected Resources getResourcesForActiveSubId() {
-            return mResources;
+            super(c, h, r, new MultinetworkPolicyTrackerTestDependencies(mResources));
         }
 
         @Override
@@ -5810,16 +5808,12 @@ public class ConnectivityServiceTest {
     public void testPreferBadWifi_doNotPrefer() throws Exception {
         // Starting with U this mode is no longer supported and can't actually be tested
         assumeFalse(SdkLevel.isAtLeastU());
-        runAsShell(READ_DEVICE_CONFIG, () -> {
-            doTestPreferBadWifi(false /* preferBadWifi */);
-        });
+        doTestPreferBadWifi(false /* preferBadWifi */);
     }
 
     @Test
     public void testPreferBadWifi_doPrefer() throws Exception {
-        runAsShell(READ_DEVICE_CONFIG, () -> {
-            doTestPreferBadWifi(true /* preferBadWifi */);
-        });
+        doTestPreferBadWifi(true /* preferBadWifi */);
     }
 
     @Test
@@ -9003,7 +8997,7 @@ public class ConnectivityServiceTest {
         final DetailedBlockedStatusCallback detailedCallback = new DetailedBlockedStatusCallback();
         mCm.registerNetworkCallback(cellRequest, detailedCallback);
 
-        mockUidNetworkingBlocked();
+        mockUidNetworkingBlocked(Process.myUid());
 
         mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
         mCellNetworkAgent.connect(true);
@@ -9118,7 +9112,7 @@ public class ConnectivityServiceTest {
     public void testNetworkBlockedStatusBeforeAndAfterConnect() throws Exception {
         final TestNetworkCallback defaultCallback = new TestNetworkCallback();
         mCm.registerDefaultNetworkCallback(defaultCallback);
-        mockUidNetworkingBlocked();
+        mockUidNetworkingBlocked(Process.myUid());
 
         // No Networkcallbacks invoked before any network is active.
         setBlockedReasonChanged(BLOCKED_REASON_BATTERY_SAVER);
@@ -16886,5 +16880,44 @@ public class ConnectivityServiceTest {
             mService.getTetherableWifiRegexs();
             verify(mTetheringManager).getTetherableWifiRegexs();
         });
+    }
+
+    @Test
+    public void testGetNetworkInfoForUid() throws Exception {
+        // Setup and verify getNetworkInfoForUid cannot be called without Network Stack permission,
+        // when querying NetworkInfo for other uid.
+        verifyNoNetwork();
+        mWiFiNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+        mServiceContext.setPermission(NETWORK_STACK, PERMISSION_DENIED);
+        mServiceContext.setPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+                PERMISSION_DENIED);
+
+        final int otherUid = Process.myUid() + 1;
+        assertNull(mCm.getActiveNetwork());
+        assertNull(mCm.getNetworkInfoForUid(mCm.getActiveNetwork(),
+                Process.myUid(), false /* ignoreBlocked */));
+        assertThrows(SecurityException.class, () -> mCm.getNetworkInfoForUid(
+                mCm.getActiveNetwork(), otherUid, false /* ignoreBlocked */));
+        withPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, () ->
+                assertNull(mCm.getNetworkInfoForUid(mCm.getActiveNetwork(),
+                        otherUid, false /* ignoreBlocked */)));
+
+        // Bringing up validated wifi and verify again. Make the other uid be blocked,
+        // verify the method returns result accordingly.
+        mWiFiNetworkAgent.connect(true);
+        setBlockedReasonChanged(BLOCKED_REASON_BATTERY_SAVER);
+        mockUidNetworkingBlocked(otherUid);
+        withPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, () ->
+                verifyActiveNetwork(TRANSPORT_WIFI));
+        checkNetworkInfo(mCm.getNetworkInfoForUid(mCm.getActiveNetwork(),
+                Process.myUid(), false /* ignoreBlocked */), TYPE_WIFI, DetailedState.CONNECTED);
+        assertThrows(SecurityException.class, () -> mCm.getNetworkInfoForUid(
+                mCm.getActiveNetwork(), otherUid, false /* ignoreBlocked */));
+        withPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, () ->
+                checkNetworkInfo(mCm.getNetworkInfoForUid(mCm.getActiveNetwork(),
+                        otherUid, false /* ignoreBlocked */), TYPE_WIFI, DetailedState.BLOCKED));
+        withPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, () ->
+                checkNetworkInfo(mCm.getNetworkInfoForUid(mCm.getActiveNetwork(),
+                        otherUid, true /* ignoreBlocked */), TYPE_WIFI, DetailedState.CONNECTED));
     }
 }
