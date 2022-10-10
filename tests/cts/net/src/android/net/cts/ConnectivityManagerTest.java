@@ -26,6 +26,7 @@ import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_SETUP_WIZARD;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.Manifest.permission.READ_DEVICE_CONFIG;
+import static android.Manifest.permission.TETHER_PRIVILEGED;
 import static android.content.pm.PackageManager.FEATURE_BLUETOOTH;
 import static android.content.pm.PackageManager.FEATURE_ETHERNET;
 import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
@@ -164,7 +165,6 @@ import android.os.MessageQueue;
 import android.os.Process;
 import android.os.ServiceManager;
 import android.os.SystemClock;
-import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.VintfRuntimeInfo;
 import android.platform.test.annotations.AppModeFull;
@@ -352,7 +352,8 @@ public class ConnectivityManagerTest {
         // Get com.android.internal.R.array.networkAttributes
         int resId = mContext.getResources().getIdentifier("networkAttributes", "array", "android");
         String[] naStrings = mContext.getResources().getStringArray(resId);
-        boolean wifiOnly = SystemProperties.getBoolean("ro.radio.noril", false);
+        boolean wifiOnly = mPackageManager.hasSystemFeature(FEATURE_WIFI)
+                && !mPackageManager.hasSystemFeature(FEATURE_TELEPHONY);
         for (String naString : naStrings) {
             try {
                 final String[] splitConfig = naString.split(",");
@@ -2488,15 +2489,24 @@ public class ConnectivityManagerTest {
                 ConnectivitySettingsManager.getNetworkAvoidBadWifi(mContext);
         final int curPrivateDnsMode = ConnectivitySettingsManager.getPrivateDnsMode(mContext);
 
-        TestTetheringEventCallback tetherEventCallback = null;
         final CtsTetheringUtils tetherUtils = new CtsTetheringUtils(mContext);
+        final TestTetheringEventCallback tetherEventCallback =
+                tetherUtils.registerTetheringEventCallback();
         try {
-            tetherEventCallback = tetherUtils.registerTetheringEventCallback();
-            // start tethering
             tetherEventCallback.assumeWifiTetheringSupported(mContext);
-            tetherUtils.startWifiTethering(tetherEventCallback);
+
+            final TestableNetworkCallback wifiCb = new TestableNetworkCallback();
+            mCtsNetUtils.ensureWifiConnected();
+            registerCallbackAndWaitForAvailable(makeWifiNetworkRequest(), wifiCb);
             // Update setting to verify the behavior.
             setAirplaneMode(true);
+            // Verify wifi lost to make sure airplane mode takes effect. This could
+            // prevent the race condition between airplane mode enabled and the followed
+            // up wifi tethering enabled.
+            waitForLost(wifiCb);
+            // start wifi tethering
+            tetherUtils.startWifiTethering(tetherEventCallback);
+
             ConnectivitySettingsManager.setPrivateDnsMode(mContext,
                     ConnectivitySettingsManager.PRIVATE_DNS_MODE_OFF);
             ConnectivitySettingsManager.setNetworkAvoidBadWifi(mContext,
@@ -2504,20 +2514,19 @@ public class ConnectivityManagerTest {
             assertEquals(AIRPLANE_MODE_ON, Settings.Global.getInt(
                     mContext.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON));
             // Verify factoryReset
-            runAsShell(NETWORK_SETTINGS, () -> mCm.factoryReset());
+            runAsShell(NETWORK_SETTINGS, TETHER_PRIVILEGED, () -> {
+                mCm.factoryReset();
+                tetherEventCallback.expectNoTetheringActive();
+            });
             verifySettings(AIRPLANE_MODE_OFF,
                     ConnectivitySettingsManager.PRIVATE_DNS_MODE_OPPORTUNISTIC,
                     ConnectivitySettingsManager.NETWORK_AVOID_BAD_WIFI_PROMPT);
-
-            tetherEventCallback.expectNoTetheringActive();
         } finally {
             // Restore settings.
             setAirplaneMode(false);
             ConnectivitySettingsManager.setNetworkAvoidBadWifi(mContext, curAvoidBadWifi);
             ConnectivitySettingsManager.setPrivateDnsMode(mContext, curPrivateDnsMode);
-            if (tetherEventCallback != null) {
-                tetherUtils.unregisterTetheringEventCallback(tetherEventCallback);
-            }
+            tetherUtils.unregisterTetheringEventCallback(tetherEventCallback);
             tetherUtils.stopAllTethering();
         }
     }
@@ -2742,6 +2751,27 @@ public class ConnectivityManagerTest {
                 mCm.getActiveNetwork(), false /* accept */ , false /* always */));
     }
 
+    private void ensureCellIsValidatedBeforeMockingValidationUrls() {
+        // Verify that current supported network is validated so that the mock http server will not
+        // apply to unexpected networks. Also see aosp/2208680.
+        //
+        // This may also apply to wifi in principle, but in practice methods that mock validation
+        // URL all disconnect wifi forcefully anyway, so don't wait for wifi to validate.
+        if (mPackageManager.hasSystemFeature(FEATURE_TELEPHONY)) {
+            ensureValidatedNetwork(makeCellNetworkRequest());
+        }
+    }
+
+    private void ensureValidatedNetwork(NetworkRequest request) {
+        final TestableNetworkCallback cb = new TestableNetworkCallback();
+        mCm.registerNetworkCallback(request, cb);
+        cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
+                NETWORK_CALLBACK_TIMEOUT_MS,
+                entry -> ((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                        .hasCapability(NET_CAPABILITY_VALIDATED));
+        mCm.unregisterNetworkCallback(cb);
+    }
+
     @AppModeFull(reason = "WRITE_DEVICE_CONFIG permission can't be granted to instant apps")
     @Test
     public void testAcceptPartialConnectivity_validatedNetwork() throws Exception {
@@ -2873,7 +2903,8 @@ public class ConnectivityManagerTest {
             assertTrue(mCm.getNetworkCapabilities(wifiNetwork).hasCapability(
                     NET_CAPABILITY_VALIDATED));
 
-            // Configure response code for unvalidated network
+            // The cell network has already been checked to be validated.
+            // Configure response code for unvalidated network.
             configTestServer(Status.INTERNAL_ERROR, Status.INTERNAL_ERROR);
             mCm.reportNetworkConnectivity(wifiNetwork, false);
             // Default network should stay on unvalidated wifi because avoid bad wifi is disabled.
@@ -2961,6 +2992,8 @@ public class ConnectivityManagerTest {
     }
 
     private Network prepareValidatedNetwork() throws Exception {
+        ensureCellIsValidatedBeforeMockingValidationUrls();
+
         prepareHttpServer();
         configTestServer(Status.NO_CONTENT, Status.NO_CONTENT);
         // Disconnect wifi first then start wifi network with configuration.
@@ -2971,6 +3004,8 @@ public class ConnectivityManagerTest {
     }
 
     private Network preparePartialConnectivity() throws Exception {
+        ensureCellIsValidatedBeforeMockingValidationUrls();
+
         prepareHttpServer();
         // Configure response code for partial connectivity
         configTestServer(Status.INTERNAL_ERROR  /* httpsStatusCode */,
@@ -2984,6 +3019,8 @@ public class ConnectivityManagerTest {
     }
 
     private Network prepareUnvalidatedNetwork() throws Exception {
+        ensureCellIsValidatedBeforeMockingValidationUrls();
+
         prepareHttpServer();
         // Configure response code for unvalidated network
         configTestServer(Status.INTERNAL_ERROR /* httpsStatusCode */,

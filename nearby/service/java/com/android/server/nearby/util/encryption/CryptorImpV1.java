@@ -33,7 +33,6 @@ import java.util.Arrays;
 import javax.crypto.BadPaddingException;
 import javax.crypto.Cipher;
 import javax.crypto.IllegalBlockSizeException;
-import javax.crypto.Mac;
 import javax.crypto.NoSuchPaddingException;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
@@ -42,20 +41,15 @@ import javax.crypto.spec.SecretKeySpec;
 /**
  * {@link android.nearby.BroadcastRequest#PRESENCE_VERSION_V1} for encryption and decryption.
  */
-public class CryptorImpV1 implements Cryptor {
+public class CryptorImpV1 extends Cryptor {
 
     /**
      * In the form of "algorithm/mode/padding". Must be the same across broadcast and scan devices.
      */
     private static final String CIPHER_ALGORITHM = "AES/CTR/NoPadding";
 
-    private static final String HMAC_SHA256_ALGORITHM = "HmacSHA256";
-
     @VisibleForTesting
     static final String ENCRYPT_ALGORITHM = KeyProperties.KEY_ALGORITHM_AES;
-
-    /** AES only supports key sizes of 16, 24 or 32 bytes. */
-    private static final int AUTHENTICITY_KEY_BYTE_SIZE = 16;
 
     /** Length of encryption key required by AES/GCM encryption. */
     private static final int ENCRYPTION_KEY_SIZE = 32;
@@ -66,7 +60,7 @@ public class CryptorImpV1 implements Cryptor {
     /** Length HMAC tag */
     public static final int HMAC_TAG_SIZE = 16;
 
-    // 4 16 byte arrays known by both the encryptor and decryptor.
+    // 3 16 byte arrays known by both the encryptor and decryptor.
     private static final byte[] AK_IV =
             new byte[] {12, -59, 19, 23, 96, 57, -59, 19, 117, -31, -116, -61, 86, -25, -33, -78};
     private static final byte[] ASALT_IV =
@@ -97,7 +91,7 @@ public class CryptorImpV1 implements Cryptor {
         }
 
         // Generates a 32 bytes encryption key from authenticity_key
-        byte[] encryptionKey = computeHkdf(authenticityKey, AK_IV, ENCRYPTION_KEY_SIZE);
+        byte[] encryptionKey = Cryptor.computeHkdf(authenticityKey, AK_IV, ENCRYPTION_KEY_SIZE);
         if (encryptionKey == null) {
             Log.e(TAG, "Failed to generate encryption key.");
             return null;
@@ -112,7 +106,7 @@ public class CryptorImpV1 implements Cryptor {
             Log.e(TAG, "Failed to encrypt with secret key.", e);
             return null;
         }
-        byte[] asalt = computeHkdf(salt, ASALT_IV, AES_CTR_IV_SIZE);
+        byte[] asalt = Cryptor.computeHkdf(salt, ASALT_IV, AES_CTR_IV_SIZE);
         if (asalt == null) {
             Log.e(TAG, "Failed to generate salt.");
             return null;
@@ -140,7 +134,7 @@ public class CryptorImpV1 implements Cryptor {
         }
 
         // Generates a 32 bytes encryption key from authenticity_key
-        byte[] encryptionKey = computeHkdf(authenticityKey, AK_IV, ENCRYPTION_KEY_SIZE);
+        byte[] encryptionKey = Cryptor.computeHkdf(authenticityKey, AK_IV, ENCRYPTION_KEY_SIZE);
         if (encryptionKey == null) {
             Log.e(TAG, "Failed to generate encryption key.");
             return null;
@@ -155,7 +149,7 @@ public class CryptorImpV1 implements Cryptor {
             Log.e(TAG, "Failed to get cipher instance.", e);
             return null;
         }
-        byte[] asalt = computeHkdf(salt, ASALT_IV, AES_CTR_IV_SIZE);
+        byte[] asalt = Cryptor.computeHkdf(salt, ASALT_IV, AES_CTR_IV_SIZE);
         if (asalt == null) {
             return null;
         }
@@ -181,6 +175,11 @@ public class CryptorImpV1 implements Cryptor {
     }
 
     @Override
+    public int getSignatureLength() {
+        return HMAC_TAG_SIZE;
+    }
+
+    @Override
     public boolean verify(byte[] data, byte[] key, byte[] signature) {
         return Arrays.equals(sign(data, key), signature);
     }
@@ -201,75 +200,13 @@ public class CryptorImpV1 implements Cryptor {
         }
 
         // Generates a 32 bytes HMAC key from authenticity_key
-        byte[] hmacKey = computeHkdf(authenticityKey, HK_IV, AES_CTR_IV_SIZE);
+        byte[] hmacKey = Cryptor.computeHkdf(authenticityKey, HK_IV, AES_CTR_IV_SIZE);
         if (hmacKey == null) {
             Log.e(TAG, "Failed to generate HMAC key.");
             return null;
         }
 
         // Generates a 16 bytes HMAC tag from authenticity_key
-        return computeHkdf(data, hmacKey, HMAC_TAG_SIZE);
-    }
-
-    /**
-     * A HAMC sha256 based HKDF algorithm to pseudo randomly hash data and salt into a byte array of
-     * given size.
-     */
-    // Based on google3/third_party/tink/java/src/main/java/com/google/crypto/tink/subtle/Hkdf.java
-    @Nullable
-    @VisibleForTesting
-    static byte[] computeHkdf(byte[] ikm, byte[] salt, int size) {
-        Mac mac;
-        try {
-            mac = Mac.getInstance(HMAC_SHA256_ALGORITHM);
-        } catch (NoSuchAlgorithmException e) {
-            Log.w(TAG, "HMAC_SHA256_ALGORITHM is not supported.", e);
-            return null;
-        }
-
-        if (size > 255 * mac.getMacLength()) {
-            Log.w(TAG, "Size too large.");
-            return null;
-        }
-
-        if (salt.length == 0) {
-            Log.w(TAG, "Salt cannot be empty.");
-            return null;
-        }
-
-        try {
-            mac.init(new SecretKeySpec(salt, HMAC_SHA256_ALGORITHM));
-        } catch (InvalidKeyException e) {
-            Log.w(TAG, "Invalid key.", e);
-            return null;
-        }
-
-        byte[] prk = mac.doFinal(ikm);
-        byte[] result = new byte[size];
-        try {
-            mac.init(new SecretKeySpec(prk, HMAC_SHA256_ALGORITHM));
-        } catch (InvalidKeyException e) {
-            Log.w(TAG, "Invalid key.", e);
-            return null;
-        }
-
-        byte[] digest = new byte[0];
-        int ctr = 1;
-        int pos = 0;
-        while (true) {
-            mac.update(digest);
-            mac.update((byte) ctr);
-            digest = mac.doFinal();
-            if (pos + digest.length < size) {
-                System.arraycopy(digest, 0, result, pos, digest.length);
-                pos += digest.length;
-                ctr++;
-            } else {
-                System.arraycopy(digest, 0, result, pos, size - pos);
-                break;
-            }
-        }
-
-        return result;
+        return Cryptor.computeHkdf(data, hmacKey, HMAC_TAG_SIZE);
     }
 }

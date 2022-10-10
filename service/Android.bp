@@ -143,6 +143,7 @@ java_library {
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
         ":services-connectivity-shared-srcs",
+        ":statslog-connectivity-java-gen",
     ],
     libs: [
         "framework-annotations-lib",
@@ -152,6 +153,7 @@ java_library {
         "framework-wifi.stubs.module_lib",
         "unsupportedappusage",
         "ServiceConnectivityResources",
+        "framework-statsd.stubs.module_lib",
     ],
     static_libs: [
         // Do not add libs here if they are already included
@@ -221,6 +223,9 @@ java_defaults {
     name: "service-connectivity-defaults",
     sdk_version: "system_server_current",
     min_sdk_version: "30",
+    defaults: [
+        "standalone-system-server-module-optimize-defaults",
+    ],
     // This library combines system server jars that have access to different bootclasspath jars.
     // Lower SDK service jars must not depend on higher SDK jars as that would let them
     // transitively depend on the wrong bootclasspath jars. Sources also cannot be added here as
@@ -250,8 +255,6 @@ java_defaults {
         "com.android.tethering",
     ],
     optimize: {
-        enabled: true,
-        shrink: true,
         proguard_flags_files: ["proguard.flags"],
     },
     lint: { strict_updatability_linting: true },
@@ -307,7 +310,7 @@ java_genrule {
     ],
     out: ["service_connectivity_jarjar_rules.txt"],
     cmd: "$(location jarjar-rules-generator) " +
-        "--jars $(location :service-connectivity-pre-jarjar{.jar}) " +
+        "$(location :service-connectivity-pre-jarjar{.jar}) " +
         "$(location :service-connectivity-tiramisu-pre-jarjar{.jar}) " +
         "--prefix android.net.connectivity " +
         "--excludes $(location jarjar-excludes.txt) " +
@@ -326,9 +329,16 @@ java_genrule {
     ],
     out: ["service_nearby_jarjar_rules.txt"],
     cmd: "$(location jarjar-rules-generator) " +
-        "--jars $(location :service-nearby-pre-jarjar{.jar}) " +
+        "$(location :service-nearby-pre-jarjar{.jar}) " +
         "--prefix com.android.server.nearby " +
         "--excludes $(location jarjar-excludes.txt) " +
         "--output $(out)",
     visibility: ["//visibility:private"],
+}
+
+genrule {
+  name: "statslog-connectivity-java-gen",
+  tools: ["stats-log-api-gen"],
+  cmd: "$(location stats-log-api-gen) --java $(out) --module connectivity --javaPackage com.android.server --javaClass ConnectivityStatsLog",
+  out: ["com/android/server/ConnectivityStatsLog.java"],
 }
