@@ -61,6 +61,7 @@ import android.util.Log;
 import android.util.Pair;
 import android.util.SparseArray;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.WakeupMessage;
 import com.android.modules.utils.build.SdkLevel;
@@ -397,6 +398,12 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         if (0L != mFirstEvaluationConcludedTime) return false;
         mFirstEvaluationConcludedTime = SystemClock.elapsedRealtime();
         return true;
+    }
+
+    /** When this network ever concluded its first evaluation, or 0 if this never happened. */
+    @VisibleForTesting
+    public long getFirstEvaluationConcludedTime() {
+        return mFirstEvaluationConcludedTime;
     }
 
     // Delay between when the network is disconnected and when the native network is destroyed.
@@ -996,9 +1003,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
             @NonNull final NetworkCapabilities nc) {
         final NetworkCapabilities oldNc = networkCapabilities;
         networkCapabilities = nc;
-        mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig, everValidated(),
-                0L != getAvoidUnvalidated(), yieldToBadWiFi(),
-                0L != mFirstEvaluationConcludedTime, isDestroyed());
+        updateScoreForNetworkAgentUpdate();
         final NetworkMonitorManager nm = mNetworkMonitor;
         if (nm != null) {
             nm.notifyNetworkCapabilitiesChanged(nc);
@@ -1200,9 +1205,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * Mix-in the ConnectivityService-managed bits in the score.
      */
     public void setScore(final NetworkScore score) {
+        final FullScore oldScore = mScore;
         mScore = FullScore.fromNetworkScore(score, networkCapabilities, networkAgentConfig,
-                everValidated(), 0L == getAvoidUnvalidated(), yieldToBadWiFi(),
+                everValidated(), 0L != getAvoidUnvalidated(), yieldToBadWiFi(),
                 0L != mFirstEvaluationConcludedTime, isDestroyed());
+        maybeLogDifferences(oldScore);
     }
 
     /**
@@ -1211,9 +1218,22 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * Call this after changing any data that might affect the score (e.g., agent config).
      */
     public void updateScoreForNetworkAgentUpdate() {
+        final FullScore oldScore = mScore;
         mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig,
                 everValidated(), 0L != getAvoidUnvalidated(), yieldToBadWiFi(),
                 0L != mFirstEvaluationConcludedTime, isDestroyed());
+        maybeLogDifferences(oldScore);
+    }
+
+    /**
+     * Prints score differences to logcat, if any.
+     * @param oldScore the old score. Differences from |oldScore| to |this| are logged, if any.
+     */
+    public void maybeLogDifferences(final FullScore oldScore) {
+        final String differences = mScore.describeDifferencesFrom(oldScore);
+        if (null != differences) {
+            Log.i(TAG, "Update score for net " + network + " : " + differences);
+        }
     }
 
     /**

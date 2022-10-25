@@ -1413,7 +1413,7 @@ public class BpfCoordinatorTest {
 
         // [1] Don't stop monitoring if it has never started.
         coordinator.stopMonitoring(mIpServer);
-        verify(mConntrackMonitor, never()).start();
+        verify(mConntrackMonitor, never()).stop();
 
         // [2] Start monitoring.
         coordinator.startMonitoring(mIpServer);
@@ -2091,5 +2091,12 @@ public class BpfCoordinatorTest {
         assertNull(mTetherClients.get(mIpServer));
         assertNull(mBpfUpstream4Map.getValue(upstream4KeyB));
         assertNull(mBpfDownstream4Map.getValue(downstream4KeyB));
+    }
+
+    @Test
+    public void testIpv6ForwardingRuleToString() throws Exception {
+        final Ipv6ForwardingRule rule = buildTestForwardingRule(UPSTREAM_IFINDEX, NEIGH_A, MAC_A);
+        assertEquals("upstreamIfindex: 1001, downstreamIfindex: 1003, address: 2001:db8::1, "
+                + "srcMac: 12:34:56:78:90:ab, dstMac: 00:00:00:00:00:0a", rule.toString());
     }
 }

@@ -56,7 +56,6 @@ import static android.net.netstats.NetworkStatsDataMigrationUtils.PREFIX_UID_TAG
 import static android.net.netstats.NetworkStatsDataMigrationUtils.PREFIX_XT;
 import static android.os.Trace.TRACE_TAG_NETWORK;
 import static android.system.OsConstants.ENOENT;
-import static android.system.OsConstants.R_OK;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
 import static android.text.format.DateUtils.DAY_IN_MILLIS;
 import static android.text.format.DateUtils.HOUR_IN_MILLIS;
@@ -134,7 +133,6 @@ import android.provider.Settings.Global;
 import android.service.NetworkInterfaceProto;
 import android.service.NetworkStatsServiceDumpProto;
 import android.system.ErrnoException;
-import android.system.Os;
 import android.telephony.PhoneStateListener;
 import android.telephony.SubscriptionPlan;
 import android.text.TextUtils;
@@ -164,7 +162,7 @@ import com.android.net.module.util.NetworkStatsUtils;
 import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.Struct;
-import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.Struct.S32;
 import com.android.net.module.util.Struct.U8;
 import com.android.net.module.util.bpf.CookieTagMapKey;
 import com.android.net.module.util.bpf.CookieTagMapValue;
@@ -254,6 +252,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             "/sys/fs/bpf/netd_shared/map_netd_stats_map_A";
     private static final String STATS_MAP_B_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_stats_map_B";
+    private static final String IFACE_STATS_MAP_PATH =
+            "/sys/fs/bpf/netd_shared/map_netd_iface_stats_map";
 
     /**
      * DeviceConfig flag used to indicate whether the files should be stored in the apex data
@@ -408,11 +408,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      * mActiveUidCounterSet to avoid accessing kernel too frequently.
      */
     private SparseIntArray mActiveUidCounterSet = new SparseIntArray();
-    private final IBpfMap<U32, U8> mUidCounterSetMap;
+    private final IBpfMap<S32, U8> mUidCounterSetMap;
     private final IBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap;
     private final IBpfMap<StatsMapKey, StatsMapValue> mStatsMapA;
     private final IBpfMap<StatsMapKey, StatsMapValue> mStatsMapB;
     private final IBpfMap<UidStatsMapKey, StatsMapValue> mAppUidStatsMap;
+    private final IBpfMap<S32, StatsMapValue> mIfaceStatsMap;
 
     /** Data layer operation counters for splicing into other structures. */
     private NetworkStats mUidOperations = new NetworkStats(0L, 10);
@@ -429,12 +430,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private long mLastStatsSessionPoll;
 
     private final Object mOpenSessionCallsLock = new Object();
-    /**
-     * Map from UID to number of opened sessions. This is used for rate-limt an app to open
-     * session frequently
-     */
-    @GuardedBy("mOpenSessionCallsLock")
-    private final SparseIntArray mOpenSessionCallsPerUid = new SparseIntArray();
+
     /**
      * Map from key {@code OpenSessionKey} to count of opened sessions. This is for recording
      * the caller of open session and it is only for debugging.
@@ -592,6 +588,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mStatsMapA = mDeps.getStatsMapA();
         mStatsMapB = mDeps.getStatsMapB();
         mAppUidStatsMap = mDeps.getAppUidStatsMap();
+        mIfaceStatsMap = mDeps.getIfaceStatsMap();
 
         // TODO: Remove bpfNetMaps creation and always start SkDestroyListener
         // Following code is for the experiment to verify the SkDestroyListener refactoring. Based
@@ -741,10 +738,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
 
         /** Get counter sets map for each UID. */
-        public IBpfMap<U32, U8> getUidCounterSetMap() {
+        public IBpfMap<S32, U8> getUidCounterSetMap() {
             try {
-                return new BpfMap<U32, U8>(UID_COUNTERSET_MAP_PATH, BpfMap.BPF_F_RDWR,
-                        U32.class, U8.class);
+                return new BpfMap<S32, U8>(UID_COUNTERSET_MAP_PATH, BpfMap.BPF_F_RDWR,
+                        S32.class, U8.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open uid counter set map: " + e);
                 return null;
@@ -792,6 +789,16 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open app uid stats map: " + e);
                 return null;
+            }
+        }
+
+        /** Gets interface stats map */
+        public IBpfMap<S32, StatsMapValue> getIfaceStatsMap() {
+            try {
+                return new BpfMap<S32, StatsMapValue>(IFACE_STATS_MAP_PATH,
+                        BpfMap.BPF_F_RDWR, S32.class, StatsMapValue.class);
+            } catch (ErrnoException e) {
+                throw new IllegalStateException("Failed to open interface stats map", e);
             }
         }
 
@@ -1349,9 +1356,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 mOpenSessionCallsPerCaller.put(key, Integer.sum(callsPerCaller, 1));
             }
 
-            int callsPerUid = mOpenSessionCallsPerUid.get(key.uid, 0);
-            mOpenSessionCallsPerUid.put(key.uid, callsPerUid + 1);
-
             if (key.uid == android.os.Process.SYSTEM_UID) {
                 return false;
             }
@@ -1747,7 +1751,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
         if (set == SET_DEFAULT) {
             try {
-                mUidCounterSetMap.deleteEntry(new U32(uid));
+                mUidCounterSetMap.deleteEntry(new S32(uid));
             } catch (ErrnoException e) {
                 Log.w(TAG, "UidCounterSetMap.deleteEntry(" + uid + ") failed with errno: " + e);
             }
@@ -1755,7 +1759,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
 
         try {
-            mUidCounterSetMap.updateEntry(new U32(uid), new U8((short) set));
+            mUidCounterSetMap.updateEntry(new S32(uid), new U8((short) set));
         } catch (ErrnoException e) {
             Log.w(TAG, "UidCounterSetMap.updateEntry(" + uid + ", " + set
                     + ") failed with errno: " + e);
@@ -2472,7 +2476,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         deleteStatsMapTagData(mStatsMapB, uid);
 
         try {
-            mUidCounterSetMap.deleteEntry(new U32(uid));
+            mUidCounterSetMap.deleteEntry(new S32(uid));
         } catch (ErrnoException e) {
             logErrorIfNotErrNoent(e, "Failed to delete tag data from uid counter set map");
         }
@@ -2502,8 +2506,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         for (int uid : uids) {
             deleteKernelTagData(uid);
         }
-        // TODO: Remove the UID's entries from mOpenSessionCallsPerUid and
-        // mOpenSessionCallsPerCaller
+        // TODO: Remove the UID's entries from mOpenSessionCallsPerCaller.
     }
 
     /**
@@ -2763,6 +2766,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             dumpAppUidStatsMapLocked(pw);
             dumpStatsMapLocked(mStatsMapA, pw, "mStatsMapA");
             dumpStatsMapLocked(mStatsMapB, pw, "mStatsMapB");
+            dumpIfaceStatsMapLocked(pw);
             pw.decreaseIndent();
         }
     }
@@ -2830,26 +2834,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
     }
 
-    private <K extends Struct, V extends Struct> String getMapStatus(
-            final IBpfMap<K, V> map, final String path) {
-        if (map != null) {
-            return "OK";
-        }
-        try {
-            Os.access(path, R_OK);
-            return "NULL(map is pinned to " + path + ")";
-        } catch (ErrnoException e) {
-            return "NULL(map is not pinned to " + path + ": " + Os.strerror(e.errno) + ")";
-        }
-    }
-
     private void dumpMapStatus(final IndentingPrintWriter pw) {
-        pw.println("mCookieTagMap: " + getMapStatus(mCookieTagMap, COOKIE_TAG_MAP_PATH));
-        pw.println("mUidCounterSetMap: "
-                + getMapStatus(mUidCounterSetMap, UID_COUNTERSET_MAP_PATH));
-        pw.println("mAppUidStatsMap: " + getMapStatus(mAppUidStatsMap, APP_UID_STATS_MAP_PATH));
-        pw.println("mStatsMapA: " + getMapStatus(mStatsMapA, STATS_MAP_A_PATH));
-        pw.println("mStatsMapB: " + getMapStatus(mStatsMapB, STATS_MAP_B_PATH));
+        BpfDump.dumpMapStatus(mCookieTagMap, pw, "mCookieTagMap", COOKIE_TAG_MAP_PATH);
+        BpfDump.dumpMapStatus(mUidCounterSetMap, pw, "mUidCounterSetMap", UID_COUNTERSET_MAP_PATH);
+        BpfDump.dumpMapStatus(mAppUidStatsMap, pw, "mAppUidStatsMap", APP_UID_STATS_MAP_PATH);
+        BpfDump.dumpMapStatus(mStatsMapA, pw, "mStatsMapA", STATS_MAP_A_PATH);
+        BpfDump.dumpMapStatus(mStatsMapB, pw, "mStatsMapB", STATS_MAP_B_PATH);
+        // mIfaceStatsMap is always not null but dump status to be consistent with other maps.
+        BpfDump.dumpMapStatus(mIfaceStatsMap, pw, "mIfaceStatsMap", IFACE_STATS_MAP_PATH);
     }
 
     @GuardedBy("mStatsLock")
@@ -2896,13 +2888,27 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         BpfDump.dumpMap(statsMap, pw, mapName,
                 "ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets",
                 (key, value) -> {
-                    final long ifIndex = key.ifaceIndex;
-                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(ifIndex);
-                    return ifIndex + " "
+                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.ifaceIndex);
+                    return key.ifaceIndex + " "
                             + (ifName != null ? ifName : "unknown") + " "
                             + "0x" + Long.toHexString(key.tag) + " "
                             + key.uid + " "
                             + key.counterSet + " "
+                            + value.rxBytes + " "
+                            + value.rxPackets + " "
+                            + value.txBytes + " "
+                            + value.txPackets;
+                });
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpIfaceStatsMapLocked(final IndentingPrintWriter pw) {
+        BpfDump.dumpMap(mIfaceStatsMap, pw, "mIfaceStatsMap",
+                "ifaceIndex ifaceName rxBytes rxPackets txBytes txPackets",
+                (key, value) -> {
+                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.val);
+                    return key.val + " "
+                            + (ifName != null ? ifName : "unknown") + " "
                             + value.rxBytes + " "
                             + value.rxPackets + " "
                             + value.txBytes + " "
@@ -2944,7 +2950,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     private NetworkStats getNetworkStatsUidDetail(String[] ifaces)
             throws RemoteException {
-        final NetworkStats uidSnapshot = readNetworkStatsUidDetail(UID_ALL,  ifaces, TAG_ALL);
+        final NetworkStats uidSnapshot = readNetworkStatsUidDetail(UID_ALL, ifaces, TAG_ALL);
 
         // fold tethering stats and operations into uid snapshot
         final NetworkStats tetherSnapshot = getNetworkStatsTethering(STATS_PER_UID);
@@ -2959,6 +2965,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         uidSnapshot.combineAllValues(providerStats);
 
         uidSnapshot.combineAllValues(mUidOperations);
+        uidSnapshot.filter(UID_ALL, ifaces, TAG_ALL);
 
         return uidSnapshot;
     }

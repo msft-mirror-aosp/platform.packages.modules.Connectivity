@@ -536,6 +536,13 @@ public class BpfCoordinator {
         // TODO: Wrap conntrackMonitor stopping function into mBpfCoordinatorShim.
         if (!isUsingBpf() || !mDeps.isAtLeastS()) return;
 
+        // Ignore stopping monitoring if the monitor has never started for a given IpServer.
+        if (!mMonitoringIpServers.contains(ipServer)) {
+            mLog.e("Ignore stopping monitoring because monitoring has never started for "
+                    + ipServer.interfaceName());
+            return;
+        }
+
         mMonitoringIpServers.remove(ipServer);
 
         if (!mMonitoringIpServers.isEmpty()) return;
@@ -1465,6 +1472,15 @@ public class BpfCoordinator {
             // TODO: if this is ever used in production code, don't pass ifindices
             // to Objects.hash() to avoid autoboxing overhead.
             return Objects.hash(upstreamIfindex, downstreamIfindex, address, srcMac, dstMac);
+        }
+
+        @Override
+        public String toString() {
+            return "upstreamIfindex: " + upstreamIfindex
+                    + ", downstreamIfindex: " + downstreamIfindex
+                    + ", address: " + address.getHostAddress()
+                    + ", srcMac: " + srcMac
+                    + ", dstMac: " + dstMac;
         }
     }
 
