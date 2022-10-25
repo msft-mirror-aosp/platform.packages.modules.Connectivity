@@ -20,6 +20,10 @@ import static android.nearby.ScanRequest.SCAN_TYPE_NEARBY_PRESENCE;
 
 import static com.android.server.nearby.NearbyService.TAG;
 
+import static service.proto.Blefilter.DataElement.ElementType.DE_BATTERY_STATUS;
+import static service.proto.Blefilter.DataElement.ElementType.DE_CONNECTION_STATUS;
+import static service.proto.Blefilter.DataElement.ElementType.DE_FAST_PAIR_ACCOUNT_KEY;
+
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -126,7 +130,7 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
             PresenceScanFilter presenceScanFilter = (PresenceScanFilter) scanFilter;
             Blefilter.BleFilter.Builder filterBuilder = Blefilter.BleFilter.newBuilder();
             for (PublicCredential credential : presenceScanFilter.getCredentials()) {
-                filterBuilder.addCertficate(toProtoPublicCredential(credential));
+                filterBuilder.addCertificate(toProtoPublicCredential(credential));
             }
             for (DataElement dataElement : presenceScanFilter.getExtendedProperties()) {
                 if (dataElement.getKey() == DataElement.DataType.ACCOUNT_KEY_DATA) {
@@ -145,11 +149,14 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     }
 
     private Blefilter.PublicateCertificate toProtoPublicCredential(PublicCredential credential) {
+        Log.d(TAG, String.format("Returns a PublicCertificate with authenticity key size %d and"
+                + " encrypted metadata key tag size %d", credential.getAuthenticityKey().length,
+                credential.getEncryptedMetadataKeyTag().length));
         return Blefilter.PublicateCertificate.newBuilder()
-                        .setAuthenticityKey(ByteString.copyFrom(credential.getAuthenticityKey()))
-                        .setMetadataEncryptionKeyTag(
-                                ByteString.copyFrom(credential.getEncryptedMetadataKeyTag()))
-                        .build();
+                .setAuthenticityKey(ByteString.copyFrom(credential.getAuthenticityKey()))
+                .setMetadataEncryptionKeyTag(
+                        ByteString.copyFrom(credential.getEncryptedMetadataKeyTag()))
+                .build();
     }
 
     private Blefilter.DataElement toProtoDataElement(DataElement dataElement) {
@@ -250,15 +257,10 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                                                 encryptedMetaData)
                                         .setRssi(filterResult.getRssi())
                                         .addMedium(NearbyDevice.Medium.BLE);
-                        // Fast Pair account keys added to Data Elements.
+                        // Data Elements reported from nanoapp added to Data Elements.
+                        // i.e. Fast Pair account keys, connection status and battery
                         for (Blefilter.DataElement element : filterResult.getDataElementList()) {
-                            if (element.getKey()
-                                    == Blefilter.DataElement.ElementType.DE_FAST_PAIR_ACCOUNT_KEY) {
-                                presenceDeviceBuilder.addExtendedProperty(
-                                        new DataElement(
-                                                DataElement.DataType.ACCOUNT_KEY_DATA,
-                                                element.getValue().toByteArray()));
-                            }
+                            addDataElementsToPresenceDevice(element, presenceDeviceBuilder);
                         }
                         // BlE address appended to Data Element.
                         if (filterResult.hasBluetoothAddress()) {
@@ -274,7 +276,6 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                                             DataElement.DataType.BLE_SERVICE_DATA,
                                             filterResult.getBleServiceData().toByteArray()));
                         }
-
                         // Add action
                         if (filterResult.hasIntent()) {
                             presenceDeviceBuilder.addExtendedProperty(
@@ -308,6 +309,31 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                 } catch (Exception e) {
                     Log.e(TAG, String.format("Failed to decode the filter result %s", e));
                 }
+            }
+        }
+
+        private void addDataElementsToPresenceDevice(Blefilter.DataElement element,
+                PresenceDevice.Builder presenceDeviceBuilder) {
+            int endIndex = element.hasValueLength() ? element.getValueLength() :
+                    element.getValue().size();
+            switch (element.getKey()) {
+                case DE_FAST_PAIR_ACCOUNT_KEY:
+                    presenceDeviceBuilder.addExtendedProperty(
+                            new DataElement(DataElement.DataType.ACCOUNT_KEY_DATA,
+                                    element.getValue().substring(0, endIndex).toByteArray()));
+                    break;
+                case DE_CONNECTION_STATUS:
+                    presenceDeviceBuilder.addExtendedProperty(
+                            new DataElement(DataElement.DataType.CONNECTION_STATUS,
+                                    element.getValue().substring(0, endIndex).toByteArray()));
+                    break;
+                case DE_BATTERY_STATUS:
+                    presenceDeviceBuilder.addExtendedProperty(
+                            new DataElement(DataElement.DataType.BATTERY,
+                                    element.getValue().substring(0, endIndex).toByteArray()));
+                    break;
+                default:
+                    break;
             }
         }
     }

@@ -113,12 +113,12 @@ public class ClatCoordinator {
         return "/sys/fs/bpf/net_shared/map_clatd_clat_" + which + "_map";
     }
 
-    private static String makeProgPath(boolean ingress, boolean ether) {
-        String path = "/sys/fs/bpf/net_shared/prog_clatd_schedcls_"
-                + (ingress ? "ingress6" : "egress4")
-                + "_clat_"
+    private static final String CLAT_EGRESS4_RAWIP_PROG_PATH =
+            "/sys/fs/bpf/net_shared/prog_clatd_schedcls_egress4_clat_rawip";
+
+    private static String makeIngressProgPath(boolean ether) {
+        return "/sys/fs/bpf/net_shared/prog_clatd_schedcls_ingress6_clat_"
                 + (ether ? "ether" : "rawip");
-        return path;
     }
 
     @NonNull
@@ -478,7 +478,7 @@ public class ClatCoordinator {
             // tc filter add dev .. egress prio 4 protocol ip bpf object-pinned /sys/fs/bpf/...
             // direct-action
             mDeps.tcFilterAddDevBpf(tracker.v4ifIndex, EGRESS, (short) PRIO_CLAT, (short) ETH_P_IP,
-                    makeProgPath(EGRESS, RAWIP));
+                    CLAT_EGRESS4_RAWIP_PROG_PATH);
         } catch (IOException e) {
             Log.e(TAG, "tc filter add dev (" + tracker.v4ifIndex + "[" + tracker.v4iface
                     + "]) egress prio PRIO_CLAT protocol ip failure: " + e);
@@ -504,7 +504,7 @@ public class ClatCoordinator {
             // tc filter add dev .. ingress prio 4 protocol ipv6 bpf object-pinned /sys/fs/bpf/...
             // direct-action
             mDeps.tcFilterAddDevBpf(tracker.ifIndex, INGRESS, (short) PRIO_CLAT,
-                    (short) ETH_P_IPV6, makeProgPath(INGRESS, isEthernet));
+                    (short) ETH_P_IPV6, makeIngressProgPath(isEthernet));
         } catch (IOException e) {
             Log.e(TAG, "tc filter add dev (" + tracker.ifIndex + "[" + tracker.iface
                     + "]) ingress prio PRIO_CLAT protocol ipv6 failure: " + e);
@@ -595,13 +595,17 @@ public class ClatCoordinator {
         Log.i(TAG, "untag socket cookie " + cookie);
     }
 
+    private boolean isStarted() {
+        return mClatdTracker != null;
+    }
+
     /**
      * Start clatd for a given interface and NAT64 prefix.
      */
     public String clatStart(final String iface, final int netId,
             @NonNull final IpPrefix nat64Prefix)
             throws IOException {
-        if (mClatdTracker != null) {
+        if (isStarted()) {
             throw new IOException("Clatd is already running on " + mClatdTracker.iface
                     + " (pid " + mClatdTracker.pid + ")");
         }
@@ -833,7 +837,7 @@ public class ClatCoordinator {
      * Stop clatd
      */
     public void clatStop() throws IOException {
-        if (mClatdTracker == null) {
+        if (!isStarted()) {
             throw new IOException("Clatd has not started");
         }
         Log.i(TAG, "Stopping clatd pid=" + mClatdTracker.pid + " on " + mClatdTracker.iface);
@@ -902,12 +906,16 @@ public class ClatCoordinator {
     public void dump(@NonNull IndentingPrintWriter pw) {
         // TODO: move map dump to a global place to avoid duplicate dump while there are two or
         // more IPv6 only networks.
-        pw.println("CLAT tracker: " + mClatdTracker.toString());
-        pw.println("Forwarding rules:");
-        pw.increaseIndent();
-        dumpBpfIngress(pw);
-        dumpBpfEgress(pw);
-        pw.decreaseIndent();
+        if (isStarted()) {
+            pw.println("CLAT tracker: " + mClatdTracker.toString());
+            pw.println("Forwarding rules:");
+            pw.increaseIndent();
+            dumpBpfIngress(pw);
+            dumpBpfEgress(pw);
+            pw.decreaseIndent();
+        } else {
+            pw.println("<not started>");
+        }
         pw.println();
     }
 

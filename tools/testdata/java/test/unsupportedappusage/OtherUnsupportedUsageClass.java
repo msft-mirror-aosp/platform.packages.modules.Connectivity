@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,12 @@
  * limitations under the License.
  */
 
-package android.net;
+package test.unsupportedappusage;
 
-/**
- * Configuration details for tethering.
- * @hide
- */
-parcelable TetheringConfigurationParcel {
-    String[] tetherableUsbRegexs;
-    String[] tetherableWifiRegexs;
-    String[] tetherableBluetoothRegexs;
-    String[] legacyDhcpRanges;
-    String[] provisioningApp;
-    String provisioningAppNoUi;
+import android.compat.annotation.UnsupportedAppUsage;
+
+public class OtherUnsupportedUsageClass {
+    // The annotation is just for completeness, what matters is the unsupportedappusage.txt file
+    @UnsupportedAppUsage
+    public void testSecondMethod() {}
 }
