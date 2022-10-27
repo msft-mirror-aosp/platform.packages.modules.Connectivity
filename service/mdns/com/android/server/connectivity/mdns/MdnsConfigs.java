@@ -89,4 +89,16 @@ public class MdnsConfigs {
     public static boolean preferIpv6() {
         return false;
     }
+
+    public static boolean removeServiceAfterTtlExpires() {
+        return false;
+    }
+
+    public static boolean allowSearchOptionsToRemoveExpiredService() {
+        return false;
+    }
+
+    public static boolean allowNetworkInterfaceIndexPropagation() {
+        return true;
+    }
 }
