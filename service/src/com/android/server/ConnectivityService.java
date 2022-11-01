@@ -205,7 +205,6 @@ import android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener;
 import android.net.resolv.aidl.Nat64PrefixEventParcel;
 import android.net.resolv.aidl.PrivateDnsValidationEventParcel;
 import android.net.shared.PrivateDnsConfig;
-import android.net.util.MultinetworkPolicyTracker;
 import android.net.wifi.WifiInfo;
 import android.os.BatteryStatsManager;
 import android.os.Binder;
@@ -250,13 +249,13 @@ import com.android.internal.util.MessageUtils;
 import com.android.modules.utils.BasicShellCommandHandler;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
+import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.LinkPropertiesUtils.CompareOrUpdateResult;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
 import com.android.net.module.util.LocationPermissionChecker;
-import com.android.net.module.util.NetworkCapabilitiesUtils;
 import com.android.net.module.util.PerUidCounter;
 import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.TcUtils;
@@ -272,6 +271,7 @@ import com.android.server.connectivity.FullScore;
 import com.android.server.connectivity.KeepaliveTracker;
 import com.android.server.connectivity.LingerMonitor;
 import com.android.server.connectivity.MockableSystemProperties;
+import com.android.server.connectivity.MultinetworkPolicyTracker;
 import com.android.server.connectivity.NetworkAgentInfo;
 import com.android.server.connectivity.NetworkDiagnostics;
 import com.android.server.connectivity.NetworkNotificationManager;
@@ -368,7 +368,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final int DEFAULT_NASCENT_DELAY_MS = 5_000;
 
     // The maximum value for the blocking validation result, in milliseconds.
-    public static final int MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS = 10000;
+    public static final int MAX_VALIDATION_IGNORE_AFTER_ROAM_TIME_MS = 10000;
 
     // The maximum number of network request allowed per uid before an exception is thrown.
     @VisibleForTesting
@@ -1982,6 +1982,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Nullable
     public NetworkInfo getNetworkInfoForUid(Network network, int uid, boolean ignoreBlocked) {
         enforceAccessPermission();
+        if (uid != mDeps.getCallingUid()) {
+            enforceNetworkStackPermission(mContext);
+        }
         final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
         if (nai == null) return null;
         return getFilteredNetworkInfo(nai, uid, ignoreBlocked);
@@ -3089,7 +3092,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * Reads the network specific MTU size from resources.
      * and set it on it's iface.
      */
-    private void updateMtu(LinkProperties newLp, LinkProperties oldLp) {
+    private void updateMtu(@NonNull LinkProperties newLp, @Nullable LinkProperties oldLp) {
         final String iface = newLp.getInterfaceName();
         final int mtu = newLp.getMtu();
         if (oldLp == null && mtu == 0) {
@@ -3122,7 +3125,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @VisibleForTesting
     protected static final String DEFAULT_TCP_BUFFER_SIZES = "4096,87380,110208,4096,16384,110208";
 
-    private void updateTcpBufferSizes(String tcpBufferSizes) {
+    private void updateTcpBufferSizes(@Nullable String tcpBufferSizes) {
         String[] values = null;
         if (tcpBufferSizes != null) {
             values = tcpBufferSizes.split(",");
@@ -3457,7 +3460,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void dumpTrafficController(IndentingPrintWriter pw, final FileDescriptor fd,
             boolean verbose) {
         try {
-            mBpfNetMaps.dump(fd, verbose);
+            mBpfNetMaps.dump(pw, fd, verbose);
         } catch (ServiceSpecificException e) {
             pw.println(e.getMessage());
         } catch (IOException e) {
@@ -3647,8 +3650,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     break;
                 }
                 case NetworkAgent.EVENT_UNREGISTER_AFTER_REPLACEMENT: {
-                    // If nai is not yet created, or is already destroyed, ignore.
-                    if (!shouldDestroyNativeNetwork(nai)) break;
+                    if (!nai.isCreated()) {
+                        Log.d(TAG, "unregisterAfterReplacement on uncreated " + nai.toShortString()
+                                + ", tearing down instead");
+                        teardownUnneededNetwork(nai);
+                        break;
+                    }
+
+                    if (nai.isDestroyed()) {
+                        Log.d(TAG, "unregisterAfterReplacement on destroyed " + nai.toShortString()
+                                + ", ignoring");
+                        break;
+                    }
 
                     final int timeoutMs = (int) arg.second;
                     if (timeoutMs < 0 || timeoutMs > NetworkAgent.MAX_TEARDOWN_DELAY_MS) {
@@ -3748,17 +3761,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case EVENT_PROVISIONING_NOTIFICATION: {
                     final boolean visible = toBool(msg.arg1);
                     // If captive portal status has changed, update capabilities or disconnect.
-                    if (nai != null && (visible != nai.captivePortalDetected())) {
-                        nai.setCaptivePortalDetected(visible);
-                        if (visible && ConnectivitySettingsManager.CAPTIVE_PORTAL_MODE_AVOID
-                                == getCaptivePortalMode()) {
-                            if (DBG) log("Avoiding captive portal network: " + nai.toShortString());
-                            nai.onPreventAutomaticReconnect();
-                            teardownUnneededNetwork(nai);
-                            break;
-                        }
-                        updateCapabilitiesForNetwork(nai);
-                    }
                     if (!visible) {
                         // Only clear SIGN_IN and NETWORK_SWITCH notifications here, or else other
                         // notifications belong to the same network may be cleared unexpectedly.
@@ -3796,12 +3798,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 @NonNull NetworkAgentInfo nai, int testResult, @NonNull String redirectUrl) {
             final boolean valid = (testResult & NETWORK_VALIDATION_RESULT_VALID) != 0;
             final boolean partial = (testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0;
-            final boolean captive = !TextUtils.isEmpty(redirectUrl);
+            final boolean portal = !TextUtils.isEmpty(redirectUrl);
 
             // If there is any kind of working networking, then the NAI has been evaluated
             // once. {@see NetworkAgentInfo#setEvaluated}, which returns whether this is
             // the first time this ever happened.
-            final boolean someConnectivity = (valid || partial || captive);
+            final boolean someConnectivity = (valid || partial || portal);
             final boolean becameEvaluated = someConnectivity && nai.setEvaluated();
             // Because of b/245893397, if the score is updated when updateCapabilities is called,
             // any callback that receives onAvailable for that rematch receives an extra caps
@@ -3820,8 +3822,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
             final boolean wasValidated = nai.isValidated();
             final boolean wasPartial = nai.partialConnectivity();
-            nai.setPartialConnectivity((testResult & NETWORK_VALIDATION_RESULT_PARTIAL) != 0);
-            final boolean partialConnectivityChanged = (wasPartial != nai.partialConnectivity());
+            final boolean wasPortal = nai.captivePortalDetected();
+            nai.setPartialConnectivity(partial);
+            nai.setCaptivePortalDetected(portal);
+            nai.updateScoreForNetworkAgentUpdate();
+            final boolean partialConnectivityChanged = (wasPartial != partial);
+            final boolean portalChanged = (wasPortal != portal);
 
             if (DBG) {
                 final String logMsg = !TextUtils.isEmpty(redirectUrl)
@@ -3829,7 +3835,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         : "";
                 log(nai.toShortString() + " validation " + (valid ? "passed" : "failed") + logMsg);
             }
-            if (valid != nai.isValidated()) {
+            if (valid != wasValidated) {
                 final FullScore oldScore = nai.getScore();
                 nai.setValidated(valid);
                 updateCapabilities(oldScore, nai, nai.networkCapabilities);
@@ -3852,6 +3858,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 }
             } else if (partialConnectivityChanged) {
                 updateCapabilitiesForNetwork(nai);
+            } else if (portalChanged) {
+                if (portal && ConnectivitySettingsManager.CAPTIVE_PORTAL_MODE_AVOID
+                        == getCaptivePortalMode()) {
+                    if (DBG) log("Avoiding captive portal network: " + nai.toShortString());
+                    nai.onPreventAutomaticReconnect();
+                    teardownUnneededNetwork(nai);
+                    return;
+                } else {
+                    updateCapabilitiesForNetwork(nai);
+                }
             } else if (becameEvaluated) {
                 // If valid or partial connectivity changed, updateCapabilities* has
                 // done the rematch.
@@ -4225,12 +4241,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return nai.isCreated() && !nai.isDestroyed();
     }
 
-    private boolean shouldIgnoreValidationFailureAfterRoam(NetworkAgentInfo nai) {
+    @VisibleForTesting
+    boolean shouldIgnoreValidationFailureAfterRoam(NetworkAgentInfo nai) {
         // T+ devices should use unregisterAfterReplacement.
         if (SdkLevel.isAtLeastT()) return false;
+
+        // If the network never roamed, return false. The check below is not sufficient if time
+        // since boot is less than blockTimeOut, though that's extremely unlikely to happen.
+        if (nai.lastRoamTime == 0) return false;
+
         final long blockTimeOut = Long.valueOf(mResources.get().getInteger(
                 R.integer.config_validationFailureAfterRoamIgnoreTimeMillis));
-        if (blockTimeOut <= MAX_VALIDATION_FAILURE_BLOCKING_TIME_MS
+        if (blockTimeOut <= MAX_VALIDATION_IGNORE_AFTER_ROAM_TIME_MS
                 && blockTimeOut >= 0) {
             final long currentTimeMs = SystemClock.elapsedRealtime();
             long timeSinceLastRoam = currentTimeMs - nai.lastRoamTime;
@@ -5080,8 +5102,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void updateAvoidBadWifi() {
         ensureRunningOnConnectivityServiceThread();
         // Agent info scores and offer scores depend on whether cells yields to bad wifi.
+        final boolean avoidBadWifi = avoidBadWifi();
         for (final NetworkAgentInfo nai : mNetworkAgentInfos) {
             nai.updateScoreForNetworkAgentUpdate();
+            if (avoidBadWifi) {
+                // If the device is now avoiding bad wifi, remove notifications that might have
+                // been put up when the device didn't.
+                mNotifier.clearNotification(nai.network.getNetId(), NotificationType.LOST_INTERNET);
+            }
         }
         // UpdateOfferScore will update mNetworkOffers inline, so make a copy first.
         final ArrayList<NetworkOfferInfo> offersToUpdate = new ArrayList<>(mNetworkOffers);
@@ -5103,22 +5131,32 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         pw.println("Bad Wi-Fi avoidance: " + avoidBadWifi());
         pw.increaseIndent();
-        pw.println("Config restrict:   " + configRestrict);
-        pw.println("Actively prefer:   " + activelyPreferBadWifi());
+        pw.println("Config restrict:               " + configRestrict);
+        pw.println("Actively prefer bad wifi:      " + activelyPreferBadWifi());
 
-        final String value = mMultinetworkPolicyTracker.getAvoidBadWifiSetting();
+        final String settingValue = mMultinetworkPolicyTracker.getAvoidBadWifiSetting();
         String description;
         // Can't use a switch statement because strings are legal case labels, but null is not.
-        if ("0".equals(value)) {
+        if ("0".equals(settingValue)) {
             description = "get stuck";
-        } else if (value == null) {
+        } else if (settingValue == null) {
             description = "prompt";
-        } else if ("1".equals(value)) {
+        } else if ("1".equals(settingValue)) {
             description = "avoid";
         } else {
-            description = value + " (?)";
+            description = settingValue + " (?)";
         }
-        pw.println("User setting:      " + description);
+        pw.println("Avoid bad wifi setting:        " + description);
+        final Boolean configValue = mMultinetworkPolicyTracker.deviceConfigActivelyPreferBadWifi();
+        if (null == configValue) {
+            description = "unset";
+        } else if (configValue) {
+            description = "force true";
+        } else {
+            description = "force false";
+        }
+        pw.println("Actively prefer bad wifi conf: " + description);
+        pw.println();
         pw.println("Network overrides:");
         pw.increaseIndent();
         for (NetworkAgentInfo nai : networksSortedById()) {
@@ -5229,6 +5267,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // network was found not to have Internet access.
             nai.updateScoreForNetworkAgentUpdate();
             rematchAllNetworksAndRequests();
+
+            // Also, if this is WiFi and it should be preferred actively, now is the time to
+            // prompt the user that they walked past and connected to a bad WiFi.
+            if (nai.networkCapabilities.hasTransport(TRANSPORT_WIFI)
+                    && !avoidBadWifi()
+                    && activelyPreferBadWifi()) {
+                // The notification will be removed if the network validates or disconnects.
+                showNetworkNotification(nai, NotificationType.LOST_INTERNET);
+                return;
+            }
         }
 
         if (!shouldPromptUnvalidated(nai)) return;
@@ -5714,7 +5762,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return mProxyTracker.getGlobalProxy();
     }
 
-    private void handleApplyDefaultProxy(ProxyInfo proxy) {
+    private void handleApplyDefaultProxy(@Nullable ProxyInfo proxy) {
         if (proxy != null && TextUtils.isEmpty(proxy.getHost())
                 && Uri.EMPTY.equals(proxy.getPacFileUrl())) {
             proxy = null;
@@ -5726,8 +5774,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     // when any network changes proxy.
     // TODO: Remove usage of broadcast extras as they are deprecated and not applicable in a
     // multi-network world where an app might be bound to a non-default network.
-    private void updateProxy(LinkProperties newLp, LinkProperties oldLp) {
-        ProxyInfo newProxyInfo = newLp == null ? null : newLp.getHttpProxy();
+    private void updateProxy(@NonNull LinkProperties newLp, @Nullable LinkProperties oldLp) {
+        ProxyInfo newProxyInfo = newLp.getHttpProxy();
         ProxyInfo oldProxyInfo = oldLp == null ? null : oldLp.getHttpProxy();
 
         if (!ProxyTracker.proxyInfoEqual(newProxyInfo, oldProxyInfo)) {
@@ -7452,7 +7500,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void updateLinkProperties(NetworkAgentInfo networkAgent, @NonNull LinkProperties newLp,
-            @NonNull LinkProperties oldLp) {
+            @Nullable LinkProperties oldLp) {
         int netId = networkAgent.network.getNetId();
 
         // The NetworkAgent does not know whether clatd is running on its network or not, or whether
@@ -7504,7 +7552,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             // Start or stop DNS64 detection and 464xlat according to network state.
             networkAgent.clatd.update();
-            notifyIfacesChangedForNetworkStats();
+            // Notify NSS when relevant events happened. Currently, NSS only cares about
+            // interface changed to update clat interfaces accounting.
+            final boolean interfacesChanged = oldLp == null
+                    || !Objects.equals(newLp.getAllInterfaceNames(), oldLp.getAllInterfaceNames());
+            if (interfacesChanged) {
+                notifyIfacesChangedForNetworkStats();
+            }
             networkAgent.networkMonitor().notifyLinkPropertiesChanged(
                     new LinkProperties(newLp, true /* parcelSensitiveFields */));
             notifyNetworkCallbacks(networkAgent, ConnectivityManager.CALLBACK_IP_CHANGED);
@@ -7591,12 +7645,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     }
 
-    private void updateInterfaces(final @Nullable LinkProperties newLp,
+    private void updateInterfaces(final @NonNull LinkProperties newLp,
             final @Nullable LinkProperties oldLp, final int netId,
             final @NonNull NetworkCapabilities caps) {
         final CompareResult<String> interfaceDiff = new CompareResult<>(
-                oldLp != null ? oldLp.getAllInterfaceNames() : null,
-                newLp != null ? newLp.getAllInterfaceNames() : null);
+                oldLp != null ? oldLp.getAllInterfaceNames() : null, newLp.getAllInterfaceNames());
         if (!interfaceDiff.added.isEmpty()) {
             for (final String iface : interfaceDiff.added) {
                 try {
@@ -7657,12 +7710,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * Have netd update routes from oldLp to newLp.
      * @return true if routes changed between oldLp and newLp
      */
-    private boolean updateRoutes(LinkProperties newLp, LinkProperties oldLp, int netId) {
+    private boolean updateRoutes(@NonNull LinkProperties newLp, @Nullable LinkProperties oldLp,
+            int netId) {
         // compare the route diff to determine which routes have been updated
         final CompareOrUpdateResult<RouteInfo.RouteKey, RouteInfo> routeDiff =
                 new CompareOrUpdateResult<>(
                         oldLp != null ? oldLp.getAllRoutes() : null,
-                        newLp != null ? newLp.getAllRoutes() : null,
+                        newLp.getAllRoutes(),
                         (r) -> r.getRouteKey());
 
         // add routes before removing old in case it helps with continuous connectivity
@@ -7712,7 +7766,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 || !routeDiff.updated.isEmpty();
     }
 
-    private void updateDnses(LinkProperties newLp, LinkProperties oldLp, int netId) {
+    private void updateDnses(@NonNull LinkProperties newLp, @Nullable LinkProperties oldLp,
+            int netId) {
         if (oldLp != null && newLp.isIdenticalDnses(oldLp)) {
             return;  // no updating necessary
         }
@@ -7729,8 +7784,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private void updateVpnFiltering(LinkProperties newLp, LinkProperties oldLp,
-            NetworkAgentInfo nai) {
+    private void updateVpnFiltering(@NonNull LinkProperties newLp, @Nullable LinkProperties oldLp,
+            @NonNull NetworkAgentInfo nai) {
         final String oldIface = getVpnIsolationInterface(nai, nai.networkCapabilities, oldLp);
         final String newIface = getVpnIsolationInterface(nai, nai.networkCapabilities, newLp);
         final boolean wasFiltering = requiresVpnAllowRule(nai, oldLp, oldIface);
@@ -7801,7 +7856,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             @NonNull NetworkCapabilities agentCaps, @NonNull NetworkCapabilities newNc) {
         underlyingNetworks = underlyingNetworksOrDefault(
                 agentCaps.getOwnerUid(), underlyingNetworks);
-        long transportTypes = NetworkCapabilitiesUtils.packBits(agentCaps.getTransportTypes());
+        long transportTypes = BitUtils.packBits(agentCaps.getTransportTypes());
         int downKbps = NetworkCapabilities.LINK_BANDWIDTH_UNSPECIFIED;
         int upKbps = NetworkCapabilities.LINK_BANDWIDTH_UNSPECIFIED;
         // metered if any underlying is metered, or originally declared metered by the agent.
@@ -7854,7 +7909,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             suspended = false;
         }
 
-        newNc.setTransportTypes(NetworkCapabilitiesUtils.unpackBits(transportTypes));
+        newNc.setTransportTypes(BitUtils.unpackBits(transportTypes));
         newNc.setLinkDownstreamBandwidthKbps(downKbps);
         newNc.setLinkUpstreamBandwidthKbps(upKbps);
         newNc.setCapability(NET_CAPABILITY_NOT_METERED, !metered);
@@ -7966,6 +8021,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             @NonNull final NetworkCapabilities nc) {
         NetworkCapabilities newNc = mixInCapabilities(nai, nc);
         if (Objects.equals(nai.networkCapabilities, newNc)) return;
+        final String differences = newNc.describeCapsDifferencesFrom(nai.networkCapabilities);
+        if (null != differences) {
+            Log.i(TAG, "Update capabilities for net " + nai.network + " : " + differences);
+        }
         updateNetworkPermissions(nai, newNc);
         final NetworkCapabilities prevNc = nai.getAndSetNetworkCapabilities(newNc);
 
@@ -8263,7 +8322,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    public void handleUpdateLinkProperties(NetworkAgentInfo nai, LinkProperties newLp) {
+    public void handleUpdateLinkProperties(@NonNull NetworkAgentInfo nai,
+            @NonNull LinkProperties newLp) {
         ensureRunningOnConnectivityServiceThread();
 
         if (!mNetworkAgentInfos.contains(nai)) {
@@ -9728,8 +9788,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return ((VpnTransportInfo) ti).getType();
     }
 
-    private void maybeUpdateWifiRoamTimestamp(NetworkAgentInfo nai, NetworkCapabilities nc) {
-        if (nai == null) return;
+    private void maybeUpdateWifiRoamTimestamp(@NonNull NetworkAgentInfo nai,
+            @NonNull NetworkCapabilities nc) {
         final TransportInfo prevInfo = nai.networkCapabilities.getTransportInfo();
         final TransportInfo newInfo = nc.getTransportInfo();
         if (!(prevInfo instanceof WifiInfo) || !(newInfo instanceof WifiInfo)) {
