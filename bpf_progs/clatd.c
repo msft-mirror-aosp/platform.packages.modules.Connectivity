@@ -38,8 +38,19 @@
 #include "bpf_shared.h"
 #include "clat_mark.h"
 
-// From kernel:include/net/ip.h
-#define IP_DF 0x4000  // Flag: "Don't Fragment"
+// IP flags. (from kernel's include/net/ip.h)
+#define IP_CE      0x8000  // Flag: "Congestion" (really reserved 'evil bit')
+#define IP_DF      0x4000  // Flag: "Don't Fragment"
+#define IP_MF      0x2000  // Flag: "More Fragments"
+#define IP_OFFSET  0x1FFF  // "Fragment Offset" part
+
+// from kernel's include/net/ipv6.h
+struct frag_hdr {
+    __u8   nexthdr;
+    __u8   reserved;        // always zero
+    __be16 frag_off;        // 13 bit offset, 2 bits zero, 1 bit "More Fragments"
+    __be32 identification;
+};
 
 DEFINE_BPF_MAP_GRW(clat_ingress6_map, HASH, ClatIngress6Key, ClatIngress6Value, 16, AID_SYSTEM)
 
@@ -89,7 +100,32 @@ static inline __always_inline int nat64(struct __sk_buff* skb, bool is_ethernet)
 
     if (!v) return TC_ACT_PIPE;
 
-    switch (ip6->nexthdr) {
+    __u8 proto = ip6->nexthdr;
+    __be16 ip_id = 0;
+    __be16 frag_off = htons(IP_DF);
+    __u16 tot_len = ntohs(ip6->payload_len) + sizeof(struct iphdr);  // cannot overflow, see above
+
+    if (proto == IPPROTO_FRAGMENT) {
+        // Must have (ethernet and) ipv6 header and ipv6 fragment extension header
+        if (data + l2_header_size + sizeof(*ip6) + sizeof(struct frag_hdr) > data_end)
+            return TC_ACT_PIPE;
+        const struct frag_hdr *frag = (const struct frag_hdr *)(ip6 + 1);
+        proto = frag->nexthdr;
+        // Trivial hash of 32-bit IPv6 ID field into 16-bit IPv4 field.
+        ip_id = (frag->identification) ^ (frag->identification >> 16);
+        // Conversion of 16-bit IPv6 frag offset to 16-bit IPv4 frag offset field.
+        // IPv6 is '13 bits of offset in multiples of 8' + 2 zero bits + more fragment bit
+        // IPv4 is zero bit + don't frag bit + more frag bit + '13 bits of offset in multiples of 8'
+        frag_off = ntohs(frag->frag_off);
+        frag_off = ((frag_off & 1) << 13) | (frag_off >> 3);
+        frag_off = htons(frag_off);
+        // Note that by construction tot_len is guaranteed to not underflow here
+        tot_len -= sizeof(struct frag_hdr);
+        // This is a badly formed IPv6 packet with less payload than the size of an IPv6 Frag EH
+        if (tot_len < sizeof(struct iphdr)) return TC_ACT_PIPE;
+    }
+
+    switch (proto) {
         case IPPROTO_TCP:  // For TCP & UDP the checksum neutrality of the chosen IPv6
         case IPPROTO_UDP:  // address means there is no need to update their checksums.
         case IPPROTO_GRE:  // We do not need to bother looking at GRE/ESP headers,
@@ -114,14 +150,14 @@ static inline __always_inline int nat64(struct __sk_buff* skb, bool is_ethernet)
             .version = 4,                                                      // u4
             .ihl = sizeof(struct iphdr) / sizeof(__u32),                       // u4
             .tos = (ip6->priority << 4) + (ip6->flow_lbl[0] >> 4),             // u8
-            .tot_len = htons(ntohs(ip6->payload_len) + sizeof(struct iphdr)),  // u16
-            .id = 0,                                                           // u16
-            .frag_off = htons(IP_DF),                                          // u16
+            .tot_len = htons(tot_len),                                         // be16
+            .id = ip_id,                                                       // be16
+            .frag_off = frag_off,                                              // be16
             .ttl = ip6->hop_limit,                                             // u8
-            .protocol = ip6->nexthdr,                                          // u8
+            .protocol = proto,                                                 // u8
             .check = 0,                                                        // u16
-            .saddr = ip6->saddr.in6_u.u6_addr32[3],                            // u32
-            .daddr = v->local4.s_addr,                                         // u32
+            .saddr = ip6->saddr.in6_u.u6_addr32[3],                            // be32
+            .daddr = v->local4.s_addr,                                         // be32
     };
 
     // Calculate the IPv4 one's complement checksum of the IPv4 header.
@@ -171,6 +207,13 @@ static inline __always_inline int nat64(struct __sk_buff* skb, bool is_ethernet)
     //   return -ENOTSUPP;
     bpf_csum_update(skb, sum6);
 
+    if (frag_off != htons(IP_DF)) {
+        // If we're converting an IPv6 Fragment, we need to trim off 8 more bytes
+        // We're beyond recovery on error here... but hard to imagine how this could fail.
+        if (bpf_skb_adjust_room(skb, -(__s32)sizeof(struct frag_hdr), BPF_ADJ_ROOM_NET, /*flags*/0))
+            return TC_ACT_SHOT;
+    }
+
     // bpf_skb_change_proto() invalidates all pointers - reload them.
     data = (void*)(long)skb->data;
     data_end = (void*)(long)skb->data_end;
@@ -210,11 +253,6 @@ DEFINE_BPF_PROG("schedcls/ingress6/clat_rawip", AID_ROOT, AID_SYSTEM, sched_cls_
 }
 
 DEFINE_BPF_MAP_GRW(clat_egress4_map, HASH, ClatEgress4Key, ClatEgress4Value, 16, AID_SYSTEM)
-
-DEFINE_BPF_PROG("schedcls/egress4/clat_ether", AID_ROOT, AID_SYSTEM, sched_cls_egress4_clat_ether)
-(struct __sk_buff* skb) {
-    return TC_ACT_PIPE;
-}
 
 DEFINE_BPF_PROG("schedcls/egress4/clat_rawip", AID_ROOT, AID_SYSTEM, sched_cls_egress4_clat_rawip)
 (struct __sk_buff* skb) {
