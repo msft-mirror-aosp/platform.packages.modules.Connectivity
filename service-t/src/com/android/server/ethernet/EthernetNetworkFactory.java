@@ -469,7 +469,9 @@ public class EthernetNetworkFactory {
             // TODO: Update this logic to only do a restart if required. Although a restart may
             //  be required due to the capabilities or ipConfiguration values, not all
             //  capabilities changes require a restart.
-            restart();
+            if (mIpClient != null) {
+                restart();
+            }
         }
 
         boolean isRestricted() {
@@ -558,6 +560,13 @@ public class EthernetNetworkFactory {
 
         void updateNeighborLostEvent(String logMsg) {
             Log.i(TAG, "updateNeighborLostEvent " + logMsg);
+            if (mIpConfig.getIpAssignment() == IpAssignment.STATIC) {
+                // Ignore NUD failures for static IP configurations, where restarting the IpClient
+                // will not fix connectivity.
+                // In this scenario, NetworkMonitor will not verify the network, so it will
+                // eventually be torn down.
+                return;
+            }
             // Reachability lost will be seen only if the gateway is not reachable.
             // Since ethernet FW doesn't have the mechanism to scan for new networks
             // like WiFi, simply restart.
@@ -586,6 +595,14 @@ public class EthernetNetworkFactory {
         }
 
         private void stop() {
+            // Unregister NetworkAgent before stopping IpClient, so destroyNativeNetwork (which
+            // deletes routes) hopefully happens before stop() finishes execution. Otherwise, it may
+            // delete the new routes when IpClient gets restarted.
+            if (mNetworkAgent != null) {
+                mNetworkAgent.unregister();
+                mNetworkAgent = null;
+            }
+
             // Invalidate all previous start requests
             if (mIpClient != null) {
                 mIpClient.shutdown();
@@ -595,10 +612,6 @@ public class EthernetNetworkFactory {
 
             mIpClientCallback = null;
 
-            if (mNetworkAgent != null) {
-                mNetworkAgent.unregister();
-                mNetworkAgent = null;
-            }
             mLinkProperties.clear();
         }
 
