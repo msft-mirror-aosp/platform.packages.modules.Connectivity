@@ -17,6 +17,7 @@
 package android.net;
 
 import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIVATE;
+import static com.android.net.module.util.BitUtils.appendStringRepresentationOfBitMaskToStringBuilder;
 
 import android.annotation.IntDef;
 import android.annotation.LongDef;
@@ -36,6 +37,7 @@ import android.util.ArraySet;
 import android.util.Range;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.NetworkCapabilitiesUtils;
 
@@ -185,8 +187,16 @@ public final class NetworkCapabilities implements Parcelable {
             NET_ENTERPRISE_ID_4,
             NET_ENTERPRISE_ID_5,
     })
-
     public @interface EnterpriseId {
+    }
+
+    private static final int ALL_VALID_ENTERPRISE_IDS;
+    static {
+        int enterpriseIds = 0;
+        for (int i = NET_ENTERPRISE_ID_1; i <= NET_ENTERPRISE_ID_5; ++i) {
+            enterpriseIds |= 1 << i;
+        }
+        ALL_VALID_ENTERPRISE_IDS = enterpriseIds;
     }
 
     /**
@@ -209,7 +219,7 @@ public final class NetworkCapabilities implements Parcelable {
         if (hasCapability(NET_CAPABILITY_ENTERPRISE) && mEnterpriseId == 0) {
             return new int[]{NET_ENTERPRISE_ID_1};
         }
-        return NetworkCapabilitiesUtils.unpackBits(mEnterpriseId);
+        return BitUtils.unpackBits(mEnterpriseId);
     }
 
     /**
@@ -622,11 +632,20 @@ public final class NetworkCapabilities implements Parcelable {
     private static final int MIN_NET_CAPABILITY = NET_CAPABILITY_MMS;
     private static final int MAX_NET_CAPABILITY = NET_CAPABILITY_PRIORITIZE_BANDWIDTH;
 
+    private static final int ALL_VALID_CAPABILITIES;
+    static {
+        int caps = 0;
+        for (int i = MIN_NET_CAPABILITY; i <= MAX_NET_CAPABILITY; ++i) {
+            caps |= 1 << i;
+        }
+        ALL_VALID_CAPABILITIES = caps;
+    }
+
     /**
      * Network capabilities that are expected to be mutable, i.e., can change while a particular
      * network is connected.
      */
-    private static final long MUTABLE_CAPABILITIES = NetworkCapabilitiesUtils.packBitList(
+    private static final long MUTABLE_CAPABILITIES = BitUtils.packBitList(
             // TRUSTED can change when user explicitly connects to an untrusted network in Settings.
             // http://b/18206275
             NET_CAPABILITY_TRUSTED,
@@ -661,7 +680,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Capabilities that are set by default when the object is constructed.
      */
-    private static final long DEFAULT_CAPABILITIES = NetworkCapabilitiesUtils.packBitList(
+    private static final long DEFAULT_CAPABILITIES = BitUtils.packBitList(
             NET_CAPABILITY_NOT_RESTRICTED,
             NET_CAPABILITY_TRUSTED,
             NET_CAPABILITY_NOT_VPN);
@@ -670,7 +689,7 @@ public final class NetworkCapabilities implements Parcelable {
      * Capabilities that are managed by ConnectivityService.
      */
     private static final long CONNECTIVITY_MANAGED_CAPABILITIES =
-            NetworkCapabilitiesUtils.packBitList(
+            BitUtils.packBitList(
                     NET_CAPABILITY_VALIDATED,
                     NET_CAPABILITY_CAPTIVE_PORTAL,
                     NET_CAPABILITY_FOREGROUND,
@@ -683,7 +702,7 @@ public final class NetworkCapabilities implements Parcelable {
      * INTERNET, IMS, SUPL, etc.
      */
     private static final long TEST_NETWORKS_ALLOWED_CAPABILITIES =
-            NetworkCapabilitiesUtils.packBitList(
+            BitUtils.packBitList(
             NET_CAPABILITY_NOT_METERED,
             NET_CAPABILITY_TEMPORARILY_NOT_METERED,
             NET_CAPABILITY_NOT_RESTRICTED,
@@ -783,7 +802,7 @@ public final class NetworkCapabilities implements Parcelable {
      * @return an array of capability values for this instance.
      */
     public @NonNull @NetCapability int[] getCapabilities() {
-        return NetworkCapabilitiesUtils.unpackBits(mNetworkCapabilities);
+        return BitUtils.unpackBits(mNetworkCapabilities);
     }
 
     /**
@@ -793,7 +812,7 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     public @NetCapability int[] getForbiddenCapabilities() {
-        return NetworkCapabilitiesUtils.unpackBits(mForbiddenNetworkCapabilities);
+        return BitUtils.unpackBits(mForbiddenNetworkCapabilities);
     }
 
 
@@ -805,8 +824,8 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public void setCapabilities(@NetCapability int[] capabilities,
             @NetCapability int[] forbiddenCapabilities) {
-        mNetworkCapabilities = NetworkCapabilitiesUtils.packBits(capabilities);
-        mForbiddenNetworkCapabilities = NetworkCapabilitiesUtils.packBits(forbiddenCapabilities);
+        mNetworkCapabilities = BitUtils.packBits(capabilities);
+        mForbiddenNetworkCapabilities = BitUtils.packBits(forbiddenCapabilities);
     }
 
     /**
@@ -943,7 +962,7 @@ public final class NetworkCapabilities implements Parcelable {
                 & NON_REQUESTABLE_CAPABILITIES;
 
         if (nonRequestable != 0) {
-            return capabilityNameOf(NetworkCapabilitiesUtils.unpackBits(nonRequestable)[0]);
+            return capabilityNameOf(BitUtils.unpackBits(nonRequestable)[0]);
         }
         if (mLinkUpBandwidthKbps != 0 || mLinkDownBandwidthKbps != 0) return "link bandwidth";
         if (hasSignalStrength()) return "signalStrength";
@@ -1146,6 +1165,15 @@ public final class NetworkCapabilities implements Parcelable {
     /** @hide */
     public static final int MAX_TRANSPORT = TRANSPORT_USB;
 
+    private static final int ALL_VALID_TRANSPORTS;
+    static {
+        int transports = 0;
+        for (int i = MIN_TRANSPORT; i <= MAX_TRANSPORT; ++i) {
+            transports |= 1 << i;
+        }
+        ALL_VALID_TRANSPORTS = transports;
+    }
+
     /** @hide */
     public static boolean isValidTransport(@Transport int transportType) {
         return (MIN_TRANSPORT <= transportType) && (transportType <= MAX_TRANSPORT);
@@ -1167,7 +1195,7 @@ public final class NetworkCapabilities implements Parcelable {
      * Allowed transports on an unrestricted test network (in addition to TRANSPORT_TEST).
      */
     private static final long UNRESTRICTED_TEST_NETWORKS_ALLOWED_TRANSPORTS =
-            NetworkCapabilitiesUtils.packBitList(
+            BitUtils.packBitList(
                     TRANSPORT_TEST,
                     // Test eth networks are created with EthernetManager#setIncludeTestInterfaces
                     TRANSPORT_ETHERNET,
@@ -1232,7 +1260,7 @@ public final class NetworkCapabilities implements Parcelable {
      */
     @SystemApi
     @NonNull public @Transport int[] getTransportTypes() {
-        return NetworkCapabilitiesUtils.unpackBits(mTransportTypes);
+        return BitUtils.unpackBits(mTransportTypes);
     }
 
     /**
@@ -1242,7 +1270,7 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     public void setTransportTypes(@Transport int[] transportTypes) {
-        mTransportTypes = NetworkCapabilitiesUtils.packBits(transportTypes);
+        mTransportTypes = BitUtils.packBits(transportTypes);
     }
 
     /**
@@ -2015,9 +2043,9 @@ public final class NetworkCapabilities implements Parcelable {
         long oldImmutableCapabilities = this.mNetworkCapabilities & mask;
         long newImmutableCapabilities = that.mNetworkCapabilities & mask;
         if (oldImmutableCapabilities != newImmutableCapabilities) {
-            String before = capabilityNamesOf(NetworkCapabilitiesUtils.unpackBits(
+            String before = capabilityNamesOf(BitUtils.unpackBits(
                     oldImmutableCapabilities));
-            String after = capabilityNamesOf(NetworkCapabilitiesUtils.unpackBits(
+            String after = capabilityNamesOf(BitUtils.unpackBits(
                     newImmutableCapabilities));
             joiner.add(String.format("immutable capabilities changed: %s -> %s", before, after));
         }
@@ -2035,6 +2063,36 @@ public final class NetworkCapabilities implements Parcelable {
         }
 
         return joiner.toString();
+    }
+
+    /**
+     * Returns a short but human-readable string of updates from an older set of capabilities.
+     * @param old the old capabilities to diff from
+     * @return a string fit for logging differences, or null if no differences.
+     *         this never returns the empty string.
+     * @hide
+     */
+    @Nullable
+    public String describeCapsDifferencesFrom(@Nullable final NetworkCapabilities old) {
+        final long oldCaps = null == old ? 0 : old.mNetworkCapabilities;
+        final long changed = oldCaps ^ mNetworkCapabilities;
+        if (0 == changed) return null;
+        // If the control reaches here, there are changes (additions, removals, or both) so
+        // the code below is guaranteed to add something to the string and can't return "".
+        final long removed = oldCaps & changed;
+        final long added = mNetworkCapabilities & changed;
+        final StringBuilder sb = new StringBuilder();
+        if (0 != removed) {
+            sb.append("-");
+            appendStringRepresentationOfBitMaskToStringBuilder(sb, removed,
+                    NetworkCapabilities::capabilityNameOf, "-");
+        }
+        if (0 != added) {
+            sb.append("+");
+            appendStringRepresentationOfBitMaskToStringBuilder(sb, added,
+                    NetworkCapabilities::capabilityNameOf, "+");
+        }
+        return sb.toString();
     }
 
     /**
@@ -2114,9 +2172,9 @@ public final class NetworkCapabilities implements Parcelable {
 
     @Override
     public void writeToParcel(Parcel dest, int flags) {
-        dest.writeLong(mNetworkCapabilities);
-        dest.writeLong(mForbiddenNetworkCapabilities);
-        dest.writeLong(mTransportTypes);
+        dest.writeLong(mNetworkCapabilities & ALL_VALID_CAPABILITIES);
+        dest.writeLong(mForbiddenNetworkCapabilities & ALL_VALID_CAPABILITIES);
+        dest.writeLong(mTransportTypes & ALL_VALID_TRANSPORTS);
         dest.writeInt(mLinkUpBandwidthKbps);
         dest.writeInt(mLinkDownBandwidthKbps);
         dest.writeParcelable((Parcelable) mNetworkSpecifier, flags);
@@ -2132,7 +2190,7 @@ public final class NetworkCapabilities implements Parcelable {
         dest.writeString(mRequestorPackageName);
         dest.writeIntArray(CollectionUtils.toIntArray(mSubIds));
         dest.writeTypedList(mUnderlyingNetworks);
-        dest.writeInt(mEnterpriseId);
+        dest.writeInt(mEnterpriseId & ALL_VALID_ENTERPRISE_IDS);
     }
 
     public static final @android.annotation.NonNull Creator<NetworkCapabilities> CREATOR =
@@ -2140,10 +2198,10 @@ public final class NetworkCapabilities implements Parcelable {
             @Override
             public NetworkCapabilities createFromParcel(Parcel in) {
                 NetworkCapabilities netCap = new NetworkCapabilities();
-
-                netCap.mNetworkCapabilities = in.readLong();
-                netCap.mForbiddenNetworkCapabilities = in.readLong();
-                netCap.mTransportTypes = in.readLong();
+                // Validate the unparceled data, in case the parceling party was malicious.
+                netCap.mNetworkCapabilities = in.readLong() & ALL_VALID_CAPABILITIES;
+                netCap.mForbiddenNetworkCapabilities = in.readLong() & ALL_VALID_CAPABILITIES;
+                netCap.mTransportTypes = in.readLong() & ALL_VALID_TRANSPORTS;
                 netCap.mLinkUpBandwidthKbps = in.readInt();
                 netCap.mLinkDownBandwidthKbps = in.readInt();
                 netCap.mNetworkSpecifier = in.readParcelable(null);
@@ -2167,7 +2225,7 @@ public final class NetworkCapabilities implements Parcelable {
                     netCap.mSubIds.add(subIdInts[i]);
                 }
                 netCap.setUnderlyingNetworks(in.createTypedArrayList(Network.CREATOR));
-                netCap.mEnterpriseId = in.readInt();
+                netCap.mEnterpriseId = in.readInt() & ALL_VALID_ENTERPRISE_IDS;
                 return netCap;
             }
             @Override
@@ -2285,32 +2343,6 @@ public final class NetworkCapabilities implements Parcelable {
 
         sb.append("]");
         return sb.toString();
-    }
-
-
-    private interface NameOf {
-        String nameOf(int value);
-    }
-
-    /**
-     * @hide
-     */
-    public static void appendStringRepresentationOfBitMaskToStringBuilder(@NonNull StringBuilder sb,
-            long bitMask, @NonNull NameOf nameFetcher, @NonNull String separator) {
-        int bitPos = 0;
-        boolean firstElementAdded = false;
-        while (bitMask != 0) {
-            if ((bitMask & 1) != 0) {
-                if (firstElementAdded) {
-                    sb.append(separator);
-                } else {
-                    firstElementAdded = true;
-                }
-                sb.append(nameFetcher.nameOf(bitPos));
-            }
-            bitMask >>= 1;
-            ++bitPos;
-        }
     }
 
     /**
