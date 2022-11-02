@@ -55,7 +55,7 @@ apex {
     defaults: [
         "ConnectivityApexDefaults",
         "CronetApexDefaults",
-        "r-launched-apex-module",
+        "r-launched-dcla-enabled-apex-module",
     ],
     compile_multilib: "both",
     bootclasspath_fragments: [
