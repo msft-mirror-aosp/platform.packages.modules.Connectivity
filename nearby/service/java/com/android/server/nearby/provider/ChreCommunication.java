@@ -19,16 +19,17 @@ package com.android.server.nearby.provider;
 import static com.android.server.nearby.NearbyService.TAG;
 
 import android.annotation.Nullable;
+import android.content.Context;
 import android.hardware.location.ContextHubClient;
 import android.hardware.location.ContextHubClientCallback;
 import android.hardware.location.ContextHubInfo;
+import android.hardware.location.ContextHubManager;
 import android.hardware.location.ContextHubTransaction;
 import android.hardware.location.NanoAppMessage;
 import android.hardware.location.NanoAppState;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.nearby.injector.ContextHubManagerAdapter;
 import com.android.server.nearby.injector.Injector;
 
 import com.google.common.base.Preconditions;
@@ -64,14 +65,16 @@ public class ChreCommunication extends ContextHubClientCallback {
     }
 
     private final Injector mInjector;
+    private final Context mContext;
     private final Executor mExecutor;
 
     private boolean mStarted = false;
     @Nullable private ContextHubCommsCallback mCallback;
     @Nullable private ContextHubClient mContextHubClient;
 
-    public ChreCommunication(Injector injector, Executor executor) {
+    public ChreCommunication(Injector injector, Context context, Executor executor) {
         mInjector = injector;
+        mContext = context;
         mExecutor = executor;
     }
 
@@ -87,7 +90,7 @@ public class ChreCommunication extends ContextHubClientCallback {
      *     contexthub.
      */
     public synchronized void start(ContextHubCommsCallback callback, Set<Long> nanoAppIds) {
-        ContextHubManagerAdapter manager = mInjector.getContextHubManagerAdapter();
+        ContextHubManager manager = mInjector.getContextHubManager();
         if (manager == null) {
             Log.e(TAG, "ContexHub not available in this device");
             return;
@@ -209,13 +212,13 @@ public class ChreCommunication extends ContextHubClientCallback {
         private final ContextHubInfo mQueriedContextHub;
         private final List<ContextHubInfo> mContextHubs;
         private final Set<Long> mNanoAppIds;
-        private final ContextHubManagerAdapter mManager;
+        private final ContextHubManager mManager;
 
         OnQueryCompleteListener(
                 ContextHubInfo queriedContextHub,
                 List<ContextHubInfo> contextHubs,
                 Set<Long> nanoAppIds,
-                ContextHubManagerAdapter manager) {
+                ContextHubManager manager) {
             this.mQueriedContextHub = queriedContextHub;
             this.mContextHubs = contextHubs;
             this.mNanoAppIds = nanoAppIds;
@@ -240,14 +243,13 @@ public class ChreCommunication extends ContextHubClientCallback {
                                 TAG,
                                 String.format(
                                         "Found valid contexthub: %s", mQueriedContextHub.getId()));
-                        mContextHubClient =
-                                mManager.createClient(
-                                        mQueriedContextHub, ChreCommunication.this, mExecutor);
+                        mContextHubClient = mManager.createClient(mContext, mQueriedContextHub,
+                                mExecutor, ChreCommunication.this);
                         mCallback.started(true);
                         return;
                     }
                 }
-                Log.e(
+                Log.i(
                         TAG,
                         String.format(
                                 "Didn't find the nanoapp on contexthub: %s",

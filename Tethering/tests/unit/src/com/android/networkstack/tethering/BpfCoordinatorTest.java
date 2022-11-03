@@ -94,11 +94,13 @@ import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.dx.mockito.inline.extended.ExtendedMockito;
-import com.android.net.module.util.BpfMap;
+import com.android.internal.util.IndentingPrintWriter;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
 import com.android.net.module.util.SharedLog;
+import com.android.net.module.util.Struct.S32;
 import com.android.net.module.util.bpf.Tether4Key;
 import com.android.net.module.util.bpf.Tether4Value;
 import com.android.net.module.util.bpf.TetherStatsKey;
@@ -128,6 +130,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.MockitoSession;
 
+import java.io.StringWriter;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -135,6 +138,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.Map;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
@@ -192,13 +196,11 @@ public class BpfCoordinatorTest {
             UPSTREAM_IFACE2, UPSTREAM_IFINDEX2, MacAddress.fromString("44:55:66:00:00:0c"),
             NetworkStackConstants.ETHER_MTU);
 
-    private static final HashMap<Integer, UpstreamInformation> UPSTREAM_INFORMATIONS =
-            new HashMap<Integer, UpstreamInformation>() {{
-                    put(UPSTREAM_IFINDEX, new UpstreamInformation(UPSTREAM_IFACE_PARAMS,
-                            PUBLIC_ADDR, NetworkCapabilities.TRANSPORT_CELLULAR, TEST_NET_ID));
-                    put(UPSTREAM_IFINDEX2, new UpstreamInformation(UPSTREAM_IFACE_PARAMS2,
-                            PUBLIC_ADDR2, NetworkCapabilities.TRANSPORT_WIFI, TEST_NET_ID2));
-            }};
+    private static final Map<Integer, UpstreamInformation> UPSTREAM_INFORMATIONS = Map.of(
+            UPSTREAM_IFINDEX, new UpstreamInformation(UPSTREAM_IFACE_PARAMS,
+                    PUBLIC_ADDR, NetworkCapabilities.TRANSPORT_CELLULAR, TEST_NET_ID),
+            UPSTREAM_IFINDEX2, new UpstreamInformation(UPSTREAM_IFACE_PARAMS2,
+                    PUBLIC_ADDR2, NetworkCapabilities.TRANSPORT_WIFI, TEST_NET_ID2));
 
     private static final ClientInfo CLIENT_INFO_A = new ClientInfo(DOWNSTREAM_IFINDEX,
             DOWNSTREAM_MAC, PRIVATE_ADDR, MAC_A);
@@ -362,9 +364,6 @@ public class BpfCoordinatorTest {
     @Mock private IpServer mIpServer2;
     @Mock private TetheringConfiguration mTetherConfig;
     @Mock private ConntrackMonitor mConntrackMonitor;
-    @Mock private BpfMap<TetherDownstream6Key, Tether6Value> mBpfDownstream6Map;
-    @Mock private BpfMap<TetherUpstream6Key, Tether6Value> mBpfUpstream6Map;
-    @Mock private BpfMap<TetherDevKey, TetherDevValue> mBpfDevMap;
 
     // Late init since methods must be called by the thread that created this object.
     private TestableNetworkStatsProviderCbBinder mTetherStatsProviderCb;
@@ -379,14 +378,22 @@ public class BpfCoordinatorTest {
     private final ArgumentCaptor<ArrayList> mStringArrayCaptor =
             ArgumentCaptor.forClass(ArrayList.class);
     private final TestLooper mTestLooper = new TestLooper();
-    private final BpfMap<Tether4Key, Tether4Value> mBpfDownstream4Map =
+    private final IBpfMap<Tether4Key, Tether4Value> mBpfDownstream4Map =
             spy(new TestBpfMap<>(Tether4Key.class, Tether4Value.class));
-    private final BpfMap<Tether4Key, Tether4Value> mBpfUpstream4Map =
+    private final IBpfMap<Tether4Key, Tether4Value> mBpfUpstream4Map =
             spy(new TestBpfMap<>(Tether4Key.class, Tether4Value.class));
-    private final TestBpfMap<TetherStatsKey, TetherStatsValue> mBpfStatsMap =
+    private final IBpfMap<TetherDownstream6Key, Tether6Value> mBpfDownstream6Map =
+            spy(new TestBpfMap<>(TetherDownstream6Key.class, Tether6Value.class));
+    private final IBpfMap<TetherUpstream6Key, Tether6Value> mBpfUpstream6Map =
+            spy(new TestBpfMap<>(TetherUpstream6Key.class, Tether6Value.class));
+    private final IBpfMap<TetherStatsKey, TetherStatsValue> mBpfStatsMap =
             spy(new TestBpfMap<>(TetherStatsKey.class, TetherStatsValue.class));
-    private final TestBpfMap<TetherLimitKey, TetherLimitValue> mBpfLimitMap =
+    private final IBpfMap<TetherLimitKey, TetherLimitValue> mBpfLimitMap =
             spy(new TestBpfMap<>(TetherLimitKey.class, TetherLimitValue.class));
+    private final IBpfMap<TetherDevKey, TetherDevValue> mBpfDevMap =
+            spy(new TestBpfMap<>(TetherDevKey.class, TetherDevValue.class));
+    private final IBpfMap<S32, S32> mBpfErrorMap =
+            spy(new TestBpfMap<>(S32.class, S32.class));
     private BpfCoordinator.Dependencies mDeps =
             spy(new BpfCoordinator.Dependencies() {
                     @NonNull
@@ -424,38 +431,43 @@ public class BpfCoordinatorTest {
                     }
 
                     @Nullable
-                    public BpfMap<Tether4Key, Tether4Value> getBpfDownstream4Map() {
+                    public IBpfMap<Tether4Key, Tether4Value> getBpfDownstream4Map() {
                         return mBpfDownstream4Map;
                     }
 
                     @Nullable
-                    public BpfMap<Tether4Key, Tether4Value> getBpfUpstream4Map() {
+                    public IBpfMap<Tether4Key, Tether4Value> getBpfUpstream4Map() {
                         return mBpfUpstream4Map;
                     }
 
                     @Nullable
-                    public BpfMap<TetherDownstream6Key, Tether6Value> getBpfDownstream6Map() {
+                    public IBpfMap<TetherDownstream6Key, Tether6Value> getBpfDownstream6Map() {
                         return mBpfDownstream6Map;
                     }
 
                     @Nullable
-                    public BpfMap<TetherUpstream6Key, Tether6Value> getBpfUpstream6Map() {
+                    public IBpfMap<TetherUpstream6Key, Tether6Value> getBpfUpstream6Map() {
                         return mBpfUpstream6Map;
                     }
 
                     @Nullable
-                    public BpfMap<TetherStatsKey, TetherStatsValue> getBpfStatsMap() {
+                    public IBpfMap<TetherStatsKey, TetherStatsValue> getBpfStatsMap() {
                         return mBpfStatsMap;
                     }
 
                     @Nullable
-                    public BpfMap<TetherLimitKey, TetherLimitValue> getBpfLimitMap() {
+                    public IBpfMap<TetherLimitKey, TetherLimitValue> getBpfLimitMap() {
                         return mBpfLimitMap;
                     }
 
                     @Nullable
-                    public BpfMap<TetherDevKey, TetherDevValue> getBpfDevMap() {
+                    public IBpfMap<TetherDevKey, TetherDevValue> getBpfDevMap() {
                         return mBpfDevMap;
+                    }
+
+                    @Nullable
+                    public IBpfMap<S32, S32> getBpfErrorMap() {
+                        return mBpfErrorMap;
                     }
             });
 
@@ -1413,7 +1425,7 @@ public class BpfCoordinatorTest {
 
         // [1] Don't stop monitoring if it has never started.
         coordinator.stopMonitoring(mIpServer);
-        verify(mConntrackMonitor, never()).start();
+        verify(mConntrackMonitor, never()).stop();
 
         // [2] Start monitoring.
         coordinator.startMonitoring(mIpServer);
@@ -2091,5 +2103,96 @@ public class BpfCoordinatorTest {
         assertNull(mTetherClients.get(mIpServer));
         assertNull(mBpfUpstream4Map.getValue(upstream4KeyB));
         assertNull(mBpfDownstream4Map.getValue(downstream4KeyB));
+    }
+
+    @Test
+    public void testIpv6ForwardingRuleToString() throws Exception {
+        final Ipv6ForwardingRule rule = buildTestForwardingRule(UPSTREAM_IFINDEX, NEIGH_A, MAC_A);
+        assertEquals("upstreamIfindex: 1001, downstreamIfindex: 1003, address: 2001:db8::1, "
+                + "srcMac: 12:34:56:78:90:ab, dstMac: 00:00:00:00:00:0a", rule.toString());
+    }
+
+    private void verifyDump(@NonNull final BpfCoordinator coordinator) {
+        final StringWriter stringWriter = new StringWriter();
+        final IndentingPrintWriter ipw = new IndentingPrintWriter(stringWriter, " ");
+        coordinator.dump(ipw);
+        assertFalse(stringWriter.toString().isEmpty());
+    }
+
+    @Test
+    public void testDumpDoesNotCrash() throws Exception {
+        // This dump test only used to for improving mainline module test coverage and doesn't
+        // really do any meaningful tests.
+        // TODO: consider verifying the dump content and separate tests into testDumpXXX().
+        final BpfCoordinator coordinator = makeBpfCoordinator();
+
+        // [1] Dump mostly empty content.
+        verifyDump(coordinator);
+
+        // [2] Dump mostly non-empty content.
+        // Test the following dump function and fill the corresponding content to execute
+        // code as more as possible for test coverage.
+        // - dumpBpfForwardingRulesIpv4
+        //   * mBpfDownstream4Map
+        //   * mBpfUpstream4Map
+        // - dumpBpfForwardingRulesIpv6
+        //   * mBpfDownstream6Map
+        //   * mBpfUpstream6Map
+        // - dumpStats
+        //   * mBpfStatsMap
+        // - dumpDevmap
+        //   * mBpfDevMap
+        // - dumpCounters
+        //   * mBpfErrorMap
+        // - dumpIpv6ForwardingRulesByDownstream
+        //   * mIpv6ForwardingRules
+
+        // dumpBpfForwardingRulesIpv4
+        mBpfDownstream4Map.insertEntry(
+                new TestDownstream4Key.Builder().build(),
+                new TestDownstream4Value.Builder().build());
+        mBpfUpstream4Map.insertEntry(
+                new TestUpstream4Key.Builder().build(),
+                new TestUpstream4Value.Builder().build());
+
+        // dumpBpfForwardingRulesIpv6
+        final Ipv6ForwardingRule rule = buildTestForwardingRule(UPSTREAM_IFINDEX, NEIGH_A, MAC_A);
+        mBpfDownstream6Map.insertEntry(rule.makeTetherDownstream6Key(), rule.makeTether6Value());
+
+        final TetherUpstream6Key upstream6Key = new TetherUpstream6Key(DOWNSTREAM_IFINDEX,
+                DOWNSTREAM_MAC);
+        final Tether6Value upstream6Value = new Tether6Value(UPSTREAM_IFINDEX,
+                MacAddress.ALL_ZEROS_ADDRESS, MacAddress.ALL_ZEROS_ADDRESS,
+                ETH_P_IPV6, NetworkStackConstants.ETHER_MTU);
+        mBpfUpstream6Map.insertEntry(upstream6Key, upstream6Value);
+
+        // dumpStats
+        mBpfStatsMap.insertEntry(
+                new TetherStatsKey(UPSTREAM_IFINDEX),
+                new TetherStatsValue(
+                        0L /* rxPackets */, 0L /* rxBytes */, 0L /* rxErrors */,
+                        0L /* txPackets */, 0L /* txBytes */, 0L /* txErrors */));
+
+        // dumpDevmap
+        coordinator.addUpstreamNameToLookupTable(UPSTREAM_IFINDEX, UPSTREAM_IFACE);
+        mBpfDevMap.insertEntry(
+                new TetherDevKey(UPSTREAM_IFINDEX),
+                new TetherDevValue(UPSTREAM_IFINDEX));
+
+        // dumpCounters
+        // The error code is defined in packages/modules/Connectivity/bpf_progs/bpf_tethering.h.
+        mBpfErrorMap.insertEntry(
+                new S32(0 /* INVALID_IPV4_VERSION */),
+                new S32(1000 /* count */));
+
+        // dumpIpv6ForwardingRulesByDownstream
+        final HashMap<IpServer, LinkedHashMap<Inet6Address, Ipv6ForwardingRule>>
+                ipv6ForwardingRules = coordinator.getForwardingRulesForTesting();
+        final LinkedHashMap<Inet6Address, Ipv6ForwardingRule> addressRuleMap =
+                new LinkedHashMap<>();
+        addressRuleMap.put(rule.address, rule);
+        ipv6ForwardingRules.put(mIpServer, addressRuleMap);
+
+        verifyDump(coordinator);
     }
 }

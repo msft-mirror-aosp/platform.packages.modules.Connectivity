@@ -34,8 +34,8 @@ import android.service.NetworkIdentityProto;
 import android.telephony.TelephonyManager;
 import android.util.proto.ProtoOutputStream;
 
+import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.CollectionUtils;
-import com.android.net.module.util.NetworkCapabilitiesUtils;
 import com.android.net.module.util.NetworkIdentityUtils;
 
 import java.lang.annotation.Retention;
@@ -84,6 +84,12 @@ public class NetworkIdentity {
     public static final int OEM_PRIVATE = 1 << 1;
 
     private static final long SUPPORTED_OEM_MANAGED_TYPES = OEM_PAID | OEM_PRIVATE;
+
+    // Need to be synchronized with ConnectivityManager.
+    // TODO: Use {@code ConnectivityManager#*} when visible.
+    static final int TYPE_TEST = 18;
+    private static final int MAX_NETWORK_TYPE = TYPE_TEST;
+    private static final int MIN_NETWORK_TYPE = TYPE_MOBILE;
 
     final int mType;
     final int mRatType;
@@ -166,7 +172,7 @@ public class NetworkIdentity {
         if (oemManaged == OEM_NONE) {
             return "OEM_NONE";
         }
-        final int[] bitPositions = NetworkCapabilitiesUtils.unpackBits(oemManaged);
+        final int[] bitPositions = BitUtils.unpackBits(oemManaged);
         final ArrayList<String> oemManagedNames = new ArrayList<String>();
         for (int position : bitPositions) {
             oemManagedNames.add(nameOfOemManaged(1 << position));
@@ -346,11 +352,6 @@ public class NetworkIdentity {
      * Builder class for {@link NetworkIdentity}.
      */
     public static final class Builder {
-        // Need to be synchronized with ConnectivityManager.
-        // TODO: Use {@link ConnectivityManager#MAX_NETWORK_TYPE} when this file is in the module.
-        private static final int MAX_NETWORK_TYPE = 18; // TYPE_TEST
-        private static final int MIN_NETWORK_TYPE = TYPE_MOBILE;
-
         private int mType;
         private int mRatType;
         private String mSubscriberId;
@@ -412,6 +413,12 @@ public class NetworkIdentity {
                 if (transportInfo instanceof WifiInfo) {
                     final WifiInfo info = (WifiInfo) transportInfo;
                     setWifiNetworkKey(info.getNetworkKey());
+                }
+            } else if (mType == TYPE_TEST) {
+                final NetworkSpecifier ns = snapshot.getNetworkCapabilities().getNetworkSpecifier();
+                if (ns instanceof TestNetworkSpecifier) {
+                    // Reuse the wifi network key field to identify individual test networks.
+                    setWifiNetworkKey(((TestNetworkSpecifier) ns).getInterfaceName());
                 }
             }
             return this;
@@ -574,7 +581,7 @@ public class NetworkIdentity {
             }
 
             // Assert non-wifi network cannot have a wifi network key.
-            if (mType != TYPE_WIFI && mWifiNetworkKey != null) {
+            if (mType != TYPE_WIFI && mType != TYPE_TEST && mWifiNetworkKey != null) {
                 throw new IllegalArgumentException("Invalid wifi network key for type " + mType);
             }
         }
