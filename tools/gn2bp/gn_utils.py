@@ -120,6 +120,7 @@ class GnParser(object):
       self.outputs = set()
       self.script = None
       self.args = []
+      self.response_file_contents = None
 
       # These variables are propagated up when encountering a dependency
       # on a source_set target.
@@ -168,6 +169,21 @@ class GnParser(object):
     self.source_sets = {}
     self.actions = {}
     self.proto_libs = {}
+
+  def _get_response_file_contents(self, action_desc):
+    # response_file_contents are formatted as:
+    # ['--flags', '--flag=true && false'] and need to be formatted as:
+    # '--flags --flag=\"true && false\"'
+    flags = action_desc.get('response_file_contents', [])
+    formatted_flags = []
+    for flag in flags:
+      if '=' in flag:
+        key, val = flag.split('=')
+        formatted_flags.append('%s=\\"%s\\"' % (key, val))
+      else:
+        formatted_flags.append(flag)
+
+    return ' '.join(formatted_flags)
 
   def get_target(self, gn_target_name):
     """Returns a Target object from the fully qualified GN target name.
@@ -222,9 +238,8 @@ class GnParser(object):
       outs = [re.sub('^//out/.+?/gen/', '', x) for x in desc['outputs']]
       target.outputs.update(outs)
       target.script = desc['script']
-      # Args are typically relative to the root build dir (../../xxx)
-      # because root build dir is typically out/xxx/).
-      target.args = [re.sub('^../../', '//', x) for x in desc['args']]
+      target.args = desc['args']
+      target.response_file_contents = self._get_response_file_contents(desc)
     elif target.type == 'copy':
       # TODO: copy rules are not currently implemented.
       self.actions[gn_target_name] = target
