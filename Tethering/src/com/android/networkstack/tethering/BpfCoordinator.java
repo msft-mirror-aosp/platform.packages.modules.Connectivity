@@ -403,6 +403,18 @@ public class BpfCoordinator {
                 return null;
             }
         }
+
+        /** Get error BPF map. */
+        @Nullable public IBpfMap<S32, S32> getBpfErrorMap() {
+            if (!isAtLeastS()) return null;
+            try {
+                return new BpfMap<>(TETHER_ERROR_MAP_PATH,
+                    BpfMap.BPF_F_RDONLY, S32.class, S32.class);
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Cannot create error map: " + e);
+                return null;
+            }
+        }
     }
 
     @VisibleForTesting
@@ -535,6 +547,13 @@ public class BpfCoordinator {
     public void stopMonitoring(@NonNull final IpServer ipServer) {
         // TODO: Wrap conntrackMonitor stopping function into mBpfCoordinatorShim.
         if (!isUsingBpf() || !mDeps.isAtLeastS()) return;
+
+        // Ignore stopping monitoring if the monitor has never started for a given IpServer.
+        if (!mMonitoringIpServers.contains(ipServer)) {
+            mLog.e("Ignore stopping monitoring because monitoring has never started for "
+                    + ipServer.interfaceName());
+            return;
+        }
 
         mMonitoringIpServers.remove(ipServer);
 
@@ -1280,13 +1299,15 @@ public class BpfCoordinator {
     }
 
     private void dumpCounters(@NonNull IndentingPrintWriter pw) {
-        if (!mDeps.isAtLeastS()) {
-            pw.println("No counter support");
-            return;
-        }
-        try (IBpfMap<S32, S32> map = new BpfMap<>(TETHER_ERROR_MAP_PATH, BpfMap.BPF_F_RDONLY,
-                S32.class, S32.class)) {
-
+        try (IBpfMap<S32, S32> map = mDeps.getBpfErrorMap()) {
+            if (map == null) {
+                pw.println("No error counter support");
+                return;
+            }
+            if (map.isEmpty()) {
+                pw.println("<empty>");
+                return;
+            }
             map.forEach((k, v) -> {
                 String counterName;
                 try {
@@ -1300,7 +1321,7 @@ public class BpfCoordinator {
                 if (v.val > 0) pw.println(String.format("%s: %d", counterName, v.val));
             });
         } catch (ErrnoException | IOException e) {
-            pw.println("Error dumping counter map: " + e);
+            pw.println("Error dumping error counter map: " + e);
         }
     }
 
@@ -1465,6 +1486,15 @@ public class BpfCoordinator {
             // TODO: if this is ever used in production code, don't pass ifindices
             // to Objects.hash() to avoid autoboxing overhead.
             return Objects.hash(upstreamIfindex, downstreamIfindex, address, srcMac, dstMac);
+        }
+
+        @Override
+        public String toString() {
+            return "upstreamIfindex: " + upstreamIfindex
+                    + ", downstreamIfindex: " + downstreamIfindex
+                    + ", address: " + address.getHostAddress()
+                    + ", srcMac: " + srcMac
+                    + ", dstMac: " + dstMac;
         }
     }
 
