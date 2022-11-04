@@ -16,6 +16,11 @@
 
 package test.unsupportedappusage;
 
+
+import android.compat.annotation.UnsupportedAppUsage;
+
 public class TestUnsupportedAppUsageClass {
+    // The annotation is just for completeness, what matters is the unsupportedappusage.txt file
+    @UnsupportedAppUsage
     public void testMethod() {}
 }
