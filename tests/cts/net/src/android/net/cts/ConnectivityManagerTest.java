@@ -270,7 +270,10 @@ public class ConnectivityManagerTest {
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
-    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 5_000;
+    // Timeout for waiting network to be validated. Set the timeout to 30s, which is more than
+    // DNS timeout.
+    // TODO(b/252972908): reset the original timer when aosp/2188755 is ramped up.
+    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 30_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int SOCKET_TIMEOUT_MS = 100;
     private static final int NUM_TRIES_MULTIPATH_PREF_CHECK = 20;
@@ -2618,8 +2621,7 @@ public class ConnectivityManagerTest {
             // the network with the TEST transport. Also wait for validation here, in case there
             // is a bug that's only visible when the network is validated.
             setWifiMeteredStatusAndWait(ssid, true /* isMetered */, true /* waitForValidation */);
-            defaultCallback.expectCallback(CallbackEntry.LOST, wifiNetwork,
-                    NETWORK_CALLBACK_TIMEOUT_MS);
+            defaultCallback.expect(CallbackEntry.LOST, wifiNetwork, NETWORK_CALLBACK_TIMEOUT_MS);
             waitForAvailable(defaultCallback, tnt.getNetwork());
             // Depending on if this device has cellular connectivity or not, multiple available
             // callbacks may be received. Eventually, metered Wi-Fi should be the final available
@@ -2628,10 +2630,9 @@ public class ConnectivityManagerTest {
             waitForAvailable(systemDefaultCallback, TRANSPORT_WIFI);
         }, /* cleanup */ () -> {
             // Validate that removing the test network will fallback to the default network.
-            runWithShellPermissionIdentity(tnt::teardown);
-            defaultCallback.expectCallback(CallbackEntry.LOST, tnt.getNetwork(),
-                    NETWORK_CALLBACK_TIMEOUT_MS);
-            waitForAvailable(defaultCallback);
+                runWithShellPermissionIdentity(tnt::teardown);
+                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
+                waitForAvailable(defaultCallback);
             }, /* cleanup */ () -> {
                 setWifiMeteredStatusAndWait(ssid, oldMeteredValue, false /* waitForValidation */);
             }, /* cleanup */ () -> {
@@ -2666,8 +2667,7 @@ public class ConnectivityManagerTest {
             waitForAvailable(systemDefaultCallback, wifiNetwork);
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
-                defaultCallback.expectCallback(CallbackEntry.LOST, tnt.getNetwork(),
-                        NETWORK_CALLBACK_TIMEOUT_MS);
+                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
 
                 // This network preference should only ever use the test network therefore available
                 // should not trigger when the test network goes down (e.g. switch to cellular).
