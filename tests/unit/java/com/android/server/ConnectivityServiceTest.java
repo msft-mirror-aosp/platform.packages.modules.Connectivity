@@ -3477,7 +3477,12 @@ public class ConnectivityServiceTest {
             final int uid, final String packageName) throws Exception {
         doReturn(buildPackageInfo(true /* hasSystemPermission */, uid)).when(mPackageManager)
                 .getPackageInfo(eq(packageName), eq(GET_PERMISSIONS));
-        mService.mPermissionMonitor.onPackageAdded(packageName, uid);
+
+        // Send a broadcast indicating a package was installed.
+        final Intent addedIntent = new Intent(ACTION_PACKAGE_ADDED);
+        addedIntent.putExtra(Intent.EXTRA_UID, uid);
+        addedIntent.setData(Uri.parse("package:" + packageName));
+        processBroadcast(addedIntent);
     }
 
     @Test
@@ -7327,8 +7332,14 @@ public class ConnectivityServiceTest {
         expectNotifyNetworkStatus(onlyCell(), onlyCell(), MOBILE_IFNAME);
         reset(mStatsManager);
 
-        // Temp metered change shouldn't update ifaces
+        // Temp metered change should update ifaces
         mCellNetworkAgent.addCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED);
+        waitForIdle();
+        expectNotifyNetworkStatus(onlyCell(), onlyCell(), MOBILE_IFNAME);
+        reset(mStatsManager);
+
+        // Congested change shouldn't update ifaces
+        mCellNetworkAgent.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED);
         waitForIdle();
         verify(mStatsManager, never()).notifyNetworkStatus(eq(onlyCell()),
                 any(List.class), eq(MOBILE_IFNAME), any(List.class));
