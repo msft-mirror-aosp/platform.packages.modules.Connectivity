@@ -25,6 +25,7 @@ import com.android.server.connectivity.mdns.util.MdnsLogger;
 import java.io.EOFException;
 import java.io.IOException;
 import java.net.DatagramPacket;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
@@ -37,6 +38,8 @@ public class MdnsResponseDecoder {
     public static final int SUCCESS = 0;
     private static final String TAG = "MdnsResponseDecoder";
     private static final MdnsLogger LOGGER = new MdnsLogger(TAG);
+    private final boolean allowMultipleSrvRecordsPerHost =
+            MdnsConfigs.allowMultipleSrvRecordsPerHost();
     private final String[] serviceType;
     private final Clock clock;
 
@@ -92,9 +95,12 @@ public class MdnsResponseDecoder {
      * the responses for completeness; the caller should do that.
      *
      * @param packet The packet to read from.
+     * @param interfaceIndex the network interface index (or {@link
+     *     MdnsSocket#INTERFACE_INDEX_UNSPECIFIED} if not known) at which the packet was received
      * @return A list of mDNS responses, or null if the packet contained no appropriate responses.
      */
-    public int decode(@NonNull DatagramPacket packet, @NonNull List<MdnsResponse> responses) {
+    public int decode(@NonNull DatagramPacket packet, @NonNull List<MdnsResponse> responses,
+            int interfaceIndex) {
         MdnsPacketReader reader = new MdnsPacketReader(packet);
 
         List<MdnsRecord> records;
@@ -278,16 +284,56 @@ public class MdnsResponseDecoder {
         for (MdnsRecord record : records) {
             if (record instanceof MdnsInetAddressRecord) {
                 MdnsInetAddressRecord inetRecord = (MdnsInetAddressRecord) record;
-                MdnsResponse response = findResponseWithHostName(responses, inetRecord.getName());
-                if (inetRecord.getInet4Address() != null && response != null) {
-                    response.setInet4AddressRecord(inetRecord);
-                } else if (inetRecord.getInet6Address() != null && response != null) {
-                    response.setInet6AddressRecord(inetRecord);
+                if (allowMultipleSrvRecordsPerHost) {
+                    List<MdnsResponse> matchingResponses =
+                            findResponsesWithHostName(responses, inetRecord.getName());
+                    for (MdnsResponse response : matchingResponses) {
+                        assignInetRecord(response, inetRecord, interfaceIndex);
+                    }
+                } else {
+                    MdnsResponse response =
+                            findResponseWithHostName(responses, inetRecord.getName());
+                    if (response != null) {
+                        assignInetRecord(response, inetRecord, interfaceIndex);
+                    }
                 }
             }
         }
 
         return SUCCESS;
+    }
+
+    private static void assignInetRecord(
+            MdnsResponse response, MdnsInetAddressRecord inetRecord, int interfaceIndex) {
+        if (inetRecord.getInet4Address() != null) {
+            response.setInet4AddressRecord(inetRecord);
+            response.setInterfaceIndex(interfaceIndex);
+        } else if (inetRecord.getInet6Address() != null) {
+            response.setInet6AddressRecord(inetRecord);
+            response.setInterfaceIndex(interfaceIndex);
+        }
+    }
+
+    private static List<MdnsResponse> findResponsesWithHostName(
+            @Nullable List<MdnsResponse> responses, String[] hostName) {
+        if (responses == null || responses.isEmpty()) {
+            return List.of();
+        }
+
+        List<MdnsResponse> result = null;
+        for (MdnsResponse response : responses) {
+            MdnsServiceRecord serviceRecord = response.getServiceRecord();
+            if (serviceRecord == null) {
+                continue;
+            }
+            if (Arrays.equals(serviceRecord.getServiceHost(), hostName)) {
+                if (result == null) {
+                    result = new ArrayList<>(/* initialCapacity= */ responses.size());
+                }
+                result.add(response);
+            }
+        }
+        return result == null ? List.of() : result;
     }
 
     public static class Clock {
