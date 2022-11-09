@@ -2944,7 +2944,8 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testRequiresValidation() {
-        assertTrue(NetworkMonitorUtils.isValidationRequired(false /* isVpnValidationRequired */,
+        assertTrue(NetworkMonitorUtils.isValidationRequired(false /* isDunValidationRequired */,
+                false /* isVpnValidationRequired */,
                 mCm.getDefaultRequest().networkCapabilities));
     }
 
@@ -3476,7 +3477,12 @@ public class ConnectivityServiceTest {
             final int uid, final String packageName) throws Exception {
         doReturn(buildPackageInfo(true /* hasSystemPermission */, uid)).when(mPackageManager)
                 .getPackageInfo(eq(packageName), eq(GET_PERMISSIONS));
-        mService.mPermissionMonitor.onPackageAdded(packageName, uid);
+
+        // Send a broadcast indicating a package was installed.
+        final Intent addedIntent = new Intent(ACTION_PACKAGE_ADDED);
+        addedIntent.putExtra(Intent.EXTRA_UID, uid);
+        addedIntent.setData(Uri.parse("package:" + packageName));
+        processBroadcast(addedIntent);
     }
 
     @Test
@@ -5175,9 +5181,10 @@ public class ConnectivityServiceTest {
     }
 
     @Test
-    public void testRegisterPrivilegedDefaultCallbacksRequireNetworkSettings() throws Exception {
+    public void testRegisterPrivilegedDefaultCallbacksRequirePermissions() throws Exception {
         mCellNetworkAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
         mCellNetworkAgent.connect(false /* validated */);
+        mServiceContext.setPermission(CONNECTIVITY_USE_RESTRICTED_NETWORKS, PERMISSION_DENIED);
 
         final Handler handler = new Handler(ConnectivityThread.getInstanceLooper());
         final TestNetworkCallback callback = new TestNetworkCallback();
@@ -5187,6 +5194,12 @@ public class ConnectivityServiceTest {
         assertThrows(SecurityException.class,
                 () -> mCm.registerDefaultNetworkCallbackForUid(APP1_UID, callback, handler));
         callback.assertNoCallback();
+
+        mServiceContext.setPermission(CONNECTIVITY_USE_RESTRICTED_NETWORKS, PERMISSION_GRANTED);
+        mCm.registerSystemDefaultNetworkCallback(callback, handler);
+        mServiceContext.setPermission(CONNECTIVITY_USE_RESTRICTED_NETWORKS, PERMISSION_DENIED);
+        callback.expectAvailableCallbacksUnvalidated(mCellNetworkAgent);
+        mCm.unregisterNetworkCallback(callback);
 
         mServiceContext.setPermission(NETWORK_SETTINGS, PERMISSION_GRANTED);
         mCm.registerSystemDefaultNetworkCallback(callback, handler);
@@ -7326,8 +7339,14 @@ public class ConnectivityServiceTest {
         expectNotifyNetworkStatus(onlyCell(), onlyCell(), MOBILE_IFNAME);
         reset(mStatsManager);
 
-        // Temp metered change shouldn't update ifaces
+        // Temp metered change should update ifaces
         mCellNetworkAgent.addCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED);
+        waitForIdle();
+        expectNotifyNetworkStatus(onlyCell(), onlyCell(), MOBILE_IFNAME);
+        reset(mStatsManager);
+
+        // Congested change shouldn't update ifaces
+        mCellNetworkAgent.addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED);
         waitForIdle();
         verify(mStatsManager, never()).notifyNetworkStatus(eq(onlyCell()),
                 any(List.class), eq(MOBILE_IFNAME), any(List.class));
@@ -8314,6 +8333,7 @@ public class ConnectivityServiceTest {
         // VPN networks do not satisfy the default request and are automatically validated
         // by NetworkMonitor
         assertFalse(NetworkMonitorUtils.isValidationRequired(
+                false /* isDunValidationRequired */,
                 NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
                         .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
@@ -8466,6 +8486,7 @@ public class ConnectivityServiceTest {
         assertTrue(nc.hasCapability(NET_CAPABILITY_INTERNET));
 
         assertFalse(NetworkMonitorUtils.isValidationRequired(
+                false /* isDunValidationRequired */,
                 NetworkAgentConfigShimImpl.newInstance(mMockVpn.getNetworkAgentConfig())
                         .isVpnValidationRequired(),
                 mMockVpn.getAgent().getNetworkCapabilities()));
