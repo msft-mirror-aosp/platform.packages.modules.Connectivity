@@ -38,6 +38,11 @@ import gn_utils
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Default targets to translate to the blueprint file.
+default_targets = [
+    '//components/cronet/android:cronet',
+]
+
 # Defines a custom init_rc argument to be applied to the corresponding output
 # blueprint target.
 target_initrc = {
@@ -84,12 +89,17 @@ static_library_allowlist = [
     'statslog_perfetto',
 ]
 
+# Include directories that will be removed from all targets.
+local_include_dirs_denylist = [
+    'third_party/protobuf/src/',
+]
+
 # Name of the module which settings such as compiler flags for all other
 # modules.
 defaults_module = module_prefix + 'defaults'
 
 # Location of the project in the Android source tree.
-tree_path = 'external/perfetto'
+tree_path = 'external/chromium_org'
 
 # Path for the protobuf sources in the standalone build.
 buildtools_protobuf_src = '//buildtools/protobuf/src'
@@ -102,8 +112,30 @@ cflag_allowlist = r'^-DPERFETTO.*$'
 
 # Additional arguments to apply to Android.bp rules.
 additional_args = {
-    # TODO: remove if this is not useful for the cronet build.
-    # Consider using additional_args for overriding the genrule cmd property for gn actions.
+    # TODO: remove if not needed.
+    'cronet_aml_net_net': [
+        ('export_static_lib_headers', {
+            'cronet_aml_net_third_party_quiche_quiche',
+            'cronet_aml_crypto_crypto',
+        }),
+        # When a code is compiled under rtti(cronet) that depends on another code(net)
+        # that doesn't depend on rtti. undefined symbol: typeinfo 'class' errors appears.
+        ('rtti', True), # go/undefined-symbol-typeinfo
+        ('whole_static_libs', {
+            'cronet_aml_net_third_party_quiche_quiche',
+            'cronet_aml_base_base',
+            "cronet_aml_crypto_crypto",
+            "libssl",
+        }),
+    ],
+    'cronet_aml_components_cronet_android_cronet': [
+        ('rtti', True),
+        ('cppflags', {
+            # TODO: figure out if there is no way around this and if this is
+            # allowed for platform code.
+            "-fexceptions",
+        })
+    ],
 }
 
 
@@ -120,12 +152,13 @@ def enable_protobuf_full(module):
   elif module.host_supported:
     module.host.static_libs.add('libprotobuf-cpp-full')
     module.android.shared_libs.add('libprotobuf-cpp-full')
-  else:
+  elif module.type not in ['genrule', 'filegroup']:
     module.shared_libs.add('libprotobuf-cpp-full')
 
 
 def enable_protobuf_lite(module):
-  module.shared_libs.add('libprotobuf-cpp-lite')
+  if module.type not in ['genrule', 'filegroup']:
+    module.shared_libs.add('libprotobuf-cpp-lite')
 
 
 def enable_protoc_lib(module):
@@ -193,6 +226,11 @@ def enable_bionic_libc_platform_headers_on_android(module):
   module.header_libs.add('bionic_libc_platform_headers')
 
 
+def enable_boringssl(module):
+  if module.type not in ['genrule', 'filegroup']:
+    module.static_libs.add('libssl')
+
+
 # Android equivalents for third-party libraries that the upstream project
 # depends on.
 builtin_deps = {
@@ -200,18 +238,10 @@ builtin_deps = {
         lambda x: None,
     '//gn:gtest_main':
         lambda x: None,
-    '//gn:protoc':
-        lambda x: None,
     '//gn:gtest_and_gmock':
         enable_gtest_and_gmock,
     '//gn:libunwind':
         enable_libunwind,
-    '//gn:protobuf_full':
-        enable_protobuf_full,
-    '//gn:protobuf_lite':
-        enable_protobuf_lite,
-    '//gn:protoc_lib':
-        enable_protoc_lib,
     '//gn:libunwindstack':
         enable_libunwindstack,
     '//gn:sqlite':
@@ -224,6 +254,14 @@ builtin_deps = {
         enable_bionic_libc_platform_headers_on_android,
     '//third_party/protobuf:protoc':
       lambda x: None,
+    '//third_party/protobuf:protobuf_full':
+        enable_protobuf_full,
+    '//third_party/protobuf:protobuf_lite':
+        enable_protobuf_lite,
+    '//third_party/protobuf:protoc_lib':
+        enable_protoc_lib,
+    '//third_party/boringssl:boringssl':
+        enable_boringssl,
 }
 
 # ----------------------------------------------------------------------------
@@ -336,6 +374,7 @@ class Module(object):
     self.export_include_dirs = set()
     self.generated_headers = set()
     self.export_generated_headers = set()
+    self.export_static_lib_headers = set()
     self.defaults = set()
     self.cflags = set()
     self.include_dirs = set()
@@ -363,6 +402,8 @@ class Module(object):
     self.test_suites = set()
     self.test_config = None
     self.stubs = {}
+    self.cppflags = set()
+    self.rtti = False
 
   def to_string(self, output):
     if self.comment:
@@ -385,6 +426,7 @@ class Module(object):
     self._output_field(output, 'export_include_dirs')
     self._output_field(output, 'generated_headers')
     self._output_field(output, 'export_generated_headers')
+    self._output_field(output, 'export_static_lib_headers')
     self._output_field(output, 'defaults')
     self._output_field(output, 'cflags')
     self._output_field(output, 'include_dirs')
@@ -404,6 +446,9 @@ class Module(object):
     self._output_field(output, 'test_config')
     self._output_field(output, 'stubs')
     self._output_field(output, 'proto')
+    self._output_field(output, 'cppflags')
+    if self.rtti:
+      self._output_field(output, 'rtti')
 
     target_out = []
     self._output_field(target_out, 'android')
@@ -473,7 +518,7 @@ def label_to_module_name(label):
 
 def is_supported_source_file(name):
   """Returns True if |name| can appear in a 'srcs' list."""
-  return os.path.splitext(name)[1] in ['.c', '.cc', '.java', '.proto']
+  return os.path.splitext(name)[1] in ['.c', '.cc', '.cpp', '.java', '.proto', '.S']
 
 
 def create_proto_modules(blueprint, gn, target):
@@ -494,13 +539,13 @@ def create_proto_modules(blueprint, gn, target):
   assert (target.type == 'proto_library')
 
   tools = {'aprotoc'}
-  cpp_out_dir = '$(genDir)/%s/' % tree_path
+  cpp_out_dir = '$(genDir)/%s/%s/' % (tree_path, target.proto_in_dir)
   target_module_name = label_to_module_name(target.name)
 
   # In GN builds the proto path is always relative to the output directory
   # (out/tmp.xxx).
-  cmd = ['mkdir -p %s &&' % cpp_out_dir, '$(location aprotoc)']
-  cmd += ['--proto_path=%s' % tree_path]
+  cmd = ['$(location aprotoc)']
+  cmd += ['--proto_path=%s/%s' % (tree_path, target.proto_in_dir)]
 
   if buildtools_protobuf_src in target.proto_paths:
     cmd += ['--proto_path=%s' % android_protobuf_src]
@@ -556,6 +601,10 @@ def create_proto_modules(blueprint, gn, target):
   # to still do the old #include "perfetto/..." rather than
   # #include "protos/perfetto/...".
   header_module.export_include_dirs = {'.', 'protos'}
+  # Since the .cc file and .h get created by a different gerule target, they
+  # are not put in the same intermediate path, so local includes do not work
+  # without explictily exporting the include dir.
+  header_module.export_include_dirs.add(target.proto_in_dir)
 
   source_module.genrule_srcs.add(':' + source_module.name)
   source_module.genrule_headers.add(header_module.name)
@@ -791,6 +840,24 @@ def create_action_module(blueprint, target):
     # fix target.output directory to match #include statements.
     target.outputs = [re.sub('^jni_headers/', '', out) for out in target.outputs]
 
+  elif target.script == '//base/android/jni_generator/jni_registration_generator.py':
+    # jni_registration_generator.py pulls in some config dependencies that we
+    # do not handle. Remove them.
+    # TODO: find a better way to do this.
+    target.deps.clear()
+
+    target.inputs = [file for file in target.inputs if not file.startswith('//out/')]
+    for i, val in enumerate(target.args):
+      if val in ['--depfile', '--srcjar-path', '--header-path']:
+        target.args[i + 1] = re.sub('^gen', '$(genDir)', target.args[i + 1])
+      if val == '--sources-files':
+        target.args[i + 1] = '$(genDir)/java.sources'
+      elif val == '--sources-exclusions':
+        # update_jni_registration_module removes them from the srcs of the module
+        # It might be better to remove sources by '--sources-exclusions'
+        target.args[i] = ''
+        target.args[i + 1] = ''
+
   elif target.script == '//build/android/gyp/write_build_config.py':
     for i, val in enumerate(target.args):
       if val == '--depfile':
@@ -857,38 +924,53 @@ def create_action_module(blueprint, target):
     # Specifying file under $(genDir) so that parent directory exists.
     # If this file is used by other module, we may need to add this file to the outputs.
     target.args[2] = '$(genDir)/' + target.args[2].split('/')[-1]
-  elif target.script == "//tools/protoc_wrapper/protoc_wrapper.py":
-    # Use protoc in the android
-    module.tools.add("aprotoc")
-    target.outputs = [os.path.basename(out) for out in target.outputs]
+  elif target.script == "//tools/grit/grit.py":
     for i, val in enumerate(target.args):
-      if val == '--protoc':
-        target.args[i + 1] = '$(location aprotoc)'
-      elif val == '--proto-in-dir':
-        # Proto files in the cmd is relative path from --proto-in-dir
-        # Proto files are specified as filenames without directory except net_quic_proto_gen
-        # So getting directory from source file
-        proto_file = gn_utils.label_to_path(sorted(list(target.sources))[0])
-        target.args[i + 1] = '`dirname $(location %s)`' % proto_file
-        # Adjusting path for net_quic_proto_gen
-        if target.name == "//net/third_party/quiche:net_quic_proto_gen":
-          target.args[i + 1] += '/../../../../'
-      elif val == '--cc-out-dir':
-        target.args[i + 1] = '$(genDir)'
-      elif val == 'dllexport_decl':
-        # Needs to be dllexport_decl=value format
-        target.args[i] += '=' + target.args[i+1]
-        target.args[i+1] = ''
-      elif val == '--include':
-        # This file can be got from filegroup this target depends on, but currently we don't add .h
-        # files to the srcs. So far this is the only case .h files need to be added to the srcs.
-        # So, for now, adding specific for this target.
-        module.srcs.add(target.args[i+1])
-        target.args[i + 1] = '$(location %s)' % target.args[i + 1]
-      elif val == "--py-out-dir":
-        # pb2.py files are not used by others.
-        target.args[i] = ''
-        target.args[i + 1] = ''
+      if val == '-i':
+        # Delete leading ../..
+        filename = re.sub('^\.\./\.\./', '', target.args[i + 1])
+        target.args[i + 1] = '$(location %s)' % filename
+      elif val == '-o':
+        filename = re.sub('^gen/', '', target.args[i + 1])
+        if filename == "net":
+          # This is a directory not a file
+          target.args[i + 1] = '$(genDir)/net'
+        else:
+          # This is an output fil
+          target.args[i + 1] = '$(location %s)' % filename
+      elif val == '--depfile':
+        # The depfile is replaced by adding /tools/**/*.py to the tools_files
+        # This is basically just globbing all the needed sources by hardcoding.
+        module.tool_files.update([
+            "tools/grit/**/*.py",
+            "third_party/six/src/six.py" # This is not picked up by default. Must be added
+        ])
+
+        # Delete the depfile argument
+        target.args[i] = ' '
+        target.args[i + 1] = ' '
+      elif val == '--input':
+        # Delete leading ../..
+        filename = re.sub('^\.\./\.\./', '', target.args[i + 1])
+        # This is an output file so use $(location %s)
+        target.args[i + 1] = '$(location %s)' % filename
+  elif target.script == "//net/tools/dafsa/make_dafsa.py":
+    # This script generates .cc files but source (registry_controlled_domain.cc) in the target that
+    # depends on this target includes .cc file this script generates.
+    module.genrule_headers.add(module.name)
+  elif target.script == "//build/util/version.py":
+    # android_chrome_version.py is not specified in anywhere but version.py imports this file
+    module.tool_files.add('build/util/android_chrome_version.py')
+    for i, val in enumerate(target.args):
+      if val.startswith('../../'):
+        filename = re.sub('^\.\./\.\./', '', val)
+        target.args[i] = '$(location %s)' % filename
+      elif val == '-e':
+        # arg for -e EVAL option should be passed in -e PATCH_HI=int(PATCH)//256 format.
+        target.args[i + 1] = '%s=\'%s\'' % (target.args[i + 1], target.args[i + 2])
+        target.args[i + 2] = ''
+      elif val == '-o':
+        target.args[i + 1] = '$(out)'
 
   script = gn_utils.label_to_path(target.script)
   module.tool_files.add(script)
@@ -916,7 +998,7 @@ def create_action_module(blueprint, target):
     # Pipe response file contents into script
     module.cmd = 'echo \'%s\' |%s%s' % (target.response_file_contents, NEWLINE, module.cmd)
 
-  if all(os.path.splitext(it)[1] == '.h' for it in target.outputs):
+  if any(os.path.splitext(it)[1] == '.h' for it in target.outputs):
     module.genrule_headers.add(bp_module_name)
 
   # gn treats inputs and sources for actions equally.
@@ -940,16 +1022,29 @@ def create_action_module(blueprint, target):
   elif target.script == "//tools/grit/stamp_grit_sources.py":
     # stamp_grit_sources.py is not executable
     module.cmd = "python " + module.cmd
-  elif target.script == "//tools/protoc_wrapper/protoc_wrapper.py":
-    # Split module to source module and header module.
-    # Source module has the .cc files and header module has the .h files in the out.
-    header_module = copy.deepcopy(module)
-    header_module.name += "_headers"
-    header_module.out = [file for file in header_module.out if os.path.splitext(file)[1] == '.h']
-    module.out = [file for file in module.out if os.path.splitext(file)[1] == '.cc']
-    module.genrule_headers.add(header_module.name)
-    module.genrule_srcs.add(':' + module.name)
-    blueprint.add_module(header_module)
+  elif target.script == "//base/android/jni_generator/jni_generator.py":
+    # android_jar.classes should be part of the tools as it list implicit classes
+    # for the script to generate JNI headers.
+    module.tool_files.add("base/android/jni_generator/android_jar.classes")
+  elif target.script == '//base/android/jni_generator/jni_registration_generator.py':
+    # jni_registration_generator.py doesn't work with python2
+    module.cmd = "python3 " + module.cmd
+    # Path in the original sources file does not work in genrule.
+    # So creating sources file in cmd based on the srcs of this target.
+    # Adding ../$(current_dir)/ to the head because jni_registration_generator.py uses the files
+    # whose path startswith(..)
+    commands = ["current_dir=`basename \\\`pwd\\\``;",
+                "for f in $(in);",
+                "do",
+                "echo \\\"../$$current_dir/$$f\\\" >> $(genDir)/java.sources;",
+                "done;",
+                module.cmd]
+
+    # .h file jni_registration_generator.py generates has #define with directory name.
+    # With the genrule env that contains "." which is invalid. So replace that at the end of cmd.
+    commands.append(";sed -i -e 's/OUT_SOONG_.TEMP_SBOX_.*_OUT/GEN/g' ")
+    commands.append("$(genDir)/components/cronet/android/cronet_jni_registration.h")
+    module.cmd = NEWLINE.join(commands)
 
   blueprint.add_module(module)
   return module
@@ -1021,6 +1116,9 @@ def create_modules_from_target(blueprint, gn, gn_target_name):
     # problem as libicu contains the only copy target which happens to be a
     # leaf node.
     return None
+  elif target.type == 'java_group':
+    # Java targets are handled outside of create_modules_from_target.
+    return None
   else:
     raise Error('Unknown target %s (%s)' % (target.name, target.type))
 
@@ -1075,29 +1173,20 @@ def create_modules_from_target(blueprint, gn, gn_target_name):
       if lib in static_library_allowlist:
         module.add_android_static_lib(android_lib)
 
+    # Remove prohibited include directories
+    module.local_include_dirs = [d for d in module.local_include_dirs
+                                 if d not in local_include_dirs_denylist]
+
+
   # If the module is a static library, export all the generated headers.
   if module.type == 'cc_library_static':
     module.export_generated_headers = module.generated_headers
 
-  # Merge in additional hardcoded arguments.
-  for key, add_val in additional_args.get(module.name, []):
-    curr = getattr(module, key)
-    if add_val and isinstance(add_val, set) and isinstance(curr, set):
-      curr.update(add_val)
-    elif isinstance(add_val, str) and (not curr or isinstance(curr, str)):
-      setattr(module, key, add_val)
-    elif isinstance(add_val, bool) and (not curr or isinstance(curr, bool)):
-      setattr(module, key, add_val)
-    elif isinstance(add_val, dict) and isinstance(curr, dict):
-      curr.update(add_val)
-    elif isinstance(add_val, dict) and isinstance(curr, Target):
-      curr.__dict__.update(add_val)
-    else:
-      raise Error('Unimplemented type %r of additional_args: %r' %
-                  (type(add_val), key))
-
   # dep_name is an unmangled GN target name (e.g. //foo:bar(toolchain)).
-  all_deps = target.deps | target.source_set_deps | target.transitive_proto_deps
+  # Currently, only one module is generated from target even target has multiple toolchains.
+  # And module is generated based on the first visited target.
+  # Sort deps before iteration to make result deterministic.
+  all_deps = sorted(target.deps | target.source_set_deps | target.transitive_proto_deps)
   for dep_name in all_deps:
     # |builtin_deps| override GN deps with Android-specific ones. See the
     # config in the top of this file.
@@ -1147,8 +1236,34 @@ def create_modules_from_target(blueprint, gn, gn_target_name):
 def create_java_module(blueprint, gn):
   bp_module_name = module_prefix + 'java'
   module = Module('java_library', bp_module_name, '//gn:java')
-  module.srcs.update(gn.java_sources)
+  module.srcs.update([gn_utils.label_to_path(source) for source in gn.java_sources])
   blueprint.add_module(module)
+
+def update_jni_registration_module(blueprint, gn):
+  bp_module_name = label_to_module_name('//components/cronet/android:cronet_jni_registration')
+  if bp_module_name not in blueprint.modules:
+    # To support building targets that might not create the cronet_jni_registration.
+    return
+  module = blueprint.modules[bp_module_name]
+
+  # TODO: deny list is in the arg of jni_registration_generator.py. Should not be hardcoded
+  deny_list = [
+    '//base/android/java/src/org/chromium/base/library_loader/LibraryLoader.java',
+    '//base/android/java/src/org/chromium/base/library_loader/LibraryPrefetcher.java',
+    '//base/android/java/src/org/chromium/base/process_launcher/ChildProcessService.java',
+    '//base/android/java/src/org/chromium/base/SysUtils.java']
+
+  # TODO: java_sources might not contain all the required java files
+  module.srcs.update([gn_utils.label_to_path(source)
+                      for source in gn.java_sources if source not in deny_list])
+
+  # TODO: Remove hardcoded file addition to srcs
+  # jni_registration_generator.py generates empty .h file if native methods are not found in the
+  # java files. But android:cronet depends on `RegisterNonMainDexNatives` which is in the template
+  # of .h file. To make script generate non empty .h file, adding java file which contains native
+  # method. Once all the required java files are added to the srcs, this can be removed.
+  module.srcs.update([
+    "components/cronet/android/java/src/org/chromium/net/impl/CronetUrlRequest.java"])
 
 def create_blueprint_for_targets(gn, desc, targets):
   """Generate a blueprint for a list of GN targets."""
@@ -1159,10 +1274,12 @@ def create_blueprint_for_targets(gn, desc, targets):
   defaults.cflags = [
       '-Wno-error=return-type',
       '-Wno-non-virtual-dtor',
+      '-Wno-macro-redefined',
       '-Wno-missing-field-initializers',
       '-Wno-sign-compare',
       '-Wno-sign-promo',
       '-Wno-unused-parameter',
+      '-Wno-deprecated-non-prototype', # needed for zlib
       '-fvisibility=hidden',
       '-O2',
   ]
@@ -1173,6 +1290,26 @@ def create_blueprint_for_targets(gn, desc, targets):
     create_modules_from_target(blueprint, gn, target)
 
   create_java_module(blueprint, gn)
+  update_jni_registration_module(blueprint, gn)
+
+  # Merge in additional hardcoded arguments.
+  for module in blueprint.modules.values():
+    for key, add_val in additional_args.get(module.name, []):
+      curr = getattr(module, key)
+      if add_val and isinstance(add_val, set) and isinstance(curr, set):
+        curr.update(add_val)
+      elif isinstance(add_val, str) and (not curr or isinstance(curr, str)):
+        setattr(module, key, add_val)
+      elif isinstance(add_val, bool) and (not curr or isinstance(curr, bool)):
+        setattr(module, key, add_val)
+      elif isinstance(add_val, dict) and isinstance(curr, dict):
+        curr.update(add_val)
+      elif isinstance(add_val, dict) and isinstance(curr, Target):
+        curr.__dict__.update(add_val)
+      else:
+        raise Error('Unimplemented type %r of additional_args: %r' %
+                    (type(add_val), key))
+
   return blueprint
 
 
@@ -1214,7 +1351,7 @@ def main():
     desc = json.load(f)
 
   gn = gn_utils.GnParser(desc)
-  blueprint = create_blueprint_for_targets(gn, desc, args.targets)
+  blueprint = create_blueprint_for_targets(gn, desc, args.targets or default_targets)
   project_root = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
   tool_name = os.path.relpath(os.path.abspath(__file__), project_root)
 
