@@ -1983,9 +1983,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Nullable
     public NetworkInfo getNetworkInfoForUid(Network network, int uid, boolean ignoreBlocked) {
         enforceAccessPermission();
-        if (uid != mDeps.getCallingUid()) {
-            enforceNetworkStackPermission(mContext);
-        }
         final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
         if (nai == null) return null;
         return getFilteredNetworkInfo(nai, uid, ignoreBlocked);
@@ -2808,6 +2805,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         enforceAnyPermissionOf(mContext,
                 android.Manifest.permission.NETWORK_SETTINGS,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
+    }
+
+    private void enforceSettingsOrUseRestrictedNetworksPermission() {
+        enforceAnyPermissionOf(mContext,
+                android.Manifest.permission.NETWORK_SETTINGS,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+                Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS);
     }
 
     private void enforceNetworkFactoryPermission() {
@@ -6656,7 +6660,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 enforceAccessPermission();
                 break;
             case TRACK_SYSTEM_DEFAULT:
-                enforceSettingsPermission();
+                enforceSettingsOrUseRestrictedNetworksPermission();
                 networkCapabilities = new NetworkCapabilities(defaultNc);
                 break;
             case BACKGROUND_REQUEST:
