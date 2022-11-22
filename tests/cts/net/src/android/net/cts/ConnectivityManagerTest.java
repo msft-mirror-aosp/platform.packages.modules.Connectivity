@@ -192,6 +192,7 @@ import com.android.testutils.CompatUtil;
 import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.DeviceConfigRule;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
@@ -559,6 +560,11 @@ public class ConnectivityManagerTest {
         // got from other APIs.
         final Network[] networks = mCm.getAllNetworks();
         assertGreaterOrEqual(networks.length, 1);
+        final TestableNetworkCallback allNetworkLinkPropertiesListener =
+                new TestableNetworkCallback();
+        mCm.registerNetworkCallback(new NetworkRequest.Builder().clearCapabilities().build(),
+                allNetworkLinkPropertiesListener);
+
         final List<NetworkStateSnapshot> snapshots = runWithShellPermissionIdentity(
                 () -> mCm.getAllNetworkStateSnapshots(), NETWORK_SETTINGS);
         assertEquals(networks.length, snapshots.size());
@@ -584,7 +590,18 @@ public class ConnectivityManagerTest {
             assertEquals("", caps.describeImmutableDifferences(
                     snapshot.getNetworkCapabilities()
                             .setNetworkSpecifier(redactedSnapshotCapSpecifier)));
-            assertEquals(mCm.getLinkProperties(network), snapshot.getLinkProperties());
+
+            // Don't check that the mutable fields are the same with synchronous calls, as
+            // the device may add or remove content of these fields in the middle of the test.
+            // Instead, search the target LinkProperties from received LinkPropertiesChanged
+            // callbacks. This is guaranteed to succeed because the callback is registered
+            // before getAllNetworkStateSnapshots is called.
+            final LinkProperties lpFromSnapshot = snapshot.getLinkProperties();
+            allNetworkLinkPropertiesListener.eventuallyExpect(CallbackEntry.LINK_PROPERTIES_CHANGED,
+                    NETWORK_CALLBACK_TIMEOUT_MS, 0 /* mark */, entry ->
+                            entry.getNetwork().equals(network)
+                                    && entry.getLp().equals(lpFromSnapshot));
+
             assertEquals(mCm.getNetworkInfo(network).getType(), snapshot.getLegacyType());
 
             if (network.equals(cellNetwork)) {
@@ -1055,14 +1072,6 @@ public class ConnectivityManagerTest {
             }, NETWORK_SETTINGS);
             registerBestMatchingNetworkCallback(makeDefaultRequest(), bestMatchingCallback, h);
         }
-        if (TestUtils.shouldTestTApis()) {
-            // Verify registerSystemDefaultNetworkCallback can be accessed via
-            // CONNECTIVITY_USE_RESTRICTED_NETWORKS permission.
-            final TestNetworkCallback systemDefaultCallback2 = new TestNetworkCallback();
-            runWithShellPermissionIdentity(() ->
-                    registerSystemDefaultNetworkCallback(systemDefaultCallback2, h),
-                    CONNECTIVITY_USE_RESTRICTED_NETWORKS);
-        }
 
         Network wifiNetwork = null;
         mCtsNetUtils.ensureWifiConnected();
@@ -1090,6 +1099,18 @@ public class ConnectivityManagerTest {
                     bestMatchingNetwork);
             assertEquals(defaultNetwork, bestMatchingNetwork);
         }
+    }
+
+    @ConnectivityModuleTest
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
+    public void testRegisterSystemDefaultNetworkCallbackPermission() {
+        final Handler h = new Handler(Looper.getMainLooper());
+        // Verify registerSystemDefaultNetworkCallback can be accessed via
+        // CONNECTIVITY_USE_RESTRICTED_NETWORKS permission.
+        runWithShellPermissionIdentity(() ->
+                        registerSystemDefaultNetworkCallback(new TestNetworkCallback(), h),
+                CONNECTIVITY_USE_RESTRICTED_NETWORKS);
     }
 
     /**
@@ -2361,8 +2382,9 @@ public class ConnectivityManagerTest {
             super.expectAvailableCallbacks(network, false /* suspended */, true /* validated */,
                     BLOCKED_REASON_NONE, NETWORK_CALLBACK_TIMEOUT_MS);
         }
-        public void expectBlockedStatusCallback(Network network, int blockedStatus) {
-            super.expectBlockedStatusCallback(blockedStatus, network, NETWORK_CALLBACK_TIMEOUT_MS);
+        public void eventuallyExpectBlockedStatusCallback(Network network, int blockedStatus) {
+            super.eventuallyExpect(CallbackEntry.BLOCKED_STATUS_INT, NETWORK_CALLBACK_TIMEOUT_MS,
+                    (it) -> it.getNetwork().equals(network) && it.getBlocked() == blockedStatus);
         }
         public void onBlockedStatusChanged(Network network, int blockedReasons) {
             getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));
@@ -2407,12 +2429,14 @@ public class ConnectivityManagerTest {
         final Range<Integer> otherUidRange = new Range<>(otherUid, otherUid);
 
         setRequireVpnForUids(true, List.of(myUidRange));
-        myUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_LOCKDOWN_VPN);
+        myUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork,
+                BLOCKED_REASON_LOCKDOWN_VPN);
         otherUidCallback.assertNoBlockedStatusCallback();
 
         setRequireVpnForUids(true, List.of(myUidRange, otherUidRange));
         myUidCallback.assertNoBlockedStatusCallback();
-        otherUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_LOCKDOWN_VPN);
+        otherUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork,
+                BLOCKED_REASON_LOCKDOWN_VPN);
 
         // setRequireVpnForUids does no deduplication or refcounting. Removing myUidRange does not
         // unblock myUid because it was added to the blocked ranges twice.
@@ -2421,8 +2445,8 @@ public class ConnectivityManagerTest {
         otherUidCallback.assertNoBlockedStatusCallback();
 
         setRequireVpnForUids(false, List.of(myUidRange, otherUidRange));
-        myUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
-        otherUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
+        myUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
+        otherUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
 
         myUidCallback.assertNoBlockedStatusCallback();
         otherUidCallback.assertNoBlockedStatusCallback();
