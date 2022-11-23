@@ -24,6 +24,11 @@ import android.net.NetworkReleasedException;
 import android.net.QosCallbackException;
 import android.net.SocketLocalAddressChangedException;
 import android.net.SocketNotBoundException;
+<<<<<<< HEAD   (25de27 Make change and version bump to aml_tet_331116040 for mainli)
+=======
+//import android.net.SocketNotConnectedException;
+//import android.net.SocketRemoteAddressChangedException;
+>>>>>>> CHANGE (1b94c9 Hide some Connectivity APIs since finalization)
 import android.os.Build;
 
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
@@ -80,10 +85,51 @@ public class QosCallbackExceptionTest {
         final Throwable localAddrChangedException = new SocketLocalAddressChangedException();
         final QosCallbackException exception = new QosCallbackException(localAddrChangedException);
 
+<<<<<<< HEAD   (25de27 Make change and version bump to aml_tet_331116040 for mainli)
         assertTrue(exception.getCause() instanceof SocketLocalAddressChangedException);
         assertEquals(localAddrChangedException, exception.getCause());
         assertTrue(exception.getMessage().contains(ERROR_MSG_SOCK_ADDR_CHANGED));
         assertThrowableMessageContains(exception, ERROR_MSG_SOCK_ADDR_CHANGED);
+=======
+    //@Test
+    //@IgnoreUpTo(Build.VERSION_CODES.S)
+    //public void testSocketNotConnectedExceptions() throws Exception {
+        //final Throwable sockNotConnectedException = new SocketNotConnectedException();
+        //final QosCallbackException exception = new QosCallbackException(sockNotConnectedException);
+        //validateQosCallbackException(
+                //exception, sockNotConnectedException, SocketNotConnectedException.class);
+    //}
+
+    //@Test
+    //@IgnoreUpTo(Build.VERSION_CODES.S)
+    //public void testSocketRemoteAddressChangedExceptions() throws  Exception {
+        //final Throwable remoteAddressChangedException = new SocketRemoteAddressChangedException();
+        //final QosCallbackException exception =
+                //new QosCallbackException(remoteAddressChangedException);
+        //validateQosCallbackException(
+                //exception, remoteAddressChangedException,
+                //SocketRemoteAddressChangedException.class);
+    //}
+
+    private void validateQosCallbackException(
+            QosCallbackException e, Throwable cause, Class c) throws Exception {
+        /*if (c == SocketNotConnectedException.class) {
+            assertTrue(e.getCause() instanceof SocketNotConnectedException);
+        } else if (c == SocketRemoteAddressChangedException.class) {
+            assertTrue(e.getCause() instanceof SocketRemoteAddressChangedException);
+        } else */if (c == SocketLocalAddressChangedException.class) {
+            assertTrue(e.getCause() instanceof SocketLocalAddressChangedException);
+        } else if (c == SocketNotBoundException.class) {
+            assertTrue(e.getCause() instanceof SocketNotBoundException);
+        } else if (c == NetworkReleasedException.class) {
+            assertTrue(e.getCause() instanceof NetworkReleasedException);
+        } else {
+            fail("unexpected error msg.");
+        }
+        assertEquals(cause, e.getCause());
+        assertFalse(e.getMessage().isEmpty());
+        assertThrowableMessageContains(e, e.getMessage());
+>>>>>>> CHANGE (1b94c9 Hide some Connectivity APIs since finalization)
     }
 
     private void assertThrowableMessageContains(QosCallbackException exception, String errorMsg)
