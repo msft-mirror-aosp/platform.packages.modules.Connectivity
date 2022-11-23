@@ -76,7 +76,7 @@ import android.net.TetheringManager.StartTetheringCallback;
 import android.net.TetheringManager.TetheringEventCallback;
 import android.net.TetheringManager.TetheringRequest;
 import android.net.TetheringTester.TetheredDevice;
-import android.net.cts.util.CtsNetUtils;;
+import android.net.cts.util.CtsNetUtils;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -554,23 +554,6 @@ public class EthernetTetheringTest {
 
         // There is nothing more we can do on a physical interface without connecting an actual
         // client, which is not possible in this test.
-    }
-
-    private boolean isEthernetTetheringSupported() throws Exception {
-        final CompletableFuture<Boolean> future = new CompletableFuture<>();
-        final TetheringEventCallback callback = new TetheringEventCallback() {
-            @Override
-            public void onSupportedTetheringTypes(Set<Integer> supportedTypes) {
-                future.complete(supportedTypes.contains(TETHERING_ETHERNET));
-            }
-        };
-
-        try {
-            mTm.registerTetheringEventCallback(mHandler::post, callback);
-            return future.get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
-        } finally {
-            mTm.unregisterTetheringEventCallback(callback);
-        }
     }
 
     private static final class MyTetheringEventCallback implements TetheringEventCallback {
