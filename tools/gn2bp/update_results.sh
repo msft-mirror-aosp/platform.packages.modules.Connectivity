@@ -12,8 +12,9 @@
 set -eux
 
 TARGETS=(
-  "//net:net"
+  "//components/cronet/android:cronet"
+  "//components/cronet:cronet_package"
 )
 
 BASEDIR=$(dirname "$0")
-$BASEDIR/gen_android_bp --desc $BASEDIR/desc.json --out $BASEDIR/Android.bp ${TARGETS[@]}
+$BASEDIR/gen_android_bp --desc $BASEDIR/desc_x64.json --desc $BASEDIR/desc_x86.json --out $BASEDIR/Android.bp ${TARGETS[@]}
