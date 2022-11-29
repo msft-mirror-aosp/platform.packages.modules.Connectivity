@@ -16,6 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
+import android.annotation.Nullable;
+
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.connectivity.mdns.MdnsServiceInfo.TextEntry;
 
@@ -26,14 +28,24 @@ import java.util.List;
 import java.util.Objects;
 
 /** An mDNS "TXT" record, which contains a list of {@link TextEntry}. */
-// TODO(b/242631897): Resolve nullness suppression.
-@SuppressWarnings("nullness")
 @VisibleForTesting
 public class MdnsTextRecord extends MdnsRecord {
     private List<TextEntry> entries;
 
     public MdnsTextRecord(String[] name, MdnsPacketReader reader) throws IOException {
-        super(name, TYPE_TXT, reader);
+        this(name, reader, false);
+    }
+
+    public MdnsTextRecord(String[] name, MdnsPacketReader reader, boolean isQuestion)
+            throws IOException {
+        super(name, TYPE_TXT, reader, isQuestion);
+    }
+
+    public MdnsTextRecord(String[] name, long receiptTimeMillis, boolean cacheFlush, long ttlMillis,
+            List<TextEntry> entries) {
+        super(name, TYPE_TXT, MdnsConstants.QCLASS_INTERNET, receiptTimeMillis, cacheFlush,
+                ttlMillis);
+        this.entries = entries;
     }
 
     /** Returns the list of strings. */
@@ -90,7 +102,7 @@ public class MdnsTextRecord extends MdnsRecord {
     }
 
     @Override
-    public boolean equals(Object other) {
+    public boolean equals(@Nullable Object other) {
         if (this == other) {
             return true;
         }
