@@ -16,6 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
+import android.annotation.Nullable;
+
 import com.android.internal.annotations.VisibleForTesting;
 
 import java.io.IOException;
@@ -27,12 +29,10 @@ import java.util.Locale;
 import java.util.Objects;
 
 /** An mDNS "AAAA" or "A" record, which holds an IPv6 or IPv4 address. */
-// TODO(b/242631897): Resolve nullness suppression.
-@SuppressWarnings("nullness")
 @VisibleForTesting
 public class MdnsInetAddressRecord extends MdnsRecord {
-    private Inet6Address inet6Address;
-    private Inet4Address inet4Address;
+    @Nullable private Inet6Address inet6Address;
+    @Nullable private Inet4Address inet4Address;
 
     /**
      * Constructs the {@link MdnsRecord}
@@ -43,15 +43,42 @@ public class MdnsInetAddressRecord extends MdnsRecord {
      */
     public MdnsInetAddressRecord(String[] name, int type, MdnsPacketReader reader)
             throws IOException {
-        super(name, type, reader);
+        this(name, type, reader, false);
+    }
+
+    /**
+     * Constructs the {@link MdnsRecord}
+     *
+     * @param name       the service host name
+     * @param type       the type of record (either Type 'AAAA' or Type 'A')
+     * @param reader     the reader to read the record from.
+     * @param isQuestion whether the record is in the question section
+     */
+    public MdnsInetAddressRecord(String[] name, int type, MdnsPacketReader reader,
+            boolean isQuestion)
+            throws IOException {
+        super(name, type, reader, isQuestion);
+    }
+
+    public MdnsInetAddressRecord(String[] name, long receiptTimeMillis, boolean cacheFlush,
+                    long ttlMillis, InetAddress address) {
+        super(name, address instanceof Inet4Address ? TYPE_A : TYPE_AAAA,
+                MdnsConstants.QCLASS_INTERNET, receiptTimeMillis, cacheFlush, ttlMillis);
+        if (address instanceof Inet4Address) {
+            inet4Address = (Inet4Address) address;
+        } else {
+            inet6Address = (Inet6Address) address;
+        }
     }
 
     /** Returns the IPv6 address. */
+    @Nullable
     public Inet6Address getInet6Address() {
         return inet6Address;
     }
 
     /** Returns the IPv4 address. */
+    @Nullable
     public Inet4Address getInet4Address() {
         return inet4Address;
     }
@@ -113,7 +140,7 @@ public class MdnsInetAddressRecord extends MdnsRecord {
     }
 
     @Override
-    public boolean equals(Object other) {
+    public boolean equals(@Nullable Object other) {
         if (this == other) {
             return true;
         }

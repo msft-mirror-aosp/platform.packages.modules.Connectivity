@@ -22,6 +22,7 @@ import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.ConnectivityManager.TYPE_MOBILE_DUN;
 import static android.net.ConnectivityManager.TYPE_MOBILE_HIPRI;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
+import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
 import static com.android.networkstack.apishim.ConstantsShim.KEY_CARRIER_SUPPORTS_TETHERING_BOOL;
@@ -193,8 +194,13 @@ public class TetheringConfiguration {
 
         isDunRequired = checkDunRequired(ctx);
 
-        final boolean forceAutomaticUpstream = !SdkLevel.isAtLeastS()
-                && isFeatureEnabled(ctx, TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION);
+        // Here is how automatic mode enable/disable support on different Android version:
+        // - R   : can be enabled/disabled by resource config_tether_upstream_automatic.
+        //         but can be force-enabled by flag TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION.
+        // - S, T: can be enabled/disabled by resource config_tether_upstream_automatic.
+        // - U+  : automatic mode only.
+        final boolean forceAutomaticUpstream = SdkLevel.isAtLeastU() || (!SdkLevel.isAtLeastS()
+                && isConnectivityFeatureEnabled(ctx, TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION));
         chooseUpstreamAutomatically = forceAutomaticUpstream || getResourceBoolean(
                 res, R.bool.config_tether_upstream_automatic, false /** defaultValue */);
         preferredUpstreamIfaceTypes = getUpstreamIfaceTypes(res, isDunRequired);
@@ -565,9 +571,23 @@ public class TetheringConfiguration {
         return DeviceConfig.getProperty(NAMESPACE_CONNECTIVITY, name);
     }
 
+    /**
+     * This is deprecated because connectivity namespace already be used for NetworkStack mainline
+     * module. Tethering should use its own namespace to roll out the feature flag.
+     * @deprecated new caller should use isTetheringFeatureEnabled instead.
+     */
+    @Deprecated
+    private boolean isConnectivityFeatureEnabled(Context ctx, String featureVersionFlag) {
+        return isFeatureEnabled(ctx, NAMESPACE_CONNECTIVITY, featureVersionFlag);
+    }
+
+    private boolean isTetheringFeatureEnabled(Context ctx, String featureVersionFlag) {
+        return isFeatureEnabled(ctx, NAMESPACE_TETHERING, featureVersionFlag);
+    }
+
     @VisibleForTesting
-    protected boolean isFeatureEnabled(Context ctx, String featureVersionFlag) {
-        return DeviceConfigUtils.isFeatureEnabled(ctx, NAMESPACE_CONNECTIVITY, featureVersionFlag,
+    protected boolean isFeatureEnabled(Context ctx, String namespace, String featureVersionFlag) {
+        return DeviceConfigUtils.isFeatureEnabled(ctx, namespace, featureVersionFlag,
                 TETHERING_MODULE_NAME, false /* defaultEnabled */);
     }
 
