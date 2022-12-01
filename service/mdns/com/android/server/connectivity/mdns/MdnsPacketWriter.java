@@ -29,7 +29,7 @@ import java.util.Map;
 public class MdnsPacketWriter {
     private static final int MDNS_POINTER_MASK = 0xC000;
     private final byte[] data;
-    private final Map<Integer, String[]> labelDictionary;
+    private final Map<Integer, String[]> labelDictionary = new HashMap<>();
     private int pos = 0;
     private int savedWritePos = -1;
 
@@ -44,7 +44,15 @@ public class MdnsPacketWriter {
         }
 
         data = new byte[maxSize];
-        labelDictionary = new HashMap<>();
+    }
+
+    /**
+     * Constructs a writer for a new packet.
+     *
+     * @param buffer The buffer to write to.
+     */
+    public MdnsPacketWriter(byte[] buffer) {
+        data = buffer;
     }
 
     /** Returns the current write position. */
@@ -190,12 +198,7 @@ public class MdnsPacketWriter {
             }
             writePointer(suffixPointer);
         } else {
-            int[] offsets = new int[labels.length];
-            for (int i = 0; i < labels.length; ++i) {
-                offsets[i] = getWritePosition();
-                writeString(labels[i]);
-            }
-            writeUInt8(0); // NUL terminator
+            int[] offsets = writeLabelsNoCompression(labels);
 
             // Add entries to the label dictionary for each suffix of the label list, including
             // the whole list itself.
@@ -205,6 +208,21 @@ public class MdnsPacketWriter {
                 labelDictionary.put(offsets[i], value);
             }
         }
+    }
+
+    /**
+     * Write a series a labels, without using name compression.
+     *
+     * @return The offsets where each label was written to.
+     */
+    public int[] writeLabelsNoCompression(String[] labels) throws IOException {
+        int[] offsets = new int[labels.length];
+        for (int i = 0; i < labels.length; ++i) {
+            offsets[i] = getWritePosition();
+            writeString(labels[i]);
+        }
+        writeUInt8(0); // NUL terminator
+        return offsets;
     }
 
     /** Returns the number of bytes that can still be written. */
