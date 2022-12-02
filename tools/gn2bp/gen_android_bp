@@ -397,15 +397,12 @@ class Module(object):
     return write_blueprint_key_value(output, name, value, sort)
 
   def is_compiled(self):
-    return self.type not in ('cc_genrule', 'filegroup', 'cc_defaults')
+    return self.type not in ('cc_genrule', 'filegroup', 'java_genrule')
 
   def is_genrule(self):
     return self.type == "cc_genrule"
 
   def has_input_files(self):
-    for target in self.target.values():
-      if len(target.srcs) > 0:
-        return True
     return len(self.srcs) > 0 or any([len(target.srcs) > 0 for target in self.target.values()])
 
   def merge_attribute(self, key, source_module, allowed_archs, source_key = None):
@@ -623,28 +620,49 @@ class BaseActionSanitizer():
   def __init__(self, target):
     # Just to be on the safe side, create a deep-copy.
     self.target = copy.deepcopy(target)
+    self.target.args = self._normalize_args()
+
+  def _normalize_args(self):
     # Convert ['--param=value'] to ['--param', 'value'] for consistency.
-    self.target.args = [str for it in self.target.args for str in it.split('=')]
+    normalized_args = []
+    for arg in self.target.args:
+      if arg.startswith('-'):
+        normalized_args.extend(arg.split('='))
+      else:
+        normalized_args.append(arg)
+    return normalized_args
 
   # There are three types of args:
   # - flags (--flag)
   # - value args (--arg value)
   # - list args (--arg value1 --arg value2)
+  # value args have exactly one arg value pair and list args have one or more arg value pairs.
+  # Note that the set of list args contains the set of value args.
+  # This is because list and value args are identical when the list args has only one arg value pair
   # Some functions provide special implementations for each type, while others
   # work on all of them.
   def _has_arg(self, arg):
     return arg in self.target.args
 
-  # Whether an arg has multiple occurences (e.g. see argparse action='append')
-  def _is_list_arg(self, arg):
-    return operator.countOf(arg, self.target.args) > 1
+  def _get_arg_indices(self, target_arg):
+    return [i for i, arg in enumerate(self.target.args) if arg == target_arg]
 
+  # Whether an arg value pair appears once or more times
+  def _is_list_arg(self, arg):
+    indices = self._get_arg_indices(arg)
+    return len(indices) > 0 and all([not self.target.args[i + 1].startswith('--') for i in indices])
+
+  def _update_list_arg(self, arg, func, throw_if_absent = True):
+    if self._should_fail_silently(arg, throw_if_absent):
+      return
+    assert(self._is_list_arg(arg))
+    indices = self._get_arg_indices(arg)
+    for i in indices:
+      self._set_arg_at(i + 1, func(self.target.args[i + 1]))
+
+  # Whether an arg value pair appears exactly once
   def _is_value_arg(self, arg):
-    # TODO: we'll probably need a set of helper functions to deal with append
-    # args as well.
-    assert(not self._is_list_arg(arg))
-    i = self.target.args.index(arg)
-    return not self.target.args[i + 1].startswith('--')
+    return operator.countOf(self.target.args, arg) == 1 and self._is_list_arg(arg)
 
   def _get_value_arg(self, arg):
     assert(self._is_value_arg(arg))
@@ -683,6 +701,12 @@ class BaseActionSanitizer():
     self.target.args.append(arg)
     self.target.args.append(value)
 
+  def _sanitize_filepath_with_location_tag(self, arg):
+    if arg.startswith('../../'):
+      arg = self._sanitize_filepath(arg)
+      arg = self._add_location_tag(arg)
+    return arg
+
   # wrap filename in location tag.
   def _add_location_tag(self, filename):
     return '$(location %s)' % filename
@@ -697,22 +721,50 @@ class BaseActionSanitizer():
     filepath = re.sub('^gen', '$(genDir)', filepath)
     return filepath
 
+  # Iterate through all the args and apply function
+  def _update_all_args(self, func):
+    self.target.args = [func(arg) for arg in self.target.args]
+
   def get_args(self):
     return self.target.args
 
+  def get_outputs(self):
+    return self.target.outputs
+
+  def _sanitize_args(self):
+    pass
+
+  def _sanitize_outputs(self):
+    pass
+
+  def sanitize(self):
+    self._sanitize_args()
+    self._sanitize_outputs()
+
+  # Whether this target generates header files
+  def is_header_generated(self):
+    return any(os.path.splitext(it)[1] == '.h' for it in self.target.outputs)
+
 class WriteBuildDateHeaderSanitizer(BaseActionSanitizer):
-  def get_args(self):
+  def _sanitize_args(self):
     self._set_arg_at(0, '$(out)')
-    return super().get_args()
+    super()._sanitize_args()
 
 class WriteBuildFlagHeaderSanitizer(BaseActionSanitizer):
-  def get_args(self):
+  def _sanitize_args(self):
     self._set_value_arg('--gen-dir', '.')
     self._set_value_arg('--output', '$(out)')
-    return super().get_args()
+    super()._sanitize_args()
 
 class JniGeneratorSanitizer(BaseActionSanitizer):
-  def get_args(self):
+  def _add_location_tag_to_filepath(self, arg):
+    if not arg.endswith('.class'):
+      # --input_file supports both .class specifiers or source files as arguments.
+      # Only source files need to be wrapped inside a $(location <label>) tag.
+      arg = self._add_location_tag(arg)
+    return arg
+
+  def _sanitize_args(self):
     self._update_value_arg('--jar_file', self._sanitize_filepath, False)
     self._update_value_arg('--jar_file', self._add_location_tag, False)
     if self._has_arg('--jar_file'):
@@ -720,8 +772,46 @@ class JniGeneratorSanitizer(BaseActionSanitizer):
     self._update_value_arg('--output_dir', self._sanitize_filepath)
     self._update_value_arg('--includes', self._sanitize_filepath, False)
     self._delete_value_arg('--prev_output_dir', False)
-    return super().get_args()
+    self._update_list_arg('--input_file', self._sanitize_filepath)
+    self._update_list_arg('--input_file', self._add_location_tag_to_filepath)
+    super()._sanitize_args()
 
+  def _sanitize_outputs(self):
+    # fix target.output directory to match #include statements.
+    self.target.outputs = {re.sub('^jni_headers/', '', out) for out in self.target.outputs}
+    super()._sanitize_outputs()
+
+class JniRegistrationGeneratorSanitizer(BaseActionSanitizer):
+  def _sanitize_args(self):
+    self._update_value_arg('--depfile', self._sanitize_filepath)
+    self._update_value_arg('--srcjar-path', self._sanitize_filepath)
+    self._update_value_arg('--header-path', self._sanitize_filepath)
+    self._set_value_arg('--sources-files', '$(genDir)/java.sources')
+    # update_jni_registration_module removes them from the srcs of the module
+    # It might be better to remove sources by '--sources-exclusions'
+    self._delete_value_arg('--sources-exclusions')
+    super()._sanitize_args()
+
+class VersionSanitizer(BaseActionSanitizer):
+  def _sanitize_args(self):
+    self._set_value_arg('-o', '$(out)')
+    # args for the version.py contain file path without leading --arg key. So apply sanitize
+    # function for all the args.
+    self._update_all_args(self._sanitize_filepath_with_location_tag)
+    self._update_value_arg('-e', lambda arg: arg.replace('"', r'\"'))
+    super()._sanitize_args()
+
+class JavaCppEnumSanitizer(BaseActionSanitizer):
+  def _sanitize_args(self):
+    self._update_all_args(self._sanitize_filepath_with_location_tag)
+    self._set_value_arg('--srcjar', '$(out)')
+    super()._sanitize_args()
+
+class MakeDafsaSanitizer(BaseActionSanitizer):
+  def is_header_generated(self):
+    # This script generates .cc files but they are #included by other sources
+    # (e.g. registry_controlled_domain.cc)
+    return True
 
 def get_action_sanitizer(target):
   if target.script == "//build/write_buildflag_header.py":
@@ -730,6 +820,14 @@ def get_action_sanitizer(target):
     return WriteBuildDateHeaderSanitizer(target)
   elif target.script == '//base/android/jni_generator/jni_generator.py':
     return JniGeneratorSanitizer(target)
+  elif target.script == '//base/android/jni_generator/jni_registration_generator.py':
+    return JniRegistrationGeneratorSanitizer(target)
+  elif target.script == "//build/util/version.py":
+    return VersionSanitizer(target)
+  elif target.script == "//build/android/gyp/java_cpp_enum.py":
+    return JavaCppEnumSanitizer(target)
+  elif target.script == "//net/tools/dafsa/make_dafsa.py":
+    return MakeDafsaSanitizer(target)
   else:
     # TODO: throw exception here once all script hacks have been converted.
     return BaseActionSanitizer(target)
@@ -765,28 +863,23 @@ def create_action_foreach_modules(blueprint, target):
         new_args.append(arg)
 
   target.args = new_args
-  return create_action_module(blueprint, target)
+  return create_action_module(blueprint, target, 'cc_genrule')
 
-def create_action_module(blueprint, target):
+def create_action_module(blueprint, target, type):
   bp_module_name = label_to_module_name(target.name)
-  module = Module('cc_genrule', bp_module_name, target.name)
+  module = Module(type, bp_module_name, target.name)
 
   sanitizer = get_action_sanitizer(target)
+  sanitizer.sanitize()
   target.args = sanitizer.get_args()
+  module.out = sanitizer.get_outputs()
+  if sanitizer.is_header_generated():
+    module.genrule_headers.add(module.name)
 
   if target.script == '//base/android/jni_generator/jni_generator.py':
-    for i, val in enumerate(target.args):
-      if val == '--input_file':
-        # --input_file supports both .class specifiers or source files as arguments.
-        # Only source files need to be wrapped inside a $(location <label>) tag.
-        if re.match('.*\.class$', target.args[i + 1]):
-          continue
-        # replace --input_file ../../... with --input_file $(location ...)
-        # TODO: put inside function
-        filename = re.sub('^\.\./\.\./', '', target.args[i + 1])
-        target.args[i + 1] = '$(location %s)' % filename
-    # fix target.output directory to match #include statements.
-    target.outputs = [re.sub('^jni_headers/', '', out) for out in target.outputs]
+    # android_jar.classes should be part of the tools as it list implicit classes
+    # for the script to generate JNI headers.
+    module.tool_files.add("base/android/jni_generator/android_jar.classes")
 
   elif target.script == '//base/android/jni_generator/jni_registration_generator.py':
     # jni_registration_generator.py pulls in some config dependencies that we
@@ -795,33 +888,9 @@ def create_action_module(blueprint, target):
     target.deps.clear()
 
     target.inputs = [file for file in target.inputs if not file.startswith('//out/')]
-    for i, val in enumerate(target.args):
-      if val in ['--depfile', '--srcjar-path', '--header-path']:
-        target.args[i + 1] = re.sub('^gen', '$(genDir)', target.args[i + 1])
-      if val == '--sources-files':
-        target.args[i + 1] = '$(genDir)/java.sources'
-      elif val == '--sources-exclusions':
-        # update_jni_registration_module removes them from the srcs of the module
-        # It might be better to remove sources by '--sources-exclusions'
-        target.args[i] = ''
-        target.args[i + 1] = ''
-  elif target.script == "//net/tools/dafsa/make_dafsa.py":
-    # This script generates .cc files but source (registry_controlled_domain.cc) in the target that
-    # depends on this target includes .cc file this script generates.
-    module.genrule_headers.add(module.name)
   elif target.script == "//build/util/version.py":
     # android_chrome_version.py is not specified in anywhere but version.py imports this file
     module.tool_files.add('build/util/android_chrome_version.py')
-    for i, val in enumerate(target.args):
-      if val.startswith('../../'):
-        filename = re.sub('^\.\./\.\./', '', val)
-        target.args[i] = '$(location %s)' % filename
-      elif val == '-e':
-        # arg for -e EVAL option should be passed in -e PATCH_HI=int(PATCH)//256 format.
-        target.args[i + 1] = '%s=\'%s\'' % (target.args[i + 1], target.args[i + 2])
-        target.args[i + 2] = ''
-      elif val == '-o':
-        target.args[i + 1] = '$(out)'
 
   script = gn_utils.label_to_path(target.script)
   module.tool_files.add(script)
@@ -834,12 +903,6 @@ def create_action_module(blueprint, target):
     # Replace {{response_file_contents}} with /dev/stdin
     target.args = ['/dev/stdin' if it == response_file else it for it in target.args]
 
-  # escape " and \$ in target.args.
-  # once all actions are properly implemented, this may not be necessary anymore.
-  # TODO: is this the right place to do this?
-  target.args = [arg.replace('"', r'\"') for arg in target.args]
-  target.args = [arg.replace(r'\$', r'\\$') for arg in target.args]
-
   # put all args on a new line for better diffs.
   NEWLINE = ' " +\n         "'
   arg_string = NEWLINE.join(target.args)
@@ -848,9 +911,6 @@ def create_action_module(blueprint, target):
   if use_response_file:
     # Pipe response file contents into script
     module.cmd = 'echo \'%s\' |%s%s' % (target.response_file_contents, NEWLINE, module.cmd)
-
-  if any(os.path.splitext(it)[1] == '.h' for it in target.outputs):
-    module.genrule_headers.add(bp_module_name)
 
   # gn treats inputs and sources for actions equally.
   # soong only supports source files inside srcs, non-source files are added as
@@ -861,18 +921,7 @@ def create_action_module(blueprint, target):
     else:
       module.tool_files.add(gn_utils.label_to_path(it))
 
-  # Actions using template "action_with_pydeps" also put script inside inputs.
-  # TODO: it might make sense to filter inputs inside GnParser.
-  if script in module.srcs:
-    module.srcs.remove(script)
-
-  module.out.update(target.outputs)
-
-  if target.script == "//base/android/jni_generator/jni_generator.py":
-    # android_jar.classes should be part of the tools as it list implicit classes
-    # for the script to generate JNI headers.
-    module.tool_files.add("base/android/jni_generator/android_jar.classes")
-  elif target.script == '//base/android/jni_generator/jni_registration_generator.py':
+  if target.script == '//base/android/jni_generator/jni_registration_generator.py':
     # jni_registration_generator.py doesn't work with python2
     module.cmd = "python3 " + module.cmd
     # Path in the original sources file does not work in genrule.
@@ -935,7 +984,6 @@ def set_module_include_dirs(module, cflags, include_dirs):
                                  for d in include_dirs
                                  if not re.match('^//out/.*', d)])
 
-
 def create_modules_from_target(blueprint, gn, gn_target_name):
   """Generate module(s) for a given GN target.
 
@@ -975,7 +1023,15 @@ def create_modules_from_target(blueprint, gn, gn_target_name):
     if module is None:
       return None
   elif target.type == 'action':
-    module = create_action_module(blueprint, target)
+    if gn_utils.is_java_action(target.script, target.outputs) and \
+        target.name != "//components/cronet/android:cronet_jni_registration":
+      # This is a cc_genrule that generates both a c++ header file and
+      # srcjar for java. Treat it as a cc_genrule for the time being while
+      # making anothe deep copy of the module and append _java to it for
+      # the java_library.
+      module = create_action_module(blueprint, target, 'java_genrule')
+    else:
+      module = create_action_module(blueprint, target, 'cc_genrule')
   elif target.type == 'action_foreach':
     module = create_action_foreach_modules(blueprint, target)
   elif target.type == 'copy':
@@ -1154,6 +1210,14 @@ def create_java_module(blueprint, gn):
   bp_module_name = module_prefix + 'java'
   module = Module('java_library', bp_module_name, '//gn:java')
   module.srcs.update([gn_utils.label_to_path(source) for source in gn.java_sources])
+  for dep in gn.java_actions:
+    dep_module = create_modules_from_target(blueprint, gn, dep)
+    if "cronet_jni_registration" in dep_module.name:
+      dep_module = copy.deepcopy(dep_module)
+      dep_module.name += "_java"
+      dep_module.type = 'java_genrule'
+      dep_module.out = [out for out in dep_module.out if out.endswith(".srcjar")]
+      blueprint.add_module(dep_module)
   blueprint.add_module(module)
 
 def update_jni_registration_module(module, gn):
