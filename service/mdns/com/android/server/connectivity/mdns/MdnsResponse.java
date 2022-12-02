@@ -16,6 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
+import android.annotation.Nullable;
+
 import com.android.internal.annotations.VisibleForTesting;
 
 import java.io.IOException;
@@ -25,8 +27,6 @@ import java.util.LinkedList;
 import java.util.List;
 
 /** An mDNS response. */
-// TODO(b/242631897): Resolve nullness suppression.
-@SuppressWarnings("nullness")
 public class MdnsResponse {
     private final List<MdnsRecord> records;
     private final List<MdnsPointerRecord> pointerRecords;
@@ -35,6 +35,7 @@ public class MdnsResponse {
     private MdnsInetAddressRecord inet4AddressRecord;
     private MdnsInetAddressRecord inet6AddressRecord;
     private long lastUpdateTime;
+    private int interfaceIndex = MdnsSocket.INTERFACE_INDEX_UNSPECIFIED;
 
     /** Constructs a new, empty response. */
     public MdnsResponse(long now) {
@@ -77,7 +78,7 @@ public class MdnsResponse {
     }
 
     @VisibleForTesting
-    /* package */ synchronized void clearPointerRecords() {
+    synchronized void clearPointerRecords() {
         pointerRecords.clear();
     }
 
@@ -90,15 +91,16 @@ public class MdnsResponse {
         return false;
     }
 
+    @Nullable
     public synchronized List<String> getSubtypes() {
         List<String> subtypes = null;
-
         for (MdnsPointerRecord pointerRecord : pointerRecords) {
-            if (pointerRecord.hasSubtype()) {
+            String pointerRecordSubtype = pointerRecord.getSubtype();
+            if (pointerRecordSubtype != null) {
                 if (subtypes == null) {
                     subtypes = new LinkedList<>();
                 }
-                subtypes.add(pointerRecord.getSubtype());
+                subtypes.add(pointerRecordSubtype);
             }
         }
 
@@ -165,7 +167,8 @@ public class MdnsResponse {
     }
 
     /** Sets the IPv4 address record. */
-    public synchronized boolean setInet4AddressRecord(MdnsInetAddressRecord newInet4AddressRecord) {
+    public synchronized boolean setInet4AddressRecord(
+            @Nullable MdnsInetAddressRecord newInet4AddressRecord) {
         if (recordsAreSame(this.inet4AddressRecord, newInet4AddressRecord)) {
             return false;
         }
@@ -189,7 +192,8 @@ public class MdnsResponse {
     }
 
     /** Sets the IPv6 address record. */
-    public synchronized boolean setInet6AddressRecord(MdnsInetAddressRecord newInet6AddressRecord) {
+    public synchronized boolean setInet6AddressRecord(
+            @Nullable MdnsInetAddressRecord newInet6AddressRecord) {
         if (recordsAreSame(this.inet6AddressRecord, newInet6AddressRecord)) {
             return false;
         }
@@ -203,6 +207,21 @@ public class MdnsResponse {
         return true;
     }
 
+    /**
+     * Updates the index of the network interface at which this response was received. Can be set to
+     * {@link MdnsSocket#INTERFACE_INDEX_UNSPECIFIED} if unset.
+     */
+    public synchronized void setInterfaceIndex(int interfaceIndex) {
+        this.interfaceIndex = interfaceIndex;
+    }
+
+    /**
+     * Returns the index of the network interface at which this response was received. Can be set to
+     * {@link MdnsSocket#INTERFACE_INDEX_UNSPECIFIED} if unset.
+     */
+    public synchronized int getInterfaceIndex() {
+        return interfaceIndex;
+    }
 
     /** Gets the IPv6 address record. */
     public synchronized MdnsInetAddressRecord getInet6AddressRecord() {

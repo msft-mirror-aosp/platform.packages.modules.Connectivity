@@ -34,8 +34,8 @@ import android.service.NetworkIdentityProto;
 import android.telephony.TelephonyManager;
 import android.util.proto.ProtoOutputStream;
 
+import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.CollectionUtils;
-import com.android.net.module.util.NetworkCapabilitiesUtils;
 import com.android.net.module.util.NetworkIdentityUtils;
 
 import java.lang.annotation.Retention;
@@ -172,7 +172,7 @@ public class NetworkIdentity {
         if (oemManaged == OEM_NONE) {
             return "OEM_NONE";
         }
-        final int[] bitPositions = NetworkCapabilitiesUtils.unpackBits(oemManaged);
+        final int[] bitPositions = BitUtils.unpackBits(oemManaged);
         final ArrayList<String> oemManagedNames = new ArrayList<String>();
         for (int position : bitPositions) {
             oemManagedNames.add(nameOfOemManaged(1 << position));
@@ -400,10 +400,8 @@ public class NetworkIdentity {
             setSubscriberId(snapshot.getSubscriberId());
             setRoaming(!snapshot.getNetworkCapabilities().hasCapability(
                     NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING));
-            setMetered(!(snapshot.getNetworkCapabilities().hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-                    || snapshot.getNetworkCapabilities().hasCapability(
-                    NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED)));
+            setMetered(!snapshot.getNetworkCapabilities().hasCapability(
+                    NetworkCapabilities.NET_CAPABILITY_NOT_METERED));
 
             setOemManaged(getOemBitfield(snapshot.getNetworkCapabilities()));
 

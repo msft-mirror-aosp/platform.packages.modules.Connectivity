@@ -165,7 +165,6 @@ import android.os.MessageQueue;
 import android.os.Process;
 import android.os.ServiceManager;
 import android.os.SystemClock;
-import android.os.SystemProperties;
 import android.os.UserHandle;
 import android.os.VintfRuntimeInfo;
 import android.platform.test.annotations.AppModeFull;
@@ -193,6 +192,7 @@ import com.android.testutils.CompatUtil;
 import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.DeviceConfigRule;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
@@ -271,7 +271,10 @@ public class ConnectivityManagerTest {
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
-    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 5_000;
+    // Timeout for waiting network to be validated. Set the timeout to 30s, which is more than
+    // DNS timeout.
+    // TODO(b/252972908): reset the original timer when aosp/2188755 is ramped up.
+    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 30_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int SOCKET_TIMEOUT_MS = 100;
     private static final int NUM_TRIES_MULTIPATH_PREF_CHECK = 20;
@@ -353,7 +356,8 @@ public class ConnectivityManagerTest {
         // Get com.android.internal.R.array.networkAttributes
         int resId = mContext.getResources().getIdentifier("networkAttributes", "array", "android");
         String[] naStrings = mContext.getResources().getStringArray(resId);
-        boolean wifiOnly = SystemProperties.getBoolean("ro.radio.noril", false);
+        boolean wifiOnly = mPackageManager.hasSystemFeature(FEATURE_WIFI)
+                && !mPackageManager.hasSystemFeature(FEATURE_TELEPHONY);
         for (String naString : naStrings) {
             try {
                 final String[] splitConfig = naString.split(",");
@@ -556,6 +560,11 @@ public class ConnectivityManagerTest {
         // got from other APIs.
         final Network[] networks = mCm.getAllNetworks();
         assertGreaterOrEqual(networks.length, 1);
+        final TestableNetworkCallback allNetworkLinkPropertiesListener =
+                new TestableNetworkCallback();
+        mCm.registerNetworkCallback(new NetworkRequest.Builder().clearCapabilities().build(),
+                allNetworkLinkPropertiesListener);
+
         final List<NetworkStateSnapshot> snapshots = runWithShellPermissionIdentity(
                 () -> mCm.getAllNetworkStateSnapshots(), NETWORK_SETTINGS);
         assertEquals(networks.length, snapshots.size());
@@ -581,7 +590,18 @@ public class ConnectivityManagerTest {
             assertEquals("", caps.describeImmutableDifferences(
                     snapshot.getNetworkCapabilities()
                             .setNetworkSpecifier(redactedSnapshotCapSpecifier)));
-            assertEquals(mCm.getLinkProperties(network), snapshot.getLinkProperties());
+
+            // Don't check that the mutable fields are the same with synchronous calls, as
+            // the device may add or remove content of these fields in the middle of the test.
+            // Instead, search the target LinkProperties from received LinkPropertiesChanged
+            // callbacks. This is guaranteed to succeed because the callback is registered
+            // before getAllNetworkStateSnapshots is called.
+            final LinkProperties lpFromSnapshot = snapshot.getLinkProperties();
+            allNetworkLinkPropertiesListener.eventuallyExpect(CallbackEntry.LINK_PROPERTIES_CHANGED,
+                    NETWORK_CALLBACK_TIMEOUT_MS, 0 /* mark */, entry ->
+                            entry.getNetwork().equals(network)
+                                    && entry.getLp().equals(lpFromSnapshot));
+
             assertEquals(mCm.getNetworkInfo(network).getType(), snapshot.getLegacyType());
 
             if (network.equals(cellNetwork)) {
@@ -1044,6 +1064,8 @@ public class ConnectivityManagerTest {
         final TestNetworkCallback bestMatchingCallback = new TestNetworkCallback();
         final Handler h = new Handler(Looper.getMainLooper());
         if (TestUtils.shouldTestSApis()) {
+            assertThrows(SecurityException.class, () ->
+                    registerSystemDefaultNetworkCallback(systemDefaultCallback, h));
             runWithShellPermissionIdentity(() -> {
                 registerSystemDefaultNetworkCallback(systemDefaultCallback, h);
                 registerDefaultNetworkCallbackForUid(Process.myUid(), perUidCallback, h);
@@ -1077,6 +1099,18 @@ public class ConnectivityManagerTest {
                     bestMatchingNetwork);
             assertEquals(defaultNetwork, bestMatchingNetwork);
         }
+    }
+
+    @ConnectivityModuleTest
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    @Test
+    public void testRegisterSystemDefaultNetworkCallbackPermission() {
+        final Handler h = new Handler(Looper.getMainLooper());
+        // Verify registerSystemDefaultNetworkCallback can be accessed via
+        // CONNECTIVITY_USE_RESTRICTED_NETWORKS permission.
+        runWithShellPermissionIdentity(() ->
+                        registerSystemDefaultNetworkCallback(new TestNetworkCallback(), h),
+                CONNECTIVITY_USE_RESTRICTED_NETWORKS);
     }
 
     /**
@@ -2348,8 +2382,9 @@ public class ConnectivityManagerTest {
             super.expectAvailableCallbacks(network, false /* suspended */, true /* validated */,
                     BLOCKED_REASON_NONE, NETWORK_CALLBACK_TIMEOUT_MS);
         }
-        public void expectBlockedStatusCallback(Network network, int blockedStatus) {
-            super.expectBlockedStatusCallback(blockedStatus, network, NETWORK_CALLBACK_TIMEOUT_MS);
+        public void eventuallyExpectBlockedStatusCallback(Network network, int blockedStatus) {
+            super.eventuallyExpect(CallbackEntry.BLOCKED_STATUS_INT, NETWORK_CALLBACK_TIMEOUT_MS,
+                    (it) -> it.getNetwork().equals(network) && it.getBlocked() == blockedStatus);
         }
         public void onBlockedStatusChanged(Network network, int blockedReasons) {
             getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));
@@ -2394,12 +2429,14 @@ public class ConnectivityManagerTest {
         final Range<Integer> otherUidRange = new Range<>(otherUid, otherUid);
 
         setRequireVpnForUids(true, List.of(myUidRange));
-        myUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_LOCKDOWN_VPN);
+        myUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork,
+                BLOCKED_REASON_LOCKDOWN_VPN);
         otherUidCallback.assertNoBlockedStatusCallback();
 
         setRequireVpnForUids(true, List.of(myUidRange, otherUidRange));
         myUidCallback.assertNoBlockedStatusCallback();
-        otherUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_LOCKDOWN_VPN);
+        otherUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork,
+                BLOCKED_REASON_LOCKDOWN_VPN);
 
         // setRequireVpnForUids does no deduplication or refcounting. Removing myUidRange does not
         // unblock myUid because it was added to the blocked ranges twice.
@@ -2408,8 +2445,8 @@ public class ConnectivityManagerTest {
         otherUidCallback.assertNoBlockedStatusCallback();
 
         setRequireVpnForUids(false, List.of(myUidRange, otherUidRange));
-        myUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
-        otherUidCallback.expectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
+        myUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
+        otherUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
 
         myUidCallback.assertNoBlockedStatusCallback();
         otherUidCallback.assertNoBlockedStatusCallback();
@@ -2618,8 +2655,7 @@ public class ConnectivityManagerTest {
             // the network with the TEST transport. Also wait for validation here, in case there
             // is a bug that's only visible when the network is validated.
             setWifiMeteredStatusAndWait(ssid, true /* isMetered */, true /* waitForValidation */);
-            defaultCallback.expectCallback(CallbackEntry.LOST, wifiNetwork,
-                    NETWORK_CALLBACK_TIMEOUT_MS);
+            defaultCallback.expect(CallbackEntry.LOST, wifiNetwork, NETWORK_CALLBACK_TIMEOUT_MS);
             waitForAvailable(defaultCallback, tnt.getNetwork());
             // Depending on if this device has cellular connectivity or not, multiple available
             // callbacks may be received. Eventually, metered Wi-Fi should be the final available
@@ -2628,10 +2664,9 @@ public class ConnectivityManagerTest {
             waitForAvailable(systemDefaultCallback, TRANSPORT_WIFI);
         }, /* cleanup */ () -> {
             // Validate that removing the test network will fallback to the default network.
-            runWithShellPermissionIdentity(tnt::teardown);
-            defaultCallback.expectCallback(CallbackEntry.LOST, tnt.getNetwork(),
-                    NETWORK_CALLBACK_TIMEOUT_MS);
-            waitForAvailable(defaultCallback);
+                runWithShellPermissionIdentity(tnt::teardown);
+                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
+                waitForAvailable(defaultCallback);
             }, /* cleanup */ () -> {
                 setWifiMeteredStatusAndWait(ssid, oldMeteredValue, false /* waitForValidation */);
             }, /* cleanup */ () -> {
@@ -2666,8 +2701,7 @@ public class ConnectivityManagerTest {
             waitForAvailable(systemDefaultCallback, wifiNetwork);
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
-                defaultCallback.expectCallback(CallbackEntry.LOST, tnt.getNetwork(),
-                        NETWORK_CALLBACK_TIMEOUT_MS);
+                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
 
                 // This network preference should only ever use the test network therefore available
                 // should not trigger when the test network goes down (e.g. switch to cellular).
@@ -2749,6 +2783,27 @@ public class ConnectivityManagerTest {
         assumeTrue(TestUtils.shouldTestSApis());
         assertThrows(SecurityException.class, () -> mCm.setAcceptPartialConnectivity(
                 mCm.getActiveNetwork(), false /* accept */ , false /* always */));
+    }
+
+    private void ensureCellIsValidatedBeforeMockingValidationUrls() {
+        // Verify that current supported network is validated so that the mock http server will not
+        // apply to unexpected networks. Also see aosp/2208680.
+        //
+        // This may also apply to wifi in principle, but in practice methods that mock validation
+        // URL all disconnect wifi forcefully anyway, so don't wait for wifi to validate.
+        if (mPackageManager.hasSystemFeature(FEATURE_TELEPHONY)) {
+            ensureValidatedNetwork(makeCellNetworkRequest());
+        }
+    }
+
+    private void ensureValidatedNetwork(NetworkRequest request) {
+        final TestableNetworkCallback cb = new TestableNetworkCallback();
+        mCm.registerNetworkCallback(request, cb);
+        cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
+                NETWORK_CALLBACK_TIMEOUT_MS,
+                entry -> ((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                        .hasCapability(NET_CAPABILITY_VALIDATED));
+        mCm.unregisterNetworkCallback(cb);
     }
 
     @AppModeFull(reason = "WRITE_DEVICE_CONFIG permission can't be granted to instant apps")
@@ -2882,7 +2937,8 @@ public class ConnectivityManagerTest {
             assertTrue(mCm.getNetworkCapabilities(wifiNetwork).hasCapability(
                     NET_CAPABILITY_VALIDATED));
 
-            // Configure response code for unvalidated network
+            // The cell network has already been checked to be validated.
+            // Configure response code for unvalidated network.
             configTestServer(Status.INTERNAL_ERROR, Status.INTERNAL_ERROR);
             mCm.reportNetworkConnectivity(wifiNetwork, false);
             // Default network should stay on unvalidated wifi because avoid bad wifi is disabled.
@@ -2970,6 +3026,8 @@ public class ConnectivityManagerTest {
     }
 
     private Network prepareValidatedNetwork() throws Exception {
+        ensureCellIsValidatedBeforeMockingValidationUrls();
+
         prepareHttpServer();
         configTestServer(Status.NO_CONTENT, Status.NO_CONTENT);
         // Disconnect wifi first then start wifi network with configuration.
@@ -2980,6 +3038,8 @@ public class ConnectivityManagerTest {
     }
 
     private Network preparePartialConnectivity() throws Exception {
+        ensureCellIsValidatedBeforeMockingValidationUrls();
+
         prepareHttpServer();
         // Configure response code for partial connectivity
         configTestServer(Status.INTERNAL_ERROR  /* httpsStatusCode */,
@@ -2993,6 +3053,8 @@ public class ConnectivityManagerTest {
     }
 
     private Network prepareUnvalidatedNetwork() throws Exception {
+        ensureCellIsValidatedBeforeMockingValidationUrls();
+
         prepareHttpServer();
         // Configure response code for unvalidated network
         configTestServer(Status.INTERNAL_ERROR /* httpsStatusCode */,
