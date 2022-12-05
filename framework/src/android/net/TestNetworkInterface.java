@@ -106,6 +106,7 @@ public final class TestNetworkInterface implements Parcelable {
      * When TestNetworkInterface wraps a tun interface, the MAC address is null.
      *
      * @return the tap interface MAC address or null.
+     * @hide
      */
     @Nullable
     public MacAddress getMacAddress() {
@@ -118,6 +119,7 @@ public final class TestNetworkInterface implements Parcelable {
      * MTU defaults to 1500 if an error occurs.
      *
      * @return MTU in bytes.
+     * @hide
      */
     public int getMtu() {
         return mMtu;
