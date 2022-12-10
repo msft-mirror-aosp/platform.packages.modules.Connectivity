@@ -34,6 +34,7 @@ import os
 import re
 import sys
 import copy
+from pathlib import Path
 
 import gn_utils
 
@@ -314,6 +315,7 @@ class Module(object):
     self.rtti = False
     # Name of the output. Used for setting .so file name for libcronet
     self.stem = None
+    self.compile_multilib = None
 
   def to_string(self, output):
     if self.comment:
@@ -361,6 +363,7 @@ class Module(object):
     self._output_field(output, 'linker_scripts')
     self._output_field(output, 'cppflags')
     self._output_field(output, 'stem')
+    self._output_field(output, 'compile_multilib')
     if self.rtti:
       self._output_field(output, 'rtti')
 
@@ -618,6 +621,53 @@ def create_proto_group_modules(blueprint, gn, module_name, target_names):
 
   blueprint.add_module(module)
 
+def create_gcc_preprocess_modules(blueprint, target):
+  # gcc_preprocess.py internally execute host gcc which is not allowed in genrule.
+  # So, this function create multiple modules and realize equivalent processing
+  # TODO: Consider to support gcc_preprocess.py in different way
+  # It's not great to have genrule and cc_object in the dependency from java_library
+  assert (len(target.sources) == 1)
+  source = list(target.sources)[0]
+  assert (Path(source).suffix == '.template')
+  stem = Path(source).stem
+
+  bp_module_name = label_to_module_name(target.name)
+
+  # Rename .template to .cc since cc_object does not accept .template file as srcs
+  rename_module = Module('genrule', bp_module_name + '_rename', target.name)
+  rename_module.srcs.add(gn_utils.label_to_path(source))
+  rename_module.out.add(stem + '.cc')
+  rename_module.cmd = 'cp $(in) $(out)'
+  blueprint.add_module(rename_module)
+
+  # Preprocess template file and generates java file
+  preprocess_module = Module('cc_object', bp_module_name + '_preprocess', target.name)
+  # -E: stop after preprocessing.
+  # -P: disable line markers, i.e. '#line 309'
+  preprocess_module.cflags.update(['-E', '-P', '-DANDROID'])
+  preprocess_module.srcs.add(':' + rename_module.name)
+  defines = ['-D' + target.args[i+1] for i, arg in enumerate(target.args) if arg == '--define']
+  preprocess_module.cflags.update(defines)
+  # HACK: Specifying compile_multilib to build cc_object only once.
+  # Without this, soong complain to genrule that depends on cc_object when built for 64bit target.
+  # It seems this is because cc object is a module with per-architecture variants and genrule is a
+  # module with default variant. For 64bit target, cc_object is built multiple times for 32/64bit
+  # modes and genrule doesn't know which one to depend on.
+  preprocess_module.compile_multilib = 32
+  blueprint.add_module(preprocess_module)
+
+  # Generates srcjar using soong_zip
+  module = Module('genrule', bp_module_name, target.name)
+  module.srcs.add(':' + preprocess_module.name)
+  module.out.add(stem + '.srcjar')
+  module.cmd = NEWLINE.join([
+    f'cp $(in) $(genDir)/{stem}.java &&',
+    f'$(location soong_zip) -o $(out) -srcjar -f $(genDir)/{stem}.java'
+  ])
+  module.tools.add('soong_zip')
+  blueprint.add_module(module)
+  return module
+
 
 class BaseActionSanitizer():
   def __init__(self, target):
@@ -746,6 +796,23 @@ class BaseActionSanitizer():
   def get_outputs(self):
     return self.target.outputs
 
+  def get_srcs(self):
+    # gn treats inputs and sources for actions equally.
+    # soong only supports source files inside srcs, non-source files are added as
+    # tool_files dependency.
+    files = self.target.sources.union(self.target.inputs)
+    return {gn_utils.label_to_path(file) for file in files if is_supported_source_file(file)}
+
+  def get_tool_files(self):
+    # gn treats inputs and sources for actions equally.
+    # soong only supports source files inside srcs, non-source files are added as
+    # tool_files dependency.
+    files = self.target.sources.union(self.target.inputs)
+    tool_files = {gn_utils.label_to_path(file)
+                  for file in files if not is_supported_source_file(file)}
+    tool_files.add(gn_utils.label_to_path(self.target.script))
+    return tool_files
+
   def _sanitize_args(self):
     # Handle passing parameters via response file by piping them into the script
     # and reading them from /dev/stdin.
@@ -759,9 +826,13 @@ class BaseActionSanitizer():
   def _sanitize_outputs(self):
     pass
 
+  def _sanitize_inputs(self):
+    pass
+
   def sanitize(self):
     self._sanitize_args()
     self._sanitize_outputs()
+    self._sanitize_inputs()
 
   # Whether this target generates header files
   def is_header_generated(self):
@@ -803,7 +874,17 @@ class JniGeneratorSanitizer(BaseActionSanitizer):
     self.target.outputs = {re.sub('^jni_headers/', '', out) for out in self.target.outputs}
     super()._sanitize_outputs()
 
+  def get_tool_files(self):
+    tool_files = super().get_tool_files()
+    # android_jar.classes should be part of the tools as it list implicit classes
+    # for the script to generate JNI headers.
+    tool_files.add("base/android/jni_generator/android_jar.classes")
+    return tool_files
+
 class JniRegistrationGeneratorSanitizer(BaseActionSanitizer):
+  def _sanitize_inputs(self):
+    self.target.inputs = [file for file in self.target.inputs if not file.startswith('//out/')]
+
   def _sanitize_args(self):
     self._update_value_arg('--depfile', self._sanitize_filepath)
     self._update_value_arg('--srcjar-path', self._sanitize_filepath)
@@ -849,7 +930,14 @@ class VersionSanitizer(BaseActionSanitizer):
     # args for the version.py contain file path without leading --arg key. So apply sanitize
     # function for all the args.
     self._update_all_args(self._sanitize_filepath_with_location_tag)
+    self._set_value_arg('-e', "'%s'" % self._get_value_arg('-e'))
     super()._sanitize_args()
+
+  def get_tool_files(self):
+    tool_files = super().get_tool_files()
+    # android_chrome_version.py is not specified in anywhere but version.py imports this file
+    tool_files.add('build/util/android_chrome_version.py')
+    return tool_files
 
 class JavaCppEnumSanitizer(BaseActionSanitizer):
   def _sanitize_args(self):
@@ -862,6 +950,23 @@ class MakeDafsaSanitizer(BaseActionSanitizer):
     # This script generates .cc files but they are #included by other sources
     # (e.g. registry_controlled_domain.cc)
     return True
+
+class JavaCppFeatureSanitizer(BaseActionSanitizer):
+  def _sanitize_args(self):
+    self._update_all_args(self._sanitize_filepath_with_location_tag)
+    self._set_value_arg('--srcjar', '$(out)')
+    super()._sanitize_args()
+
+class JavaCppStringSanitizer(BaseActionSanitizer):
+  def _sanitize_args(self):
+    self._update_all_args(self._sanitize_filepath_with_location_tag)
+    self._set_value_arg('--srcjar', '$(out)')
+    super()._sanitize_args()
+
+class WriteNativeLibrariesJavaSanitizer(BaseActionSanitizer):
+  def _sanitize_args(self):
+    self._set_value_arg('--output', '$(out)')
+    super()._sanitize_args()
 
 def get_action_sanitizer(target, type):
   if target.script == "//build/write_buildflag_header.py":
@@ -881,6 +986,12 @@ def get_action_sanitizer(target, type):
     return JavaCppEnumSanitizer(target)
   elif target.script == "//net/tools/dafsa/make_dafsa.py":
     return MakeDafsaSanitizer(target)
+  elif target.script == '//build/android/gyp/java_cpp_features.py':
+    return JavaCppFeatureSanitizer(target)
+  elif target.script == '//build/android/gyp/java_cpp_strings.py':
+    return JavaCppStringSanitizer(target)
+  elif target.script == '//build/android/gyp/write_native_libraries_java.py':
+    return WriteNativeLibrariesJavaSanitizer(target)
   else:
     # TODO: throw exception here once all script hacks have been converted.
     return BaseActionSanitizer(target)
@@ -921,39 +1032,14 @@ def create_action_foreach_modules(blueprint, target):
 def create_action_module(blueprint, target, type):
   sanitizer = get_action_sanitizer(target, type)
   sanitizer.sanitize()
+
   module = Module(type, sanitizer.get_name(), target.name)
   module.cmd = sanitizer.get_cmd()
   module.out = sanitizer.get_outputs()
   if sanitizer.is_header_generated():
     module.genrule_headers.add(module.name)
-
-  if target.script == '//base/android/jni_generator/jni_generator.py':
-    # android_jar.classes should be part of the tools as it list implicit classes
-    # for the script to generate JNI headers.
-    module.tool_files.add("base/android/jni_generator/android_jar.classes")
-
-  elif target.script == '//base/android/jni_generator/jni_registration_generator.py':
-    # jni_registration_generator.py pulls in some config dependencies that we
-    # do not handle. Remove them.
-    # TODO: find a better way to do this.
-    target.deps.clear()
-
-    target.inputs = [file for file in target.inputs if not file.startswith('//out/')]
-  elif target.script == "//build/util/version.py":
-    # android_chrome_version.py is not specified in anywhere but version.py imports this file
-    module.tool_files.add('build/util/android_chrome_version.py')
-
-  script = gn_utils.label_to_path(target.script)
-  module.tool_files.add(script)
-
-  # gn treats inputs and sources for actions equally.
-  # soong only supports source files inside srcs, non-source files are added as
-  # tool_files dependency.
-  for it in target.sources or target.inputs:
-    if is_supported_source_file(it):
-      module.srcs.add(gn_utils.label_to_path(it))
-    else:
-      module.tool_files.add(gn_utils.label_to_path(it))
+  module.srcs = sanitizer.get_srcs()
+  module.tool_files = sanitizer.get_tool_files()
 
   blueprint.add_module(module)
   return module
@@ -1217,7 +1303,11 @@ def create_java_module(blueprint, gn):
   module = Module('java_library', bp_module_name, '//gn:java')
   module.srcs.update([gn_utils.label_to_path(source) for source in gn.java_sources])
   for dep in gn.java_actions:
-    dep_module = create_action_module(blueprint, gn.get_target(dep), 'java_genrule')
+    target = gn.get_target(dep)
+    if target.script == '//build/android/gyp/gcc_preprocess.py':
+      module.srcs.add(':' + create_gcc_preprocess_modules(blueprint, target).name)
+    else:
+      module.srcs.add(':' + create_action_module(blueprint, target, 'java_genrule').name)
   blueprint.add_module(module)
 
 def update_jni_registration_module(module, gn):
@@ -1230,7 +1320,8 @@ def update_jni_registration_module(module, gn):
 
   # TODO: java_sources might not contain all the required java files
   module.srcs.update([gn_utils.label_to_path(source)
-                      for source in gn.java_sources if source not in deny_list])
+                      for source in gn.java_sources
+                      if source.endswith('.java') and source not in deny_list])
 
 def create_blueprint_for_targets(gn, targets):
   """Generate a blueprint for a list of GN targets."""
