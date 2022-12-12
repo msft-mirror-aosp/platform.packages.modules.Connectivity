@@ -29,16 +29,30 @@ import sys
 
 BUILDFLAGS_TARGET = '//gn:gen_buildflags'
 GEN_VERSION_TARGET = '//src/base:version_gen_h'
-TARGET_TOOLCHAIN = '//gn/standalone/toolchain:gcc_like_host'
-HOST_TOOLCHAIN = '//gn/standalone/toolchain:gcc_like_host'
-LINKER_UNIT_TYPES = ('executable', 'shared_library', 'static_library')
-
+LINKER_UNIT_TYPES = ('executable', 'shared_library', 'static_library', 'source_set')
+JAVA_BANNED_SCRIPTS = [
+    "//build/android/gyp/turbine.py",
+    "//build/android/gyp/compile_java.py",
+    "//build/android/gyp/filter_zip.py",
+    "//build/android/gyp/dex.py",
+    "//build/android/gyp/write_build_config.py",
+    "//build/android/gyp/create_r_java.py",
+    "//build/android/gyp/ijar.py",
+    "//build/android/gyp/create_r_java.py",
+    "//build/android/gyp/bytecode_processor.py",
+    "//build/android/gyp/prepare_resources.py",
+    "//build/android/gyp/aar.py",
+    "//build/android/gyp/zip.py",
+]
 # TODO(primiano): investigate these, they require further componentization.
 ODR_VIOLATION_IGNORE_TARGETS = {
     '//test/cts:perfetto_cts_deps',
     '//:perfetto_integrationtests',
 }
-
+ARCH_REGEX = r'(android_x86_64|android_x86|android_arm|android_arm64|host)'
+DEX_REGEX = '.*__dex__%s$' % ARCH_REGEX
+COMPILE_JAVA_REGEX = '.*__compile_java__%s$' % ARCH_REGEX
+RESPONSE_FILE = '{{response_file_name}}'
 
 def repo_root():
   """Returns an absolute path to the repository root."""
@@ -70,6 +84,13 @@ def label_to_target_name_with_path(label):
   name = re.sub(r'[^a-zA-Z0-9_]', '_', name)
   return name
 
+def _is_java_source(src):
+  return os.path.splitext(src)[1] == '.java' and not src.startswith("//out/test/gen/")
+
+def is_java_action(script, outputs):
+  return (script != "" and script not in JAVA_BANNED_SCRIPTS) and any(
+      [file.endswith(".srcjar") or file.endswith(".java")
+       for file in outputs])
 
 class GnParser(object):
   """A parser with some cleverness for GN json desc files
@@ -94,6 +115,18 @@ class GnParser(object):
         Maked properties are propagated up the dependency chain when a
         source_set dependency is encountered.
         """
+    class Arch():
+      """Architecture-dependent properties
+        """
+      def __init__(self):
+        self.sources = set()
+        self.cflags = set()
+        self.defines = set()
+        self.include_dirs = set()
+        self.deps = set()
+        self.transitive_static_libs_deps = set()
+        self.source_set_deps = set()
+
 
     def __init__(self, name, type):
       self.name = name  # e.g. //src/ipc:ipc
@@ -135,14 +168,21 @@ class GnParser(object):
       self.source_set_deps = set()  # Transitive set of source_set deps.
       self.proto_deps = set()
       self.transitive_proto_deps = set()
-      self.transitive_static_libs_deps = set()
+      self.rtti = False
 
-      # Deps on //gn:xxx have this flag set to True. These dependencies
-      # are special because they pull third_party code from buildtools/.
-      # We don't want to keep recursing into //buildtools in generators,
-      # this flag is used to stop the recursion and create an empty
-      # placeholder target once we hit //gn:protoc or similar.
-      self.is_third_party_dep_ = False
+      # TODO: come up with a better way to only run this once.
+      # is_finalized tracks whether finalize() was called on this target.
+      self.is_finalized = False
+      self.arch = dict()
+
+      # This is used to get the name/version of libcronet
+      self.output_name = None
+
+    def host_supported(self):
+      return 'host' in self.arch
+
+    def device_supported(self):
+      return any([name.startswith('android') for name in self.arch.keys()])
 
     def __lt__(self, other):
       if isinstance(other, self.__class__):
@@ -159,20 +199,51 @@ class GnParser(object):
                         indent=4,
                         sort_keys=True)
 
-    def update(self, other):
+    def update(self, other, arch):
       for key in ('cflags', 'defines', 'deps', 'include_dirs', 'ldflags',
                   'source_set_deps', 'proto_deps', 'transitive_proto_deps',
                   'libs', 'proto_paths'):
         self.__dict__[key].update(other.__dict__.get(key, []))
 
-  def __init__(self, gn_desc):
-    self.gn_desc_ = gn_desc
+      for key_in_arch in ('cflags', 'defines', 'include_dirs', 'source_set_deps'):
+        self.arch[arch].__dict__[key_in_arch].update(
+          other.arch[arch].__dict__.get(key_in_arch, []))
+
+    def finalize(self):
+      """Move common properties out of arch-dependent subobjects to Target object.
+
+        TODO: find a better name for this function.
+        """
+      if self.is_finalized:
+        return
+      self.is_finalized = True
+
+      # Target contains the intersection of arch-dependent properties
+      self.sources = set.intersection(*[arch.sources for arch in self.arch.values()])
+      self.cflags = set.intersection(*[arch.cflags for arch in self.arch.values()])
+      self.defines = set.intersection(*[arch.defines for arch in self.arch.values()])
+      self.include_dirs = set.intersection(*[arch.include_dirs for arch in self.arch.values()])
+      self.deps.update(set.intersection(*[arch.deps for arch in self.arch.values()]))
+      self.source_set_deps.update(set.intersection(*[arch.source_set_deps for arch in self.arch.values()]))
+
+      # Deduplicate arch-dependent properties
+      for arch in self.arch.keys():
+        self.arch[arch].sources -= self.sources
+        self.arch[arch].cflags -= self.cflags
+        self.arch[arch].defines -= self.defines
+        self.arch[arch].include_dirs -= self.include_dirs
+        self.arch[arch].deps -= self.deps
+        self.arch[arch].source_set_deps -= self.source_set_deps
+
+
+  def __init__(self):
     self.all_targets = {}
     self.linker_units = {}  # Executables, shared or static libraries.
     self.source_sets = {}
     self.actions = {}
     self.proto_libs = {}
     self.java_sources = set()
+    self.java_actions = set()
 
   def _get_response_file_contents(self, action_desc):
     # response_file_contents are formatted as:
@@ -195,39 +266,64 @@ class GnParser(object):
     # TODO: There are some other possible variations we might need to support.
     return target.type == 'group' and re.match('.*_java$', target.name)
 
+  def _get_arch(self, toolchain):
+    if toolchain == '//build/toolchain/android:android_clang_x86':
+      return 'android_x86'
+    elif toolchain == '//build/toolchain/android:android_clang_x64':
+      return 'android_x86_64'
+    elif toolchain == '//build/toolchain/android:android_clang_arm':
+      return 'android_arm'
+    elif toolchain == '//build/toolchain/android:android_clang_arm64':
+      return 'android_arm64'
+    else:
+      return 'host'
 
   def get_target(self, gn_target_name):
     """Returns a Target object from the fully qualified GN target name.
 
+      get_target() requires that parse_gn_desc() has already been called.
+      """
+    # Run this every time as parse_gn_desc can be called at any time.
+    for target in self.all_targets.values():
+      target.finalize()
+
+    return self.all_targets[label_without_toolchain(gn_target_name)]
+
+  def parse_gn_desc(self, gn_desc, gn_target_name):
+    """Parses a gn desc tree and resolves all target dependencies.
+
         It bubbles up variables from source_set dependencies as described in the
         class-level comments.
         """
-    target = self.all_targets.get(gn_target_name)
-    if target is not None:
+    # Use name without toolchain for targets to support targets built for
+    # multiple archs.
+    target_name = label_without_toolchain(gn_target_name)
+    desc = gn_desc[gn_target_name]
+    type_ = desc['type']
+    arch = self._get_arch(desc['toolchain'])
+
+    # Action modules can differ depending on the target architecture, yet
+    # genrule's do not allow to overload cmd per target OS / arch.  Create a
+    # separate action for every architecture.
+    # Cover both action and action_foreach
+    if type_.startswith('action') and \
+        not is_java_action(desc.get("script", ""), desc.get("outputs", [])):
+      # Don't meddle with the java actions name
+      target_name += '__' + arch
+
+    target = self.all_targets.get(target_name)
+    if target is None:
+      target = GnParser.Target(target_name, type_)
+      self.all_targets[target_name] = target
+
+    if arch not in target.arch:
+      target.arch[arch] = GnParser.Target.Arch()
+    else:
       return target  # Target already processed.
 
-    desc = self.gn_desc_[gn_target_name]
-    target = GnParser.Target(gn_target_name, desc['type'])
     target.testonly = desc.get('testonly', False)
-    target.toolchain = desc.get('toolchain', None)
-    self.all_targets[gn_target_name] = target
 
-    # TODO: determine if below comment should apply for cronet builds in Android.
-    # We should never have GN targets directly depend on buidtools. They
-    # should hop via //gn:xxx, so we can give generators an opportunity to
-    # override them.
-    # Specifically allow targets to depend on libc++ and libunwind.
-    if not any(match in gn_target_name for match in ['libc++', 'libunwind']):
-      assert (not gn_target_name.startswith('//buildtools'))
-
-
-    # Don't descend further into third_party targets. Genrators are supposed
-    # to either ignore them or route to other externally-provided targets.
-    if gn_target_name.startswith('//gn'):
-      target.is_third_party_dep_ = True
-      return target
-
-    proto_target_type, proto_desc = self.get_proto_target_type(target)
+    proto_target_type, proto_desc = self.get_proto_target_type(gn_desc, gn_target_name)
     if proto_target_type is not None:
       self.proto_libs[target.name] = target
       target.type = 'proto_library'
@@ -235,18 +331,29 @@ class GnParser(object):
       target.proto_paths.update(self.get_proto_paths(proto_desc))
       target.proto_exports.update(self.get_proto_exports(proto_desc))
       target.proto_in_dir = self.get_proto_in_dir(proto_desc)
-      target.sources.update(proto_desc.get('sources', []))
-      assert (all(x.endswith('.proto') for x in target.sources))
+      for gn_proto_deps_name in proto_desc.get('deps', []):
+        dep = self.parse_gn_desc(gn_desc, gn_proto_deps_name)
+        target.deps.add(dep.name)
+      target.arch[arch].sources.update(proto_desc.get('sources', []))
+      assert (all(x.endswith('.proto') for x in target.arch[arch].sources))
     elif target.type == 'source_set':
       self.source_sets[gn_target_name] = target
-      target.sources.update(desc.get('sources', []))
+      target.arch[arch].sources.update(desc.get('sources', []))
     elif target.type in LINKER_UNIT_TYPES:
       self.linker_units[gn_target_name] = target
-      target.sources.update(desc.get('sources', []))
+      target.arch[arch].sources.update(desc.get('sources', []))
+    elif desc.get("script", "") in JAVA_BANNED_SCRIPTS or self._is_java_target(target):
+      # java_group identifies the group target generated by the android_library
+      # or java_library template. A java_group must not be added as a dependency, but sources are collected
+      log.debug('Found java target %s', target.name)
+      if target.type == "action":
+        # Convert java actions into java_group and keep the inputs for collection.
+        target.inputs.update(desc.get('inputs', []))
+      target.type = 'java_group'
     elif target.type in ['action', 'action_foreach']:
       self.actions[gn_target_name] = target
       target.inputs.update(desc.get('inputs', []))
-      target.sources.update(desc.get('sources', []))
+      target.arch[arch].sources.update(desc.get('sources', []))
       outs = [re.sub('^//out/.+?/gen/', '', x) for x in desc['outputs']]
       target.outputs.update(outs)
       target.script = desc['script']
@@ -255,11 +362,6 @@ class GnParser(object):
     elif target.type == 'copy':
       # TODO: copy rules are not currently implemented.
       self.actions[gn_target_name] = target
-    elif self._is_java_target(target):
-      # java_group identifies the group target generated by the android_library
-      # or java_library template. A java_group must not be added as a dependency, but sources are collected
-      log.debug('Found java target %s', target.name)
-      target.type = 'java_group'
 
     # Default for 'public' is //* - all headers in 'sources' are public.
     # TODO(primiano): if a 'public' section is specified (even if empty), then
@@ -269,44 +371,51 @@ class GnParser(object):
     public_headers = [x for x in desc.get('public', []) if x != '*']
     target.public_headers.update(public_headers)
 
-    target.cflags.update(desc.get('cflags', []) + desc.get('cflags_cc', []))
+    target.arch[arch].cflags.update(desc.get('cflags', []) + desc.get('cflags_cc', []))
     target.libs.update(desc.get('libs', []))
     target.ldflags.update(desc.get('ldflags', []))
-    target.defines.update(desc.get('defines', []))
-    target.include_dirs.update(desc.get('include_dirs', []))
+    target.arch[arch].defines.update(desc.get('defines', []))
+    target.arch[arch].include_dirs.update(desc.get('include_dirs', []))
+    target.output_name = desc.get('output_name', None)
+    if "-frtti" in target.arch[arch].cflags:
+      target.rtti = True
 
     # Recurse in dependencies.
-    for dep_name in desc.get('deps', []):
-      dep = self.get_target(dep_name)
-      if dep.is_third_party_dep_:
-        target.deps.add(dep_name)
-      elif dep.type == 'proto_library':
-        target.proto_deps.add(dep_name)
-        target.transitive_proto_deps.add(dep_name)
+    for gn_dep_name in desc.get('deps', []):
+      dep = self.parse_gn_desc(gn_desc, gn_dep_name)
+      if dep.type == 'proto_library':
+        target.proto_deps.add(dep.name)
+        target.transitive_proto_deps.add(dep.name)
         target.proto_paths.update(dep.proto_paths)
         target.transitive_proto_deps.update(dep.transitive_proto_deps)
       elif dep.type == 'source_set':
-        target.source_set_deps.add(dep_name)
-        target.update(dep)  # Bubble up source set's cflags/ldflags etc.
+        target.arch[arch].source_set_deps.add(dep.name)
+        target.arch[arch].source_set_deps.update(dep.arch[arch].source_set_deps)
       elif dep.type == 'group':
-        target.update(dep)  # Bubble up groups's cflags/ldflags etc.
+        target.update(dep, arch)  # Bubble up groups's cflags/ldflags etc.
       elif dep.type in ['action', 'action_foreach', 'copy']:
         if proto_target_type is None:
-          target.deps.add(dep_name)
+          target.arch[arch].deps.add(dep.name)
       elif dep.type in LINKER_UNIT_TYPES:
-        target.deps.add(dep_name)
+        target.arch[arch].deps.add(dep.name)
       elif dep.type == 'java_group':
         # Explicitly break dependency chain when a java_group is added.
         # Java sources are collected and eventually compiled as one large
         # java_library.
         pass
 
+      # Source set bubble up transitive source sets but can't be combined with this
+      # if they are combined then source sets will bubble up static libraries
+      # while we only want to have source sets bubble up only source sets.
       if dep.type == 'static_library':
         # Bubble up static_libs. Necessary, since soong does not propagate
         # static_libs up the build tree.
-        target.transitive_static_libs_deps.add(dep_name)
-        target.transitive_static_libs_deps.update(dep.transitive_static_libs_deps)
-        target.deps.update(target.transitive_static_libs_deps)
+        target.arch[arch].transitive_static_libs_deps.add(dep.name)
+
+      if arch in dep.arch:
+        target.arch[arch].transitive_static_libs_deps.update(
+            dep.arch[arch].transitive_static_libs_deps)
+        target.arch[arch].deps.update(target.arch[arch].transitive_static_libs_deps)
 
       # Collect java sources. Java sources are kept inside the __compile_java target.
       # This target can be used for both host and target compilation; only add
@@ -314,12 +423,19 @@ class GnParser(object):
       # dependency of the __dex target)
       # Note: this skips prebuilt java dependencies. These will have to be
       # added manually when building the jar.
-      if re.match('.*__dex$', target.name):
-        if re.match('.*__compile_java$', dep.name):
+      if re.match(DEX_REGEX, target.name):
+        if re.match(COMPILE_JAVA_REGEX, dep.name):
           log.debug('Adding java sources for %s', dep.name)
-          java_srcs = [src for src in dep.inputs if os.path.splitext(src)[1] == '.java']
+          java_srcs = [src for src in dep.inputs if _is_java_source(src)]
           self.java_sources.update(java_srcs)
-
+      if dep.type in ["action"] and target.type == "java_group":
+        # //base:base_java_aidl generates srcjar from .aidl files. But java_library in soong can
+        # directly have .aidl files in srcs. So adding .aidl files to the java_sources.
+        # TODO: Find a better way/place to do this.
+        if dep.name == '//base:base_java_aidl':
+          self.java_sources.update(dep.arch[arch].sources)
+        else:
+          self.java_actions.add(dep.name)
     return target
 
   def get_proto_exports(self, proto_desc):
@@ -337,7 +453,7 @@ class GnParser(object):
     args = proto_desc.get('args')
     return re.sub('^\.\./\.\./', '', args[args.index('--proto-in-dir') + 1])
 
-  def get_proto_target_type(self, target):
+  def get_proto_target_type(self, gn_desc, gn_target_name):
     """ Checks if the target is a proto library and return the plugin.
 
         Returns:
@@ -347,13 +463,13 @@ class GnParser(object):
             json desc of the target with the .proto sources (_gen target for
             non-descriptor types or the target itself for descriptor type).
         """
-    parts = target.name.split('(', 1)
+    parts = gn_target_name.split('(', 1)
     name = parts[0]
     toolchain = '(' + parts[1] if len(parts) > 1 else ''
 
     # Descriptor targets don't have a _gen target; instead we look for the
     # characteristic flag in the args of the target itself.
-    desc = self.gn_desc_.get(target.name)
+    desc = gn_desc.get(gn_target_name)
     if '--descriptor_set_out' in desc.get('args', []):
       return 'descriptor', desc
 
@@ -365,7 +481,7 @@ class GnParser(object):
 
     # In all other cases, we want to look at the _gen target as that has the
     # important information.
-    gen_desc = self.gn_desc_.get('%s_gen%s' % (name, toolchain))
+    gen_desc = gn_desc.get('%s_gen%s' % (name, toolchain))
     if gen_desc is None or gen_desc['type'] != 'action':
       return None, None
     if gen_desc['script'] != '//tools/protoc_wrapper/protoc_wrapper.py':
