@@ -75,7 +75,6 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_OEM_PAID;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_OEM_PRIVATE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVITY;
-import static android.net.NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_1;
 import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_5;
@@ -211,6 +210,7 @@ import android.os.BatteryStatsManager;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -250,6 +250,7 @@ import com.android.internal.util.MessageUtils;
 import com.android.modules.utils.BasicShellCommandHandler;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
+import com.android.net.module.util.BinderUtils;
 import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
@@ -1450,7 +1451,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mCellularRadioTimesharingCapable =
                 mResources.get().getBoolean(R.bool.config_cellular_radio_timesharing_capable);
 
+        mNetd = netd;
+        mBpfNetMaps = mDeps.getBpfNetMaps(mContext, netd);
         mHandlerThread = mDeps.makeHandlerThread();
+        mPermissionMonitor =
+                new PermissionMonitor(mContext, mNetd, mBpfNetMaps, mHandlerThread);
         mHandlerThread.start();
         mHandler = new InternalHandler(mHandlerThread.getLooper());
         mTrackerHandler = new NetworkStateTrackerHandler(mHandlerThread.getLooper());
@@ -1465,8 +1470,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mDnsResolver = Objects.requireNonNull(dnsresolver, "missing IDnsResolver");
         mProxyTracker = mDeps.makeProxyTracker(mContext, mHandler);
 
-        mNetd = netd;
-        mBpfNetMaps = mDeps.getBpfNetMaps(mContext, netd);
         mTelephonyManager = (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
         mAppOpsManager = (AppOpsManager) mContext.getSystemService(Context.APP_OPS_SERVICE);
         mLocationPermissionChecker = mDeps.makeLocationPermissionChecker(mContext);
@@ -1495,8 +1498,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         mUserManager = (UserManager) context.getSystemService(Context.USER_SERVICE);
-
-        mPermissionMonitor = new PermissionMonitor(mContext, mNetd, mBpfNetMaps);
 
         mUserAllContext = mContext.createContextAsUser(UserHandle.ALL, 0 /* flags */);
         // Listen for user add/removes to inform PermissionMonitor.
@@ -1983,9 +1984,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Nullable
     public NetworkInfo getNetworkInfoForUid(Network network, int uid, boolean ignoreBlocked) {
         enforceAccessPermission();
-        if (uid != mDeps.getCallingUid()) {
-            enforceNetworkStackPermission(mContext);
-        }
         final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
         if (nai == null) return null;
         return getFilteredNetworkInfo(nai, uid, ignoreBlocked);
@@ -3043,7 +3041,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // Calling PermissionMonitor#startMonitoring() in systemReadyInternal() and the
         // MultipathPolicyTracker.start() is called in NetworkPolicyManagerService#systemReady()
         // to ensure the tracking will be initialized correctly.
-        mPermissionMonitor.startMonitoring();
+        final ConditionVariable startMonitoringDone = new ConditionVariable();
+        mHandler.post(() -> {
+            mPermissionMonitor.startMonitoring();
+            startMonitoringDone.open();
+        });
         mProxyTracker.loadGlobalProxy();
         registerDnsResolverUnsolicitedEventListener();
 
@@ -3070,6 +3072,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (SdkLevel.isAtLeastT()) {
             mBpfNetMaps.setPullAtomCallback(mContext);
         }
+        // Wait PermissionMonitor to finish the permission update. Then MultipathPolicyTracker won't
+        // have permission problem. While CV#block() is unbounded in time and can in principle block
+        // forever, this replaces a synchronous call to PermissionMonitor#startMonitoring, which
+        // could have blocked forever too.
+        startMonitoringDone.block();
     }
 
     /**
@@ -5155,7 +5162,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
             description = settingValue + " (?)";
         }
         pw.println("Avoid bad wifi setting:        " + description);
-        final Boolean configValue = mMultinetworkPolicyTracker.deviceConfigActivelyPreferBadWifi();
+
+        final Boolean configValue = BinderUtils.withCleanCallingIdentity(
+                () -> mMultinetworkPolicyTracker.deviceConfigActivelyPreferBadWifi());
         if (null == configValue) {
             description = "unset";
         } else if (configValue) {
@@ -8055,10 +8064,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final boolean oldMetered = prevNc.isMetered();
         final boolean newMetered = newNc.isMetered();
         final boolean meteredChanged = oldMetered != newMetered;
-        final boolean oldTempMetered = prevNc.hasCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED);
-        final boolean newTempMetered = newNc.hasCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED);
-        final boolean tempMeteredChanged = oldTempMetered != newTempMetered;
-
 
         if (meteredChanged) {
             maybeNotifyNetworkBlocked(nai, oldMetered, newMetered,
@@ -8069,7 +8074,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 != newNc.hasCapability(NET_CAPABILITY_NOT_ROAMING);
 
         // Report changes that are interesting for network statistics tracking.
-        if (meteredChanged || roamingChanged || tempMeteredChanged) {
+        if (meteredChanged || roamingChanged) {
             notifyIfacesChangedForNetworkStats();
         }
 

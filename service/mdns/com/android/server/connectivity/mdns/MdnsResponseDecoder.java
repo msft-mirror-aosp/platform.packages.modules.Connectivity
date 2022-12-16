@@ -31,8 +31,6 @@ import java.util.LinkedList;
 import java.util.List;
 
 /** A class that decodes mDNS responses from UDP packets. */
-// TODO(b/242631897): Resolve nullness suppression.
-@SuppressWarnings("nullness")
 public class MdnsResponseDecoder {
 
     public static final int SUCCESS = 0;
@@ -40,7 +38,7 @@ public class MdnsResponseDecoder {
     private static final MdnsLogger LOGGER = new MdnsLogger(TAG);
     private final boolean allowMultipleSrvRecordsPerHost =
             MdnsConfigs.allowMultipleSrvRecordsPerHost();
-    private final String[] serviceType;
+    @Nullable private final String[] serviceType;
     private final Clock clock;
 
     /** Constructs a new decoder that will extract responses for the given service type. */
@@ -258,6 +256,9 @@ public class MdnsResponseDecoder {
                         response = new MdnsResponse(now);
                         responses.add(response);
                     }
+                    // Set interface index earlier because some responses have PTR record only.
+                    // Need to know every response is getting from which interface.
+                    response.setInterfaceIndex(interfaceIndex);
                     response.addPointerRecord((MdnsPointerRecord) record);
                 }
             }
@@ -288,13 +289,13 @@ public class MdnsResponseDecoder {
                     List<MdnsResponse> matchingResponses =
                             findResponsesWithHostName(responses, inetRecord.getName());
                     for (MdnsResponse response : matchingResponses) {
-                        assignInetRecord(response, inetRecord, interfaceIndex);
+                        assignInetRecord(response, inetRecord);
                     }
                 } else {
                     MdnsResponse response =
                             findResponseWithHostName(responses, inetRecord.getName());
                     if (response != null) {
-                        assignInetRecord(response, inetRecord, interfaceIndex);
+                        assignInetRecord(response, inetRecord);
                     }
                 }
             }
@@ -303,14 +304,11 @@ public class MdnsResponseDecoder {
         return SUCCESS;
     }
 
-    private static void assignInetRecord(
-            MdnsResponse response, MdnsInetAddressRecord inetRecord, int interfaceIndex) {
+    private static void assignInetRecord(MdnsResponse response, MdnsInetAddressRecord inetRecord) {
         if (inetRecord.getInet4Address() != null) {
             response.setInet4AddressRecord(inetRecord);
-            response.setInterfaceIndex(interfaceIndex);
         } else if (inetRecord.getInet6Address() != null) {
             response.setInet6AddressRecord(inetRecord);
-            response.setInterfaceIndex(interfaceIndex);
         }
     }
 

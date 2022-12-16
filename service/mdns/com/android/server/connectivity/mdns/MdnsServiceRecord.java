@@ -16,6 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
+import android.annotation.Nullable;
+
 import com.android.internal.annotations.VisibleForTesting;
 
 import java.io.IOException;
@@ -24,8 +26,6 @@ import java.util.Locale;
 import java.util.Objects;
 
 /** An mDNS "SRV" record, which contains service information. */
-// TODO(b/242631897): Resolve nullness suppression.
-@SuppressWarnings("nullness")
 @VisibleForTesting
 public class MdnsServiceRecord extends MdnsRecord {
     public static final int PROTO_NONE = 0;
@@ -39,7 +39,23 @@ public class MdnsServiceRecord extends MdnsRecord {
     private String[] serviceHost;
 
     public MdnsServiceRecord(String[] name, MdnsPacketReader reader) throws IOException {
-        super(name, TYPE_SRV, reader);
+        this(name, reader, false);
+    }
+
+    public MdnsServiceRecord(String[] name, MdnsPacketReader reader, boolean isQuestion)
+            throws IOException {
+        super(name, TYPE_SRV, reader, isQuestion);
+    }
+
+    public MdnsServiceRecord(String[] name, long receiptTimeMillis, boolean cacheFlush,
+                    long ttlMillis, int servicePriority, int serviceWeight, int servicePort,
+                    String[] serviceHost) {
+        super(name, TYPE_SRV, MdnsConstants.QCLASS_INTERNET, receiptTimeMillis, cacheFlush,
+                ttlMillis);
+        this.servicePriority = servicePriority;
+        this.serviceWeight = serviceWeight;
+        this.servicePort = servicePort;
+        this.serviceHost = serviceHost;
     }
 
     /** Returns the service's port number. */
@@ -131,7 +147,7 @@ public class MdnsServiceRecord extends MdnsRecord {
     }
 
     @Override
-    public boolean equals(Object other) {
+    public boolean equals(@Nullable Object other) {
         if (this == other) {
             return true;
         }
