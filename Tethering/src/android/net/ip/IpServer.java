@@ -378,6 +378,11 @@ public class IpServer extends StateMachine {
         return Collections.unmodifiableList(mDhcpLeases);
     }
 
+    /** Enable this IpServer. IpServer state machine will be tethered or localHotspot state. */
+    public void enable(final int requestedState, final TetheringRequestParcel request) {
+        sendMessage(CMD_TETHER_REQUESTED, requestedState, 0, request);
+    }
+
     /** Stop this IpServer. After this is called this IpServer should not be used any more. */
     public void stop() {
         sendMessage(CMD_INTERFACE_DOWN);
@@ -1145,9 +1150,6 @@ public class IpServer extends StateMachine {
                     break;
                 case CMD_INTERFACE_DOWN:
                     transitionTo(mUnavailableState);
-                    break;
-                case CMD_IPV6_TETHER_UPDATE:
-                    updateUpstreamIPv6LinkProperties((LinkProperties) message.obj, message.arg1);
                     break;
                 default:
                     return NOT_HANDLED;
