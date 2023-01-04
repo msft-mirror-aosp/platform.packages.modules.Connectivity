@@ -32,6 +32,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator:buildflags__android_arm64
@@ -51,6 +54,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -72,6 +78,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator:buildflags__android_x86_64
@@ -91,6 +100,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -114,6 +126,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:chromecast_buildflags__android_arm
@@ -133,6 +148,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -154,6 +172,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:chromecast_buildflags__android_x86
@@ -174,6 +195,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:chromecast_buildflags__android_x86_64
@@ -193,6 +217,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -216,6 +243,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:chromeos_buildflags__android_arm
@@ -235,6 +265,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -256,6 +289,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:chromeos_buildflags__android_x86
@@ -276,6 +312,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:chromeos_buildflags__android_x86_64
@@ -295,6 +334,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -318,6 +360,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:debugging_buildflags__android_arm
@@ -337,6 +382,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -358,6 +406,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:debugging_buildflags__android_x86
@@ -378,6 +429,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:debugging_buildflags__android_x86_64
@@ -397,6 +451,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -420,6 +477,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:logging_buildflags__android_arm
@@ -439,6 +499,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -460,6 +523,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:logging_buildflags__android_x86
@@ -480,6 +546,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:logging_buildflags__android_x86_64
@@ -499,6 +568,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -521,6 +593,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -787,6 +862,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:partition_alloc_buildflags__android_arm64
@@ -806,6 +884,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -827,6 +908,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base/allocator/partition_allocator:partition_alloc_buildflags__android_x86_64
@@ -846,6 +930,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -869,6 +956,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:anchor_functions_buildflags__android_arm
@@ -888,6 +978,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -909,6 +1002,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:anchor_functions_buildflags__android_x86
@@ -929,6 +1025,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:anchor_functions_buildflags__android_x86_64
@@ -948,6 +1047,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -971,6 +1073,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:android_runtime_jni_headers__android_arm
@@ -978,8 +1083,6 @@ cc_genrule {
     name: "cronet_aml_base_android_runtime_jni_headers__android_arm",
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/android_runtime_jni_headers " +
          "--includes " +
@@ -1007,6 +1110,9 @@ cc_genrule {
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
         "third_party/android_sdk/public/platforms/android-33/android.jar",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -1015,8 +1121,6 @@ cc_genrule {
     name: "cronet_aml_base_android_runtime_jni_headers__android_arm64",
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/android_runtime_jni_headers " +
          "--includes " +
@@ -1044,6 +1148,9 @@ cc_genrule {
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
         "third_party/android_sdk/public/platforms/android-33/android.jar",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -1052,8 +1159,6 @@ cc_genrule {
     name: "cronet_aml_base_android_runtime_jni_headers__android_x86",
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/android_runtime_jni_headers " +
          "--includes " +
@@ -1081,6 +1186,9 @@ cc_genrule {
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
         "third_party/android_sdk/public/platforms/android-33/android.jar",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -1089,8 +1197,6 @@ cc_genrule {
     name: "cronet_aml_base_android_runtime_jni_headers__android_x86_64",
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/android_runtime_jni_headers " +
          "--includes " +
@@ -1118,6 +1224,9 @@ cc_genrule {
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
         "third_party/android_sdk/public/platforms/android-33/android.jar",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -2221,6 +2330,39 @@ cc_library_static {
     },
 }
 
+// GN: //base:base_android_java_enums_srcjar
+java_genrule {
+    name: "cronet_aml_base_base_android_java_enums_srcjar",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location base/android/application_status_listener.h) " +
+         "$(location base/android/child_process_binding_types.h) " +
+         "$(location base/android/library_loader/library_loader_hooks.h) " +
+         "$(location base/android/linker/modern_linker_jni.h) " +
+         "$(location base/android/task_scheduler/task_runner_android.h) " +
+         "$(location base/memory/memory_pressure_listener.h) " +
+         "$(location base/metrics/histogram_base.h) " +
+         "$(location base/task/task_traits.h)",
+    out: [
+        "base/base_android_java_enums_srcjar.srcjar",
+    ],
+    tool_files: [
+        "base/android/application_status_listener.h",
+        "base/android/child_process_binding_types.h",
+        "base/android/library_loader/library_loader_hooks.h",
+        "base/android/linker/modern_linker_jni.h",
+        "base/android/task_scheduler/task_runner_android.h",
+        "base/memory/memory_pressure_listener.h",
+        "base/metrics/histogram_base.h",
+        "base/task/task_traits.h",
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+    ],
+}
+
 // GN: //base:base_jni_headers__android_arm
 cc_genrule {
     name: "cronet_aml_base_base_jni_headers__android_arm",
@@ -2268,8 +2410,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/base_jni_headers " +
          "--includes " +
@@ -2483,6 +2623,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -2533,8 +2676,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/base_jni_headers " +
          "--includes " +
@@ -2748,6 +2889,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -2798,8 +2942,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/base_jni_headers " +
          "--includes " +
@@ -3013,6 +3155,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3063,8 +3208,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/base/base_jni_headers " +
          "--includes " +
@@ -3278,6 +3421,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3399,6 +3545,9 @@ cc_genrule {
     tool_files: [
         "build/write_build_date_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:build_date__android_arm64
@@ -3411,6 +3560,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_build_date_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3425,6 +3577,9 @@ cc_genrule {
     tool_files: [
         "build/write_build_date_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:build_date__android_x86_64
@@ -3437,6 +3592,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_build_date_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3452,6 +3610,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_build_date_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3473,6 +3634,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:cfi_buildflags__android_arm64
@@ -3492,6 +3656,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3513,6 +3680,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:cfi_buildflags__android_x86_64
@@ -3532,6 +3702,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3555,6 +3728,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:clang_profiling_buildflags__android_arm
@@ -3574,6 +3750,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3595,6 +3774,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:clang_profiling_buildflags__android_x86
@@ -3615,6 +3797,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:clang_profiling_buildflags__android_x86_64
@@ -3634,6 +3819,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3657,6 +3845,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:debugging_buildflags__android_arm
@@ -3676,6 +3867,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3697,6 +3891,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:debugging_buildflags__android_x86
@@ -3717,6 +3914,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:debugging_buildflags__android_x86_64
@@ -3736,6 +3936,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3759,6 +3962,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:feature_list_buildflags__android_arm
@@ -3778,6 +3984,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3799,6 +4008,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:feature_list_buildflags__android_x86
@@ -3819,6 +4031,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:feature_list_buildflags__android_x86_64
@@ -3838,6 +4053,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3861,6 +4079,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:ios_cronet_buildflags__android_arm
@@ -3880,6 +4101,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3901,6 +4125,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:ios_cronet_buildflags__android_x86
@@ -3921,6 +4148,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:ios_cronet_buildflags__android_x86_64
@@ -3940,6 +4170,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -3963,6 +4196,61 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
+}
+
+// GN: //base:java_features_srcjar
+java_genrule {
+    name: "cronet_aml_base_java_features_srcjar",
+    srcs: [
+        "base/android/base_features.cc",
+        "base/features.cc",
+        "base/task/task_features.cc",
+    ],
+    cmd: "$(location build/android/gyp/java_cpp_features.py) --srcjar " +
+         "$(out) " +
+         "--template " +
+         "$(location base/android/java/src/org/chromium/base/BaseFeatures.java.tmpl) " +
+         "$(location base/android/base_features.cc) " +
+         "$(location base/features.cc) " +
+         "$(location base/task/task_features.cc)",
+    out: [
+        "base/java_features_srcjar.srcjar",
+    ],
+    tool_files: [
+        "base/android/java/src/org/chromium/base/BaseFeatures.java.tmpl",
+        "build/android/gyp/java_cpp_features.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+    ],
+}
+
+// GN: //base:java_switches_srcjar
+java_genrule {
+    name: "cronet_aml_base_java_switches_srcjar",
+    srcs: [
+        "base/base_switches.cc",
+    ],
+    cmd: "$(location build/android/gyp/java_cpp_strings.py) --srcjar " +
+         "$(out) " +
+         "--template " +
+         "$(location base/android/java/src/org/chromium/base/BaseSwitches.java.tmpl) " +
+         "$(location base/base_switches.cc)",
+    out: [
+        "base/java_switches_srcjar.srcjar",
+    ],
+    tool_files: [
+        "base/android/java/src/org/chromium/base/BaseSwitches.java.tmpl",
+        "build/android/gyp/java_cpp_strings.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+    ],
 }
 
 // GN: //base:logging_buildflags__android_arm
@@ -3982,6 +4270,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4003,6 +4294,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:logging_buildflags__android_x86
@@ -4023,6 +4317,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:logging_buildflags__android_x86_64
@@ -4042,6 +4339,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4065,6 +4365,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:message_pump_buildflags__android_arm
@@ -4084,6 +4387,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4105,6 +4411,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:message_pump_buildflags__android_x86
@@ -4125,6 +4434,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:message_pump_buildflags__android_x86_64
@@ -4144,6 +4456,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4166,6 +4481,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4261,6 +4579,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:orderfile_buildflags__android_arm64
@@ -4280,6 +4601,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4301,6 +4625,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:orderfile_buildflags__android_x86_64
@@ -4320,6 +4647,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4343,6 +4673,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:parsing_buildflags__android_arm
@@ -4362,6 +4695,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4383,6 +4719,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:parsing_buildflags__android_x86
@@ -4403,6 +4742,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:parsing_buildflags__android_x86_64
@@ -4422,6 +4764,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4445,6 +4790,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:power_monitor_buildflags__android_arm
@@ -4464,6 +4812,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4485,6 +4836,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:power_monitor_buildflags__android_x86
@@ -4505,6 +4859,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:power_monitor_buildflags__android_x86_64
@@ -4524,6 +4881,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4547,6 +4907,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:profiler_buildflags__android_arm
@@ -4566,6 +4929,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4587,6 +4953,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:profiler_buildflags__android_x86
@@ -4607,6 +4976,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:profiler_buildflags__android_x86_64
@@ -4626,6 +4998,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4649,6 +5024,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:sanitizer_buildflags__android_arm
@@ -4668,6 +5046,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4689,6 +5070,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:sanitizer_buildflags__android_x86
@@ -4709,6 +5093,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:sanitizer_buildflags__android_x86_64
@@ -4728,6 +5115,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4751,6 +5141,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:synchronization_buildflags__android_arm
@@ -4770,6 +5163,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4791,6 +5187,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:synchronization_buildflags__android_x86
@@ -4811,6 +5210,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:synchronization_buildflags__android_x86_64
@@ -4830,6 +5232,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -4852,6 +5257,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5163,6 +5571,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:tracing_buildflags__android_arm64
@@ -5182,6 +5593,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5203,6 +5617,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //base:tracing_buildflags__android_x86_64
@@ -5222,6 +5639,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5245,6 +5665,70 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
+}
+
+// GN: //build/android:build_config_gen
+genrule {
+    name: "cronet_aml_build_android_build_config_gen",
+    srcs: [
+        ":cronet_aml_build_android_build_config_gen_preprocess",
+    ],
+    tools: [
+        "soong_zip",
+    ],
+    cmd: "cp $(in) $(genDir)/BuildConfig.java && " +
+         "$(location soong_zip) -o $(out) -srcjar -f $(genDir)/BuildConfig.java",
+    out: [
+        "BuildConfig.srcjar",
+    ],
+}
+
+// GN: //build/android:build_config_gen
+cc_object {
+    name: "cronet_aml_build_android_build_config_gen_preprocess",
+    srcs: [
+        ":cronet_aml_build_android_build_config_gen_rename",
+    ],
+    cflags: [
+        "-DANDROID",
+        "-D_ENABLE_ASSERTS",
+        "-E",
+        "-P",
+    ],
+    compile_multilib: "32",
+}
+
+// GN: //build/android:build_config_gen
+genrule {
+    name: "cronet_aml_build_android_build_config_gen_rename",
+    srcs: [
+        "build/android/java/templates/BuildConfig.template",
+    ],
+    cmd: "cp $(in) $(out)",
+    out: [
+        "BuildConfig.cc",
+    ],
+}
+
+// GN: //build/android:native_libraries_gen
+java_genrule {
+    name: "cronet_aml_build_android_native_libraries_gen",
+    cmd: "$(location build/android/gyp/write_native_libraries_java.py) --output " +
+         "$(out) " +
+         "--cpu-family " +
+         "CPU_FAMILY_ARM",
+    out: [
+        "build/android/native_libraries_gen.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/write_native_libraries_java.py",
+        "build/gn_helpers.py",
+    ],
 }
 
 // GN: //build:branding_buildflags__android_arm
@@ -5264,6 +5748,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5285,6 +5772,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build:branding_buildflags__android_x86
@@ -5305,6 +5795,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build:branding_buildflags__android_x86_64
@@ -5324,6 +5817,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5346,6 +5842,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5441,6 +5940,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build:chromecast_buildflags__android_arm64
@@ -5460,6 +5962,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5481,6 +5986,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build:chromecast_buildflags__android_x86_64
@@ -5500,6 +6008,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5523,6 +6034,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build:chromeos_buildflags__android_arm
@@ -5542,6 +6056,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5563,6 +6080,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build:chromeos_buildflags__android_x86
@@ -5583,6 +6103,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build:chromeos_buildflags__android_x86_64
@@ -5602,6 +6125,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5625,6 +6151,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build/config/compiler:compiler_buildflags__android_arm
@@ -5644,6 +6173,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5665,6 +6197,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build/config/compiler:compiler_buildflags__android_x86
@@ -5685,6 +6220,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //build/config/compiler:compiler_buildflags__android_x86_64
@@ -5704,6 +6242,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -5726,6 +6267,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -6042,6 +6586,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //components/cronet/android:buildflags__android_arm64
@@ -6061,6 +6608,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -6082,6 +6632,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //components/cronet/android:buildflags__android_x86_64
@@ -6101,6 +6654,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -6147,9 +6703,11 @@ cc_library_shared {
         "cronet_aml_url_url",
     ],
     generated_headers: [
+        "cronet_aml_components_cronet_android_cronet_jni_registration",
         "cronet_aml_third_party_metrics_proto_metrics_proto_gen_headers",
     ],
     export_generated_headers: [
+        "cronet_aml_components_cronet_android_cronet_jni_registration",
         "cronet_aml_third_party_metrics_proto_metrics_proto_gen_headers",
     ],
     defaults: [
@@ -6192,6 +6750,7 @@ cc_library_shared {
     linker_scripts: [
         "base/android/library_loader/anchor_functions.lds",
     ],
+    stem: "libcronet.109.0.5386.0",
     target: {
         android_arm: {
             generated_headers: [
@@ -6200,7 +6759,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_arm",
                 "cronet_aml_components_cronet_android_buildflags__android_arm",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_arm",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm",
                 "cronet_aml_components_cronet_cronet_buildflags__android_arm",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_arm",
                 "cronet_aml_url_buildflags__android_arm",
@@ -6211,7 +6769,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_arm",
                 "cronet_aml_components_cronet_android_buildflags__android_arm",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_arm",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm",
                 "cronet_aml_components_cronet_cronet_buildflags__android_arm",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_arm",
                 "cronet_aml_url_buildflags__android_arm",
@@ -6224,7 +6781,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_arm64",
                 "cronet_aml_components_cronet_android_buildflags__android_arm64",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_arm64",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm64",
                 "cronet_aml_components_cronet_cronet_buildflags__android_arm64",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_arm64",
                 "cronet_aml_url_buildflags__android_arm64",
@@ -6235,7 +6791,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_arm64",
                 "cronet_aml_components_cronet_android_buildflags__android_arm64",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_arm64",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm64",
                 "cronet_aml_components_cronet_cronet_buildflags__android_arm64",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_arm64",
                 "cronet_aml_url_buildflags__android_arm64",
@@ -6251,7 +6806,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_x86",
                 "cronet_aml_components_cronet_android_buildflags__android_x86",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_x86",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86",
                 "cronet_aml_components_cronet_cronet_buildflags__android_x86",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_x86",
                 "cronet_aml_url_buildflags__android_x86",
@@ -6262,7 +6816,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_x86",
                 "cronet_aml_components_cronet_android_buildflags__android_x86",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_x86",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86",
                 "cronet_aml_components_cronet_cronet_buildflags__android_x86",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_x86",
                 "cronet_aml_url_buildflags__android_x86",
@@ -6278,7 +6831,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_android_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_x86_64",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86_64",
                 "cronet_aml_components_cronet_cronet_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_x86_64",
                 "cronet_aml_url_buildflags__android_x86_64",
@@ -6289,7 +6841,6 @@ cc_library_shared {
                 "cronet_aml_build_chromeos_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_android_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_x86_64",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86_64",
                 "cronet_aml_components_cronet_cronet_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_x86_64",
                 "cronet_aml_url_buildflags__android_x86_64",
@@ -6310,8 +6861,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/cronet/android/cronet_jni_headers " +
          "--includes " +
@@ -6350,6 +6899,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -6365,8 +6917,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/cronet/android/cronet_jni_headers " +
          "--includes " +
@@ -6405,6 +6955,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -6420,8 +6973,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/cronet/android/cronet_jni_headers " +
          "--includes " +
@@ -6460,6 +7011,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -6475,8 +7029,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/cronet/android/cronet_jni_headers " +
          "--includes " +
@@ -6516,11 +7068,14 @@ cc_genrule {
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
-// GN: //components/cronet/android:cronet_jni_registration__android_arm
+// GN: //components/cronet/android:cronet_jni_registration
 cc_genrule {
-    name: "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm",
+    name: "cronet_aml_components_cronet_android_cronet_jni_registration",
     srcs: [
         "base/android/java/src/org/chromium/base/ActivityState.java",
         "base/android/java/src/org/chromium/base/ApiCompatibilityUtils.java",
@@ -6809,8 +7364,6 @@ cc_genrule {
          "--header-path " +
          "$(genDir)/components/cronet/android/cronet_jni_registration.h " +
          "--manual_jni_registration " +
-         " " +
-         " " +
          ";sed -i -e 's/OUT_SOONG_.TEMP_SBOX_.*_OUT/GEN/g'  " +
          "$(genDir)/components/cronet/android/cronet_jni_registration.h",
     out: [
@@ -6824,11 +7377,14 @@ cc_genrule {
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
-// GN: //components/cronet/android:cronet_jni_registration__android_arm64
-cc_genrule {
-    name: "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm64",
+// GN: //components/cronet/android:cronet_jni_registration
+java_genrule {
+    name: "cronet_aml_components_cronet_android_cronet_jni_registration__java",
     srcs: [
         "base/android/java/src/org/chromium/base/ActivityState.java",
         "base/android/java/src/org/chromium/base/ApiCompatibilityUtils.java",
@@ -7117,628 +7673,9 @@ cc_genrule {
          "--header-path " +
          "$(genDir)/components/cronet/android/cronet_jni_registration.h " +
          "--manual_jni_registration " +
-         " " +
-         " " +
          ";sed -i -e 's/OUT_SOONG_.TEMP_SBOX_.*_OUT/GEN/g'  " +
          "$(genDir)/components/cronet/android/cronet_jni_registration.h",
     out: [
-        "components/cronet/android/cronet_jni_registration.h",
-        "components/cronet/android/cronet_jni_registration.srcjar",
-    ],
-    tool_files: [
-        "base/android/jni_generator/jni_generator.py",
-        "base/android/jni_generator/jni_registration_generator.py",
-        "build/android/gyp/util/__init__.py",
-        "build/android/gyp/util/build_utils.py",
-        "build/gn_helpers.py",
-    ],
-}
-
-// GN: //components/cronet/android:cronet_jni_registration__android_x86
-cc_genrule {
-    name: "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86",
-    srcs: [
-        "base/android/java/src/org/chromium/base/ActivityState.java",
-        "base/android/java/src/org/chromium/base/ApiCompatibilityUtils.java",
-        "base/android/java/src/org/chromium/base/ApkAssets.java",
-        "base/android/java/src/org/chromium/base/ApplicationStatus.java",
-        "base/android/java/src/org/chromium/base/BaseFeatureList.java",
-        "base/android/java/src/org/chromium/base/BuildInfo.java",
-        "base/android/java/src/org/chromium/base/BundleUtils.java",
-        "base/android/java/src/org/chromium/base/ByteArrayGenerator.java",
-        "base/android/java/src/org/chromium/base/Callback.java",
-        "base/android/java/src/org/chromium/base/CallbackController.java",
-        "base/android/java/src/org/chromium/base/CollectionUtil.java",
-        "base/android/java/src/org/chromium/base/CommandLine.java",
-        "base/android/java/src/org/chromium/base/CommandLineInitUtil.java",
-        "base/android/java/src/org/chromium/base/Consumer.java",
-        "base/android/java/src/org/chromium/base/ContentUriUtils.java",
-        "base/android/java/src/org/chromium/base/ContextUtils.java",
-        "base/android/java/src/org/chromium/base/CpuFeatures.java",
-        "base/android/java/src/org/chromium/base/DiscardableReferencePool.java",
-        "base/android/java/src/org/chromium/base/EarlyTraceEvent.java",
-        "base/android/java/src/org/chromium/base/EventLog.java",
-        "base/android/java/src/org/chromium/base/FeatureList.java",
-        "base/android/java/src/org/chromium/base/Features.java",
-        "base/android/java/src/org/chromium/base/FieldTrialList.java",
-        "base/android/java/src/org/chromium/base/FileUtils.java",
-        "base/android/java/src/org/chromium/base/Function.java",
-        "base/android/java/src/org/chromium/base/ImportantFileWriterAndroid.java",
-        "base/android/java/src/org/chromium/base/IntStringCallback.java",
-        "base/android/java/src/org/chromium/base/IntentUtils.java",
-        "base/android/java/src/org/chromium/base/JNIUtils.java",
-        "base/android/java/src/org/chromium/base/JavaExceptionReporter.java",
-        "base/android/java/src/org/chromium/base/JavaHandlerThread.java",
-        "base/android/java/src/org/chromium/base/JniException.java",
-        "base/android/java/src/org/chromium/base/JniStaticTestMocker.java",
-        "base/android/java/src/org/chromium/base/LifetimeAssert.java",
-        "base/android/java/src/org/chromium/base/LocaleUtils.java",
-        "base/android/java/src/org/chromium/base/Log.java",
-        "base/android/java/src/org/chromium/base/MathUtils.java",
-        "base/android/java/src/org/chromium/base/MemoryPressureListener.java",
-        "base/android/java/src/org/chromium/base/NativeLibraryLoadedStatus.java",
-        "base/android/java/src/org/chromium/base/ObserverList.java",
-        "base/android/java/src/org/chromium/base/PackageManagerUtils.java",
-        "base/android/java/src/org/chromium/base/PackageUtils.java",
-        "base/android/java/src/org/chromium/base/PathService.java",
-        "base/android/java/src/org/chromium/base/PathUtils.java",
-        "base/android/java/src/org/chromium/base/PiiElider.java",
-        "base/android/java/src/org/chromium/base/PowerMonitor.java",
-        "base/android/java/src/org/chromium/base/PowerMonitorForQ.java",
-        "base/android/java/src/org/chromium/base/Predicate.java",
-        "base/android/java/src/org/chromium/base/Promise.java",
-        "base/android/java/src/org/chromium/base/RadioUtils.java",
-        "base/android/java/src/org/chromium/base/StreamUtil.java",
-        "base/android/java/src/org/chromium/base/StrictModeContext.java",
-        "base/android/java/src/org/chromium/base/ThreadUtils.java",
-        "base/android/java/src/org/chromium/base/TimeUtils.java",
-        "base/android/java/src/org/chromium/base/TimezoneUtils.java",
-        "base/android/java/src/org/chromium/base/TraceEvent.java",
-        "base/android/java/src/org/chromium/base/UnguessableToken.java",
-        "base/android/java/src/org/chromium/base/UnownedUserData.java",
-        "base/android/java/src/org/chromium/base/UnownedUserDataHost.java",
-        "base/android/java/src/org/chromium/base/UnownedUserDataKey.java",
-        "base/android/java/src/org/chromium/base/UserData.java",
-        "base/android/java/src/org/chromium/base/UserDataHost.java",
-        "base/android/java/src/org/chromium/base/WrappedClassLoader.java",
-        "base/android/java/src/org/chromium/base/annotations/AccessedByNative.java",
-        "base/android/java/src/org/chromium/base/annotations/CalledByNative.java",
-        "base/android/java/src/org/chromium/base/annotations/CalledByNativeForTesting.java",
-        "base/android/java/src/org/chromium/base/annotations/CalledByNativeUnchecked.java",
-        "base/android/java/src/org/chromium/base/annotations/JNIAdditionalImport.java",
-        "base/android/java/src/org/chromium/base/annotations/JNINamespace.java",
-        "base/android/java/src/org/chromium/base/annotations/JniIgnoreNatives.java",
-        "base/android/java/src/org/chromium/base/annotations/NativeClassQualifiedName.java",
-        "base/android/java/src/org/chromium/base/annotations/NativeMethods.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForM.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForN.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForO.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForOMR1.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForP.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForQ.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForR.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForS.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/DummyJankTracker.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/FrameMetrics.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/FrameMetricsListener.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/FrameMetricsStore.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankActivityTracker.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankMetricCalculator.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankMetricUMARecorder.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankMetrics.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankReportingRunnable.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankReportingScheduler.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankScenario.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankTracker.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankTrackerImpl.java",
-        "base/android/java/src/org/chromium/base/library_loader/LegacyLinker.java",
-        "base/android/java/src/org/chromium/base/library_loader/Linker.java",
-        "base/android/java/src/org/chromium/base/library_loader/LinkerJni.java",
-        "base/android/java/src/org/chromium/base/library_loader/LoaderErrors.java",
-        "base/android/java/src/org/chromium/base/library_loader/ModernLinker.java",
-        "base/android/java/src/org/chromium/base/library_loader/ModernLinkerJni.java",
-        "base/android/java/src/org/chromium/base/library_loader/NativeLibraryPreloader.java",
-        "base/android/java/src/org/chromium/base/library_loader/ProcessInitException.java",
-        "base/android/java/src/org/chromium/base/lifetime/DestroyChecker.java",
-        "base/android/java/src/org/chromium/base/lifetime/Destroyable.java",
-        "base/android/java/src/org/chromium/base/memory/JavaHeapDumpGenerator.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPressureCallback.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPressureMonitor.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPressureUma.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPurgeManager.java",
-        "base/android/java/src/org/chromium/base/metrics/CachingUmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/NativeUmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/NoopUmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/RecordHistogram.java",
-        "base/android/java/src/org/chromium/base/metrics/RecordUserAction.java",
-        "base/android/java/src/org/chromium/base/metrics/ScopedSysTraceEvent.java",
-        "base/android/java/src/org/chromium/base/metrics/StatisticsRecorderAndroid.java",
-        "base/android/java/src/org/chromium/base/metrics/TimingMetric.java",
-        "base/android/java/src/org/chromium/base/metrics/UmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/UmaRecorderHolder.java",
-        "base/android/java/src/org/chromium/base/multidex/ChromiumMultiDexInstaller.java",
-        "base/android/java/src/org/chromium/base/process_launcher/BindService.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildConnectionAllocator.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessConnection.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessConstants.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessLauncher.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessServiceDelegate.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnection.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionDelegate.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionFactory.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionImpl.java",
-        "base/android/java/src/org/chromium/base/process_launcher/FileDescriptorInfo.java",
-        "base/android/java/src/org/chromium/base/supplier/BooleanSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/DestroyableObservableSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/ObservableSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/ObservableSupplierImpl.java",
-        "base/android/java/src/org/chromium/base/supplier/OneShotCallback.java",
-        "base/android/java/src/org/chromium/base/supplier/OneshotSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/OneshotSupplierImpl.java",
-        "base/android/java/src/org/chromium/base/supplier/Supplier.java",
-        "base/android/java/src/org/chromium/base/supplier/UnownedUserDataSupplier.java",
-        "base/android/java/src/org/chromium/base/task/AsyncTask.java",
-        "base/android/java/src/org/chromium/base/task/BackgroundOnlyAsyncTask.java",
-        "base/android/java/src/org/chromium/base/task/ChainedTasks.java",
-        "base/android/java/src/org/chromium/base/task/ChoreographerTaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/ChromeThreadPoolExecutor.java",
-        "base/android/java/src/org/chromium/base/task/DefaultTaskExecutor.java",
-        "base/android/java/src/org/chromium/base/task/PostTask.java",
-        "base/android/java/src/org/chromium/base/task/SequencedTaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/SequencedTaskRunnerImpl.java",
-        "base/android/java/src/org/chromium/base/task/SerialExecutor.java",
-        "base/android/java/src/org/chromium/base/task/SingleThreadTaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/SingleThreadTaskRunnerImpl.java",
-        "base/android/java/src/org/chromium/base/task/TaskExecutor.java",
-        "base/android/java/src/org/chromium/base/task/TaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/TaskRunnerImpl.java",
-        "base/android/java/src/org/chromium/base/task/TaskTraits.java",
-        "base/android/java/src/org/chromium/base/task/TaskTraitsExtensionDescriptor.java",
-        "build/android/java/src/org/chromium/build/annotations/AlwaysInline.java",
-        "build/android/java/src/org/chromium/build/annotations/CheckDiscard.java",
-        "build/android/java/src/org/chromium/build/annotations/DoNotClassMerge.java",
-        "build/android/java/src/org/chromium/build/annotations/DoNotInline.java",
-        "build/android/java/src/org/chromium/build/annotations/IdentifierNameString.java",
-        "build/android/java/src/org/chromium/build/annotations/MainDex.java",
-        "build/android/java/src/org/chromium/build/annotations/MockedInTests.java",
-        "build/android/java/src/org/chromium/build/annotations/UsedByReflection.java",
-        "components/cronet/android/api/src/org/chromium/net/BidirectionalStream.java",
-        "components/cronet/android/api/src/org/chromium/net/CallbackException.java",
-        "components/cronet/android/api/src/org/chromium/net/CronetEngine.java",
-        "components/cronet/android/api/src/org/chromium/net/CronetException.java",
-        "components/cronet/android/api/src/org/chromium/net/CronetProvider.java",
-        "components/cronet/android/api/src/org/chromium/net/ExperimentalBidirectionalStream.java",
-        "components/cronet/android/api/src/org/chromium/net/ExperimentalCronetEngine.java",
-        "components/cronet/android/api/src/org/chromium/net/ExperimentalUrlRequest.java",
-        "components/cronet/android/api/src/org/chromium/net/ICronetEngineBuilder.java",
-        "components/cronet/android/api/src/org/chromium/net/InlineExecutionProhibitedException.java",
-        "components/cronet/android/api/src/org/chromium/net/NetworkException.java",
-        "components/cronet/android/api/src/org/chromium/net/NetworkQualityRttListener.java",
-        "components/cronet/android/api/src/org/chromium/net/NetworkQualityThroughputListener.java",
-        "components/cronet/android/api/src/org/chromium/net/QuicException.java",
-        "components/cronet/android/api/src/org/chromium/net/RequestFinishedInfo.java",
-        "components/cronet/android/api/src/org/chromium/net/UploadDataProvider.java",
-        "components/cronet/android/api/src/org/chromium/net/UploadDataProviders.java",
-        "components/cronet/android/api/src/org/chromium/net/UploadDataSink.java",
-        "components/cronet/android/api/src/org/chromium/net/UrlRequest.java",
-        "components/cronet/android/api/src/org/chromium/net/UrlResponseInfo.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/ByteArrayCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/ContentTypeParametersParser.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/CronetRequestCompletionListener.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/CronetResponse.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/ImplicitFlowControlCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/InMemoryTransformCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/JsonCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/RedirectHandler.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/RedirectHandlers.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/StringCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/UploadDataProviders.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/UrlRequestCallbacks.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeCronetController.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeCronetEngine.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeCronetProvider.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeUrlRequest.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeUrlResponse.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/ResponseMatcher.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/UrlResponseMatcher.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/BidirectionalStreamBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/BidirectionalStreamNetworkException.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CallbackExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetBidirectionalStream.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetEngineBase.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetEngineBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetLibraryLoader.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetLogger.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetLoggerFactory.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetManifest.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetMetrics.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetUploadDataStream.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetUrlRequest.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetUrlRequestContext.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/InputStreamChannel.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaCronetEngine.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaCronetEngineBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaCronetProvider.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaUploadDataSinkBase.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaUrlRequest.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaUrlRequestUtils.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NativeCronetEngineBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NativeCronetEngineBuilderWithLibraryLoaderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NativeCronetProvider.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NetworkExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NoOpLogger.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/Preconditions.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/QuicExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/RequestFinishedInfoImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UrlRequestBase.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UrlRequestBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UrlResponseInfoImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UserAgent.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/VersionSafeCallbacks.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetBufferedOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetChunkedOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetFixedModeOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetHttpURLConnection.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetHttpURLStreamHandler.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetInputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetURLStreamHandlerFactory.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/MessageLoop.java",
-        "net/android/java/src/org/chromium/net/AndroidCertVerifyResult.java",
-        "net/android/java/src/org/chromium/net/AndroidKeyStore.java",
-        "net/android/java/src/org/chromium/net/AndroidNetworkLibrary.java",
-        "net/android/java/src/org/chromium/net/AndroidTrafficStats.java",
-        "net/android/java/src/org/chromium/net/ChromiumNetworkAdapter.java",
-        "net/android/java/src/org/chromium/net/DnsStatus.java",
-        "net/android/java/src/org/chromium/net/GURLUtils.java",
-        "net/android/java/src/org/chromium/net/HttpNegotiateAuthenticator.java",
-        "net/android/java/src/org/chromium/net/HttpNegotiateConstants.java",
-        "net/android/java/src/org/chromium/net/HttpUtil.java",
-        "net/android/java/src/org/chromium/net/MimeTypeFilter.java",
-        "net/android/java/src/org/chromium/net/NetStringUtil.java",
-        "net/android/java/src/org/chromium/net/NetworkActiveNotifier.java",
-        "net/android/java/src/org/chromium/net/NetworkChangeNotifier.java",
-        "net/android/java/src/org/chromium/net/NetworkChangeNotifierAutoDetect.java",
-        "net/android/java/src/org/chromium/net/NetworkTrafficAnnotationTag.java",
-        "net/android/java/src/org/chromium/net/ProxyBroadcastReceiver.java",
-        "net/android/java/src/org/chromium/net/ProxyChangeListener.java",
-        "net/android/java/src/org/chromium/net/RegistrationPolicyAlwaysRegister.java",
-        "net/android/java/src/org/chromium/net/RegistrationPolicyApplicationStatus.java",
-        "net/android/java/src/org/chromium/net/ThreadStatsUid.java",
-        "net/android/java/src/org/chromium/net/X509Util.java",
-        "url/android/java/src/org/chromium/url/IDNStringUtil.java",
-    ],
-    cmd: "current_dir=`basename \\`pwd\\``; " +
-         "for f in $(in); " +
-         "do " +
-         "echo \"../$$current_dir/$$f\" >> $(genDir)/java.sources; " +
-         "done; " +
-         "python3 $(location base/android/jni_generator/jni_registration_generator.py) --srcjar-path " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.srcjar " +
-         "--depfile " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.d " +
-         "--sources-files " +
-         "$(genDir)/java.sources " +
-         "--include_test_only " +
-         "--use_proxy_hash " +
-         "--header-path " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.h " +
-         "--manual_jni_registration " +
-         " " +
-         " " +
-         ";sed -i -e 's/OUT_SOONG_.TEMP_SBOX_.*_OUT/GEN/g'  " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.h",
-    out: [
-        "components/cronet/android/cronet_jni_registration.h",
-        "components/cronet/android/cronet_jni_registration.srcjar",
-    ],
-    tool_files: [
-        "base/android/jni_generator/jni_generator.py",
-        "base/android/jni_generator/jni_registration_generator.py",
-        "build/android/gyp/util/__init__.py",
-        "build/android/gyp/util/build_utils.py",
-        "build/gn_helpers.py",
-    ],
-}
-
-// GN: //components/cronet/android:cronet_jni_registration__android_x86_64
-cc_genrule {
-    name: "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86_64",
-    srcs: [
-        "base/android/java/src/org/chromium/base/ActivityState.java",
-        "base/android/java/src/org/chromium/base/ApiCompatibilityUtils.java",
-        "base/android/java/src/org/chromium/base/ApkAssets.java",
-        "base/android/java/src/org/chromium/base/ApplicationStatus.java",
-        "base/android/java/src/org/chromium/base/BaseFeatureList.java",
-        "base/android/java/src/org/chromium/base/BuildInfo.java",
-        "base/android/java/src/org/chromium/base/BundleUtils.java",
-        "base/android/java/src/org/chromium/base/ByteArrayGenerator.java",
-        "base/android/java/src/org/chromium/base/Callback.java",
-        "base/android/java/src/org/chromium/base/CallbackController.java",
-        "base/android/java/src/org/chromium/base/CollectionUtil.java",
-        "base/android/java/src/org/chromium/base/CommandLine.java",
-        "base/android/java/src/org/chromium/base/CommandLineInitUtil.java",
-        "base/android/java/src/org/chromium/base/Consumer.java",
-        "base/android/java/src/org/chromium/base/ContentUriUtils.java",
-        "base/android/java/src/org/chromium/base/ContextUtils.java",
-        "base/android/java/src/org/chromium/base/CpuFeatures.java",
-        "base/android/java/src/org/chromium/base/DiscardableReferencePool.java",
-        "base/android/java/src/org/chromium/base/EarlyTraceEvent.java",
-        "base/android/java/src/org/chromium/base/EventLog.java",
-        "base/android/java/src/org/chromium/base/FeatureList.java",
-        "base/android/java/src/org/chromium/base/Features.java",
-        "base/android/java/src/org/chromium/base/FieldTrialList.java",
-        "base/android/java/src/org/chromium/base/FileUtils.java",
-        "base/android/java/src/org/chromium/base/Function.java",
-        "base/android/java/src/org/chromium/base/ImportantFileWriterAndroid.java",
-        "base/android/java/src/org/chromium/base/IntStringCallback.java",
-        "base/android/java/src/org/chromium/base/IntentUtils.java",
-        "base/android/java/src/org/chromium/base/JNIUtils.java",
-        "base/android/java/src/org/chromium/base/JavaExceptionReporter.java",
-        "base/android/java/src/org/chromium/base/JavaHandlerThread.java",
-        "base/android/java/src/org/chromium/base/JniException.java",
-        "base/android/java/src/org/chromium/base/JniStaticTestMocker.java",
-        "base/android/java/src/org/chromium/base/LifetimeAssert.java",
-        "base/android/java/src/org/chromium/base/LocaleUtils.java",
-        "base/android/java/src/org/chromium/base/Log.java",
-        "base/android/java/src/org/chromium/base/MathUtils.java",
-        "base/android/java/src/org/chromium/base/MemoryPressureListener.java",
-        "base/android/java/src/org/chromium/base/NativeLibraryLoadedStatus.java",
-        "base/android/java/src/org/chromium/base/ObserverList.java",
-        "base/android/java/src/org/chromium/base/PackageManagerUtils.java",
-        "base/android/java/src/org/chromium/base/PackageUtils.java",
-        "base/android/java/src/org/chromium/base/PathService.java",
-        "base/android/java/src/org/chromium/base/PathUtils.java",
-        "base/android/java/src/org/chromium/base/PiiElider.java",
-        "base/android/java/src/org/chromium/base/PowerMonitor.java",
-        "base/android/java/src/org/chromium/base/PowerMonitorForQ.java",
-        "base/android/java/src/org/chromium/base/Predicate.java",
-        "base/android/java/src/org/chromium/base/Promise.java",
-        "base/android/java/src/org/chromium/base/RadioUtils.java",
-        "base/android/java/src/org/chromium/base/StreamUtil.java",
-        "base/android/java/src/org/chromium/base/StrictModeContext.java",
-        "base/android/java/src/org/chromium/base/ThreadUtils.java",
-        "base/android/java/src/org/chromium/base/TimeUtils.java",
-        "base/android/java/src/org/chromium/base/TimezoneUtils.java",
-        "base/android/java/src/org/chromium/base/TraceEvent.java",
-        "base/android/java/src/org/chromium/base/UnguessableToken.java",
-        "base/android/java/src/org/chromium/base/UnownedUserData.java",
-        "base/android/java/src/org/chromium/base/UnownedUserDataHost.java",
-        "base/android/java/src/org/chromium/base/UnownedUserDataKey.java",
-        "base/android/java/src/org/chromium/base/UserData.java",
-        "base/android/java/src/org/chromium/base/UserDataHost.java",
-        "base/android/java/src/org/chromium/base/WrappedClassLoader.java",
-        "base/android/java/src/org/chromium/base/annotations/AccessedByNative.java",
-        "base/android/java/src/org/chromium/base/annotations/CalledByNative.java",
-        "base/android/java/src/org/chromium/base/annotations/CalledByNativeForTesting.java",
-        "base/android/java/src/org/chromium/base/annotations/CalledByNativeUnchecked.java",
-        "base/android/java/src/org/chromium/base/annotations/JNIAdditionalImport.java",
-        "base/android/java/src/org/chromium/base/annotations/JNINamespace.java",
-        "base/android/java/src/org/chromium/base/annotations/JniIgnoreNatives.java",
-        "base/android/java/src/org/chromium/base/annotations/NativeClassQualifiedName.java",
-        "base/android/java/src/org/chromium/base/annotations/NativeMethods.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForM.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForN.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForO.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForOMR1.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForP.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForQ.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForR.java",
-        "base/android/java/src/org/chromium/base/compat/ApiHelperForS.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/DummyJankTracker.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/FrameMetrics.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/FrameMetricsListener.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/FrameMetricsStore.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankActivityTracker.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankMetricCalculator.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankMetricUMARecorder.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankMetrics.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankReportingRunnable.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankReportingScheduler.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankScenario.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankTracker.java",
-        "base/android/java/src/org/chromium/base/jank_tracker/JankTrackerImpl.java",
-        "base/android/java/src/org/chromium/base/library_loader/LegacyLinker.java",
-        "base/android/java/src/org/chromium/base/library_loader/Linker.java",
-        "base/android/java/src/org/chromium/base/library_loader/LinkerJni.java",
-        "base/android/java/src/org/chromium/base/library_loader/LoaderErrors.java",
-        "base/android/java/src/org/chromium/base/library_loader/ModernLinker.java",
-        "base/android/java/src/org/chromium/base/library_loader/ModernLinkerJni.java",
-        "base/android/java/src/org/chromium/base/library_loader/NativeLibraryPreloader.java",
-        "base/android/java/src/org/chromium/base/library_loader/ProcessInitException.java",
-        "base/android/java/src/org/chromium/base/lifetime/DestroyChecker.java",
-        "base/android/java/src/org/chromium/base/lifetime/Destroyable.java",
-        "base/android/java/src/org/chromium/base/memory/JavaHeapDumpGenerator.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPressureCallback.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPressureMonitor.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPressureUma.java",
-        "base/android/java/src/org/chromium/base/memory/MemoryPurgeManager.java",
-        "base/android/java/src/org/chromium/base/metrics/CachingUmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/NativeUmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/NoopUmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/RecordHistogram.java",
-        "base/android/java/src/org/chromium/base/metrics/RecordUserAction.java",
-        "base/android/java/src/org/chromium/base/metrics/ScopedSysTraceEvent.java",
-        "base/android/java/src/org/chromium/base/metrics/StatisticsRecorderAndroid.java",
-        "base/android/java/src/org/chromium/base/metrics/TimingMetric.java",
-        "base/android/java/src/org/chromium/base/metrics/UmaRecorder.java",
-        "base/android/java/src/org/chromium/base/metrics/UmaRecorderHolder.java",
-        "base/android/java/src/org/chromium/base/multidex/ChromiumMultiDexInstaller.java",
-        "base/android/java/src/org/chromium/base/process_launcher/BindService.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildConnectionAllocator.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessConnection.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessConstants.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessLauncher.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildProcessServiceDelegate.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnection.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionDelegate.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionFactory.java",
-        "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionImpl.java",
-        "base/android/java/src/org/chromium/base/process_launcher/FileDescriptorInfo.java",
-        "base/android/java/src/org/chromium/base/supplier/BooleanSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/DestroyableObservableSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/ObservableSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/ObservableSupplierImpl.java",
-        "base/android/java/src/org/chromium/base/supplier/OneShotCallback.java",
-        "base/android/java/src/org/chromium/base/supplier/OneshotSupplier.java",
-        "base/android/java/src/org/chromium/base/supplier/OneshotSupplierImpl.java",
-        "base/android/java/src/org/chromium/base/supplier/Supplier.java",
-        "base/android/java/src/org/chromium/base/supplier/UnownedUserDataSupplier.java",
-        "base/android/java/src/org/chromium/base/task/AsyncTask.java",
-        "base/android/java/src/org/chromium/base/task/BackgroundOnlyAsyncTask.java",
-        "base/android/java/src/org/chromium/base/task/ChainedTasks.java",
-        "base/android/java/src/org/chromium/base/task/ChoreographerTaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/ChromeThreadPoolExecutor.java",
-        "base/android/java/src/org/chromium/base/task/DefaultTaskExecutor.java",
-        "base/android/java/src/org/chromium/base/task/PostTask.java",
-        "base/android/java/src/org/chromium/base/task/SequencedTaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/SequencedTaskRunnerImpl.java",
-        "base/android/java/src/org/chromium/base/task/SerialExecutor.java",
-        "base/android/java/src/org/chromium/base/task/SingleThreadTaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/SingleThreadTaskRunnerImpl.java",
-        "base/android/java/src/org/chromium/base/task/TaskExecutor.java",
-        "base/android/java/src/org/chromium/base/task/TaskRunner.java",
-        "base/android/java/src/org/chromium/base/task/TaskRunnerImpl.java",
-        "base/android/java/src/org/chromium/base/task/TaskTraits.java",
-        "base/android/java/src/org/chromium/base/task/TaskTraitsExtensionDescriptor.java",
-        "build/android/java/src/org/chromium/build/annotations/AlwaysInline.java",
-        "build/android/java/src/org/chromium/build/annotations/CheckDiscard.java",
-        "build/android/java/src/org/chromium/build/annotations/DoNotClassMerge.java",
-        "build/android/java/src/org/chromium/build/annotations/DoNotInline.java",
-        "build/android/java/src/org/chromium/build/annotations/IdentifierNameString.java",
-        "build/android/java/src/org/chromium/build/annotations/MainDex.java",
-        "build/android/java/src/org/chromium/build/annotations/MockedInTests.java",
-        "build/android/java/src/org/chromium/build/annotations/UsedByReflection.java",
-        "components/cronet/android/api/src/org/chromium/net/BidirectionalStream.java",
-        "components/cronet/android/api/src/org/chromium/net/CallbackException.java",
-        "components/cronet/android/api/src/org/chromium/net/CronetEngine.java",
-        "components/cronet/android/api/src/org/chromium/net/CronetException.java",
-        "components/cronet/android/api/src/org/chromium/net/CronetProvider.java",
-        "components/cronet/android/api/src/org/chromium/net/ExperimentalBidirectionalStream.java",
-        "components/cronet/android/api/src/org/chromium/net/ExperimentalCronetEngine.java",
-        "components/cronet/android/api/src/org/chromium/net/ExperimentalUrlRequest.java",
-        "components/cronet/android/api/src/org/chromium/net/ICronetEngineBuilder.java",
-        "components/cronet/android/api/src/org/chromium/net/InlineExecutionProhibitedException.java",
-        "components/cronet/android/api/src/org/chromium/net/NetworkException.java",
-        "components/cronet/android/api/src/org/chromium/net/NetworkQualityRttListener.java",
-        "components/cronet/android/api/src/org/chromium/net/NetworkQualityThroughputListener.java",
-        "components/cronet/android/api/src/org/chromium/net/QuicException.java",
-        "components/cronet/android/api/src/org/chromium/net/RequestFinishedInfo.java",
-        "components/cronet/android/api/src/org/chromium/net/UploadDataProvider.java",
-        "components/cronet/android/api/src/org/chromium/net/UploadDataProviders.java",
-        "components/cronet/android/api/src/org/chromium/net/UploadDataSink.java",
-        "components/cronet/android/api/src/org/chromium/net/UrlRequest.java",
-        "components/cronet/android/api/src/org/chromium/net/UrlResponseInfo.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/ByteArrayCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/ContentTypeParametersParser.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/CronetRequestCompletionListener.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/CronetResponse.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/ImplicitFlowControlCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/InMemoryTransformCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/JsonCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/RedirectHandler.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/RedirectHandlers.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/StringCronetCallback.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/UploadDataProviders.java",
-        "components/cronet/android/api/src/org/chromium/net/apihelpers/UrlRequestCallbacks.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeCronetController.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeCronetEngine.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeCronetProvider.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeUrlRequest.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/FakeUrlResponse.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/ResponseMatcher.java",
-        "components/cronet/android/fake/java/org/chromium/net/test/UrlResponseMatcher.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/BidirectionalStreamBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/BidirectionalStreamNetworkException.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CallbackExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetBidirectionalStream.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetEngineBase.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetEngineBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetLibraryLoader.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetLogger.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetLoggerFactory.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetManifest.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetMetrics.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetUploadDataStream.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetUrlRequest.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/CronetUrlRequestContext.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/InputStreamChannel.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaCronetEngine.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaCronetEngineBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaCronetProvider.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaUploadDataSinkBase.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaUrlRequest.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/JavaUrlRequestUtils.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NativeCronetEngineBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NativeCronetEngineBuilderWithLibraryLoaderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NativeCronetProvider.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NetworkExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/NoOpLogger.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/Preconditions.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/QuicExceptionImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/RequestFinishedInfoImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UrlRequestBase.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UrlRequestBuilderImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UrlResponseInfoImpl.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/UserAgent.java",
-        "components/cronet/android/java/src/org/chromium/net/impl/VersionSafeCallbacks.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetBufferedOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetChunkedOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetFixedModeOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetHttpURLConnection.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetHttpURLStreamHandler.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetInputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetOutputStream.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/CronetURLStreamHandlerFactory.java",
-        "components/cronet/android/java/src/org/chromium/net/urlconnection/MessageLoop.java",
-        "net/android/java/src/org/chromium/net/AndroidCertVerifyResult.java",
-        "net/android/java/src/org/chromium/net/AndroidKeyStore.java",
-        "net/android/java/src/org/chromium/net/AndroidNetworkLibrary.java",
-        "net/android/java/src/org/chromium/net/AndroidTrafficStats.java",
-        "net/android/java/src/org/chromium/net/ChromiumNetworkAdapter.java",
-        "net/android/java/src/org/chromium/net/DnsStatus.java",
-        "net/android/java/src/org/chromium/net/GURLUtils.java",
-        "net/android/java/src/org/chromium/net/HttpNegotiateAuthenticator.java",
-        "net/android/java/src/org/chromium/net/HttpNegotiateConstants.java",
-        "net/android/java/src/org/chromium/net/HttpUtil.java",
-        "net/android/java/src/org/chromium/net/MimeTypeFilter.java",
-        "net/android/java/src/org/chromium/net/NetStringUtil.java",
-        "net/android/java/src/org/chromium/net/NetworkActiveNotifier.java",
-        "net/android/java/src/org/chromium/net/NetworkChangeNotifier.java",
-        "net/android/java/src/org/chromium/net/NetworkChangeNotifierAutoDetect.java",
-        "net/android/java/src/org/chromium/net/NetworkTrafficAnnotationTag.java",
-        "net/android/java/src/org/chromium/net/ProxyBroadcastReceiver.java",
-        "net/android/java/src/org/chromium/net/ProxyChangeListener.java",
-        "net/android/java/src/org/chromium/net/RegistrationPolicyAlwaysRegister.java",
-        "net/android/java/src/org/chromium/net/RegistrationPolicyApplicationStatus.java",
-        "net/android/java/src/org/chromium/net/ThreadStatsUid.java",
-        "net/android/java/src/org/chromium/net/X509Util.java",
-        "url/android/java/src/org/chromium/url/IDNStringUtil.java",
-    ],
-    cmd: "current_dir=`basename \\`pwd\\``; " +
-         "for f in $(in); " +
-         "do " +
-         "echo \"../$$current_dir/$$f\" >> $(genDir)/java.sources; " +
-         "done; " +
-         "python3 $(location base/android/jni_generator/jni_registration_generator.py) --srcjar-path " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.srcjar " +
-         "--depfile " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.d " +
-         "--sources-files " +
-         "$(genDir)/java.sources " +
-         "--include_test_only " +
-         "--use_proxy_hash " +
-         "--header-path " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.h " +
-         "--manual_jni_registration " +
-         " " +
-         " " +
-         ";sed -i -e 's/OUT_SOONG_.TEMP_SBOX_.*_OUT/GEN/g'  " +
-         "$(genDir)/components/cronet/android/cronet_jni_registration.h",
-    out: [
-        "components/cronet/android/cronet_jni_registration.h",
         "components/cronet/android/cronet_jni_registration.srcjar",
     ],
     tool_files: [
@@ -7790,6 +7727,7 @@ cc_object {
         "cronet_aml_url_url",
     ],
     generated_headers: [
+        "cronet_aml_components_cronet_android_cronet_jni_registration",
         "cronet_aml_third_party_metrics_proto_metrics_proto_gen_headers",
     ],
     defaults: [
@@ -7841,7 +7779,6 @@ cc_object {
                 "cronet_aml_build_chromeos_buildflags__android_arm",
                 "cronet_aml_components_cronet_android_buildflags__android_arm",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_arm",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm",
                 "cronet_aml_components_cronet_cronet_buildflags__android_arm",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_arm",
                 "cronet_aml_url_buildflags__android_arm",
@@ -7854,7 +7791,6 @@ cc_object {
                 "cronet_aml_build_chromeos_buildflags__android_arm64",
                 "cronet_aml_components_cronet_android_buildflags__android_arm64",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_arm64",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_arm64",
                 "cronet_aml_components_cronet_cronet_buildflags__android_arm64",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_arm64",
                 "cronet_aml_url_buildflags__android_arm64",
@@ -7870,7 +7806,6 @@ cc_object {
                 "cronet_aml_build_chromeos_buildflags__android_x86",
                 "cronet_aml_components_cronet_android_buildflags__android_x86",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_x86",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86",
                 "cronet_aml_components_cronet_cronet_buildflags__android_x86",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_x86",
                 "cronet_aml_url_buildflags__android_x86",
@@ -7886,13 +7821,258 @@ cc_object {
                 "cronet_aml_build_chromeos_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_android_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_android_cronet_jni_headers__android_x86_64",
-                "cronet_aml_components_cronet_android_cronet_jni_registration__android_x86_64",
                 "cronet_aml_components_cronet_cronet_buildflags__android_x86_64",
                 "cronet_aml_components_cronet_cronet_version_header_action__android_x86_64",
                 "cronet_aml_url_buildflags__android_x86_64",
             ],
         },
     },
+}
+
+// GN: //components/cronet/android:http_cache_type_java
+java_genrule {
+    name: "cronet_aml_components_cronet_android_http_cache_type_java",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location components/cronet/url_request_context_config.h)",
+    out: [
+        "components/cronet/android/http_cache_type_java.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "components/cronet/url_request_context_config.h",
+    ],
+}
+
+// GN: //components/cronet/android:implementation_api_version
+java_genrule {
+    name: "cronet_aml_components_cronet_android_implementation_api_version",
+    cmd: "$(location build/util/version.py) -f " +
+         "$(location chrome/VERSION) " +
+         "-f " +
+         "$(location build/util/LASTCHANGE) " +
+         "-e " +
+         "'API_LEVEL=20' " +
+         "-o " +
+         "$(out) " +
+         "$(location components/cronet/android/java/src/org/chromium/net/impl/ImplVersion.template)",
+    out: [
+        "components/cronet/android/templates/org/chromium/net/impl/ImplVersion.java",
+    ],
+    tool_files: [
+        "build/util/LASTCHANGE",
+        "build/util/android_chrome_version.py",
+        "build/util/version.py",
+        "chrome/VERSION",
+        "components/cronet/android/java/src/org/chromium/net/impl/ImplVersion.template",
+    ],
+}
+
+// GN: //components/cronet/android:integrated_mode_state
+genrule {
+    name: "cronet_aml_components_cronet_android_integrated_mode_state",
+    srcs: [
+        ":cronet_aml_components_cronet_android_integrated_mode_state_preprocess",
+    ],
+    tools: [
+        "soong_zip",
+    ],
+    cmd: "cp $(in) $(genDir)/IntegratedModeState.java && " +
+         "$(location soong_zip) -o $(out) -srcjar -f $(genDir)/IntegratedModeState.java",
+    out: [
+        "IntegratedModeState.srcjar",
+    ],
+}
+
+// GN: //components/cronet/android:integrated_mode_state
+cc_object {
+    name: "cronet_aml_components_cronet_android_integrated_mode_state_preprocess",
+    srcs: [
+        ":cronet_aml_components_cronet_android_integrated_mode_state_rename",
+    ],
+    cflags: [
+        "-DANDROID",
+        "-E",
+        "-P",
+    ],
+    compile_multilib: "32",
+}
+
+// GN: //components/cronet/android:integrated_mode_state
+genrule {
+    name: "cronet_aml_components_cronet_android_integrated_mode_state_rename",
+    srcs: [
+        "components/cronet/android/java/src/org/chromium/net/impl/IntegratedModeState.template",
+    ],
+    cmd: "cp $(in) $(out)",
+    out: [
+        "IntegratedModeState.cc",
+    ],
+}
+
+// GN: //components/cronet/android:interface_api_version
+java_genrule {
+    name: "cronet_aml_components_cronet_android_interface_api_version",
+    cmd: "$(location build/util/version.py) -f " +
+         "$(location chrome/VERSION) " +
+         "-f " +
+         "$(location build/util/LASTCHANGE) " +
+         "-e " +
+         "'API_LEVEL=20' " +
+         "-o " +
+         "$(out) " +
+         "$(location components/cronet/android/api/src/org/chromium/net/ApiVersion.template)",
+    out: [
+        "components/cronet/android/templates/org/chromium/net/ApiVersion.java",
+    ],
+    tool_files: [
+        "build/util/LASTCHANGE",
+        "build/util/android_chrome_version.py",
+        "build/util/version.py",
+        "chrome/VERSION",
+        "components/cronet/android/api/src/org/chromium/net/ApiVersion.template",
+    ],
+}
+
+// GN: //components/cronet/android:load_states_list
+genrule {
+    name: "cronet_aml_components_cronet_android_load_states_list",
+    srcs: [
+        ":cronet_aml_components_cronet_android_load_states_list_preprocess",
+    ],
+    tools: [
+        "soong_zip",
+    ],
+    cmd: "cp $(in) $(genDir)/LoadState.java && " +
+         "$(location soong_zip) -o $(out) -srcjar -f $(genDir)/LoadState.java",
+    out: [
+        "LoadState.srcjar",
+    ],
+}
+
+// GN: //components/cronet/android:load_states_list
+cc_object {
+    name: "cronet_aml_components_cronet_android_load_states_list_preprocess",
+    srcs: [
+        ":cronet_aml_components_cronet_android_load_states_list_rename",
+    ],
+    cflags: [
+        "-DANDROID",
+        "-E",
+        "-P",
+    ],
+    compile_multilib: "32",
+}
+
+// GN: //components/cronet/android:load_states_list
+genrule {
+    name: "cronet_aml_components_cronet_android_load_states_list_rename",
+    srcs: [
+        "components/cronet/android/java/src/org/chromium/net/impl/LoadState.template",
+    ],
+    cmd: "cp $(in) $(out)",
+    out: [
+        "LoadState.cc",
+    ],
+}
+
+// GN: //components/cronet/android:net_idempotency_java
+java_genrule {
+    name: "cronet_aml_components_cronet_android_net_idempotency_java",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location net/base/idempotency.h)",
+    out: [
+        "components/cronet/android/net_idempotency_java.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "net/base/idempotency.h",
+    ],
+}
+
+// GN: //components/cronet/android:net_request_priority_java
+java_genrule {
+    name: "cronet_aml_components_cronet_android_net_request_priority_java",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location net/base/request_priority.h)",
+    out: [
+        "components/cronet/android/net_request_priority_java.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "net/base/request_priority.h",
+    ],
+}
+
+// GN: //components/cronet/android:network_quality_observation_source_java
+java_genrule {
+    name: "cronet_aml_components_cronet_android_network_quality_observation_source_java",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location net/nqe/network_quality_observation_source.h)",
+    out: [
+        "components/cronet/android/network_quality_observation_source_java.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "net/nqe/network_quality_observation_source.h",
+    ],
+}
+
+// GN: //components/cronet/android:rtt_throughput_values_java
+java_genrule {
+    name: "cronet_aml_components_cronet_android_rtt_throughput_values_java",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location net/nqe/network_quality.h)",
+    out: [
+        "components/cronet/android/rtt_throughput_values_java.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "net/nqe/network_quality.h",
+    ],
+}
+
+// GN: //components/cronet/android:url_request_error_java
+java_genrule {
+    name: "cronet_aml_components_cronet_android_url_request_error_java",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location components/cronet/android/url_request_error.h)",
+    out: [
+        "components/cronet/android/url_request_error_java.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "components/cronet/android/url_request_error.h",
+    ],
 }
 
 // GN: //components/cronet:cronet_buildflags__android_arm
@@ -7912,6 +8092,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -7933,6 +8116,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //components/cronet:cronet_buildflags__android_x86
@@ -7953,6 +8139,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //components/cronet:cronet_buildflags__android_x86_64
@@ -7972,6 +8161,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8154,8 +8346,7 @@ cc_genrule {
     cmd: "$(location build/util/version.py) -f " +
          "$(location chrome/VERSION) " +
          "-e " +
-         "VERSION_FULL='\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
-         " " +
+         "'VERSION_FULL=\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
          "-o " +
          "$(out) " +
          "$(location components/cronet/version.h.in)",
@@ -8168,6 +8359,9 @@ cc_genrule {
         "build/util/version.py",
         "chrome/VERSION",
         "components/cronet/version.h.in",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8177,8 +8371,7 @@ cc_genrule {
     cmd: "$(location build/util/version.py) -f " +
          "$(location chrome/VERSION) " +
          "-e " +
-         "VERSION_FULL='\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
-         " " +
+         "'VERSION_FULL=\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
          "-o " +
          "$(out) " +
          "$(location components/cronet/version.h.in)",
@@ -8191,6 +8384,9 @@ cc_genrule {
         "build/util/version.py",
         "chrome/VERSION",
         "components/cronet/version.h.in",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8200,8 +8396,7 @@ cc_genrule {
     cmd: "$(location build/util/version.py) -f " +
          "$(location chrome/VERSION) " +
          "-e " +
-         "VERSION_FULL='\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
-         " " +
+         "'VERSION_FULL=\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
          "-o " +
          "$(out) " +
          "$(location components/cronet/version.h.in)",
@@ -8214,6 +8409,9 @@ cc_genrule {
         "build/util/version.py",
         "chrome/VERSION",
         "components/cronet/version.h.in",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8223,8 +8421,7 @@ cc_genrule {
     cmd: "$(location build/util/version.py) -f " +
          "$(location chrome/VERSION) " +
          "-e " +
-         "VERSION_FULL='\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
-         " " +
+         "'VERSION_FULL=\"%s.%s.%s.%s\" % (MAJOR,MINOR,BUILD,PATCH)' " +
          "-o " +
          "$(out) " +
          "$(location components/cronet/version.h.in)",
@@ -8237,6 +8434,9 @@ cc_genrule {
         "build/util/version.py",
         "chrome/VERSION",
         "components/cronet/version.h.in",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8713,6 +8913,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //components/prefs/android:jni_headers__android_arm
@@ -8723,8 +8926,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/prefs/android/jni_headers " +
          "--includes " +
@@ -8743,6 +8944,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8754,8 +8958,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/prefs/android/jni_headers " +
          "--includes " +
@@ -8774,6 +8976,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8785,8 +8990,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/prefs/android/jni_headers " +
          "--includes " +
@@ -8805,6 +9008,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8816,8 +9022,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/components/prefs/android/jni_headers " +
          "--includes " +
@@ -8836,6 +9040,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -8995,6 +9202,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //crypto:buildflags__android_arm64
@@ -9014,6 +9224,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -9035,6 +9248,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //crypto:buildflags__android_x86_64
@@ -9054,6 +9270,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -9076,6 +9295,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -9263,6 +9485,10 @@ cc_defaults {
         "-fvisibility=hidden",
     ],
     stl: "none",
+    apex_available: [
+        "com.android.tethering",
+    ],
+    min_sdk_version: "29",
     target: {
         android: {
             header_libs: [
@@ -9326,6 +9552,25 @@ cc_object {
 java_library {
     name: "cronet_aml_java",
     srcs: [
+        ":cronet_aml_base_base_android_java_enums_srcjar",
+        ":cronet_aml_base_java_features_srcjar",
+        ":cronet_aml_base_java_switches_srcjar",
+        ":cronet_aml_build_android_build_config_gen",
+        ":cronet_aml_build_android_native_libraries_gen",
+        ":cronet_aml_components_cronet_android_cronet_jni_registration__java",
+        ":cronet_aml_components_cronet_android_http_cache_type_java",
+        ":cronet_aml_components_cronet_android_implementation_api_version",
+        ":cronet_aml_components_cronet_android_integrated_mode_state",
+        ":cronet_aml_components_cronet_android_interface_api_version",
+        ":cronet_aml_components_cronet_android_load_states_list",
+        ":cronet_aml_components_cronet_android_net_idempotency_java",
+        ":cronet_aml_components_cronet_android_net_request_priority_java",
+        ":cronet_aml_components_cronet_android_network_quality_observation_source_java",
+        ":cronet_aml_components_cronet_android_rtt_throughput_values_java",
+        ":cronet_aml_components_cronet_android_url_request_error_java",
+        ":cronet_aml_net_android_net_android_java_enums_srcjar",
+        ":cronet_aml_net_android_net_errors_java",
+        ":cronet_aml_net_effective_connection_type_java",
         "base/android/java/src/org/chromium/base/ActivityState.java",
         "base/android/java/src/org/chromium/base/ApiCompatibilityUtils.java",
         "base/android/java/src/org/chromium/base/ApkAssets.java",
@@ -9460,6 +9705,8 @@ java_library {
         "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionFactory.java",
         "base/android/java/src/org/chromium/base/process_launcher/ChildServiceConnectionImpl.java",
         "base/android/java/src/org/chromium/base/process_launcher/FileDescriptorInfo.java",
+        "base/android/java/src/org/chromium/base/process_launcher/IChildProcessService.aidl",
+        "base/android/java/src/org/chromium/base/process_launcher/IParentProcess.aidl",
         "base/android/java/src/org/chromium/base/supplier/BooleanSupplier.java",
         "base/android/java/src/org/chromium/base/supplier/DestroyableObservableSupplier.java",
         "base/android/java/src/org/chromium/base/supplier/ObservableSupplier.java",
@@ -9603,6 +9850,79 @@ java_library {
     ],
 }
 
+// GN: //net/android:net_android_java_enums_srcjar
+java_genrule {
+    name: "cronet_aml_net_android_net_android_java_enums_srcjar",
+    srcs: [
+        "net/android/network_change_notifier_android.cc",
+        "net/android/traffic_stats.cc",
+        "net/socket/socket_tag.cc",
+    ],
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location net/base/network_change_notifier.h) " +
+         "$(location net/socket/socket_tag.cc) " +
+         "$(location net/android/cert_verify_result_android.h) " +
+         "$(location net/android/keystore.h) " +
+         "$(location net/android/network_change_notifier_android.cc) " +
+         "$(location net/android/traffic_stats.cc)",
+    out: [
+        "net/android/net_android_java_enums_srcjar.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "net/android/cert_verify_result_android.h",
+        "net/android/keystore.h",
+        "net/base/network_change_notifier.h",
+    ],
+}
+
+// GN: //net/android:net_errors_java
+genrule {
+    name: "cronet_aml_net_android_net_errors_java",
+    srcs: [
+        ":cronet_aml_net_android_net_errors_java_preprocess",
+    ],
+    tools: [
+        "soong_zip",
+    ],
+    cmd: "cp $(in) $(genDir)/NetError.java && " +
+         "$(location soong_zip) -o $(out) -srcjar -f $(genDir)/NetError.java",
+    out: [
+        "NetError.srcjar",
+    ],
+}
+
+// GN: //net/android:net_errors_java
+cc_object {
+    name: "cronet_aml_net_android_net_errors_java_preprocess",
+    srcs: [
+        ":cronet_aml_net_android_net_errors_java_rename",
+    ],
+    cflags: [
+        "-DANDROID",
+        "-E",
+        "-P",
+    ],
+    compile_multilib: "32",
+}
+
+// GN: //net/android:net_errors_java
+genrule {
+    name: "cronet_aml_net_android_net_errors_java_rename",
+    srcs: [
+        "net/android/java/NetError.template",
+    ],
+    cmd: "cp $(in) $(out)",
+    out: [
+        "NetError.cc",
+    ],
+}
+
 // GN: //net/base/registry_controlled_domains:registry_controlled_domains__android_arm
 cc_genrule {
     name: "cronet_aml_net_base_registry_controlled_domains_registry_controlled_domains__android_arm",
@@ -9651,6 +9971,9 @@ cc_genrule {
         "net/base/registry_controlled_domains/effective_tld_names_unittest5.gperf",
         "net/base/registry_controlled_domains/effective_tld_names_unittest6.gperf",
         "net/tools/dafsa/make_dafsa.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -9703,6 +10026,9 @@ cc_genrule {
         "net/base/registry_controlled_domains/effective_tld_names_unittest6.gperf",
         "net/tools/dafsa/make_dafsa.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net/base/registry_controlled_domains:registry_controlled_domains__android_x86
@@ -9753,6 +10079,9 @@ cc_genrule {
         "net/base/registry_controlled_domains/effective_tld_names_unittest5.gperf",
         "net/base/registry_controlled_domains/effective_tld_names_unittest6.gperf",
         "net/tools/dafsa/make_dafsa.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -9805,6 +10134,9 @@ cc_genrule {
         "net/base/registry_controlled_domains/effective_tld_names_unittest6.gperf",
         "net/tools/dafsa/make_dafsa.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net:buildflags__android_arm
@@ -9824,6 +10156,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -9845,6 +10180,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net:buildflags__android_x86
@@ -9865,6 +10203,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net:buildflags__android_x86_64
@@ -9884,6 +10225,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -9970,6 +10314,9 @@ cc_genrule {
         "net/data/ssl/chrome_root_store/root_store.certs",
         "net/data/ssl/chrome_root_store/root_store.textproto",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net/data/ssl/chrome_root_store:gen_root_store_inc__android_arm64
@@ -9992,6 +10339,9 @@ cc_genrule {
         "build/gn_run_binary.py",
         "net/data/ssl/chrome_root_store/root_store.certs",
         "net/data/ssl/chrome_root_store/root_store.textproto",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -10016,6 +10366,9 @@ cc_genrule {
         "net/data/ssl/chrome_root_store/root_store.certs",
         "net/data/ssl/chrome_root_store/root_store.textproto",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net/data/ssl/chrome_root_store:gen_root_store_inc__android_x86_64
@@ -10038,6 +10391,9 @@ cc_genrule {
         "build/gn_run_binary.py",
         "net/data/ssl/chrome_root_store/root_store.certs",
         "net/data/ssl/chrome_root_store/root_store.textproto",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -10858,6 +11214,25 @@ cc_object {
     },
 }
 
+// GN: //net:effective_connection_type_java
+java_genrule {
+    name: "cronet_aml_net_effective_connection_type_java",
+    cmd: "$(location build/android/gyp/java_cpp_enum.py) --srcjar " +
+         "$(out) " +
+         "$(location net/nqe/effective_connection_type.h)",
+    out: [
+        "net/effective_connection_type_java.srcjar",
+    ],
+    tool_files: [
+        "build/android/gyp/java_cpp_enum.py",
+        "build/android/gyp/util/__init__.py",
+        "build/android/gyp/util/build_utils.py",
+        "build/android/gyp/util/java_cpp_utils.py",
+        "build/gn_helpers.py",
+        "net/nqe/effective_connection_type.h",
+    ],
+}
+
 // GN: //net/http:transport_security_state_generated_files
 cc_object {
     name: "cronet_aml_net_http_transport_security_state_generated_files",
@@ -11011,6 +11386,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net:ios_cronet_buildflags__android_arm64
@@ -11030,6 +11408,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -11051,6 +11432,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net:ios_cronet_buildflags__android_x86_64
@@ -11071,6 +11455,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net:isolation_info_proto
@@ -11085,6 +11472,9 @@ cc_genrule {
     cmd: "$(location cronet_aml_third_party_protobuf_protoc) --proto_path=external/chromium_org/net/base --cpp_out=lite=true:$(genDir)/external/chromium_org/net/base/ $(in)",
     out: [
         "external/chromium_org/net/base/isolation_info.pb.cc",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -11105,6 +11495,9 @@ cc_genrule {
         ".",
         "net/base",
         "protos",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -11982,8 +12375,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/net/net_jni_headers " +
          "--includes " +
@@ -12062,6 +12453,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -12085,8 +12479,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/net/net_jni_headers " +
          "--includes " +
@@ -12165,6 +12557,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -12188,8 +12583,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/net/net_jni_headers " +
          "--includes " +
@@ -12268,6 +12661,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -12291,8 +12687,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/net/net_jni_headers " +
          "--includes " +
@@ -12372,6 +12766,9 @@ cc_genrule {
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net:net_nqe_proto
@@ -12386,6 +12783,9 @@ cc_genrule {
     cmd: "$(location cronet_aml_third_party_protobuf_protoc) --proto_path=external/chromium_org/net/nqe/proto --cpp_out=lite=true:$(genDir)/external/chromium_org/net/nqe/proto/ $(in)",
     out: [
         "external/chromium_org/net/nqe/proto/network_id_proto.pb.cc",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -12406,6 +12806,9 @@ cc_genrule {
         ".",
         "net/nqe/proto",
         "protos",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -12596,6 +12999,9 @@ cc_genrule {
         "external/chromium_org/net/third_party/quiche/src/quiche/quic/core/proto/crypto_server_config.pb.cc",
         "external/chromium_org/net/third_party/quiche/src/quiche/quic/core/proto/source_address_token.pb.cc",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net/third_party/quiche:net_quic_proto
@@ -12620,6 +13026,9 @@ cc_genrule {
         "net/third_party/quiche/src",
         "protos",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //net/third_party/quiche:net_quic_test_tools_proto
@@ -12634,6 +13043,9 @@ cc_genrule {
     cmd: "$(location cronet_aml_third_party_protobuf_protoc) --proto_path=external/chromium_org/net/third_party/quiche/src/quiche/quic/test_tools --cpp_out=lite=true:$(genDir)/external/chromium_org/net/third_party/quiche/src/quiche/quic/test_tools/ $(in)",
     out: [
         "external/chromium_org/net/third_party/quiche/src/quiche/quic/test_tools/send_algorithm_test_result.pb.cc",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -12654,6 +13066,9 @@ cc_genrule {
         ".",
         "net/third_party/quiche/src/quiche/quic/test_tools",
         "protos",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -23510,6 +23925,9 @@ cc_genrule {
         "external/chromium_org/third_party/metrics_proto/user_action_event.pb.cc",
         "external/chromium_org/third_party/metrics_proto/user_demographics.pb.cc",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //third_party/metrics_proto:metrics_proto
@@ -23581,6 +23999,9 @@ cc_genrule {
         ".",
         "protos",
         "third_party/metrics_proto",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -24673,6 +25094,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //url:buildflags__android_arm64
@@ -24692,6 +25116,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -24713,6 +25140,9 @@ cc_genrule {
     tool_files: [
         "build/write_buildflag_header.py",
     ],
+    apex_available: [
+        "com.android.tethering",
+    ],
 }
 
 // GN: //url:buildflags__android_x86_64
@@ -24732,6 +25162,9 @@ cc_genrule {
     ],
     tool_files: [
         "build/write_buildflag_header.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -24891,8 +25324,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/url/url_jni_headers " +
          "--includes " +
@@ -24916,6 +25347,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -24928,8 +25362,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/url/url_jni_headers " +
          "--includes " +
@@ -24953,6 +25385,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -24965,8 +25400,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/url/url_jni_headers " +
          "--includes " +
@@ -24990,6 +25423,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
@@ -25002,8 +25438,6 @@ cc_genrule {
     ],
     cmd: "$(location base/android/jni_generator/jni_generator.py) --ptr_type " +
          "long " +
-         " " +
-         " " +
          "--output_dir " +
          "$(genDir)/url/url_jni_headers " +
          "--includes " +
@@ -25027,6 +25461,9 @@ cc_genrule {
         "build/android/gyp/util/__init__.py",
         "build/android/gyp/util/build_utils.py",
         "build/gn_helpers.py",
+    ],
+    apex_available: [
+        "com.android.tethering",
     ],
 }
 
