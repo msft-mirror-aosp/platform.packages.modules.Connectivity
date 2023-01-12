@@ -23,8 +23,10 @@ import static com.android.server.nearby.NearbyService.TAG;
 import android.annotation.Nullable;
 import android.app.AppOpsManager;
 import android.content.Context;
+import android.nearby.DataElement;
 import android.nearby.IScanListener;
 import android.nearby.NearbyDeviceParcelable;
+import android.nearby.NearbyManager;
 import android.nearby.PresenceScanFilter;
 import android.nearby.ScanFilter;
 import android.nearby.ScanRequest;
@@ -51,6 +53,7 @@ import java.util.stream.Collectors;
 
 /** Manages all aspects of discovery providers. */
 public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Listener {
+
     protected final Object mLock = new Object();
     private final Context mContext;
     private final BleDiscoveryProvider mBleDiscoveryProvider;
@@ -123,6 +126,18 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         mInjector = injector;
     }
 
+    @VisibleForTesting
+    DiscoveryProviderManager(Context context, Injector injector,
+            BleDiscoveryProvider bleDiscoveryProvider,
+            ChreDiscoveryProvider chreDiscoveryProvider,
+            Map<IBinder, ScanListenerRecord> scanTypeScanListenerRecordMap) {
+        mContext = context;
+        mInjector = injector;
+        mBleDiscoveryProvider = bleDiscoveryProvider;
+        mChreDiscoveryProvider = chreDiscoveryProvider;
+        mScanTypeScanListenerRecordMap = scanTypeScanListenerRecordMap;
+    }
+
     /** Called after boot completed. */
     public void init() {
         if (mInjector.getContextHubManager() != null) {
@@ -134,7 +149,8 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
     /**
      * Registers the listener in the manager and starts scan according to the requested scan mode.
      */
-    public boolean registerScanListener(ScanRequest scanRequest, IScanListener listener,
+    @NearbyManager.ScanStatus
+    public int registerScanListener(ScanRequest scanRequest, IScanListener listener,
             CallerIdentity callerIdentity) {
         synchronized (mLock) {
             ScanListenerDeathRecipient deathRecipient = (listener != null)
@@ -152,23 +168,26 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                         mScanTypeScanListenerRecordMap.get(listenerBinder).getScanRequest();
                 if (scanRequest.equals(savedScanRequest)) {
                     Log.d(TAG, "Already registered the scanRequest: " + scanRequest);
-                    return true;
+                    return NearbyManager.ScanStatus.SUCCESS;
                 }
             }
             ScanListenerRecord scanListenerRecord =
                     new ScanListenerRecord(scanRequest, listener, callerIdentity, deathRecipient);
             mScanTypeScanListenerRecordMap.put(listenerBinder, scanListenerRecord);
 
-            if (!startProviders(scanRequest)) {
-                return false;
+            Boolean started = startProviders(scanRequest);
+            if (started == null) {
+                return NearbyManager.ScanStatus.UNKNOWN;
             }
-
+            if (!started) {
+                return NearbyManager.ScanStatus.ERROR;
+            }
             NearbyMetrics.logScanStarted(scanListenerRecord.hashCode(), scanRequest);
             if (mScanMode < scanRequest.getScanMode()) {
                 mScanMode = scanRequest.getScanMode();
                 invalidateProviderScanMode();
             }
-            return true;
+            return NearbyManager.ScanStatus.SUCCESS;
         }
     }
 
@@ -223,36 +242,85 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         }
     }
 
-    // Returns false when fail to start all the providers. Returns true if any one of the provider
-    // starts successfully.
-    private boolean startProviders(ScanRequest scanRequest) {
-        if (scanRequest.isBleEnabled()) {
-            if (mChreDiscoveryProvider.available()
-                    && scanRequest.getScanType() == SCAN_TYPE_NEARBY_PRESENCE) {
-                startChreProvider();
-            } else {
-                startBleProvider();
+    /**
+     * @return {@code null} when all providers are initializing
+     * {@code false} when fail to start all the providers
+     * {@code true} when any one of the provider starts successfully
+     */
+    @VisibleForTesting
+    @Nullable
+    Boolean startProviders(ScanRequest scanRequest) {
+        if (!scanRequest.isBleEnabled()) {
+            Log.w(TAG, "failed to start any provider because client disabled BLE");
+            return false;
+        }
+        List<ScanFilter> scanFilters = getPresenceScanFilters();
+        boolean chreOnly = isChreOnly(scanFilters);
+        Boolean chreAvailable = mChreDiscoveryProvider.available();
+        if (chreAvailable == null) {
+            if (chreOnly) {
+                Log.w(TAG, "client wants CHRE only and Nearby service is still querying CHRE"
+                        + " status");
+                return null;
             }
+            startBleProvider(scanFilters);
             return true;
+        }
+
+        if (!chreAvailable) {
+            if (chreOnly) {
+                Log.w(TAG, "failed to start any provider because client wants CHRE only and CHRE"
+                        + " is not available");
+                return false;
+            }
+            startBleProvider(scanFilters);
+            return true;
+        }
+
+        if (scanRequest.getScanType() == SCAN_TYPE_NEARBY_PRESENCE) {
+            startChreProvider(scanFilters);
+            return true;
+        }
+
+        startBleProvider(scanFilters);
+        return true;
+    }
+
+    private static boolean isChreOnly(List<ScanFilter> scanFilters) {
+        for (ScanFilter scanFilter : scanFilters) {
+            List<DataElement> dataElements =
+                    ((PresenceScanFilter) scanFilter).getExtendedProperties();
+            for (DataElement dataElement : dataElements) {
+                if (dataElement.getKey() != DataElement.DataType.SCAN_MODE) {
+                    continue;
+                }
+                byte[] scanModeValue = dataElement.getValue();
+                if (scanModeValue == null || scanModeValue.length == 0) {
+                    break;
+                }
+                if (Byte.toUnsignedInt(scanModeValue[0]) == ScanRequest.SCAN_MODE_CHRE_ONLY) {
+                    return true;
+                }
+            }
+
         }
         return false;
     }
 
-    private void startBleProvider() {
+    private void startBleProvider(List<ScanFilter> scanFilters) {
         if (!mBleDiscoveryProvider.getController().isStarted()) {
             Log.d(TAG, "DiscoveryProviderManager starts Ble scanning.");
             mBleDiscoveryProvider.getController().setListener(this);
             mBleDiscoveryProvider.getController().setProviderScanMode(mScanMode);
-            mBleDiscoveryProvider.getController().setProviderScanFilters(
-                    getPresenceScanFilters());
+            mBleDiscoveryProvider.getController().setProviderScanFilters(scanFilters);
             mBleDiscoveryProvider.getController().start();
         }
     }
 
     @VisibleForTesting
-    void startChreProvider() {
+    void startChreProvider(List<ScanFilter> scanFilters) {
         Log.d(TAG, "DiscoveryProviderManager starts CHRE scanning.");
-        mChreDiscoveryProvider.getController().setProviderScanFilters(getPresenceScanFilters());
+        mChreDiscoveryProvider.getController().setProviderScanFilters(scanFilters);
         mChreDiscoveryProvider.getController().setProviderScanMode(mScanMode);
         mChreDiscoveryProvider.getController().start();
     }
@@ -329,7 +397,8 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         }
     }
 
-    private static class ScanListenerRecord {
+    @VisibleForTesting
+    static class ScanListenerRecord {
 
         private final ScanRequest mScanRequest;
 
