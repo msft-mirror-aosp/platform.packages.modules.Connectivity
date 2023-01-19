@@ -112,6 +112,7 @@ public class KeepaliveTracker {
         mConnectivityServiceHandler = handler;
         mTcpController = new TcpKeepaliveController(handler);
         mContext = context;
+
         mSupportedKeepalives = KeepaliveUtils.getSupportedKeepalives(mContext);
 
         final ConnectivityResources res = new ConnectivityResources(mContext);
@@ -739,6 +740,9 @@ public class KeepaliveTracker {
         return true;
     }
 
+    /**
+     * Dump KeepaliveTracker state.
+     */
     public void dump(IndentingPrintWriter pw) {
         pw.println("Supported Socket keepalives: " + Arrays.toString(mSupportedKeepalives));
         pw.println("Reserved Privileged keepalives: " + mReservedPrivilegedSlots);
