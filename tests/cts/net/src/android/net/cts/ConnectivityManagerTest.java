@@ -96,6 +96,7 @@ import static com.android.net.module.util.NetworkStackConstants.TEST_CAPTIVE_POR
 import static com.android.net.module.util.NetworkStackConstants.TEST_CAPTIVE_PORTAL_HTTP_URL;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_LOCKDOWN_VPN;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_NONE;
+import static com.android.networkstack.apishim.ConstantsShim.RECEIVER_EXPORTED;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 import static com.android.testutils.MiscAsserts.assertThrows;
@@ -1131,7 +1132,8 @@ public class ConnectivityManagerTest {
 
         final ConnectivityActionReceiver receiver = new ConnectivityActionReceiver(
                 mCm, ConnectivityManager.TYPE_WIFI, NetworkInfo.State.CONNECTED);
-        mContext.registerReceiver(receiver, filter);
+        final int flags = SdkLevel.isAtLeastT() ? RECEIVER_EXPORTED : 0;
+        mContext.registerReceiver(receiver, filter, flags);
 
         // Create a broadcast PendingIntent for NETWORK_CALLBACK_ACTION.
         final Intent intent = new Intent(NETWORK_CALLBACK_ACTION)
@@ -1188,7 +1190,8 @@ public class ConnectivityManagerTest {
             final String extraBoolKey = "extra_bool";
             firstIntent = PendingIntent.getBroadcast(mContext,
                     0 /* requestCode */,
-                    new Intent(broadcastAction).putExtra(extraBoolKey, false),
+                    new Intent(broadcastAction).putExtra(extraBoolKey, false)
+                            .setPackage(mContext.getPackageName()),
                     PendingIntent.FLAG_UPDATE_CURRENT | pendingIntentFlagMutable);
 
             if (useListen) {
@@ -1201,7 +1204,8 @@ public class ConnectivityManagerTest {
             // intent will be updated with the new extras
             secondIntent = PendingIntent.getBroadcast(mContext,
                     0 /* requestCode */,
-                    new Intent(broadcastAction).putExtra(extraBoolKey, true),
+                    new Intent(broadcastAction).putExtra(extraBoolKey, true)
+                            .setPackage(mContext.getPackageName()),
                     PendingIntent.FLAG_UPDATE_CURRENT | pendingIntentFlagMutable);
 
             // Because secondIntent.intentFilterEquals the first, the request should be replaced
@@ -1225,7 +1229,8 @@ public class ConnectivityManagerTest {
                     networkFuture.complete(intent.getParcelableExtra(EXTRA_NETWORK));
                 }
             };
-            mContext.registerReceiver(receiver, filter);
+            final int flags = SdkLevel.isAtLeastT() ? RECEIVER_EXPORTED : 0;
+            mContext.registerReceiver(receiver, filter, flags);
 
             final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
             try {
