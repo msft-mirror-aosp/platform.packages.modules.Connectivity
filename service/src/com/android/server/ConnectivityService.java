@@ -3082,6 +3082,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             optsShim.setDeliveryGroupPolicy(ConstantsShim.DELIVERY_GROUP_POLICY_MOST_RECENT);
             optsShim.setDeliveryGroupMatchingKey(ConnectivityManager.CONNECTIVITY_ACTION,
                     createDeliveryGroupKeyForConnectivityAction(info));
+            optsShim.setDeferUntilActive(true);
         } catch (UnsupportedApiLevelException e) {
             Log.wtf(TAG, "Using unsupported API" + e);
         }
@@ -6245,9 +6246,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (mOemNetworkPreferences.getNetworkPreferences().size() > 0) {
             handleSetOemNetworkPreference(mOemNetworkPreferences, null);
         }
-        if (!mProfileNetworkPreferences.isEmpty()) {
-            updateProfileAllowedNetworks();
-        }
+        updateProfileAllowedNetworks();
     }
 
     private void onUserRemoved(@NonNull final UserHandle user) {

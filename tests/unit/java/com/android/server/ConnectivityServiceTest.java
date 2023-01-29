@@ -848,6 +848,7 @@ public class ConnectivityServiceTest {
                     verify(mBroadcastOptionsShim).setDeliveryGroupMatchingKey(
                             eq(CONNECTIVITY_ACTION),
                             eq(createDeliveryGroupKeyForConnectivityAction(ni)));
+                    verify(mBroadcastOptionsShim).setDeferUntilActive(eq(true));
                 } catch (UnsupportedApiLevelException e) {
                     throw new RuntimeException(e);
                 }
@@ -15757,6 +15758,39 @@ public class ConnectivityServiceTest {
         inOrder.verify(mMockNetd).networkRemoveUidRangesParcel(new NativeUidRangeConfig(
                 mCellAgent.getNetwork().netId, uidRangeFor(testHandle),
                 PREFERENCE_ORDER_PROFILE));
+    }
+
+    @Test
+    public void testProfileNetworkPreferenceBlocking_addUser() throws Exception {
+        final InOrder inOrder = inOrder(mMockNetd);
+        doReturn(asList(PRIMARY_USER_HANDLE)).when(mUserManager).getUserHandles(anyBoolean());
+
+        // Only one network
+        mCellAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
+        mCellAgent.connect(true);
+
+        // Verify uid ranges 0~99999 are allowed
+        final ArraySet<UidRange> allowedRanges = new ArraySet<>();
+        allowedRanges.add(PRIMARY_UIDRANGE);
+        final NativeUidRangeConfig config1User = new NativeUidRangeConfig(
+                mCellAgent.getNetwork().netId,
+                toUidRangeStableParcels(allowedRanges),
+                0 /* subPriority */);
+        inOrder.verify(mMockNetd).setNetworkAllowlist(new NativeUidRangeConfig[] { config1User });
+
+        doReturn(asList(PRIMARY_USER_HANDLE, SECONDARY_USER_HANDLE))
+                .when(mUserManager).getUserHandles(anyBoolean());
+        final Intent addedIntent = new Intent(ACTION_USER_ADDED);
+        addedIntent.putExtra(Intent.EXTRA_USER, UserHandle.of(SECONDARY_USER));
+        processBroadcast(addedIntent);
+
+        // Make sure the allow list has been updated.
+        allowedRanges.add(UidRange.createForUser(SECONDARY_USER_HANDLE));
+        final NativeUidRangeConfig config2Users = new NativeUidRangeConfig(
+                mCellAgent.getNetwork().netId,
+                toUidRangeStableParcels(allowedRanges),
+                0 /* subPriority */);
+        inOrder.verify(mMockNetd).setNetworkAllowlist(new NativeUidRangeConfig[] { config2Users });
     }
 
     @Test
