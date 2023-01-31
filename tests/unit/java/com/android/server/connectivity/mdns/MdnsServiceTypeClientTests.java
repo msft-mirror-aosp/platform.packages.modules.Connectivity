@@ -39,6 +39,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.InetAddresses;
+import android.net.Network;
 import android.text.TextUtils;
 
 import com.android.server.connectivity.mdns.MdnsServiceInfo.TextEntry;
@@ -61,7 +62,7 @@ import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
-import java.net.SocketAddress;
+import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -79,6 +80,10 @@ public class MdnsServiceTypeClientTests {
     private static final int INTERFACE_INDEX = 999;
     private static final String SERVICE_TYPE = "_googlecast._tcp.local";
     private static final String[] SERVICE_TYPE_LABELS = TextUtils.split(SERVICE_TYPE, "\\.");
+    private static final InetSocketAddress IPV4_ADDRESS = new InetSocketAddress(
+            MdnsConstants.getMdnsIPv4Address(), MdnsConstants.MDNS_PORT);
+    private static final InetSocketAddress IPV6_ADDRESS = new InetSocketAddress(
+            MdnsConstants.getMdnsIPv6Address(), MdnsConstants.MDNS_PORT);
 
     @Mock
     private MdnsServiceBrowserListener mockListenerOne;
@@ -87,13 +92,16 @@ public class MdnsServiceTypeClientTests {
     @Mock
     private MdnsPacketWriter mockPacketWriter;
     @Mock
-    private MdnsSocketClient mockSocketClient;
+    private MdnsMultinetworkSocketClient mockSocketClient;
+    @Mock
+    private Network mockNetwork;
     @Captor
     private ArgumentCaptor<MdnsServiceInfo> serviceInfoCaptor;
 
     private final byte[] buf = new byte[10];
 
-    private DatagramPacket[] expectedPackets;
+    private DatagramPacket[] expectedIPv4Packets;
+    private DatagramPacket[] expectedIPv6Packets;
     private ScheduledFuture<?>[] expectedSendFutures;
     private FakeExecutor currentThreadExecutor = new FakeExecutor();
 
@@ -104,30 +112,52 @@ public class MdnsServiceTypeClientTests {
     public void setUp() throws IOException {
         MockitoAnnotations.initMocks(this);
 
-        expectedPackets = new DatagramPacket[16];
+        expectedIPv4Packets = new DatagramPacket[16];
+        expectedIPv6Packets = new DatagramPacket[16];
         expectedSendFutures = new ScheduledFuture<?>[16];
 
         for (int i = 0; i < expectedSendFutures.length; ++i) {
-            expectedPackets[i] = new DatagramPacket(buf, 0, 5);
+            expectedIPv4Packets[i] = new DatagramPacket(buf, 0 /* offset */, 5 /* length */,
+                    MdnsConstants.getMdnsIPv4Address(), MdnsConstants.MDNS_PORT);
+            expectedIPv6Packets[i] = new DatagramPacket(buf, 0 /* offset */, 5 /* length */,
+                    MdnsConstants.getMdnsIPv6Address(), MdnsConstants.MDNS_PORT);
             expectedSendFutures[i] = Mockito.mock(ScheduledFuture.class);
         }
-        when(mockPacketWriter.getPacket(any(SocketAddress.class)))
-                .thenReturn(expectedPackets[0])
-                .thenReturn(expectedPackets[1])
-                .thenReturn(expectedPackets[2])
-                .thenReturn(expectedPackets[3])
-                .thenReturn(expectedPackets[4])
-                .thenReturn(expectedPackets[5])
-                .thenReturn(expectedPackets[6])
-                .thenReturn(expectedPackets[7])
-                .thenReturn(expectedPackets[8])
-                .thenReturn(expectedPackets[9])
-                .thenReturn(expectedPackets[10])
-                .thenReturn(expectedPackets[11])
-                .thenReturn(expectedPackets[12])
-                .thenReturn(expectedPackets[13])
-                .thenReturn(expectedPackets[14])
-                .thenReturn(expectedPackets[15]);
+        when(mockPacketWriter.getPacket(IPV4_ADDRESS))
+                .thenReturn(expectedIPv4Packets[0])
+                .thenReturn(expectedIPv4Packets[1])
+                .thenReturn(expectedIPv4Packets[2])
+                .thenReturn(expectedIPv4Packets[3])
+                .thenReturn(expectedIPv4Packets[4])
+                .thenReturn(expectedIPv4Packets[5])
+                .thenReturn(expectedIPv4Packets[6])
+                .thenReturn(expectedIPv4Packets[7])
+                .thenReturn(expectedIPv4Packets[8])
+                .thenReturn(expectedIPv4Packets[9])
+                .thenReturn(expectedIPv4Packets[10])
+                .thenReturn(expectedIPv4Packets[11])
+                .thenReturn(expectedIPv4Packets[12])
+                .thenReturn(expectedIPv4Packets[13])
+                .thenReturn(expectedIPv4Packets[14])
+                .thenReturn(expectedIPv4Packets[15]);
+
+        when(mockPacketWriter.getPacket(IPV6_ADDRESS))
+                .thenReturn(expectedIPv6Packets[0])
+                .thenReturn(expectedIPv6Packets[1])
+                .thenReturn(expectedIPv6Packets[2])
+                .thenReturn(expectedIPv6Packets[3])
+                .thenReturn(expectedIPv6Packets[4])
+                .thenReturn(expectedIPv6Packets[5])
+                .thenReturn(expectedIPv6Packets[6])
+                .thenReturn(expectedIPv6Packets[7])
+                .thenReturn(expectedIPv6Packets[8])
+                .thenReturn(expectedIPv6Packets[9])
+                .thenReturn(expectedIPv6Packets[10])
+                .thenReturn(expectedIPv6Packets[11])
+                .thenReturn(expectedIPv6Packets[12])
+                .thenReturn(expectedIPv6Packets[13])
+                .thenReturn(expectedIPv6Packets[14])
+                .thenReturn(expectedIPv6Packets[15]);
 
         client =
                 new MdnsServiceTypeClient(SERVICE_TYPE, mockSocketClient, currentThreadExecutor) {
@@ -280,8 +310,8 @@ public class MdnsServiceTypeClientTests {
         //MdnsConfigsFlagsImpl.alwaysAskForUnicastResponseInEachBurst.override(true);
         MdnsSearchOptions searchOptions =
                 MdnsSearchOptions.newBuilder().addSubtype("12345").setIsPassiveMode(false).build();
-        QueryTaskConfig config =
-                new QueryTaskConfig(searchOptions.getSubtypes(), searchOptions.isPassiveMode(), 1);
+        QueryTaskConfig config = new QueryTaskConfig(
+                searchOptions.getSubtypes(), searchOptions.isPassiveMode(), 1, mockNetwork);
 
         // This is the first query. We will ask for unicast response.
         assertTrue(config.expectUnicastResponse);
@@ -309,8 +339,8 @@ public class MdnsServiceTypeClientTests {
     public void testQueryTaskConfig_askForUnicastInFirstQuery() {
         MdnsSearchOptions searchOptions =
                 MdnsSearchOptions.newBuilder().addSubtype("12345").setIsPassiveMode(false).build();
-        QueryTaskConfig config =
-                new QueryTaskConfig(searchOptions.getSubtypes(), searchOptions.isPassiveMode(), 1);
+        QueryTaskConfig config = new QueryTaskConfig(
+                searchOptions.getSubtypes(), searchOptions.isPassiveMode(), 1, mockNetwork);
 
         // This is the first query. We will ask for unicast response.
         assertTrue(config.expectUnicastResponse);
@@ -385,7 +415,8 @@ public class MdnsServiceTypeClientTests {
 
     private static void verifyServiceInfo(MdnsServiceInfo serviceInfo, String serviceName,
             String[] serviceType, String ipv4Address, String ipv6Address, int port,
-            List<String> subTypes, Map<String, String> attributes, int interfaceIndex) {
+            List<String> subTypes, Map<String, String> attributes, int interfaceIndex,
+            Network network) {
         assertEquals(serviceName, serviceInfo.getServiceInstanceName());
         assertArrayEquals(serviceType, serviceInfo.getServiceType());
         assertEquals(ipv4Address, serviceInfo.getIpv4Address());
@@ -396,6 +427,7 @@ public class MdnsServiceTypeClientTests {
             assertEquals(attributes.get(key), serviceInfo.getAttributeByKey(key));
         }
         assertEquals(interfaceIndex, serviceInfo.getInterfaceIndex());
+        assertEquals(network, serviceInfo.getNetwork());
     }
 
     @Test
@@ -405,6 +437,7 @@ public class MdnsServiceTypeClientTests {
         MdnsResponse response = mock(MdnsResponse.class);
         when(response.getServiceInstanceName()).thenReturn("service-instance-1");
         doReturn(INTERFACE_INDEX).when(response).getInterfaceIndex();
+        doReturn(mockNetwork).when(response).getNetwork();
         when(response.isComplete()).thenReturn(false);
 
         client.processResponse(response);
@@ -417,7 +450,8 @@ public class MdnsServiceTypeClientTests {
                 0 /* port */,
                 List.of() /* subTypes */,
                 Collections.singletonMap("key", null) /* attributes */,
-                INTERFACE_INDEX);
+                INTERFACE_INDEX,
+                mockNetwork);
 
         verify(mockListenerOne, never()).onServiceFound(any(MdnsServiceInfo.class));
         verify(mockListenerOne, never()).onServiceUpdated(any(MdnsServiceInfo.class));
@@ -436,7 +470,8 @@ public class MdnsServiceTypeClientTests {
                         5353,
                         /* subtype= */ "ABCDE",
                         Collections.emptyMap(),
-                        /* interfaceIndex= */ 20);
+                        /* interfaceIndex= */ 20,
+                        mockNetwork);
         client.processResponse(initialResponse);
 
         // Process a second response with a different port and updated text attributes.
@@ -447,7 +482,8 @@ public class MdnsServiceTypeClientTests {
                         5354,
                         /* subtype= */ "ABCDE",
                         Collections.singletonMap("key", "value"),
-                        /* interfaceIndex= */ 20);
+                        /* interfaceIndex= */ 20,
+                        mockNetwork);
         client.processResponse(secondResponse);
 
         // Verify onServiceNameDiscovered was called once for the initial response.
@@ -460,7 +496,8 @@ public class MdnsServiceTypeClientTests {
                 5353 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", null) /* attributes */,
-                20 /* interfaceIndex */);
+                20 /* interfaceIndex */,
+                mockNetwork);
 
         // Verify onServiceFound was called once for the initial response.
         verify(mockListenerOne).onServiceFound(serviceInfoCaptor.capture());
@@ -471,6 +508,7 @@ public class MdnsServiceTypeClientTests {
         assertEquals(initialServiceInfo.getSubtypes(), Collections.singletonList("ABCDE"));
         assertNull(initialServiceInfo.getAttributeByKey("key"));
         assertEquals(initialServiceInfo.getInterfaceIndex(), 20);
+        assertEquals(mockNetwork, initialServiceInfo.getNetwork());
 
         // Verify onServiceUpdated was called once for the second response.
         verify(mockListenerOne).onServiceUpdated(serviceInfoCaptor.capture());
@@ -482,6 +520,7 @@ public class MdnsServiceTypeClientTests {
         assertEquals(updatedServiceInfo.getSubtypes(), Collections.singletonList("ABCDE"));
         assertEquals(updatedServiceInfo.getAttributeByKey("key"), "value");
         assertEquals(updatedServiceInfo.getInterfaceIndex(), 20);
+        assertEquals(mockNetwork, updatedServiceInfo.getNetwork());
     }
 
     @Test
@@ -497,7 +536,8 @@ public class MdnsServiceTypeClientTests {
                         5353,
                         /* subtype= */ "ABCDE",
                         Collections.emptyMap(),
-                        /* interfaceIndex= */ 20);
+                        /* interfaceIndex= */ 20,
+                        mockNetwork);
         client.processResponse(initialResponse);
 
         // Process a second response with a different port and updated text attributes.
@@ -508,7 +548,8 @@ public class MdnsServiceTypeClientTests {
                         5354,
                         /* subtype= */ "ABCDE",
                         Collections.singletonMap("key", "value"),
-                        /* interfaceIndex= */ 20);
+                        /* interfaceIndex= */ 20,
+                        mockNetwork);
         client.processResponse(secondResponse);
 
         System.out.println("secondResponses ip"
@@ -524,7 +565,8 @@ public class MdnsServiceTypeClientTests {
                 5353 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", null) /* attributes */,
-                20 /* interfaceIndex */);
+                20 /* interfaceIndex */,
+                mockNetwork);
 
         // Verify onServiceFound was called once for the initial response.
         verify(mockListenerOne).onServiceFound(serviceInfoCaptor.capture());
@@ -535,6 +577,7 @@ public class MdnsServiceTypeClientTests {
         assertEquals(initialServiceInfo.getSubtypes(), Collections.singletonList("ABCDE"));
         assertNull(initialServiceInfo.getAttributeByKey("key"));
         assertEquals(initialServiceInfo.getInterfaceIndex(), 20);
+        assertEquals(mockNetwork, initialServiceInfo.getNetwork());
 
         // Verify onServiceUpdated was called once for the second response.
         verify(mockListenerOne).onServiceUpdated(serviceInfoCaptor.capture());
@@ -546,6 +589,7 @@ public class MdnsServiceTypeClientTests {
         assertEquals(updatedServiceInfo.getSubtypes(), Collections.singletonList("ABCDE"));
         assertEquals(updatedServiceInfo.getAttributeByKey("key"), "value");
         assertEquals(updatedServiceInfo.getInterfaceIndex(), 20);
+        assertEquals(mockNetwork, updatedServiceInfo.getNetwork());
     }
 
     private void verifyServiceRemovedNoCallback(MdnsServiceBrowserListener listener) {
@@ -554,15 +598,17 @@ public class MdnsServiceTypeClientTests {
     }
 
     private void verifyServiceRemovedCallback(MdnsServiceBrowserListener listener,
-            String serviceName, String[] serviceType, int interfaceIndex) {
+            String serviceName, String[] serviceType, int interfaceIndex, Network network) {
         verify(listener).onServiceRemoved(argThat(
                 info -> serviceName.equals(info.getServiceInstanceName())
                         && Arrays.equals(serviceType, info.getServiceType())
-                        && info.getInterfaceIndex() == interfaceIndex));
+                        && info.getInterfaceIndex() == interfaceIndex
+                        && network.equals(info.getNetwork())));
         verify(listener).onServiceNameRemoved(argThat(
                 info -> serviceName.equals(info.getServiceInstanceName())
                         && Arrays.equals(serviceType, info.getServiceType())
-                        && info.getInterfaceIndex() == interfaceIndex));
+                        && info.getInterfaceIndex() == interfaceIndex
+                        && network.equals(info.getNetwork())));
     }
 
     @Test
@@ -580,11 +626,13 @@ public class MdnsServiceTypeClientTests {
                         5353 /* port */,
                         /* subtype= */ "ABCDE",
                         Collections.emptyMap(),
-                        INTERFACE_INDEX);
+                        INTERFACE_INDEX,
+                        mockNetwork);
         client.processResponse(initialResponse);
         MdnsResponse response = mock(MdnsResponse.class);
         doReturn("goodbye-service").when(response).getServiceInstanceName();
         doReturn(INTERFACE_INDEX).when(response).getInterfaceIndex();
+        doReturn(mockNetwork).when(response).getNetwork();
         doReturn(true).when(response).isGoodbye();
         client.processResponse(response);
         // Verify removed callback won't be called if the service is not existed.
@@ -595,9 +643,9 @@ public class MdnsServiceTypeClientTests {
         doReturn(serviceName).when(response).getServiceInstanceName();
         client.processResponse(response);
         verifyServiceRemovedCallback(
-                mockListenerOne, serviceName, SERVICE_TYPE_LABELS, INTERFACE_INDEX);
+                mockListenerOne, serviceName, SERVICE_TYPE_LABELS, INTERFACE_INDEX, mockNetwork);
         verifyServiceRemovedCallback(
-                mockListenerTwo, serviceName, SERVICE_TYPE_LABELS, INTERFACE_INDEX);
+                mockListenerTwo, serviceName, SERVICE_TYPE_LABELS, INTERFACE_INDEX, mockNetwork);
     }
 
     @Test
@@ -610,7 +658,8 @@ public class MdnsServiceTypeClientTests {
                         5353,
                         /* subtype= */ "ABCDE",
                         Collections.emptyMap(),
-                        INTERFACE_INDEX);
+                        INTERFACE_INDEX,
+                        mockNetwork);
         client.processResponse(initialResponse);
 
         client.startSendAndReceive(mockListenerOne, MdnsSearchOptions.getDefaultOptions());
@@ -625,7 +674,8 @@ public class MdnsServiceTypeClientTests {
                 5353 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", null) /* attributes */,
-                INTERFACE_INDEX);
+                INTERFACE_INDEX,
+                mockNetwork);
 
         // Verify onServiceFound was called once for the existing response.
         verify(mockListenerOne).onServiceFound(serviceInfoCaptor.capture());
@@ -662,7 +712,7 @@ public class MdnsServiceTypeClientTests {
         MdnsResponse initialResponse =
                 createMockResponse(
                         serviceInstanceName, "192.168.1.1", 5353, List.of("ABCDE"),
-                        Map.of(), INTERFACE_INDEX);
+                        Map.of(), INTERFACE_INDEX, mockNetwork);
         client.processResponse(initialResponse);
 
         // Clear the scheduled runnable.
@@ -696,7 +746,7 @@ public class MdnsServiceTypeClientTests {
         MdnsResponse initialResponse =
                 createMockResponse(
                         serviceInstanceName, "192.168.1.1", 5353, List.of("ABCDE"),
-                        Map.of(), INTERFACE_INDEX);
+                        Map.of(), INTERFACE_INDEX, mockNetwork);
         client.processResponse(initialResponse);
 
         // Clear the scheduled runnable.
@@ -714,8 +764,8 @@ public class MdnsServiceTypeClientTests {
         firstMdnsTask.run();
 
         // Verify removed callback was called.
-        verifyServiceRemovedCallback(
-                mockListenerOne, serviceInstanceName, SERVICE_TYPE_LABELS, INTERFACE_INDEX);
+        verifyServiceRemovedCallback(mockListenerOne, serviceInstanceName, SERVICE_TYPE_LABELS,
+                INTERFACE_INDEX, mockNetwork);
     }
 
     @Test
@@ -736,7 +786,7 @@ public class MdnsServiceTypeClientTests {
         MdnsResponse initialResponse =
                 createMockResponse(
                         serviceInstanceName, "192.168.1.1", 5353, List.of("ABCDE"),
-                        Map.of(), INTERFACE_INDEX);
+                        Map.of(), INTERFACE_INDEX, mockNetwork);
         client.processResponse(initialResponse);
 
         // Clear the scheduled runnable.
@@ -770,7 +820,7 @@ public class MdnsServiceTypeClientTests {
         MdnsResponse initialResponse =
                 createMockResponse(
                         serviceInstanceName, "192.168.1.1", 5353, List.of("ABCDE"),
-                        Map.of(), INTERFACE_INDEX);
+                        Map.of(), INTERFACE_INDEX, mockNetwork);
         client.processResponse(initialResponse);
 
         // Clear the scheduled runnable.
@@ -781,8 +831,8 @@ public class MdnsServiceTypeClientTests {
         firstMdnsTask.run();
 
         // Verify removed callback was called.
-        verifyServiceRemovedCallback(
-                mockListenerOne, serviceInstanceName, SERVICE_TYPE_LABELS, INTERFACE_INDEX);
+        verifyServiceRemovedCallback(mockListenerOne, serviceInstanceName, SERVICE_TYPE_LABELS,
+                INTERFACE_INDEX, mockNetwork);
     }
 
     @Test
@@ -801,7 +851,8 @@ public class MdnsServiceTypeClientTests {
                         5353,
                         "ABCDE" /* subtype */,
                         Collections.emptyMap(),
-                        INTERFACE_INDEX);
+                        INTERFACE_INDEX,
+                        mockNetwork);
         client.processResponse(initialResponse);
 
         // Process a second response which has ip address to make response become complete.
@@ -812,7 +863,8 @@ public class MdnsServiceTypeClientTests {
                         5353,
                         "ABCDE" /* subtype */,
                         Collections.emptyMap(),
-                        INTERFACE_INDEX);
+                        INTERFACE_INDEX,
+                        mockNetwork);
         client.processResponse(secondResponse);
 
         // Process a third response with a different ip address, port and updated text attributes.
@@ -823,7 +875,8 @@ public class MdnsServiceTypeClientTests {
                         5354,
                         "ABCDE" /* subtype */,
                         Collections.singletonMap("key", "value"),
-                        INTERFACE_INDEX);
+                        INTERFACE_INDEX,
+                        mockNetwork);
         client.processResponse(thirdResponse);
 
         // Process the last response which is goodbye message.
@@ -842,7 +895,8 @@ public class MdnsServiceTypeClientTests {
                 5353 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", null) /* attributes */,
-                INTERFACE_INDEX);
+                INTERFACE_INDEX,
+                mockNetwork);
 
         // Verify onServiceFound was second called for the second response.
         inOrder.verify(mockListenerOne).onServiceFound(serviceInfoCaptor.capture());
@@ -854,7 +908,8 @@ public class MdnsServiceTypeClientTests {
                 5353 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", null) /* attributes */,
-                INTERFACE_INDEX);
+                INTERFACE_INDEX,
+                mockNetwork);
 
         // Verify onServiceUpdated was third called for the third response.
         inOrder.verify(mockListenerOne).onServiceUpdated(serviceInfoCaptor.capture());
@@ -866,7 +921,8 @@ public class MdnsServiceTypeClientTests {
                 5354 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", "value") /* attributes */,
-                INTERFACE_INDEX);
+                INTERFACE_INDEX,
+                mockNetwork);
 
         // Verify onServiceRemoved was called for the last response.
         inOrder.verify(mockListenerOne).onServiceRemoved(serviceInfoCaptor.capture());
@@ -878,7 +934,8 @@ public class MdnsServiceTypeClientTests {
                 5354 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", "value") /* attributes */,
-                INTERFACE_INDEX);
+                INTERFACE_INDEX,
+                mockNetwork);
 
         // Verify onServiceNameRemoved was called for the last response.
         inOrder.verify(mockListenerOne).onServiceNameRemoved(serviceInfoCaptor.capture());
@@ -890,18 +947,35 @@ public class MdnsServiceTypeClientTests {
                 5354 /* port */,
                 Collections.singletonList("ABCDE") /* subTypes */,
                 Collections.singletonMap("key", "value") /* attributes */,
-                INTERFACE_INDEX);
+                INTERFACE_INDEX,
+                mockNetwork);
     }
 
     // verifies that the right query was enqueued with the right delay, and send query by executing
     // the runnable.
     private void verifyAndSendQuery(int index, long timeInMs, boolean expectsUnicastResponse) {
+        verifyAndSendQuery(
+                index, timeInMs, expectsUnicastResponse, true /* multipleSocketDiscovery */);
+    }
+
+    private void verifyAndSendQuery(int index, long timeInMs, boolean expectsUnicastResponse,
+            boolean multipleSocketDiscovery) {
         assertEquals(currentThreadExecutor.getAndClearLastScheduledDelayInMs(), timeInMs);
         currentThreadExecutor.getAndClearLastScheduledRunnable().run();
         if (expectsUnicastResponse) {
-            verify(mockSocketClient).sendUnicastPacket(expectedPackets[index]);
+            verify(mockSocketClient).sendUnicastPacket(
+                    expectedIPv4Packets[index], null /* network */);
+            if (multipleSocketDiscovery) {
+                verify(mockSocketClient).sendUnicastPacket(
+                        expectedIPv6Packets[index], null /* network */);
+            }
         } else {
-            verify(mockSocketClient).sendMulticastPacket(expectedPackets[index]);
+            verify(mockSocketClient).sendMulticastPacket(
+                    expectedIPv4Packets[index], null /* network */);
+            if (multipleSocketDiscovery) {
+                verify(mockSocketClient).sendMulticastPacket(
+                        expectedIPv6Packets[index], null /* network */);
+            }
         }
     }
 
@@ -962,26 +1036,25 @@ public class MdnsServiceTypeClientTests {
             int port,
             @NonNull List<String> subtypes,
             @NonNull Map<String, String> textAttributes,
-            int interfaceIndex)
+            int interfaceIndex,
+            Network network)
             throws Exception {
         String[] hostName = new String[]{"hostname"};
         MdnsServiceRecord serviceRecord = mock(MdnsServiceRecord.class);
         when(serviceRecord.getServiceHost()).thenReturn(hostName);
         when(serviceRecord.getServicePort()).thenReturn(port);
 
-        MdnsResponse response = spy(new MdnsResponse(0));
+        MdnsResponse response = spy(new MdnsResponse(0, interfaceIndex, network));
 
         MdnsInetAddressRecord inetAddressRecord = mock(MdnsInetAddressRecord.class);
         if (host.contains(":")) {
             when(inetAddressRecord.getInet6Address())
                     .thenReturn((Inet6Address) Inet6Address.getByName(host));
             response.setInet6AddressRecord(inetAddressRecord);
-            response.setInterfaceIndex(interfaceIndex);
         } else {
             when(inetAddressRecord.getInet4Address())
                     .thenReturn((Inet4Address) Inet4Address.getByName(host));
             response.setInet4AddressRecord(inetAddressRecord);
-            response.setInterfaceIndex(interfaceIndex);
         }
 
         MdnsTextRecord textRecord = mock(MdnsTextRecord.class);
@@ -1011,10 +1084,10 @@ public class MdnsServiceTypeClientTests {
             int port,
             @NonNull String subtype,
             @NonNull Map<String, String> textAttributes,
-            int interfaceIndex)
+            int interfaceIndex,
+            Network network)
             throws Exception {
-        MdnsResponse response = new MdnsResponse(0);
-        response.setInterfaceIndex(interfaceIndex);
+        MdnsResponse response = new MdnsResponse(0, interfaceIndex, network);
 
         // Set PTR record
         final MdnsPointerRecord pointerRecord = new MdnsPointerRecord(
