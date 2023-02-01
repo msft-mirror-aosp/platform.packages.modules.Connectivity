@@ -491,10 +491,19 @@ public class EthernetNetworkFactory {
             mDeps.makeIpClient(mContext, name, mIpClientCallback);
             mIpClientCallback.awaitIpClientStart();
 
+            if (mIpConfig.getProxySettings() == ProxySettings.STATIC
+                    || mIpConfig.getProxySettings() == ProxySettings.PAC) {
+                mIpClient.setHttpProxy(mIpConfig.getHttpProxy());
+            }
+
             if (sTcpBufferSizes == null) {
                 sTcpBufferSizes = mDeps.getTcpBufferSizesFromResource(mContext);
             }
-            provisionIpClient(mIpClient, mIpConfig, sTcpBufferSizes);
+            if (!TextUtils.isEmpty(sTcpBufferSizes)) {
+                mIpClient.setTcpBufferSizes(sTcpBufferSizes);
+            }
+
+            mIpClient.startProvisioning(createProvisioningConfiguration(mIpConfig));
         }
 
         void onIpLayerStarted(@NonNull final LinkProperties linkProperties) {
@@ -635,20 +644,6 @@ public class EthernetNetworkFactory {
             mRequestIds.clear();
         }
 
-        private static void provisionIpClient(@NonNull final IpClientManager ipClient,
-                @NonNull final IpConfiguration config, @NonNull final String tcpBufferSizes) {
-            if (config.getProxySettings() == ProxySettings.STATIC ||
-                    config.getProxySettings() == ProxySettings.PAC) {
-                ipClient.setHttpProxy(config.getHttpProxy());
-            }
-
-            if (!TextUtils.isEmpty(tcpBufferSizes)) {
-                ipClient.setTcpBufferSizes(tcpBufferSizes);
-            }
-
-            ipClient.startProvisioning(createProvisioningConfiguration(config));
-        }
-
         private static ProvisioningConfiguration createProvisioningConfiguration(
                 @NonNull final IpConfiguration config) {
             if (config.getIpAssignment() == IpAssignment.STATIC) {
@@ -662,7 +657,17 @@ public class EthernetNetworkFactory {
         }
 
         void restart() {
-            if (DBG) Log.d(TAG, "reconnecting Ethernet");
+            if (DBG) Log.d(TAG, "restart IpClient");
+
+            if (mIpClient == null) {
+                // If restart() is called from a provisioning failure, it is
+                // possible that link disappeared in the meantime. In that
+                // case, stop() has already been called and IpClient should not
+                // get restarted to prevent a provisioning failure loop.
+                Log.i(TAG, String.format("restart() was called on stopped interface %s", name));
+                return;
+            }
+
             stop();
             start();
         }

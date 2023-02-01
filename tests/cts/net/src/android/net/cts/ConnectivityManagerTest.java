@@ -96,6 +96,7 @@ import static com.android.net.module.util.NetworkStackConstants.TEST_CAPTIVE_POR
 import static com.android.net.module.util.NetworkStackConstants.TEST_CAPTIVE_PORTAL_HTTP_URL;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_LOCKDOWN_VPN;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_NONE;
+import static com.android.networkstack.apishim.ConstantsShim.RECEIVER_EXPORTED;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 import static com.android.testutils.MiscAsserts.assertThrows;
@@ -233,6 +234,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -1130,7 +1132,8 @@ public class ConnectivityManagerTest {
 
         final ConnectivityActionReceiver receiver = new ConnectivityActionReceiver(
                 mCm, ConnectivityManager.TYPE_WIFI, NetworkInfo.State.CONNECTED);
-        mContext.registerReceiver(receiver, filter);
+        final int flags = SdkLevel.isAtLeastT() ? RECEIVER_EXPORTED : 0;
+        mContext.registerReceiver(receiver, filter, flags);
 
         // Create a broadcast PendingIntent for NETWORK_CALLBACK_ACTION.
         final Intent intent = new Intent(NETWORK_CALLBACK_ACTION)
@@ -1187,7 +1190,8 @@ public class ConnectivityManagerTest {
             final String extraBoolKey = "extra_bool";
             firstIntent = PendingIntent.getBroadcast(mContext,
                     0 /* requestCode */,
-                    new Intent(broadcastAction).putExtra(extraBoolKey, false),
+                    new Intent(broadcastAction).putExtra(extraBoolKey, false)
+                            .setPackage(mContext.getPackageName()),
                     PendingIntent.FLAG_UPDATE_CURRENT | pendingIntentFlagMutable);
 
             if (useListen) {
@@ -1200,7 +1204,8 @@ public class ConnectivityManagerTest {
             // intent will be updated with the new extras
             secondIntent = PendingIntent.getBroadcast(mContext,
                     0 /* requestCode */,
-                    new Intent(broadcastAction).putExtra(extraBoolKey, true),
+                    new Intent(broadcastAction).putExtra(extraBoolKey, true)
+                            .setPackage(mContext.getPackageName()),
                     PendingIntent.FLAG_UPDATE_CURRENT | pendingIntentFlagMutable);
 
             // Because secondIntent.intentFilterEquals the first, the request should be replaced
@@ -1224,7 +1229,8 @@ public class ConnectivityManagerTest {
                     networkFuture.complete(intent.getParcelableExtra(EXTRA_NETWORK));
                 }
             };
-            mContext.registerReceiver(receiver, filter);
+            final int flags = SdkLevel.isAtLeastT() ? RECEIVER_EXPORTED : 0;
+            mContext.registerReceiver(receiver, filter, flags);
 
             final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
             try {
@@ -2378,7 +2384,7 @@ public class ConnectivityManagerTest {
     }
 
     private class DetailedBlockedStatusCallback extends TestableNetworkCallback {
-        public void expectAvailableCallbacks(Network network) {
+        public void expectAvailableCallbacksWithBlockedReasonNone(Network network) {
             super.expectAvailableCallbacks(network, false /* suspended */, true /* validated */,
                     BLOCKED_REASON_NONE, NETWORK_CALLBACK_TIMEOUT_MS);
         }
@@ -2390,7 +2396,7 @@ public class ConnectivityManagerTest {
             getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));
         }
         private void assertNoBlockedStatusCallback() {
-            super.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS,
+            super.assertNoCallback(NO_CALLBACK_TIMEOUT_MS,
                     c -> c instanceof CallbackEntry.BlockedStatus);
         }
     }
@@ -2408,6 +2414,15 @@ public class ConnectivityManagerTest {
     }
 
     private void doTestBlockedStatusCallback() throws Exception {
+        // The test will need a stable active network that is persistent during the test.
+        // Try to connect to a wifi network and wait for it becomes the default network before
+        // starting the test to prevent from sudden active network change caused by previous
+        // executed tests.
+        if (mPackageManager.hasSystemFeature(FEATURE_WIFI)) {
+            final Network expectedDefaultNetwork = mCtsNetUtils.ensureWifiConnected();
+            mCtsNetUtils.expectNetworkIsSystemDefault(expectedDefaultNetwork);
+        }
+
         final DetailedBlockedStatusCallback myUidCallback = new DetailedBlockedStatusCallback();
         final DetailedBlockedStatusCallback otherUidCallback = new DetailedBlockedStatusCallback();
 
@@ -2422,7 +2437,7 @@ public class ConnectivityManagerTest {
         final List<DetailedBlockedStatusCallback> allCallbacks =
                 List.of(myUidCallback, otherUidCallback);
         for (DetailedBlockedStatusCallback callback : allCallbacks) {
-            callback.expectAvailableCallbacks(defaultNetwork);
+            callback.expectAvailableCallbacksWithBlockedReasonNone(defaultNetwork);
         }
 
         final Range<Integer> myUidRange = new Range<>(myUid, myUid);
@@ -2458,6 +2473,17 @@ public class ConnectivityManagerTest {
         // shims, and @IgnoreUpTo does not check that.
         assumeTrue(TestUtils.shouldTestSApis());
         runWithShellPermissionIdentity(() -> doTestBlockedStatusCallback(), NETWORK_SETTINGS);
+    }
+
+    @Test
+    public void testSetVpnDefaultForUids() {
+        assumeTrue(TestUtils.shouldTestUApis());
+        final String session = UUID.randomUUID().toString();
+        assertThrows(NullPointerException.class, () -> mCm.setVpnDefaultForUids(session, null));
+        assertThrows(SecurityException.class,
+                () -> mCm.setVpnDefaultForUids(session, new ArraySet<>()));
+        // For testing the complete behavior of setVpnDefaultForUids(), please refer to
+        // HostsideVpnTests.
     }
 
     private void doTestLegacyLockdownEnabled() throws Exception {
@@ -2958,7 +2984,7 @@ public class ConnectivityManagerTest {
             defaultCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
                     entry -> cellNetwork.equals(entry.getNetwork()));
             // The network should not validate again.
-            wifiCb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS, c -> isValidatedCaps(c));
+            wifiCb.assertNoCallback(NO_CALLBACK_TIMEOUT_MS, c -> isValidatedCaps(c));
         } finally {
             resetAvoidBadWifi(previousAvoidBadWifi);
             mHttpServer.stop();
@@ -3130,7 +3156,7 @@ public class ConnectivityManagerTest {
      */
     private void assertNoCallbackExceptCapOrLpChange(
             @NonNull final TestableNetworkCallback cb) {
-        cb.assertNoCallbackThat(NO_CALLBACK_TIMEOUT_MS,
+        cb.assertNoCallback(NO_CALLBACK_TIMEOUT_MS,
                 c -> !(c instanceof CallbackEntry.CapabilitiesChanged
                         || c instanceof CallbackEntry.LinkPropertiesChanged));
     }
