@@ -36,16 +36,16 @@ prebuilt_etc {
 // different value depending on the branch.
 java_defaults {
     name: "ConnectivityNextEnableDefaults",
-    enabled: false,
+    enabled: true,
 }
 apex_defaults {
     name: "ConnectivityApexDefaults",
     // Tethering app to include in the AOSP apex. Branches that disable the "next" targets may use
     // a stable tethering app instead, but will generally override the AOSP apex to use updatable
     // package names and keys, so that apex will be unused anyway.
-    apps: ["Tethering"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
+    apps: ["TetheringNext"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
 }
-enable_tethering_next_apex = false
+enable_tethering_next_apex = true
 // This is a placeholder comment to avoid merge conflicts
 // as the above target may have different "enabled" values
 // depending on the branch
@@ -54,7 +54,7 @@ enable_tethering_next_apex = false
 // enables or disables inclusion of Cronet in the Tethering apex. This is used to disable Cronet
 // on tm-mainline-prod. Note: in order for Cronet APIs to work Cronet must also be enabled
 // by the cronet_java_*_defaults in common/TetheringLib/Android.bp.
-cronet_in_tethering_apex_defaults = "CronetInTetheringApexDefaultsDisabled"
+cronet_in_tethering_apex_defaults = "CronetInTetheringApexDefaultsEnabled"
 // This is a placeholder comment to avoid merge conflicts
 // as cronet_apex_defaults may have different values
 // depending on the branch
