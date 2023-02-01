@@ -40,9 +40,13 @@
 #define TETHERING_GID AID_NETWORK_STACK
 #endif
 
+// This is non production code, only used for testing
+// Needed because the bitmap array definition is non-kosher for pre-T OS devices.
+#define THIS_BPF_PROGRAM_IS_FOR_TEST_PURPOSES_ONLY
+
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
-#include "bpf_tethering.h"
+#include "offload.h"
 
 // Used only by TetheringPrivilegedTests, not by production code.
 DEFINE_BPF_MAP_GRW(tether_downstream6_map, HASH, TetherDownstream6Key, Tether6Value, 16,

@@ -18,7 +18,8 @@
 
 #include "TrafficController.h"
 
-#include <bpf_shared.h>
+#include "netd.h"
+
 #include <jni.h>
 #include <log/log.h>
 #include <nativehelper/JNIHelp.h>
@@ -47,8 +48,8 @@ namespace android {
       ALOGE("%s failed, error code = %d", __func__, status.code()); \
   } while (0)
 
-static void native_init(JNIEnv* env, jclass clazz) {
-  Status status = mTc.start();
+static void native_init(JNIEnv* env, jclass clazz, jboolean startSkDestroyListener) {
+  Status status = mTc.start(startSkDestroyListener);
   CHECK_LOG(status);
   if (!isOk(status)) {
     uid_t uid = getuid();
@@ -191,13 +192,17 @@ static void native_dump(JNIEnv* env, jobject self, jobject javaFd, jboolean verb
     mTc.dump(fd, verbose);
 }
 
+static jint native_synchronizeKernelRCU(JNIEnv* env, jobject self) {
+    return -bpf::synchronizeKernelRCU();
+}
+
 /*
  * JNI registration.
  */
 // clang-format off
 static const JNINativeMethod gMethods[] = {
     /* name, signature, funcPtr */
-    {"native_init", "()V",
+    {"native_init", "(Z)V",
     (void*)native_init},
     {"native_addNaughtyApp", "(I)I",
     (void*)native_addNaughtyApp},
@@ -225,6 +230,8 @@ static const JNINativeMethod gMethods[] = {
     (void*)native_setPermissionForUids},
     {"native_dump", "(Ljava/io/FileDescriptor;Z)V",
     (void*)native_dump},
+    {"native_synchronizeKernelRCU", "()I",
+    (void*)native_synchronizeKernelRCU},
 };
 // clang-format on
 

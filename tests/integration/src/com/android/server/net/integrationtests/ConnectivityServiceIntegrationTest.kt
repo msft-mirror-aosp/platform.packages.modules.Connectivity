@@ -37,7 +37,7 @@ import android.net.NetworkRequest
 import android.net.TestNetworkStackClient
 import android.net.Uri
 import android.net.metrics.IpConnectivityLog
-import android.net.util.MultinetworkPolicyTracker
+import com.android.server.connectivity.MultinetworkPolicyTracker
 import android.os.ConditionVariable
 import android.os.IBinder
 import android.os.SystemConfigManager
@@ -211,10 +211,15 @@ class ConnectivityServiceIntegrationTest {
         doReturn(TestNetIdManager()).`when`(deps).makeNetIdManager()
         doReturn(mock(BpfNetMaps::class.java)).`when`(deps).getBpfNetMaps(any(), any())
         doAnswer { inv ->
-            object : MultinetworkPolicyTracker(inv.getArgument(0), inv.getArgument(1),
-                    inv.getArgument(2)) {
-                override fun getResourcesForActiveSubId() = resources
-            }
+            MultinetworkPolicyTracker(inv.getArgument(0),
+                    inv.getArgument(1),
+                    inv.getArgument(2),
+                    object : MultinetworkPolicyTracker.Dependencies() {
+                        override fun getResourcesForActiveSubId(
+                            connResources: ConnectivityResources,
+                            activeSubId: Int
+                        ) = resources
+                    })
         }.`when`(deps).makeMultinetworkPolicyTracker(any(), any(), any())
         return deps
     }

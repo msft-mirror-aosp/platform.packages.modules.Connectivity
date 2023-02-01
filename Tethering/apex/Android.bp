@@ -50,10 +50,40 @@ enable_tethering_next_apex = true
 // as the above target may have different "enabled" values
 // depending on the branch
 
+// cronet_in_tethering_apex_defaults can be used to specify an apex_defaults target that either
+// enables or disables inclusion of Cronet in the Tethering apex. This is used to disable Cronet
+// on tm-mainline-prod. Note: in order for Cronet APIs to work Cronet must also be enabled
+// by the cronet_java_*_defaults in common/TetheringLib/Android.bp.
+cronet_in_tethering_apex_defaults = "CronetInTetheringApexDefaultsEnabled"
+// This is a placeholder comment to avoid merge conflicts
+// as cronet_apex_defaults may have different values
+// depending on the branch
+
+apex_defaults {
+    name: "CronetInTetheringApexDefaults",
+    defaults: [cronet_in_tethering_apex_defaults],
+}
+
+apex_defaults {
+    name: "CronetInTetheringApexDefaultsEnabled",
+    jni_libs: ["cronet_aml_components_cronet_android_cronet"],
+    arch: {
+        riscv64: {
+            // TODO: remove this when there is a riscv64 libcronet
+            exclude_jni_libs: ["cronet_aml_components_cronet_android_cronet"],
+        },
+    },
+}
+
+apex_defaults {
+    name: "CronetInTetheringApexDefaultsDisabled",
+}
+
 apex {
     name: "com.android.tethering",
     defaults: [
         "ConnectivityApexDefaults",
+        "CronetInTetheringApexDefaults",
         "r-launched-apex-module",
     ],
     compile_multilib: "both",
@@ -69,7 +99,10 @@ apex {
                 "libservice-connectivity",
                 "libandroid_net_connectivity_com_android_net_module_util_jni",
             ],
-            native_shared_libs: ["libnetd_updatable"],
+            native_shared_libs: [
+                "libcom.android.tethering.connectivity_native",
+                "libnetd_updatable",
+            ],
         },
         both: {
             jni_libs: [
@@ -94,6 +127,7 @@ apex {
     ],
     apps: [
         "ServiceConnectivityResources",
+        "HalfSheetUX",
     ],
     prebuilts: [
         "current_sdkinfo",
@@ -127,7 +161,10 @@ android_app_certificate {
 
 filegroup {
     name: "connectivity-hiddenapi-files",
-    srcs: ["hiddenapi/*.txt"],
+    srcs: [
+        ":connectivity-t-hiddenapi-files",
+        "hiddenapi/*.txt",
+    ],
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
@@ -158,16 +195,11 @@ bootclasspath_fragment {
     // Additional hidden API flag files to override the defaults. This must only be
     // modified by the Soong or platform compat team.
     hidden_api: {
-        max_target_r_low_priority: [
-            "hiddenapi/hiddenapi-max-target-r-loprio.txt",
-	],
         max_target_o_low_priority: [
             "hiddenapi/hiddenapi-max-target-o-low-priority.txt",
-            "hiddenapi/hiddenapi-max-target-o-low-priority-tiramisu.txt",
-	],
+        ],
         unsupported: [
             "hiddenapi/hiddenapi-unsupported.txt",
-            "hiddenapi/hiddenapi-unsupported-tiramisu.txt",
         ],
 
         // The following packages contain classes from other modules on the
@@ -178,7 +210,9 @@ bootclasspath_fragment {
         // API.
         split_packages: [
             "android.app.usage",
+            "android.nearby",
             "android.net",
+            "android.net.http",
             "android.net.netstats",
             "android.net.util",
         ],
@@ -190,10 +224,14 @@ bootclasspath_fragment {
         // classes into an API surface, e.g. public, system, etc.. Doing so will
         // result in a build failure due to inconsistent flags.
         package_prefixes: [
+            "android.nearby.aidl",
             "android.net.apf",
             "android.net.connectivity",
+            "android.net.http.apihelpers",
+            "android.net.http.internal",
             "android.net.netstats.provider",
             "android.net.nsd",
+            "android.net.wear",
         ],
     },
 }

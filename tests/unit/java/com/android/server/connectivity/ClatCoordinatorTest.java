@@ -94,10 +94,10 @@ public class ClatCoordinatorTest {
     private static final int GOOGLE_DNS_4 = 0x08080808;  // 8.8.8.8
     private static final int NETID = 42;
 
-    // The test fwmark means: PERMISSION_SYSTEM (0x2), protectedFromVpn: true,
+    // The test fwmark means: PERMISSION_NETWORK | PERMISSION_SYSTEM (0x3), protectedFromVpn: true,
     // explicitlySelected: true, netid: 42. For bit field structure definition, see union Fwmark in
     // system/netd/include/Fwmark.h
-    private static final int MARK = 0xb002a;
+    private static final int MARK = 0xf002a;
 
     private static final String XLAT_LOCAL_IPV4ADDR_STRING = "192.0.0.46";
     private static final String XLAT_LOCAL_IPV6ADDR_STRING = "2001:db8:0:b11::464";
@@ -220,12 +220,12 @@ public class ClatCoordinatorTest {
          */
         @Override
         public String generateIpv6Address(@NonNull String iface, @NonNull String v4,
-                @NonNull String prefix64) throws IOException {
+                @NonNull String prefix64, int mark) throws IOException {
             if (BASE_IFACE.equals(iface) && XLAT_LOCAL_IPV4ADDR_STRING.equals(v4)
-                    && NAT64_PREFIX_STRING.equals(prefix64)) {
+                    && NAT64_PREFIX_STRING.equals(prefix64) && MARK == mark) {
                 return XLAT_LOCAL_IPV6ADDR_STRING;
             }
-            fail("unsupported args: " + iface + ", " + v4 + ", " + prefix64);
+            fail("unsupported args: " + iface + ", " + v4 + ", " + prefix64 + ", " + mark);
             return null;
         }
 
@@ -417,7 +417,7 @@ public class ClatCoordinatorTest {
 
         // Generate a checksum-neutral IID.
         inOrder.verify(mDeps).generateIpv6Address(eq(BASE_IFACE),
-                eq(XLAT_LOCAL_IPV4ADDR_STRING), eq(NAT64_PREFIX_STRING));
+                eq(XLAT_LOCAL_IPV4ADDR_STRING), eq(NAT64_PREFIX_STRING), eq(MARK));
 
         // Open, configure and bring up the tun interface.
         inOrder.verify(mDeps).createTunInterface(eq(STACKED_IFACE));
@@ -493,10 +493,10 @@ public class ClatCoordinatorTest {
 
     @Test
     public void testGetFwmark() throws Exception {
-        assertEquals(0xb0064, ClatCoordinator.getFwmark(100));
-        assertEquals(0xb03e8, ClatCoordinator.getFwmark(1000));
-        assertEquals(0xb2710, ClatCoordinator.getFwmark(10000));
-        assertEquals(0xbffff, ClatCoordinator.getFwmark(65535));
+        assertEquals(0xf0064, ClatCoordinator.getFwmark(100));
+        assertEquals(0xf03e8, ClatCoordinator.getFwmark(1000));
+        assertEquals(0xf2710, ClatCoordinator.getFwmark(10000));
+        assertEquals(0xfffff, ClatCoordinator.getFwmark(65535));
     }
 
     @Test
@@ -516,28 +516,38 @@ public class ClatCoordinatorTest {
         assertEquals(65508, ClatCoordinator.adjustMtu(CLAT_MAX_MTU + 1 /* over maximum mtu */));
     }
 
-    @Test
-    public void testDump() throws Exception {
-        final ClatCoordinator coordinator = makeClatCoordinator();
+    private void verifyDump(final ClatCoordinator coordinator, boolean clatStarted) {
         final StringWriter stringWriter = new StringWriter();
         final IndentingPrintWriter ipw = new IndentingPrintWriter(stringWriter, " ");
-        coordinator.clatStart(BASE_IFACE, NETID, NAT64_IP_PREFIX);
         coordinator.dump(ipw);
 
         final String[] dumpStrings = stringWriter.toString().split("\n");
-        assertEquals(6, dumpStrings.length);
-        assertEquals("CLAT tracker: iface: test0 (1000), v4iface: v4-test0 (1001), "
-                + "v4: /192.0.0.46, v6: /2001:db8:0:b11::464, pfx96: /64:ff9b::, "
-                + "pid: 10483, cookie: 27149", dumpStrings[0].trim());
-        assertEquals("Forwarding rules:", dumpStrings[1].trim());
-        assertEquals("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif",
-                dumpStrings[2].trim());
-        assertEquals("1000 /64:ff9b::/96 /2001:db8:0:b11::464 -> /192.0.0.46 1001",
-                dumpStrings[3].trim());
-        assertEquals("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif",
-                dumpStrings[4].trim());
-        assertEquals("1001 /192.0.0.46 -> /2001:db8:0:b11::464 /64:ff9b::/96 1000 ether",
-                dumpStrings[5].trim());
+        if (clatStarted) {
+            assertEquals(6, dumpStrings.length);
+            assertEquals("CLAT tracker: iface: test0 (1000), v4iface: v4-test0 (1001), "
+                    + "v4: /192.0.0.46, v6: /2001:db8:0:b11::464, pfx96: /64:ff9b::, "
+                    + "pid: 10483, cookie: 27149", dumpStrings[0].trim());
+            assertEquals("Forwarding rules:", dumpStrings[1].trim());
+            assertEquals("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif",
+                    dumpStrings[2].trim());
+            assertEquals("1000 /64:ff9b::/96 /2001:db8:0:b11::464 -> /192.0.0.46 1001",
+                    dumpStrings[3].trim());
+            assertEquals("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif",
+                    dumpStrings[4].trim());
+            assertEquals("1001 /192.0.0.46 -> /2001:db8:0:b11::464 /64:ff9b::/96 1000 ether",
+                    dumpStrings[5].trim());
+        } else {
+            assertEquals(1, dumpStrings.length);
+            assertEquals("<not started>", dumpStrings[0].trim());
+        }
+    }
+
+    @Test
+    public void testDump() throws Exception {
+        final ClatCoordinator coordinator = makeClatCoordinator();
+        verifyDump(coordinator, false /* clatStarted */);
+        coordinator.clatStart(BASE_IFACE, NETID, NAT64_IP_PREFIX);
+        verifyDump(coordinator, true /* clatStarted */);
     }
 
     @Test
@@ -548,25 +558,18 @@ public class ClatCoordinatorTest {
                 () -> coordinator.clatStart(BASE_IFACE, NETID, invalidPrefix));
     }
 
-    private void assertStartClat(final TestDependencies deps) throws Exception {
-        final ClatCoordinator coordinator = new ClatCoordinator(deps);
-        assertNotNull(coordinator.clatStart(BASE_IFACE, NETID, NAT64_IP_PREFIX));
-    }
-
-    private void assertNotStartClat(final TestDependencies deps) {
-        // Expect that the injection function of TestDependencies causes clatStart() failed.
-        final ClatCoordinator coordinator = new ClatCoordinator(deps);
-        assertThrows(IOException.class,
-                () -> coordinator.clatStart(BASE_IFACE, NETID, NAT64_IP_PREFIX));
-    }
-
     private void checkNotStartClat(final TestDependencies deps, final boolean needToCloseTunFd,
             final boolean needToClosePacketSockFd, final boolean needToCloseRawSockFd)
             throws Exception {
-        // [1] Expect that modified TestDependencies can't start clatd.
-        // Use precise check to make sure that there is no unexpected file descriptor closing.
         clearInvocations(TUN_PFD, RAW_SOCK_PFD, PACKET_SOCK_PFD);
-        assertNotStartClat(deps);
+
+        // [1] Expect that modified TestDependencies can't start clatd.
+        // Expect that the injection function of TestDependencies causes clatStart() failed.
+        final ClatCoordinator coordinatorWithBrokenDeps = new ClatCoordinator(deps);
+        assertThrows(IOException.class,
+                () -> coordinatorWithBrokenDeps.clatStart(BASE_IFACE, NETID, NAT64_IP_PREFIX));
+
+        // Use precise check to make sure that there is no unexpected file descriptor closing.
         if (needToCloseTunFd) {
             verify(TUN_PFD).close();
         } else {
@@ -583,10 +586,15 @@ public class ClatCoordinatorTest {
             verify(RAW_SOCK_PFD, never()).close();
         }
 
+        // Check that dump doesn't crash after any clat starting failure.
+        verifyDump(coordinatorWithBrokenDeps, false /* clatStarted */);
+
         // [2] Expect that unmodified TestDependencies can start clatd.
         // Used to make sure that the above modified TestDependencies has really broken the
         // clatd starting.
-        assertStartClat(new TestDependencies());
+        final ClatCoordinator coordinatorWithDefaultDeps = new ClatCoordinator(
+                new TestDependencies());
+        assertNotNull(coordinatorWithDefaultDeps.clatStart(BASE_IFACE, NETID, NAT64_IP_PREFIX));
     }
 
     // The following testNotStartClat* tests verifies bunches of code for unwinding the
@@ -609,7 +617,7 @@ public class ClatCoordinatorTest {
         class FailureDependencies extends TestDependencies {
             @Override
             public String generateIpv6Address(@NonNull String iface, @NonNull String v4,
-                    @NonNull String prefix64) throws IOException {
+                    @NonNull String prefix64, int mark) throws IOException {
                 throw new IOException();
             }
         }

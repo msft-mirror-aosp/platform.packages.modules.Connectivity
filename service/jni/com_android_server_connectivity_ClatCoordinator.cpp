@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <linux/if_packet.h>
 #include <linux/if_tun.h>
 #include <linux/ioctl.h>
 #include <log/log.h>
@@ -30,15 +31,11 @@
 
 #include <bpf/BpfMap.h>
 #include <bpf/BpfUtils.h>
-#include <bpf_shared.h>
 #include <netjniutils/netjniutils.h>
 #include <private/android_filesystem_config.h>
 
 #include "libclat/clatutils.h"
 #include "nativehelper/scoped_utf_chars.h"
-
-// Sync from system/netd/include/netid_client.h
-#define MARK_UNSET 0u
 
 // Sync from system/netd/server/NetdConstants.h
 #define __INT_STRLEN(i) sizeof(#i)
@@ -87,7 +84,8 @@ jstring com_android_server_connectivity_ClatCoordinator_selectIpv4Address(JNIEnv
 
 // Picks a random interface ID that is checksum neutral with the IPv4 address and the NAT64 prefix.
 jstring com_android_server_connectivity_ClatCoordinator_generateIpv6Address(
-        JNIEnv* env, jobject clazz, jstring ifaceStr, jstring v4Str, jstring prefix64Str) {
+        JNIEnv* env, jobject clazz, jstring ifaceStr, jstring v4Str, jstring prefix64Str,
+        jint mark) {
     ScopedUtfChars iface(env, ifaceStr);
     ScopedUtfChars addr4(env, v4Str);
     ScopedUtfChars prefix64(env, prefix64Str);
@@ -111,7 +109,7 @@ jstring com_android_server_connectivity_ClatCoordinator_generateIpv6Address(
     }
 
     in6_addr v6;
-    if (net::clat::generateIpv6Address(iface.c_str(), v4, nat64Prefix, &v6)) {
+    if (net::clat::generateIpv6Address(iface.c_str(), v4, nat64Prefix, &v6, mark)) {
         jniThrowExceptionFmt(env, "java/io/IOException",
                              "Unable to find global source address on %s for %s", iface.c_str(),
                              prefix64.c_str());
@@ -184,6 +182,12 @@ static jint com_android_server_connectivity_ClatCoordinator_openPacketSocket(JNI
         throwIOException(env, "packet socket failed", errno);
         return -1;
     }
+    int on = 1;
+    if (setsockopt(sock, SOL_PACKET, PACKET_AUXDATA, &on, sizeof(on))) {
+        throwIOException(env, "packet socket auxdata enablement failed", errno);
+        close(sock);
+        return -1;
+    }
     return sock;
 }
 
@@ -197,7 +201,7 @@ static jint com_android_server_connectivity_ClatCoordinator_openRawSocket6(JNIEn
     }
 
     // TODO: check the mark validation
-    if (mark != MARK_UNSET && setsockopt(sock, SOL_SOCKET, SO_MARK, &mark, sizeof(mark)) < 0) {
+    if (setsockopt(sock, SOL_SOCKET, SO_MARK, &mark, sizeof(mark)) < 0) {
         throwIOException(env, "could not set mark on raw socket", errno);
         close(sock);
         return -1;
@@ -447,7 +451,7 @@ static const JNINativeMethod gMethods[] = {
         {"native_selectIpv4Address", "(Ljava/lang/String;I)Ljava/lang/String;",
          (void*)com_android_server_connectivity_ClatCoordinator_selectIpv4Address},
         {"native_generateIpv6Address",
-         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;",
+         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;",
          (void*)com_android_server_connectivity_ClatCoordinator_generateIpv6Address},
         {"native_createTunInterface", "(Ljava/lang/String;)I",
          (void*)com_android_server_connectivity_ClatCoordinator_createTunInterface},

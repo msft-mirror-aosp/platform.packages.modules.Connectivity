@@ -117,6 +117,7 @@ public class NetworkPolicyTestUtils {
             return false;
         }
         if (mDataSaverSupported == null) {
+            setRestrictBackgroundInternal(false);
             assertMyRestrictBackgroundStatus(RESTRICT_BACKGROUND_STATUS_DISABLED);
             try {
                 setRestrictBackgroundInternal(true);
@@ -450,6 +451,11 @@ public class NetworkPolicyTestUtils {
     public static void assertNetworkingBlockedStatusForUid(int uid, boolean metered,
             boolean expectedResult) throws Exception {
         PollingCheck.waitFor(() -> (expectedResult == isUidNetworkingBlocked(uid, metered)));
+    }
+
+    public static void assertIsUidRestrictedOnMeteredNetworks(int uid, boolean expectedResult)
+            throws Exception {
+        PollingCheck.waitFor(() -> (expectedResult == isUidRestrictedOnMeteredNetworks(uid)));
     }
 
     public static boolean isUidNetworkingBlocked(int uid, boolean meteredNetwork) {

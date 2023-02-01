@@ -30,8 +30,8 @@ import java.util.Objects;
 
 /** Key type for downstream & upstream IPv4 forwarding maps. */
 public class Tether4Key extends Struct {
-    @Field(order = 0, type = Type.U32)
-    public final long iif;
+    @Field(order = 0, type = Type.S32)
+    public final int iif;
 
     @Field(order = 1, type = Type.EUI48)
     public final MacAddress dstMac;
@@ -51,7 +51,7 @@ public class Tether4Key extends Struct {
     @Field(order = 6, type = Type.UBE16)
     public final int dstPort;
 
-    public Tether4Key(final long iif, @NonNull final MacAddress dstMac, final short l4proto,
+    public Tether4Key(final int iif, @NonNull final MacAddress dstMac, final short l4proto,
             final byte[] src4, final byte[] dst4, final int srcPort,
             final int dstPort) {
         Objects.requireNonNull(dstMac);
@@ -75,7 +75,7 @@ public class Tether4Key extends Struct {
                     Inet4Address.getByAddress(src4), Inet4Address.getByAddress(dst4),
                     Short.toUnsignedInt((short) srcPort), Short.toUnsignedInt((short) dstPort));
         } catch (UnknownHostException | IllegalArgumentException e) {
-            return String.format("Invalid IP address", e);
+            return "Invalid IP address" + e;
         }
     }
 }

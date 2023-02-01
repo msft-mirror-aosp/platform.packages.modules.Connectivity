@@ -281,7 +281,7 @@ public abstract class NetworkAgent {
      *
      *   arg1 = the hardware slot number of the keepalive to start
      *   arg2 = interval in seconds
-     *   obj = KeepalivePacketData object describing the data to be sent
+     *   obj = AutomaticKeepaliveInfo object
      *
      * Also used internally by ConnectivityService / KeepaliveTracker, with different semantics.
      * @hide
@@ -482,6 +482,19 @@ public abstract class NetworkAgent {
      * @hide
      */
     public static final int EVENT_UNREGISTER_AFTER_REPLACEMENT = BASE + 29;
+
+    /**
+     * Sent by AutomaticOnOffKeepaliveTracker periodically (when relevant) to trigger monitor
+     * automatic keepalive request.
+     *
+     * NATT keepalives have an automatic mode where the system only sends keepalive packets when
+     * TCP sockets are open over a VPN. The system will check periodically for presence of
+     * such open sockets, and this message is what triggers the re-evaluation.
+     *
+     * obj = AutomaticOnOffKeepaliveObject.
+     * @hide
+     */
+    public static final int CMD_MONITOR_AUTOMATIC_KEEPALIVE = BASE + 30;
 
     private static NetworkInfo getLegacyNetworkInfo(final NetworkAgentConfig config) {
         final NetworkInfo ni = new NetworkInfo(config.legacyType, config.legacySubType,

@@ -21,6 +21,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+// bionic kernel uapi linux/udp.h header is munged...
+#define __kernel_udphdr udphdr
+#include <linux/udp.h>
+
+// Offsets from beginning of L4 (TCP/UDP) header
+#define TCP_OFFSET(field) offsetof(struct tcphdr, field)
+#define UDP_OFFSET(field) offsetof(struct udphdr, field)
+
+// Offsets from beginning of L3 (IPv4/IPv6) header
+#define IP4_OFFSET(field) offsetof(struct iphdr, field)
+#define IP6_OFFSET(field) offsetof(struct ipv6hdr, field)
+
 // this returns 0 iff skb->sk is NULL
 static uint64_t (*bpf_get_socket_cookie)(struct __sk_buff* skb) = (void*)BPF_FUNC_get_socket_cookie;
 
@@ -28,8 +40,11 @@ static uint32_t (*bpf_get_socket_uid)(struct __sk_buff* skb) = (void*)BPF_FUNC_g
 
 static int (*bpf_skb_pull_data)(struct __sk_buff* skb, __u32 len) = (void*)BPF_FUNC_skb_pull_data;
 
-static int (*bpf_skb_load_bytes)(struct __sk_buff* skb, int off, void* to,
+static int (*bpf_skb_load_bytes)(const struct __sk_buff* skb, int off, void* to,
                                  int len) = (void*)BPF_FUNC_skb_load_bytes;
+
+static int (*bpf_skb_load_bytes_relative)(const struct __sk_buff* skb, int off, void* to, int len,
+                                          int start_hdr) = (void*)BPF_FUNC_skb_load_bytes_relative;
 
 static int (*bpf_skb_store_bytes)(struct __sk_buff* skb, __u32 offset, const void* from, __u32 len,
                                   __u64 flags) = (void*)BPF_FUNC_skb_store_bytes;

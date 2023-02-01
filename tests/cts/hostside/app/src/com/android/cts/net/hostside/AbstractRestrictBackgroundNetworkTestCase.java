@@ -54,7 +54,9 @@ import android.net.NetworkRequest;
 import android.os.BatteryManager;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.RemoteCallback;
 import android.os.SystemClock;
+import android.os.PowerManager;
 import android.provider.DeviceConfig;
 import android.service.notification.NotificationListenerService;
 import android.util.Log;
@@ -141,6 +143,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     private static final int ACTIVITY_NETWORK_STATE_TIMEOUT_MS = 6_000;
     private static final int JOB_NETWORK_STATE_TIMEOUT_MS = 10_000;
+    private static final int LAUNCH_ACTIVITY_TIMEOUT_MS = 10_000;
 
     // Must be higher than NETWORK_TIMEOUT_MS
     private static final int ORDERED_BROADCAST_TIMEOUT_MS = NETWORK_TIMEOUT_MS * 4;
@@ -161,6 +164,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     private int mMyUid;
     private MyServiceClient mServiceClient;
     private DeviceConfigStateHelper mDeviceIdleDeviceConfigStateHelper;
+    private PowerManager mPowerManager;
+    private PowerManager.WakeLock mLock;
 
     @Rule
     public final RuleChain mRuleChain = RuleChain.outerRule(new RequiredPropertiesRule())
@@ -179,8 +184,10 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         mMyUid = getUid(mContext.getPackageName());
         mServiceClient = new MyServiceClient(mContext);
         mServiceClient.bind();
+        mPowerManager = mContext.getSystemService(PowerManager.class);
         executeShellCommand("cmd netpolicy start-watching " + mUid);
         setAppIdle(false);
+        mLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG);
 
         Log.i(TAG, "Apps status:\n"
                 + "\ttest app: uid=" + mMyUid + ", state=" + getProcessStateByUid(mMyUid) + "\n"
@@ -190,6 +197,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     protected void tearDown() throws Exception {
         executeShellCommand("cmd netpolicy stop-watching");
         mServiceClient.unbind();
+        if (mLock.isHeld()) mLock.release();
     }
 
     protected int getUid(String packageName) throws Exception {
@@ -693,11 +701,13 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     }
 
     protected void turnScreenOff() throws Exception {
+        if (!mLock.isHeld()) mLock.acquire();
         executeSilentShellCommand("input keyevent KEYCODE_SLEEP");
     }
 
     protected void turnScreenOn() throws Exception {
         executeSilentShellCommand("input keyevent KEYCODE_WAKEUP");
+        if (mLock.isHeld()) mLock.release();
         executeSilentShellCommand("wm dismiss-keyguard");
     }
 
@@ -822,6 +832,22 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     protected void resetDeviceIdleSettings() {
         mDeviceIdleDeviceConfigStateHelper.restoreOriginalValues();
+    }
+
+    protected void launchActivity() throws Exception {
+        turnScreenOn();
+        final CountDownLatch latch = new CountDownLatch(1);
+        final Intent launchIntent = getIntentForComponent(TYPE_COMPONENT_ACTIVTIY);
+        final RemoteCallback callback = new RemoteCallback(result -> latch.countDown());
+        launchIntent.putExtra(Intent.EXTRA_REMOTE_CALLBACK, callback);
+        mContext.startActivity(launchIntent);
+        // There might be a race when app2 is launched but ACTION_FINISH_ACTIVITY has not registered
+        // before test calls finishActivity(). When the issue is happened, there is no way to fix
+        // it, so have a callback design to make sure that the app is launched completely and
+        // ACTION_FINISH_ACTIVITY will be registered before leaving this method.
+        if (!latch.await(LAUNCH_ACTIVITY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            fail("Timed out waiting for launching activity");
+        }
     }
 
     protected void launchComponentAndAssertNetworkAccess(int type) throws Exception {
