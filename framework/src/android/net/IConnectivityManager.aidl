@@ -188,7 +188,7 @@ interface IConnectivityManager
 
     void startNattKeepaliveWithFd(in Network network, in ParcelFileDescriptor pfd, int resourceId,
             int intervalSeconds, in ISocketKeepaliveCallback cb, String srcAddr,
-            String dstAddr);
+            String dstAddr, boolean automaticOnOffKeepalives);
 
     void startTcpKeepalive(in Network network, in ParcelFileDescriptor pfd, int intervalSeconds,
             in ISocketKeepaliveCallback cb);
@@ -247,4 +247,8 @@ interface IConnectivityManager
     boolean getFirewallChainEnabled(int chain);
 
     void replaceFirewallChain(int chain, in int[] uids);
+
+    IBinder getCompanionDeviceManagerProxyService();
+
+    void setVpnNetworkPreference(String session, in UidRange[] ranges);
 }
