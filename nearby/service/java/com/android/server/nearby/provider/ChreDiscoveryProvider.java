@@ -24,6 +24,7 @@ import static service.proto.Blefilter.DataElement.ElementType.DE_BATTERY_STATUS;
 import static service.proto.Blefilter.DataElement.ElementType.DE_CONNECTION_STATUS;
 import static service.proto.Blefilter.DataElement.ElementType.DE_FAST_PAIR_ACCOUNT_KEY;
 
+import android.annotation.Nullable;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -38,11 +39,13 @@ import android.nearby.PublicCredential;
 import android.nearby.ScanFilter;
 import android.util.Log;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 
 import com.google.protobuf.ByteString;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.Executor;
 
 import service.proto.Blefilter;
@@ -59,15 +62,20 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     /** @hide */
     @VisibleForTesting public static final int NANOAPP_MESSAGE_TYPE_CONFIG = 5;
 
-    private static final int PRESENCE_UUID = 0xFCF1;
     private static final int FP_ACCOUNT_KEY_LENGTH = 16;
 
     private final ChreCommunication mChreCommunication;
     private final ChreCallback mChreCallback;
+    private final Object mLock = new Object();
+
     private boolean mChreStarted = false;
     private Blefilter.BleFilters mFilters = null;
     private Context mContext;
     private final IntentFilter mIntentFilter;
+    // Null when the filters are never set
+    @GuardedBy("mLock")
+    @Nullable
+    private List<ScanFilter> mScanFilters;
 
     private final BroadcastReceiver mScreenBroadcastReceiver =
             new BroadcastReceiver() {
@@ -98,27 +106,48 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     @Override
     protected void onStart() {
         Log.d(TAG, "Start CHRE scan");
-        updateFilters();
+        synchronized (mLock) {
+            updateFiltersLocked();
+        }
     }
 
     @Override
     protected void onStop() {
         Log.d(TAG, "Stop CHRE scan");
-        mScanFilters.clear();
-        updateFilters();
+        synchronized (mLock) {
+            if (mScanFilters != null) {
+                mScanFilters = null;
+            }
+            updateFiltersLocked();
+        }
     }
 
     @Override
-    protected void invalidateScanMode() {
-        onStop();
-        onStart();
+    protected void onSetScanFilters(List<ScanFilter> filters) {
+        synchronized (mLock) {
+            mScanFilters = filters == null ? null : List.copyOf(filters);
+            updateFiltersLocked();
+        }
     }
 
-    public boolean available() {
+    /**
+     * @return {@code true} if CHRE is available and {@code null} when CHRE availability result
+     * has not been returned
+     */
+    @Nullable
+    public Boolean available() {
         return mChreCommunication.available();
     }
 
-    private synchronized void updateFilters() {
+    @VisibleForTesting
+    List<ScanFilter> getFiltersLocked() {
+        synchronized (mLock) {
+            return mScanFilters == null ? null : List.copyOf(mScanFilters);
+        }
+    }
+
+    @GuardedBy("mLock")
+    private void updateFiltersLocked() {
         if (mScanFilters == null) {
             Log.e(TAG, "ScanFilters not set.");
             return;

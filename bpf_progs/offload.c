@@ -48,7 +48,7 @@
 
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
-#include "bpf_tethering.h"
+#include "offload.h"
 
 // From kernel:include/net/ip.h
 #define IP_DF 0x4000  // Flag: "Don't Fragment"
@@ -93,7 +93,7 @@
 
 // Note that pre-T devices with Mediatek chipsets may have a kernel bug (bad patch
 // "[ALPS05162612] bpf: fix ubsan error") making it impossible to write to non-zero
-// offset of bpf map ARRAYs.  This file (offload.o) loads on T, but luckily this
+// offset of bpf map ARRAYs.  This file (offload.o) loads on S+, but luckily this
 // array is only written by bpf code, and only read by userspace.
 DEFINE_BPF_MAP_RO(tether_error_map, ARRAY, uint32_t, uint32_t, BPF_TETHER_ERR__MAX, TETHERING_GID)
 
