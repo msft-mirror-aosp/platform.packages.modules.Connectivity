@@ -91,9 +91,8 @@ public final class NsdServiceInfo implements Parcelable {
     /**
      * Get the host address. The host address is valid for a resolved service.
      *
-     * @deprecated Use {@link #getHostAddresses()} to get the entire list of addresses for the host.
+     * deprecated Use {@link #getHostAddresses()} to get the entire list of addresses for the host.
      */
-    @Deprecated
     public InetAddress getHost() {
         return mHostAddresses.size() == 0 ? null : mHostAddresses.get(0);
     }
@@ -101,9 +100,8 @@ public final class NsdServiceInfo implements Parcelable {
     /**
      * Set the host address
      *
-     * @deprecated Use {@link #setHostAddresses(List)} to set multiple addresses for the host.
+     * deprecated Use {@link #setHostAddresses(List)} to set multiple addresses for the host.
      */
-    @Deprecated
     public void setHost(InetAddress s) {
         setHostAddresses(Collections.singletonList(s));
     }
@@ -129,13 +127,17 @@ public final class NsdServiceInfo implements Parcelable {
      * All host addresses are valid for the resolved service.
      * All addresses share the same port
      * @see #getPort()
+     * @hide
      */
     @NonNull
     public List<InetAddress> getHostAddresses() {
         return new ArrayList<>(mHostAddresses);
     }
 
-    /** Set the host addresses */
+    /**
+     * Set the host addresses
+     * @hide
+     */
     public void setHostAddresses(@NonNull List<InetAddress> addresses) {
         mHostAddresses.clear();
         mHostAddresses.addAll(addresses);

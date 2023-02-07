@@ -1034,7 +1034,6 @@ public class IpSecManager {
      * @param newDestinationAddress the new destination address
      * @hide
      */
-    @SystemApi
     @RequiresFeature(FEATURE_IPSEC_TUNNEL_MIGRATION)
     @RequiresPermission(android.Manifest.permission.MANAGE_IPSEC_TUNNELS)
     public void startTunnelModeTransformMigration(
