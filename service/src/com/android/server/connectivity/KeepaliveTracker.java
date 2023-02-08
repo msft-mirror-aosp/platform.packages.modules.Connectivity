@@ -125,8 +125,9 @@ public class KeepaliveTracker {
      * which is only returned when the hardware has successfully started the keepalive.
      */
     class KeepaliveInfo implements IBinder.DeathRecipient {
-        // Bookkeeping data.
+        // TODO : remove this member. Only AutoOnOffKeepalive should have a reference to this.
         public final ISocketKeepaliveCallback mCallback;
+        // Bookkeeping data.
         private final int mUid;
         private final int mPid;
         private final boolean mPrivileged;
@@ -588,9 +589,9 @@ public class KeepaliveTracker {
                 Log.d(TAG, "Started keepalive " + slot + " on " + nai.toShortString());
                 ki.mStartedState = KeepaliveInfo.STARTED;
                 try {
-                    ki.mCallback.onStarted(slot);
+                    ki.mCallback.onStarted();
                 } catch (RemoteException e) {
-                    Log.w(TAG, "Discarded onStarted(" + slot + ") callback");
+                    Log.w(TAG, "Discarded onStarted callback");
                 }
             } else {
                 Log.d(TAG, "Failed to start keepalive " + slot + " on " + nai.toShortString()

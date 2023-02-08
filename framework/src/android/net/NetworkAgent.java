@@ -291,7 +291,9 @@ public abstract class NetworkAgent {
     /**
      * Requests that the specified keepalive packet be stopped.
      *
-     * arg1 = hardware slot number of the keepalive to stop.
+     * arg1 = unused
+     * arg2 = error code (SUCCESS)
+     * obj = callback to identify the keepalive
      *
      * Also used internally by ConnectivityService / KeepaliveTracker, with different semantics.
      * @hide
@@ -491,7 +493,7 @@ public abstract class NetworkAgent {
      * TCP sockets are open over a VPN. The system will check periodically for presence of
      * such open sockets, and this message is what triggers the re-evaluation.
      *
-     * obj = AutomaticOnOffKeepaliveObject.
+     * obj = A Binder object associated with the keepalive.
      * @hide
      */
     public static final int CMD_MONITOR_AUTOMATIC_KEEPALIVE = BASE + 30;
