@@ -30,8 +30,9 @@ package android.net.http {
   }
 
   public abstract class HttpEngine {
+    method public void bindToNetwork(@Nullable android.net.Network);
     method public abstract java.net.URLStreamHandlerFactory createURLStreamHandlerFactory();
-    method public abstract String getVersionString();
+    method public static String getVersionString();
     method public abstract android.net.http.UrlRequest.Builder newUrlRequestBuilder(String, android.net.http.UrlRequest.Callback, java.util.concurrent.Executor);
     method public abstract java.net.URLConnection openConnection(java.net.URL) throws java.io.IOException;
     method public abstract void shutdown();
@@ -130,6 +131,7 @@ package android.net.http {
   public abstract static class UrlRequest.Builder {
     method public abstract android.net.http.UrlRequest.Builder addHeader(String, String);
     method public abstract android.net.http.UrlRequest.Builder allowDirectExecutor();
+    method public abstract android.net.http.UrlRequest.Builder bindToNetwork(@Nullable android.net.Network);
     method public abstract android.net.http.UrlRequest build();
     method public abstract android.net.http.UrlRequest.Builder disableCache();
     method public abstract android.net.http.UrlRequest.Builder setHttpMethod(String);

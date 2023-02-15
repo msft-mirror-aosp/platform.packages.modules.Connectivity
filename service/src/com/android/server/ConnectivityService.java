@@ -766,6 +766,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final int EVENT_SET_VPN_NETWORK_PREFERENCE = 59;
 
     /**
+     * Event to use low TCP polling timer used in automatic on/off keepalive temporarily.
+     */
+    private static final int EVENT_SET_LOW_TCP_POLLING_UNTIL = 60;
+
+    /**
      * Argument for {@link #EVENT_PROVISIONING_NOTIFICATION} to indicate that the notification
      * should be shown.
      */
@@ -781,6 +786,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * The maximum alive time to allow bad wifi configuration for testing.
      */
     private static final long MAX_TEST_ALLOW_BAD_WIFI_UNTIL_MS = 5 * 60 * 1000L;
+
+    /**
+     * The maximum alive time to decrease TCP polling timer in automatic on/off keepalive for
+     * testing.
+     */
+    private static final long MAX_TEST_LOW_TCP_POLLING_UNTIL_MS = 5 * 60 * 1000L;
 
     /**
      * The priority of the tc police rate limiter -- smaller value is higher priority.
@@ -1305,6 +1316,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
+         * @see AutomaticOnOffKeepaliveTracker
+         */
+        public AutomaticOnOffKeepaliveTracker makeAutomaticOnOffKeepaliveTracker(
+                @NonNull Context c, @NonNull Handler h) {
+            return new AutomaticOnOffKeepaliveTracker(c, h);
+        }
+
+        /**
          * @see BatteryStatsManager
          */
         public void reportNetworkInterfaceForTransports(Context context, String iface,
@@ -1567,7 +1586,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mSettingsObserver = new SettingsObserver(mContext, mHandler);
         registerSettingsCallbacks();
 
-        mKeepaliveTracker = new AutomaticOnOffKeepaliveTracker(mContext, mHandler);
+        mKeepaliveTracker = mDeps.makeAutomaticOnOffKeepaliveTracker(mContext, mHandler);
         mNotifier = new NetworkNotificationManager(mContext, mTelephonyManager);
         mQosCallbackTracker = new QosCallbackTracker(mHandler, mNetworkRequestCounter);
 
@@ -5001,6 +5020,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 mHandler.obtainMessage(EVENT_SET_TEST_ALLOW_BAD_WIFI_UNTIL, timeMs));
     }
 
+    @Override
+    public void setTestLowTcpPollingTimerForKeepalive(long timeMs) {
+        enforceSettingsPermission();
+        if (!Build.isDebuggable()) {
+            throw new IllegalStateException("Is not supported in non-debuggable build");
+        }
+
+        if (timeMs > System.currentTimeMillis() + MAX_TEST_LOW_TCP_POLLING_UNTIL_MS) {
+            throw new IllegalArgumentException("Argument should not exceed "
+                    + MAX_TEST_LOW_TCP_POLLING_UNTIL_MS + "ms from now");
+        }
+
+        mHandler.sendMessage(
+                mHandler.obtainMessage(EVENT_SET_LOW_TCP_POLLING_UNTIL, timeMs));
+    }
+
     private void handleSetAcceptUnvalidated(Network network, boolean accept, boolean always) {
         if (DBG) log("handleSetAcceptUnvalidated network=" + network +
                 " accept=" + accept + " always=" + always);
@@ -5554,13 +5589,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             mKeepaliveTracker.getKeepaliveForBinder((IBinder) msg.obj);
                     if (null == ki) return; // The callback was unregistered before the alarm fired
 
+                    final Network underpinnedNetwork = ki.getUnderpinnedNetwork();
                     final Network network = ki.getNetwork();
                     boolean networkFound = false;
-                    final ArrayList<NetworkAgentInfo> vpnsRunningOnThisNetwork = new ArrayList<>();
+                    boolean underpinnedNetworkFound = false;
                     for (NetworkAgentInfo n : mNetworkAgentInfos) {
                         if (n.network.equals(network)) networkFound = true;
-                        if (n.isVPN() && n.everConnected() && hasUnderlyingNetwork(n, network)) {
-                            vpnsRunningOnThisNetwork.add(n);
+                        if (n.everConnected() && n.network.equals(underpinnedNetwork)) {
+                            underpinnedNetworkFound = true;
                         }
                     }
 
@@ -5568,26 +5604,25 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     // cleaned up already. There is no point trying to resume keepalives.
                     if (!networkFound) return;
 
-                    if (!vpnsRunningOnThisNetwork.isEmpty()) {
+                    if (underpinnedNetworkFound) {
                         mKeepaliveTracker.handleMonitorAutomaticKeepalive(ki,
-                                // TODO: check all the VPNs running on top of this network
-                                vpnsRunningOnThisNetwork.get(0).network.netId);
+                                underpinnedNetwork.netId);
                     } else {
-                        // If no VPN, then make sure the keepalive is running.
+                        // If no underpinned network, then make sure the keepalive is running.
                         mKeepaliveTracker.handleMaybeResumeKeepalive(ki);
                     }
                     break;
                 }
                 // Sent by KeepaliveTracker to process an app request on the state machine thread.
                 case NetworkAgent.CMD_STOP_SOCKET_KEEPALIVE: {
-                    NetworkAgentInfo nai = getNetworkAgentInfoForNetwork((Network) msg.obj);
-                    if (nai == null) {
-                        Log.e(TAG, "Attempt to stop keepalive on nonexistent network");
+                    final AutomaticOnOffKeepalive ki = mKeepaliveTracker.getKeepaliveForBinder(
+                            (IBinder) msg.obj);
+                    if (ki == null) {
+                        Log.e(TAG, "Attempt to stop an already stopped keepalive");
                         return;
                     }
-                    int slot = msg.arg1;
-                    int reason = msg.arg2;
-                    mKeepaliveTracker.handleStopKeepalive(nai, slot, reason);
+                    final int reason = msg.arg2;
+                    mKeepaliveTracker.handleStopKeepalive(ki, reason);
                     break;
                 }
                 case EVENT_REPORT_NETWORK_CONNECTIVITY: {
@@ -5642,6 +5677,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case EVENT_SET_VPN_NETWORK_PREFERENCE:
                     handleSetVpnNetworkPreference((VpnNetworkPreferenceInfo) msg.obj);
                     break;
+                case EVENT_SET_LOW_TCP_POLLING_UNTIL: {
+                    final long time = ((Long) msg.obj).longValue();
+                    mKeepaliveTracker.handleSetTestLowTcpPollingTimer(time);
+                    break;
+                }
             }
         }
     }
@@ -9828,21 +9868,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 getNetworkAgentInfoForNetwork(network), null /* fd */,
                 intervalSeconds, cb, srcAddr, srcPort, dstAddr, NattSocketKeepalive.NATT_PORT,
                 // Keep behavior of the deprecated method as it is. Set automaticOnOffKeepalives to
-                // false because there is no way and no plan to configure automaticOnOffKeepalives
-                // in this deprecated method.
-                false /* automaticOnOffKeepalives */);
+                // false and set the underpinned network to null because there is no way and no
+                // plan to configure automaticOnOffKeepalives or underpinnedNetwork in this
+                // deprecated method.
+                false /* automaticOnOffKeepalives */, null /* underpinnedNetwork */);
     }
 
     @Override
     public void startNattKeepaliveWithFd(Network network, ParcelFileDescriptor pfd, int resourceId,
             int intervalSeconds, ISocketKeepaliveCallback cb, String srcAddr,
-            String dstAddr, boolean automaticOnOffKeepalives) {
+            String dstAddr, boolean automaticOnOffKeepalives, Network underpinnedNetwork) {
         try {
             final FileDescriptor fd = pfd.getFileDescriptor();
             mKeepaliveTracker.startNattKeepalive(
                     getNetworkAgentInfoForNetwork(network), fd, resourceId,
-                    intervalSeconds, cb,
-                    srcAddr, dstAddr, NattSocketKeepalive.NATT_PORT, automaticOnOffKeepalives);
+                    intervalSeconds, cb, srcAddr, dstAddr, NattSocketKeepalive.NATT_PORT,
+                    automaticOnOffKeepalives, underpinnedNetwork);
         } finally {
             // FileDescriptors coming from AIDL calls must be manually closed to prevent leaks.
             // startNattKeepalive calls Os.dup(fd) before returning, so we can close immediately.
@@ -9870,9 +9911,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     @Override
-    public void stopKeepalive(Network network, int slot) {
+    public void stopKeepalive(@NonNull final ISocketKeepaliveCallback cb) {
         mHandler.sendMessage(mHandler.obtainMessage(
-                NetworkAgent.CMD_STOP_SOCKET_KEEPALIVE, slot, SocketKeepalive.SUCCESS, network));
+                NetworkAgent.CMD_STOP_SOCKET_KEEPALIVE, 0, SocketKeepalive.SUCCESS,
+                Objects.requireNonNull(cb).asBinder()));
     }
 
     @Override
