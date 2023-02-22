@@ -1316,6 +1316,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
+         * @see AutomaticOnOffKeepaliveTracker
+         */
+        public AutomaticOnOffKeepaliveTracker makeAutomaticOnOffKeepaliveTracker(
+                @NonNull Context c, @NonNull Handler h) {
+            return new AutomaticOnOffKeepaliveTracker(c, h);
+        }
+
+        /**
          * @see BatteryStatsManager
          */
         public void reportNetworkInterfaceForTransports(Context context, String iface,
@@ -1578,7 +1586,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mSettingsObserver = new SettingsObserver(mContext, mHandler);
         registerSettingsCallbacks();
 
-        mKeepaliveTracker = new AutomaticOnOffKeepaliveTracker(mContext, mHandler);
+        mKeepaliveTracker = mDeps.makeAutomaticOnOffKeepaliveTracker(mContext, mHandler);
         mNotifier = new NetworkNotificationManager(mContext, mTelephonyManager);
         mQosCallbackTracker = new QosCallbackTracker(mHandler, mNetworkRequestCounter);
 
@@ -2874,9 +2882,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
-    private void enforceSettingsOrUseRestrictedNetworksPermission() {
+    private void enforceSettingsOrSetupWizardOrUseRestrictedNetworksPermission() {
         enforceAnyPermissionOf(mContext,
                 android.Manifest.permission.NETWORK_SETTINGS,
+                android.Manifest.permission.NETWORK_SETUP_WIZARD,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
                 Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS);
     }
@@ -5581,13 +5590,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             mKeepaliveTracker.getKeepaliveForBinder((IBinder) msg.obj);
                     if (null == ki) return; // The callback was unregistered before the alarm fired
 
+                    final Network underpinnedNetwork = ki.getUnderpinnedNetwork();
                     final Network network = ki.getNetwork();
                     boolean networkFound = false;
-                    final ArrayList<NetworkAgentInfo> vpnsRunningOnThisNetwork = new ArrayList<>();
+                    boolean underpinnedNetworkFound = false;
                     for (NetworkAgentInfo n : mNetworkAgentInfos) {
                         if (n.network.equals(network)) networkFound = true;
-                        if (n.isVPN() && n.everConnected() && hasUnderlyingNetwork(n, network)) {
-                            vpnsRunningOnThisNetwork.add(n);
+                        if (n.everConnected() && n.network.equals(underpinnedNetwork)) {
+                            underpinnedNetworkFound = true;
                         }
                     }
 
@@ -5595,12 +5605,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     // cleaned up already. There is no point trying to resume keepalives.
                     if (!networkFound) return;
 
-                    if (!vpnsRunningOnThisNetwork.isEmpty()) {
+                    if (underpinnedNetworkFound) {
                         mKeepaliveTracker.handleMonitorAutomaticKeepalive(ki,
-                                // TODO: check all the VPNs running on top of this network
-                                vpnsRunningOnThisNetwork.get(0).network.netId);
+                                underpinnedNetwork.netId);
                     } else {
-                        // If no VPN, then make sure the keepalive is running.
+                        // If no underpinned network, then make sure the keepalive is running.
                         mKeepaliveTracker.handleMaybeResumeKeepalive(ki);
                     }
                     break;
@@ -6840,7 +6849,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 enforceAccessPermission();
                 break;
             case TRACK_SYSTEM_DEFAULT:
-                enforceSettingsOrUseRestrictedNetworksPermission();
+                enforceSettingsOrSetupWizardOrUseRestrictedNetworksPermission();
                 networkCapabilities = new NetworkCapabilities(defaultNc);
                 break;
             case BACKGROUND_REQUEST:
@@ -9860,21 +9869,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 getNetworkAgentInfoForNetwork(network), null /* fd */,
                 intervalSeconds, cb, srcAddr, srcPort, dstAddr, NattSocketKeepalive.NATT_PORT,
                 // Keep behavior of the deprecated method as it is. Set automaticOnOffKeepalives to
-                // false because there is no way and no plan to configure automaticOnOffKeepalives
-                // in this deprecated method.
-                false /* automaticOnOffKeepalives */);
+                // false and set the underpinned network to null because there is no way and no
+                // plan to configure automaticOnOffKeepalives or underpinnedNetwork in this
+                // deprecated method.
+                false /* automaticOnOffKeepalives */, null /* underpinnedNetwork */);
     }
 
     @Override
     public void startNattKeepaliveWithFd(Network network, ParcelFileDescriptor pfd, int resourceId,
             int intervalSeconds, ISocketKeepaliveCallback cb, String srcAddr,
-            String dstAddr, boolean automaticOnOffKeepalives) {
+            String dstAddr, boolean automaticOnOffKeepalives, Network underpinnedNetwork) {
         try {
             final FileDescriptor fd = pfd.getFileDescriptor();
             mKeepaliveTracker.startNattKeepalive(
                     getNetworkAgentInfoForNetwork(network), fd, resourceId,
-                    intervalSeconds, cb,
-                    srcAddr, dstAddr, NattSocketKeepalive.NATT_PORT, automaticOnOffKeepalives);
+                    intervalSeconds, cb, srcAddr, dstAddr, NattSocketKeepalive.NATT_PORT,
+                    automaticOnOffKeepalives, underpinnedNetwork);
         } finally {
             // FileDescriptors coming from AIDL calls must be manually closed to prevent leaks.
             // startNattKeepalive calls Os.dup(fd) before returning, so we can close immediately.
@@ -11735,6 +11745,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    @Override
+    public int getUidFirewallRule(final int chain, final int uid) {
+        enforceNetworkStackOrSettingsPermission();
+        return mBpfNetMaps.getUidRule(chain, uid);
     }
 
     private int getFirewallRuleType(int chain, int rule) {

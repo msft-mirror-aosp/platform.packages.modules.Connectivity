@@ -27,6 +27,7 @@ import static android.Manifest.permission.LOCAL_MAC_ADDRESS;
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_FACTORY;
 import static android.Manifest.permission.NETWORK_SETTINGS;
+import static android.Manifest.permission.NETWORK_SETUP_WIZARD;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.Manifest.permission.PACKET_KEEPALIVE_OFFLOAD;
 import static android.app.PendingIntent.FLAG_IMMUTABLE;
@@ -378,6 +379,7 @@ import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 import com.android.server.ConnectivityService.ConnectivityDiagnosticsCallbackInfo;
 import com.android.server.ConnectivityService.NetworkRequestInfo;
 import com.android.server.ConnectivityServiceTest.ConnectivityServiceDependencies.ReportedInterfaces;
+import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker;
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
 import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
@@ -539,6 +541,7 @@ public class ConnectivityServiceTest {
     private MockContext mServiceContext;
     private HandlerThread mCsHandlerThread;
     private ConnectivityServiceDependencies mDeps;
+    private AutomaticOnOffKeepaliveTrackerDependencies mAutoOnOffKeepaliveDependencies;
     private ConnectivityService mService;
     private WrappedConnectivityManager mCm;
     private TestNetworkAgentWrapper mWiFiAgent;
@@ -1839,7 +1842,8 @@ public class ConnectivityServiceTest {
         doReturn(mResources).when(mockResContext).getResources();
         ConnectivityResources.setResourcesContextForTest(mockResContext);
         mDeps = new ConnectivityServiceDependencies(mockResContext);
-
+        mAutoOnOffKeepaliveDependencies =
+                new AutomaticOnOffKeepaliveTrackerDependencies(mServiceContext);
         mService = new ConnectivityService(mServiceContext,
                 mMockDnsResolver,
                 mock(IpConnectivityLog.class),
@@ -1937,6 +1941,12 @@ public class ConnectivityServiceTest {
             }
             mPolicyTracker = new WrappedMultinetworkPolicyTracker(mServiceContext, h, r);
             return mPolicyTracker;
+        }
+
+        @Override
+        public AutomaticOnOffKeepaliveTracker makeAutomaticOnOffKeepaliveTracker(final Context c,
+                final Handler h) {
+            return new AutomaticOnOffKeepaliveTracker(c, h, mAutoOnOffKeepaliveDependencies);
         }
 
         @Override
@@ -2094,6 +2104,20 @@ public class ConnectivityServiceTest {
         public BroadcastOptionsShim makeBroadcastOptionsShim(BroadcastOptions options) {
             reset(mBroadcastOptionsShim);
             return mBroadcastOptionsShim;
+        }
+    }
+
+    private class AutomaticOnOffKeepaliveTrackerDependencies
+            extends AutomaticOnOffKeepaliveTracker.Dependencies {
+        AutomaticOnOffKeepaliveTrackerDependencies(Context context) {
+            super(context);
+        }
+
+        @Override
+        public boolean isFeatureEnabled(@NonNull final String name, final boolean defaultEnabled) {
+            // Tests for enabling the feature are verified in AutomaticOnOffKeepaliveTrackerTest.
+            // Assuming enabled here to focus on ConnectivityService tests.
+            return true;
         }
     }
 
@@ -5297,6 +5321,13 @@ public class ConnectivityServiceTest {
         callback.expectAvailableCallbacksUnvalidated(mCellAgent);
         mCm.unregisterNetworkCallback(callback);
 
+        mServiceContext.setPermission(NETWORK_SETTINGS, PERMISSION_DENIED);
+        mServiceContext.setPermission(NETWORK_SETUP_WIZARD, PERMISSION_GRANTED);
+        mCm.registerSystemDefaultNetworkCallback(callback, handler);
+        callback.expectAvailableCallbacksUnvalidated(mCellAgent);
+        mCm.unregisterNetworkCallback(callback);
+
+        mServiceContext.setPermission(NETWORK_SETTINGS, PERMISSION_GRANTED);
         mCm.registerDefaultNetworkCallbackForUid(APP1_UID, callback, handler);
         callback.expectAvailableCallbacksUnvalidated(mCellAgent);
         mCm.unregisterNetworkCallback(callback);
@@ -8864,6 +8895,14 @@ public class ConnectivityServiceTest {
         final TestNetworkCallback callback = new TestNetworkCallback();
         mCm.registerNetworkCallback(request, callback);
 
+        // File a VPN request to prevent VPN network being lingered.
+        final NetworkRequest vpnRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_VPN)
+                .removeCapability(NET_CAPABILITY_NOT_VPN)
+                .build();
+        final TestNetworkCallback vpnCallback = new TestNetworkCallback();
+        mCm.requestNetwork(vpnRequest, vpnCallback);
+
         // Bring up a VPN
         mMockVpn.establishForMyUid();
         assertUidRangesUpdatedForMyUid(true);
@@ -8922,6 +8961,9 @@ public class ConnectivityServiceTest {
                 && c.getUids().contains(singleUidRange)
                 && c.hasTransport(TRANSPORT_VPN)
                 && !c.hasTransport(TRANSPORT_WIFI));
+
+        mCm.unregisterNetworkCallback(callback);
+        mCm.unregisterNetworkCallback(vpnCallback);
     }
 
     @Test
