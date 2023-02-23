@@ -45,6 +45,7 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.compat.testing.PlatformCompatChangeRule;
@@ -52,6 +53,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.net.INetd;
 import android.net.Network;
+import android.net.connectivity.ConnectivityCompatChanges;
 import android.net.mdns.aidl.DiscoveryInfo;
 import android.net.mdns.aidl.GetAddressInfo;
 import android.net.mdns.aidl.IMDnsEventListener;
@@ -170,6 +172,9 @@ public class NsdServiceTest {
         doReturn(true).when(mMockMDnsM).resolve(
                 anyInt(), anyString(), anyString(), anyString(), anyInt());
         doReturn(false).when(mDeps).isMdnsDiscoveryManagerEnabled(any(Context.class));
+        doReturn(mDiscoveryManager).when(mDeps).makeMdnsDiscoveryManager(any(), any());
+        doReturn(mSocketProvider).when(mDeps).makeMdnsSocketProvider(any(), any());
+        doReturn(mAdvertiser).when(mDeps).makeMdnsAdvertiser(any(), any(), any());
 
         mService = makeService();
     }
@@ -183,7 +188,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @DisableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @DisableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testPreSClients() throws Exception {
         // Pre S client connected, the daemon should be started.
         connectClient(mService);
@@ -210,7 +215,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testNoDaemonStartedWhenClientsConnect() throws Exception {
         // Creating an NsdManager will not cause daemon startup.
         connectClient(mService);
@@ -244,7 +249,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testClientRequestsAreGCedAtDisconnection() throws Exception {
         final NsdManager client = connectClient(mService);
         final INsdManagerCallback cb1 = getCallback();
@@ -287,7 +292,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testCleanupDelayNoRequestActive() throws Exception {
         final NsdManager client = connectClient(mService);
 
@@ -625,7 +630,7 @@ public class NsdServiceTest {
         waitForIdle();
 
         verify(mMockMDnsM).stopOperation(resolveId);
-        verify(resolveListener, timeout(TIMEOUT_MS)).onResolveStopped(argThat(ns ->
+        verify(resolveListener, timeout(TIMEOUT_MS)).onResolutionStopped(argThat(ns ->
                 request.getServiceName().equals(ns.getServiceName())
                         && request.getServiceType().equals(ns.getServiceType())));
     }
@@ -692,7 +697,7 @@ public class NsdServiceTest {
         waitForIdle();
 
         verify(mMockMDnsM).stopOperation(getAddrId);
-        verify(resolveListener, timeout(TIMEOUT_MS)).onResolveStopped(argThat(ns ->
+        verify(resolveListener, timeout(TIMEOUT_MS)).onResolutionStopped(argThat(ns ->
                 request.getServiceName().equals(ns.getServiceName())
                         && request.getServiceType().equals(ns.getServiceType())));
     }
@@ -824,40 +829,50 @@ public class NsdServiceTest {
                 client.unregisterServiceInfoCallback(serviceInfoCallback));
     }
 
-    private void makeServiceWithMdnsDiscoveryManagerEnabled() {
+    private void setMdnsDiscoveryManagerEnabled() {
         doReturn(true).when(mDeps).isMdnsDiscoveryManagerEnabled(any(Context.class));
-        doReturn(mDiscoveryManager).when(mDeps).makeMdnsDiscoveryManager(any(), any());
-        doReturn(mSocketProvider).when(mDeps).makeMdnsSocketProvider(any(), any());
-
-        mService = makeService();
-        verify(mDeps).makeMdnsDiscoveryManager(any(), any());
-        verify(mDeps).makeMdnsSocketProvider(any(), any());
     }
 
-    private void makeServiceWithMdnsAdvertiserEnabled() {
+    private void setMdnsAdvertiserEnabled() {
         doReturn(true).when(mDeps).isMdnsAdvertiserEnabled(any(Context.class));
-        doReturn(mAdvertiser).when(mDeps).makeMdnsAdvertiser(any(), any(), any());
-        doReturn(mSocketProvider).when(mDeps).makeMdnsSocketProvider(any(), any());
-
-        mService = makeService();
-        verify(mDeps).makeMdnsAdvertiser(any(), any(), any());
-        verify(mDeps).makeMdnsSocketProvider(any(), any());
     }
 
     @Test
     public void testMdnsDiscoveryManagerFeature() {
         // Create NsdService w/o feature enabled.
-        connectClient(mService);
-        verify(mDeps, never()).makeMdnsDiscoveryManager(any(), any());
-        verify(mDeps, never()).makeMdnsSocketProvider(any(), any());
+        final NsdManager client = connectClient(mService);
+        final DiscoveryListener discListenerWithoutFeature = mock(DiscoveryListener.class);
+        client.discoverServices(SERVICE_TYPE, PROTOCOL, discListenerWithoutFeature);
+        waitForIdle();
 
-        // Create NsdService again w/ feature enabled.
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        final ArgumentCaptor<Integer> legacyIdCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(mMockMDnsM).discover(legacyIdCaptor.capture(), any(), anyInt());
+        verifyNoMoreInteractions(mDiscoveryManager);
+
+        setMdnsDiscoveryManagerEnabled();
+        final DiscoveryListener discListenerWithFeature = mock(DiscoveryListener.class);
+        client.discoverServices(SERVICE_TYPE, PROTOCOL, discListenerWithFeature);
+        waitForIdle();
+
+        final String serviceTypeWithLocalDomain = SERVICE_TYPE + ".local";
+        final ArgumentCaptor<MdnsServiceBrowserListener> listenerCaptor =
+                ArgumentCaptor.forClass(MdnsServiceBrowserListener.class);
+        verify(mDiscoveryManager).registerListener(eq(serviceTypeWithLocalDomain),
+                listenerCaptor.capture(), any());
+
+        client.stopServiceDiscovery(discListenerWithoutFeature);
+        waitForIdle();
+        verify(mMockMDnsM).stopOperation(legacyIdCaptor.getValue());
+
+        client.stopServiceDiscovery(discListenerWithFeature);
+        waitForIdle();
+        verify(mDiscoveryManager).unregisterListener(serviceTypeWithLocalDomain,
+                listenerCaptor.getValue());
     }
 
     @Test
     public void testDiscoveryWithMdnsDiscoveryManager() {
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        setMdnsDiscoveryManagerEnabled();
 
         final NsdManager client = connectClient(mService);
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
@@ -922,7 +937,7 @@ public class NsdServiceTest {
 
     @Test
     public void testDiscoveryWithMdnsDiscoveryManager_FailedWithInvalidServiceType() {
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        setMdnsDiscoveryManagerEnabled();
 
         final NsdManager client = connectClient(mService);
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
@@ -951,7 +966,7 @@ public class NsdServiceTest {
 
     @Test
     public void testResolutionWithMdnsDiscoveryManager() throws UnknownHostException {
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        setMdnsDiscoveryManagerEnabled();
 
         final NsdManager client = connectClient(mService);
         final ResolveListener resolveListener = mock(ResolveListener.class);
@@ -1005,8 +1020,43 @@ public class NsdServiceTest {
     }
 
     @Test
+    public void testMdnsAdvertiserFeatureFlagging() {
+        // Create NsdService w/o feature enabled.
+        final NsdManager client = connectClient(mService);
+        final NsdServiceInfo regInfo = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
+        regInfo.setHost(parseNumericAddress("192.0.2.123"));
+        regInfo.setPort(12345);
+        final RegistrationListener regListenerWithoutFeature = mock(RegistrationListener.class);
+        client.registerService(regInfo, PROTOCOL, regListenerWithoutFeature);
+        waitForIdle();
+
+        final ArgumentCaptor<Integer> legacyIdCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(mMockMDnsM).registerService(legacyIdCaptor.capture(), any(), any(), anyInt(),
+                any(), anyInt());
+        verifyNoMoreInteractions(mAdvertiser);
+
+        setMdnsAdvertiserEnabled();
+        final RegistrationListener regListenerWithFeature = mock(RegistrationListener.class);
+        client.registerService(regInfo, PROTOCOL, regListenerWithFeature);
+        waitForIdle();
+
+        final ArgumentCaptor<Integer> serviceIdCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(mAdvertiser).addService(serviceIdCaptor.capture(),
+                argThat(info -> matches(info, regInfo)));
+
+        client.unregisterService(regListenerWithoutFeature);
+        waitForIdle();
+        verify(mMockMDnsM).stopOperation(legacyIdCaptor.getValue());
+        verify(mAdvertiser, never()).removeService(anyInt());
+
+        client.unregisterService(regListenerWithFeature);
+        waitForIdle();
+        verify(mAdvertiser).removeService(serviceIdCaptor.getValue());
+    }
+
+    @Test
     public void testAdvertiseWithMdnsAdvertiser() {
-        makeServiceWithMdnsAdvertiserEnabled();
+        setMdnsAdvertiserEnabled();
 
         final NsdManager client = connectClient(mService);
         final RegistrationListener regListener = mock(RegistrationListener.class);
@@ -1045,7 +1095,7 @@ public class NsdServiceTest {
 
     @Test
     public void testAdvertiseWithMdnsAdvertiser_FailedWithInvalidServiceType() {
-        makeServiceWithMdnsAdvertiserEnabled();
+        setMdnsAdvertiserEnabled();
 
         final NsdManager client = connectClient(mService);
         final RegistrationListener regListener = mock(RegistrationListener.class);
@@ -1070,7 +1120,7 @@ public class NsdServiceTest {
 
     @Test
     public void testAdvertiseWithMdnsAdvertiser_LongServiceName() {
-        makeServiceWithMdnsAdvertiserEnabled();
+        setMdnsAdvertiserEnabled();
 
         final NsdManager client = connectClient(mService);
         final RegistrationListener regListener = mock(RegistrationListener.class);

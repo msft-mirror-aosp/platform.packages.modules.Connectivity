@@ -1140,11 +1140,8 @@ public class ConnectivityManagerTest {
                 .setPackage(mContext.getPackageName());
         // While ConnectivityService would put extra info such as network or request id before
         // broadcasting the inner intent. The MUTABLE flag needs to be added accordingly.
-        // TODO: replace with PendingIntent.FLAG_MUTABLE when this code compiles against S+ or
-        //  shims.
-        final int pendingIntentFlagMutable = 1 << 25;
         final PendingIntent pendingIntent = PendingIntent.getBroadcast(mContext, 0 /*requestCode*/,
-                intent, PendingIntent.FLAG_CANCEL_CURRENT | pendingIntentFlagMutable);
+                intent, PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_MUTABLE);
 
         // We will register for a WIFI network being available or lost.
         mCm.registerNetworkCallback(makeWifiNetworkRequest(), pendingIntent);
@@ -1184,15 +1181,13 @@ public class ConnectivityManagerTest {
         // Avoid receiving broadcasts from other runs by appending a timestamp
         final String broadcastAction = NETWORK_CALLBACK_ACTION + System.currentTimeMillis();
         try {
-            // TODO: replace with PendingIntent.FLAG_MUTABLE when this code compiles against S+
             // Intent is mutable to receive EXTRA_NETWORK_REQUEST from ConnectivityService
-            final int pendingIntentFlagMutable = 1 << 25;
             final String extraBoolKey = "extra_bool";
             firstIntent = PendingIntent.getBroadcast(mContext,
                     0 /* requestCode */,
                     new Intent(broadcastAction).putExtra(extraBoolKey, false)
                             .setPackage(mContext.getPackageName()),
-                    PendingIntent.FLAG_UPDATE_CURRENT | pendingIntentFlagMutable);
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
             if (useListen) {
                 mCm.registerNetworkCallback(firstRequest, firstIntent);
@@ -1206,7 +1201,7 @@ public class ConnectivityManagerTest {
                     0 /* requestCode */,
                     new Intent(broadcastAction).putExtra(extraBoolKey, true)
                             .setPackage(mContext.getPackageName()),
-                    PendingIntent.FLAG_UPDATE_CURRENT | pendingIntentFlagMutable);
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
 
             // Because secondIntent.intentFilterEquals the first, the request should be replaced
             if (useListen) {
@@ -2390,7 +2385,7 @@ public class ConnectivityManagerTest {
         }
         public void eventuallyExpectBlockedStatusCallback(Network network, int blockedStatus) {
             super.eventuallyExpect(CallbackEntry.BLOCKED_STATUS_INT, NETWORK_CALLBACK_TIMEOUT_MS,
-                    (it) -> it.getNetwork().equals(network) && it.getBlocked() == blockedStatus);
+                    (it) -> it.getNetwork().equals(network) && it.getReason() == blockedStatus);
         }
         public void onBlockedStatusChanged(Network network, int blockedReasons) {
             getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));
@@ -3377,7 +3372,7 @@ public class ConnectivityManagerTest {
     }
 
     private void checkFirewallBlocking(final DatagramSocket srcSock, final DatagramSocket dstSock,
-            final boolean expectBlock) throws Exception {
+            final boolean expectBlock, final int chain) throws Exception {
         final Random random = new Random();
         final byte[] sendData = new byte[100];
         random.nextBytes(sendData);
@@ -3390,11 +3385,17 @@ public class ConnectivityManagerTest {
             if (expectBlock) {
                 return;
             }
-            fail("Expect not to be blocked by firewall but sending packet was blocked");
+            fail("Expect not to be blocked by firewall but sending packet was blocked:"
+                    + " chain=" + chain
+                    + " chainEnabled=" + mCm.getFirewallChainEnabled(chain)
+                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
         }
 
         if (expectBlock) {
-            fail("Expect to be blocked by firewall but sending packet was not blocked");
+            fail("Expect to be blocked by firewall but sending packet was not blocked:"
+                    + " chain=" + chain
+                    + " chainEnabled=" + mCm.getFirewallChainEnabled(chain)
+                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
         }
 
         dstSock.receive(pkt);
@@ -3414,34 +3415,40 @@ public class ConnectivityManagerTest {
         runWithShellPermissionIdentity(() -> {
             // Firewall chain status will be restored after the test.
             final boolean wasChainEnabled = mCm.getFirewallChainEnabled(chain);
+            final int previousUidFirewallRule = mCm.getUidFirewallRule(chain, myUid);
             final DatagramSocket srcSock = new DatagramSocket();
             final DatagramSocket dstSock = new DatagramSocket();
             testAndCleanup(() -> {
                 if (wasChainEnabled) {
                     mCm.setFirewallChainEnabled(chain, false /* enable */);
                 }
+                if (previousUidFirewallRule == ruleToAddMatch) {
+                    mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
+                }
                 dstSock.setSoTimeout(SOCKET_TIMEOUT_MS);
 
                 // Chain disabled, UID not on chain.
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS, chain);
 
                 // Chain enabled, UID not on chain.
                 mCm.setFirewallChainEnabled(chain, true /* enable */);
                 assertTrue(mCm.getFirewallChainEnabled(chain));
-                checkFirewallBlocking(srcSock, dstSock, isAllowList ? EXPECT_BLOCK : EXPECT_PASS);
+                checkFirewallBlocking(
+                        srcSock, dstSock, isAllowList ? EXPECT_BLOCK : EXPECT_PASS, chain);
 
                 // Chain enabled, UID on chain.
                 mCm.setUidFirewallRule(chain, myUid, ruleToAddMatch);
-                checkFirewallBlocking(srcSock, dstSock, isAllowList ?  EXPECT_PASS : EXPECT_BLOCK);
+                checkFirewallBlocking(
+                        srcSock, dstSock, isAllowList ?  EXPECT_PASS : EXPECT_BLOCK, chain);
 
                 // Chain disabled, UID on chain.
                 mCm.setFirewallChainEnabled(chain, false /* enable */);
                 assertFalse(mCm.getFirewallChainEnabled(chain));
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS, chain);
 
                 // Chain disabled, UID not on chain.
                 mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS, chain);
             }, /* cleanup */ () -> {
                     srcSock.close();
                     dstSock.close();
@@ -3449,8 +3456,9 @@ public class ConnectivityManagerTest {
                     // Restore the global chain status
                     mCm.setFirewallChainEnabled(chain, wasChainEnabled);
                 }, /* cleanup */ () -> {
+                    // Restore the uid firewall rule status
                     try {
-                        mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
+                        mCm.setUidFirewallRule(chain, myUid, previousUidFirewallRule);
                     } catch (IllegalStateException ignored) {
                         // Removing match causes an exception when the rule entry for the uid does
                         // not exist. But this is fine and can be ignored.

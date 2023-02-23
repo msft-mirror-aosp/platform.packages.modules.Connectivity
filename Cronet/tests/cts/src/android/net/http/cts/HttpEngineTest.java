@@ -17,6 +17,7 @@
 package android.net.http.cts;
 
 import static android.net.http.cts.util.TestUtilsKt.assertOKStatusCode;
+import static android.net.http.cts.util.TestUtilsKt.assumeOKStatusCode;
 import static android.net.http.cts.util.TestUtilsKt.skipIfNoInternetConnection;
 
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -46,6 +47,7 @@ public class HttpEngineTest {
 
     private HttpEngine.Builder mEngineBuilder;
     private TestUrlRequestCallback mCallback;
+    private UrlRequest mRequest;
     private HttpEngine mEngine;
 
     @Before
@@ -58,6 +60,10 @@ public class HttpEngineTest {
 
     @After
     public void tearDown() throws Exception {
+        if (mRequest != null) {
+            mRequest.cancel();
+            mCallback.blockForDone();
+        }
         if (mEngine != null) {
             mEngine.shutdown();
         }
@@ -72,9 +78,12 @@ public class HttpEngineTest {
         mEngine = mEngineBuilder.build();
         UrlRequest.Builder builder =
                 mEngine.newUrlRequestBuilder(URL, mCallback, mCallback.getExecutor());
-        builder.build().start();
+        mRequest = builder.build();
+        mRequest.start();
 
-        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+        // This tests uses a non-hermetic server. Instead of asserting, assume the next callback.
+        // This way, if the request were to fail, the test would just be skipped instead of failing.
+        mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
         UrlResponseInfo info = mCallback.mResponseInfo;
         assertOKStatusCode(info);
         assertEquals("h2", info.getNegotiatedProtocol());
@@ -85,9 +94,12 @@ public class HttpEngineTest {
         mEngine = mEngineBuilder.setEnableHttp2(false).build();
         UrlRequest.Builder builder =
                 mEngine.newUrlRequestBuilder(URL, mCallback, mCallback.getExecutor());
-        builder.build().start();
+        mRequest = builder.build();
+        mRequest.start();
 
-        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+        // This tests uses a non-hermetic server. Instead of asserting, assume the next callback.
+        // This way, if the request were to fail, the test would just be skipped instead of failing.
+        mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
         UrlResponseInfo info = mCallback.mResponseInfo;
         assertOKStatusCode(info);
         assertEquals("http/1.1", info.getNegotiatedProtocol());
@@ -100,13 +112,18 @@ public class HttpEngineTest {
         // We send multiple requests to reduce the flakiness of the test.
         boolean quicWasUsed = false;
         for (int i = 0; i < 5; i++) {
+            mCallback = new TestUrlRequestCallback();
             UrlRequest.Builder builder =
                     mEngine.newUrlRequestBuilder(URL, mCallback, mCallback.getExecutor());
-            builder.build().start();
+            mRequest = builder.build();
+            mRequest.start();
 
-            mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+            // This tests uses a non-hermetic server. Instead of asserting, assume the next
+            // callback. This way, if the request were to fail, the test would just be skipped
+            // instead of failing.
+            mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
             UrlResponseInfo info = mCallback.mResponseInfo;
-            assertOKStatusCode(info);
+            assumeOKStatusCode(info);
             quicWasUsed = isQuic(info.getNegotiatedProtocol());
             if (quicWasUsed) {
                 break;

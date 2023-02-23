@@ -46,12 +46,25 @@ ODR_VIOLATION_IGNORE_TARGETS = {
 }
 ARCH_REGEX = r'(android_x86_64|android_x86|android_arm|android_arm64|host)'
 RESPONSE_FILE = '{{response_file_name}}'
+AIDL_INCLUDE_DIRS_REGEX = r'--includes=\[(.*)\]'
 
 def repo_root():
   """Returns an absolute path to the repository root."""
   return os.path.join(
       os.path.realpath(os.path.dirname(__file__)), os.path.pardir)
 
+
+def _clean_string(str):
+  return str.replace('\\', '').replace('../../', '').replace('"', '').strip()
+
+
+def _extract_includes_from_aidl_args(args):
+  for arg in args:
+    is_match = re.match(AIDL_INCLUDE_DIRS_REGEX, arg)
+    if is_match:
+      local_includes = is_match.group(1).split(",")
+      return [_clean_string(local_include) for local_include in local_includes]
+  return []
 
 def label_to_path(label):
   """Turn a GN output label (e.g., //some_dir/file.cc) into a path."""
@@ -119,6 +132,7 @@ class GnParser(object):
         self.deps = set()
         self.transitive_static_libs_deps = set()
         self.source_set_deps = set()
+        self.ldflags = set()
 
         # These are valid only for type == 'action'
         self.inputs = set()
@@ -207,7 +221,7 @@ class GnParser(object):
                   'libs', 'proto_paths'):
         self.__dict__[key].update(other.__dict__.get(key, []))
 
-      for key_in_arch in ('cflags', 'defines', 'include_dirs', 'source_set_deps'):
+      for key_in_arch in ('cflags', 'defines', 'include_dirs', 'source_set_deps', 'ldflags'):
         self.arch[arch].__dict__[key_in_arch].update(
           other.arch[arch].__dict__.get(key_in_arch, []))
 
@@ -250,7 +264,7 @@ class GnParser(object):
         return
 
       for key in ('sources', 'cflags', 'defines', 'include_dirs', 'deps', 'source_set_deps',
-                  'inputs', 'outputs', 'args', 'script', 'response_file_contents'):
+                  'inputs', 'outputs', 'args', 'script', 'response_file_contents', 'ldflags'):
         self._finalize_attribute(key)
 
 
@@ -262,6 +276,7 @@ class GnParser(object):
     self.actions = {}
     self.proto_libs = {}
     self.java_sources = collections.defaultdict(set)
+    self.aidl_local_include_dirs = set()
     self.java_actions = collections.defaultdict(set)
 
   def _get_response_file_contents(self, action_desc):
@@ -392,7 +407,7 @@ class GnParser(object):
 
     target.arch[arch].cflags.update(desc.get('cflags', []) + desc.get('cflags_cc', []))
     target.libs.update(desc.get('libs', []))
-    target.ldflags.update(desc.get('ldflags', []))
+    target.arch[arch].ldflags.update(desc.get('ldflags', []))
     target.arch[arch].defines.update(desc.get('defines', []))
     target.arch[arch].include_dirs.update(desc.get('include_dirs', []))
     target.output_name = desc.get('output_name', None)
@@ -453,11 +468,12 @@ class GnParser(object):
           java_srcs = [src for src in dep.inputs if _is_java_source(src)]
           self.java_sources[java_group_name].update(java_srcs)
       if dep.type in ["action"] and target.type == "java_group":
-        # //base:base_java_aidl generates srcjar from .aidl files. But java_library in soong can
-        # directly have .aidl files in srcs. So adding .aidl files to the java_sources.
+        # GN uses an action to compile aidl files. However, this is not needed in soong
+        # as soong can directly have .aidl files in srcs. So adding .aidl files to the java_sources.
         # TODO: Find a better way/place to do this.
-        if dep.name == '//base:base_java_aidl':
+        if '_aidl' in dep.name:
           self.java_sources[java_group_name].update(dep.arch[arch].sources)
+          self.aidl_local_include_dirs.update(_extract_includes_from_aidl_args(dep.arch[arch].args))
         else:
           self.java_actions[java_group_name].add(dep.name)
     return target
