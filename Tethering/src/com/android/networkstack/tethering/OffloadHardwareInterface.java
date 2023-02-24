@@ -40,7 +40,7 @@ import android.util.Pair;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.net.module.util.SharedLog;
-import com.android.net.module.util.netlink.NetlinkSocket;
+import com.android.net.module.util.netlink.NetlinkUtils;
 import com.android.net.module.util.netlink.StructNfGenMsg;
 import com.android.net.module.util.netlink.StructNlMsgHdr;
 
@@ -234,7 +234,7 @@ public class OffloadHardwareInterface {
         public NativeHandle createConntrackSocket(final int groups) {
             final FileDescriptor fd;
             try {
-                fd = NetlinkSocket.forProto(OsConstants.NETLINK_NETFILTER);
+                fd = NetlinkUtils.netlinkSocketForProto(OsConstants.NETLINK_NETFILTER);
             } catch (ErrnoException e) {
                 mLog.e("Unable to create conntrack socket " + e);
                 return null;
@@ -295,8 +295,7 @@ public class OffloadHardwareInterface {
                 NF_NETLINK_CONNTRACK_NEW | NF_NETLINK_CONNTRACK_DESTROY);
         if (h1 == null) return false;
 
-        sendIpv4NfGenMsg(h1, (short) ((NFNL_SUBSYS_CTNETLINK << 8) | IPCTNL_MSG_CT_GET),
-                           (short) (NLM_F_REQUEST | NLM_F_DUMP));
+        requestSocketDump(h1);
 
         final NativeHandle h2 = mDeps.createConntrackSocket(
                 NF_NETLINK_CONNTRACK_UPDATE | NF_NETLINK_CONNTRACK_DESTROY);
@@ -325,7 +324,7 @@ public class OffloadHardwareInterface {
     }
 
     @VisibleForTesting
-    public void sendIpv4NfGenMsg(@NonNull NativeHandle handle, short type, short flags) {
+    void sendIpv4NfGenMsg(@NonNull NativeHandle handle, short type, short flags) {
         final int length = StructNlMsgHdr.STRUCT_SIZE + StructNfGenMsg.STRUCT_SIZE;
         final byte[] msg = new byte[length];
         final ByteBuffer byteBuffer = ByteBuffer.wrap(msg);
@@ -343,11 +342,17 @@ public class OffloadHardwareInterface {
         nfh.pack(byteBuffer);
 
         try {
-            NetlinkSocket.sendMessage(handle.getFileDescriptor(), msg, 0 /* offset */, length,
+            NetlinkUtils.sendMessage(handle.getFileDescriptor(), msg, 0 /* offset */, length,
                                       NETLINK_MESSAGE_TIMEOUT_MS);
         } catch (ErrnoException | InterruptedIOException e) {
             mLog.e("Unable to send netfilter message, error: " + e);
         }
+    }
+
+    @VisibleForTesting
+    void requestSocketDump(NativeHandle handle) {
+        sendIpv4NfGenMsg(handle, (short) ((NFNL_SUBSYS_CTNETLINK << 8) | IPCTNL_MSG_CT_GET),
+                (short) (NLM_F_REQUEST | NLM_F_DUMP));
     }
 
     private void closeFdInNativeHandle(final NativeHandle h) {

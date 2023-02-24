@@ -26,7 +26,7 @@
 #include "android-base/strings.h"
 #include "android-base/unique_fd.h"
 #include "bpf/BpfMap.h"
-#include "bpf_shared.h"
+#include "netd.h"
 #include "netdbpf/BpfNetworkStats.h"
 
 #ifdef LOG_TAG
@@ -245,10 +245,6 @@ int parseBpfNetworkStatsDev(std::vector<stats_line>* lines) {
     static BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
     static BpfMapRO<uint32_t, StatsValue> ifaceStatsMap(IFACE_STATS_MAP_PATH);
     return parseBpfNetworkStatsDevInternal(lines, ifaceStatsMap, ifaceIndexNameMap);
-}
-
-uint64_t combineUidTag(const uid_t uid, const uint32_t tag) {
-    return (uint64_t)uid << 32 | tag;
 }
 
 void groupNetworkStats(std::vector<stats_line>* lines) {
