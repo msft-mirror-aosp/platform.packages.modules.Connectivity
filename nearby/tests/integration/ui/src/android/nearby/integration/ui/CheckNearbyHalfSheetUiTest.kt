@@ -17,7 +17,6 @@
 package android.nearby.integration.ui
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.platform.test.rule.ScreenRecordRule.ScreenRecord
 import androidx.test.core.app.ApplicationProvider
@@ -35,7 +34,6 @@ import com.android.server.nearby.fastpair.halfsheet.FastPairHalfSheetManager
 import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import org.junit.AfterClass
-import org.junit.Assume.assumeFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,8 +50,6 @@ import java.time.Clock
  */
 @RunWith(AndroidJUnit4::class)
 class CheckNearbyHalfSheetUiTest : BaseUiTest() {
-    private val appContext = ApplicationProvider.getApplicationContext<Context>()
-
     private var waitHalfSheetPopupTimeoutMs: Long
     private var halfSheetTitleText: String
     private var halfSheetSubtitleText: String
@@ -85,8 +81,7 @@ class CheckNearbyHalfSheetUiTest : BaseUiTest() {
 
     @Before
     fun setUp() {
-        assumeFalse("Halfsheets not supported on Wear OS devices", isWatch())
-
+        val appContext = ApplicationProvider.getApplicationContext<Context>()
         val locator = Locator(appContext).apply {
             overrideBindingForTest(EventLoop::class.java, EventLoop.newInstance("test"))
             overrideBindingForTest(
@@ -137,10 +132,6 @@ class CheckNearbyHalfSheetUiTest : BaseUiTest() {
 
         val infoButton = device.findObject(NearbyHalfSheetUiMap.DevicePairingFragment.infoButton)
         assertThat(infoButton).isNotNull()
-    }
-
-    private fun isWatch(): Boolean {
-        return appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_WATCH)
     }
 
     companion object {
