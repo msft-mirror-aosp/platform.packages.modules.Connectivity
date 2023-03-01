@@ -50,7 +50,7 @@ public final class TcpSocketKeepalive extends SocketKeepalive {
      *   acknowledgement.
      */
     @Override
-    protected void startImpl(int intervalSec, int flags) {
+    protected void startImpl(int intervalSec, int flags, Network underpinnedNetwork) {
         if (0 != flags) {
             throw new IllegalArgumentException("Illegal flag value for "
                     + this.getClass().getSimpleName() + " : " + flags);
@@ -69,9 +69,7 @@ public final class TcpSocketKeepalive extends SocketKeepalive {
     protected void stopImpl() {
         mExecutor.execute(() -> {
             try {
-                if (mSlot != null) {
-                    mService.stopKeepalive(mNetwork, mSlot);
-                }
+                mService.stopKeepalive(mCallback);
             } catch (RemoteException e) {
                 Log.e(TAG, "Error stopping packet keepalive: ", e);
                 throw e.rethrowFromSystemServer();
