@@ -54,11 +54,16 @@ public final class DataElement implements Parcelable {
             DataType.EDDYSTONE_EPHEMERAL_IDENTIFIER,
             DataType.ACCOUNT_KEY_DATA,
             DataType.CONNECTION_STATUS,
-            DataType.BATTERY
+            DataType.BATTERY,
+            DataType.SCAN_MODE,
+            DataType.TEST_DE_BEGIN,
+            DataType.TEST_DE_END
     })
     public @interface DataType {
         int BLE_SERVICE_DATA = 100;
         int BLE_ADDRESS = 101;
+        // This is to indicate if the scan is offload only
+        int SCAN_MODE = 102;
         int SALT = 0;
         int PRIVATE_IDENTITY = 1;
         int TRUSTED_IDENTITY = 2;
@@ -71,6 +76,10 @@ public final class DataElement implements Parcelable {
         int ACCOUNT_KEY_DATA = 9;
         int CONNECTION_STATUS = 10;
         int BATTERY = 11;
+        // Reserves test DE ranges from {@link DataElement.DataType#TEST_DE_BEGIN}
+        // to {@link DataElement.DataType#TEST_DE_END}, inclusive.
+        int TEST_DE_BEGIN = 256;
+        int TEST_DE_END = 260;
     }
 
     /**
@@ -80,6 +89,7 @@ public final class DataElement implements Parcelable {
         return type == DataType.BLE_SERVICE_DATA
                 || type == DataType.ACCOUNT_KEY_DATA
                 || type == DataType.BLE_ADDRESS
+                || type == DataType.SCAN_MODE
                 || type == DataType.SALT
                 || type == DataType.PRIVATE_IDENTITY
                 || type == DataType.TRUSTED_IDENTITY
@@ -102,6 +112,14 @@ public final class DataElement implements Parcelable {
                 || mKey == DataType.TRUSTED_IDENTITY
                 || mKey == DataType.PUBLIC_IDENTITY
                 || mKey == DataType.PROVISIONED_IDENTITY;
+    }
+
+    /**
+     * @return {@code true} if this is test data element type.
+     * @hide
+     */
+    public static boolean isTestDeType(int type) {
+        return type >= DataType.TEST_DE_BEGIN && type <= DataType.TEST_DE_END;
     }
 
     /**

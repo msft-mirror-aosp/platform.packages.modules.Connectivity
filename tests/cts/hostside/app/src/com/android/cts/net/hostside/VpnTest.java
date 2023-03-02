@@ -38,8 +38,10 @@ import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentat
 import static com.android.compatibility.common.util.SystemUtil.runWithShellPermissionIdentity;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_LOCKDOWN_VPN;
 import static com.android.networkstack.apishim.ConstantsShim.BLOCKED_REASON_NONE;
+import static com.android.networkstack.apishim.ConstantsShim.RECEIVER_EXPORTED;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
+import static com.android.testutils.RecorderCallback.CallbackEntry.BLOCKED_STATUS_INT;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -93,9 +95,9 @@ import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
 import android.system.StructPollfd;
-import android.telephony.TelephonyManager;
 import android.test.MoreAsserts;
 import android.text.TextUtils;
+import android.util.ArraySet;
 import android.util.Log;
 import android.util.Range;
 
@@ -107,6 +109,7 @@ import com.android.net.module.util.PacketBuilder;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.RecorderCallback;
+import com.android.testutils.RecorderCallback.CallbackEntry;
 import com.android.testutils.TestableNetworkCallback;
 
 import org.junit.After;
@@ -135,6 +138,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -194,8 +198,8 @@ public class VpnTest {
     private RemoteSocketFactoryClient mRemoteSocketFactoryClient;
     private CtsNetUtils mCtsNetUtils;
     private PackageManager mPackageManager;
-    private TelephonyManager mTelephonyManager;
-
+    private Context mTestContext;
+    private Context mTargetContext;
     Network mNetwork;
     NetworkCallback mCallback;
     final Object mLock = new Object();
@@ -225,21 +229,19 @@ public class VpnTest {
     public void setUp() throws Exception {
         mNetwork = null;
         mCallback = null;
+        mTestContext = getInstrumentation().getContext();
+        mTargetContext = getInstrumentation().getTargetContext();
         storePrivateDnsSetting();
-
         mDevice = UiDevice.getInstance(getInstrumentation());
-        mActivity = launchActivity(getInstrumentation().getTargetContext().getPackageName(),
-                MyActivity.class);
+        mActivity = launchActivity(mTargetContext.getPackageName(), MyActivity.class);
         mPackageName = mActivity.getPackageName();
         mCM = (ConnectivityManager) mActivity.getSystemService(Context.CONNECTIVITY_SERVICE);
         mWifiManager = (WifiManager) mActivity.getSystemService(Context.WIFI_SERVICE);
         mRemoteSocketFactoryClient = new RemoteSocketFactoryClient(mActivity);
         mRemoteSocketFactoryClient.bind();
         mDevice.waitForIdle();
-        mCtsNetUtils = new CtsNetUtils(getInstrumentation().getContext());
-        mPackageManager = getInstrumentation().getContext().getPackageManager();
-        mTelephonyManager =
-                getInstrumentation().getContext().getSystemService(TelephonyManager.class);
+        mCtsNetUtils = new CtsNetUtils(mTestContext);
+        mPackageManager = mTestContext.getPackageManager();
     }
 
     @After
@@ -738,7 +740,7 @@ public class VpnTest {
     }
 
     private ContentResolver getContentResolver() {
-        return getInstrumentation().getContext().getContentResolver();
+        return mTestContext.getContentResolver();
     }
 
     private boolean isPrivateDnsInStrictMode() {
@@ -787,7 +789,7 @@ public class VpnTest {
     }
 
     private void setAndVerifyPrivateDns(boolean strictMode) throws Exception {
-        final ContentResolver cr = getInstrumentation().getContext().getContentResolver();
+        final ContentResolver cr = mTestContext.getContentResolver();
         String privateDnsHostname;
 
         if (strictMode) {
@@ -838,8 +840,13 @@ public class VpnTest {
         callback.eventuallyExpect(RecorderCallback.CallbackEntry.NETWORK_CAPS_UPDATED,
                 NETWORK_CALLBACK_TIMEOUT_MS,
                 entry -> (Objects.equals(expectUnderlyingNetworks,
-                        ((RecorderCallback.CallbackEntry.CapabilitiesChanged) entry)
-                                .getCaps().getUnderlyingNetworks())));
+                        entry.getCaps().getUnderlyingNetworks())));
+    }
+
+    private void expectVpnNetwork(TestableNetworkCallback callback) {
+        callback.eventuallyExpect(RecorderCallback.CallbackEntry.NETWORK_CAPS_UPDATED,
+                NETWORK_CALLBACK_TIMEOUT_MS,
+                entry -> entry.getCaps().hasTransport(TRANSPORT_VPN));
     }
 
     @Test @IgnoreUpTo(SC_V2) // TODO: Use to Build.VERSION_CODES.SC_V2 when available
@@ -920,7 +927,7 @@ public class VpnTest {
         }
 
         final BlockingBroadcastReceiver receiver = new BlockingBroadcastReceiver(
-                getInstrumentation().getTargetContext(), MyVpnService.ACTION_ESTABLISHED);
+                mTargetContext, MyVpnService.ACTION_ESTABLISHED);
         receiver.register();
 
         // Test the behaviour of a variety of types of network callbacks.
@@ -1516,7 +1523,7 @@ public class VpnTest {
         private boolean received;
 
         public ProxyChangeBroadcastReceiver() {
-            super(getInstrumentation().getContext(), Proxy.PROXY_CHANGE_ACTION);
+            super(mTestContext, Proxy.PROXY_CHANGE_ACTION);
             received = false;
         }
 
@@ -1546,12 +1553,12 @@ public class VpnTest {
                 "" /* allowedApps */, "com.android.providers.downloads", null /* proxyInfo */,
                 null /* underlyingNetworks */, false /* isAlwaysMetered */);
 
-        final Context context = getInstrumentation().getContext();
-        final DownloadManager dm = context.getSystemService(DownloadManager.class);
+        final DownloadManager dm = mTestContext.getSystemService(DownloadManager.class);
         final DownloadCompleteReceiver receiver = new DownloadCompleteReceiver();
         try {
-            context.registerReceiver(receiver,
-                    new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE));
+            final int flags = SdkLevel.isAtLeastT() ? RECEIVER_EXPORTED : 0;
+            mTestContext.registerReceiver(receiver,
+                    new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE), flags);
 
             // Enqueue a request and check only one download.
             final long id = dm.enqueue(new Request(
@@ -1568,7 +1575,7 @@ public class VpnTest {
             assertEquals(1, dm.remove(id));
             assertEquals(0, getTotalNumberDownloads(dm, new Query()));
         } finally {
-            context.unregisterReceiver(receiver);
+            mTestContext.unregisterReceiver(receiver);
         }
     }
 
@@ -1605,8 +1612,7 @@ public class VpnTest {
 
         // Create a TUN interface
         final FileDescriptor tunFd = runWithShellPermissionIdentity(() -> {
-            final TestNetworkManager tnm = getInstrumentation().getContext().getSystemService(
-                    TestNetworkManager.class);
+            final TestNetworkManager tnm = mTestContext.getSystemService(TestNetworkManager.class);
             final TestNetworkInterface iface = tnm.createTunInterface(List.of(
                     TEST_IP4_DST_ADDR, TEST_IP6_DST_ADDR));
             return iface.getFileDescriptor().getFileDescriptor();
@@ -1620,7 +1626,7 @@ public class VpnTest {
                 mCM.registerDefaultNetworkCallbackForUid(remoteUid, remoteUidCallback,
                         new Handler(Looper.getMainLooper()));
             }, NETWORK_SETTINGS);
-            remoteUidCallback.expectAvailableCallbacks(network);
+            remoteUidCallback.expectAvailableCallbacksWithBlockedReasonNone(network);
 
             // The remote UDP socket can receive packets coming from the TUN interface
             checkBlockIncomingPacket(tunFd, remoteUdpFd, EXPECT_PASS);
@@ -1633,7 +1639,8 @@ public class VpnTest {
             // setRequireVpnForUids setup a lockdown rule asynchronously. So it needs to wait for
             // BlockedStatusCallback to be fired before checking the blocking status of incoming
             // packets.
-            remoteUidCallback.expectBlockedStatusCallback(network, BLOCKED_REASON_LOCKDOWN_VPN);
+            remoteUidCallback.expect(BLOCKED_STATUS_INT, network,
+                    cb -> cb.getReason() == BLOCKED_REASON_LOCKDOWN_VPN);
 
             if (SdkLevel.isAtLeastT()) {
                 // On T and above, lockdown rule drop packets not coming from lo regardless of the
@@ -1661,6 +1668,56 @@ public class VpnTest {
                 runWithShellPermissionIdentity(() -> {
                     mCM.setRequireVpnForUids(false /* requireVpn */, lockdownRange);
                 }, NETWORK_SETTINGS);
+            });
+    }
+
+    @Test
+    public void testSetVpnDefaultForUids() throws Exception {
+        assumeTrue(supportedHardware());
+        assumeTrue(SdkLevel.isAtLeastU());
+
+        final Network defaultNetwork = mCM.getActiveNetwork();
+        assertNotNull("There must be a default network", defaultNetwork);
+
+        final TestableNetworkCallback defaultNetworkCallback = new TestableNetworkCallback();
+        final String session = UUID.randomUUID().toString();
+        final int myUid = Process.myUid();
+
+        testAndCleanup(() -> {
+            mCM.registerDefaultNetworkCallback(defaultNetworkCallback);
+            defaultNetworkCallback.expectAvailableCallbacks(defaultNetwork);
+
+            final Range<Integer> myUidRange = new Range<>(myUid, myUid);
+            runWithShellPermissionIdentity(() -> {
+                mCM.setVpnDefaultForUids(session, List.of(myUidRange));
+            }, NETWORK_SETTINGS);
+
+            // The VPN will be the only default network for the app, so it's expected to receive
+            // onLost() callback.
+            defaultNetworkCallback.eventuallyExpect(CallbackEntry.LOST);
+
+            final ArrayList<Network> underlyingNetworks = new ArrayList<>();
+            underlyingNetworks.add(defaultNetwork);
+            startVpn(new String[] {"192.0.2.2/32", "2001:db8:1:2::ffe/128"} /* addresses */,
+                    new String[] {"0.0.0.0/0", "::/0"} /* routes */,
+                    "" /* allowedApplications */, "" /* disallowedApplications */,
+                    null /* proxyInfo */, underlyingNetworks, false /* isAlwaysMetered */);
+
+            expectVpnNetwork(defaultNetworkCallback);
+        }, /* cleanup */ () -> {
+                stopVpn();
+                defaultNetworkCallback.eventuallyExpect(CallbackEntry.LOST);
+            }, /* cleanup */ () -> {
+                runWithShellPermissionIdentity(() -> {
+                    mCM.setVpnDefaultForUids(session, new ArraySet<>());
+                }, NETWORK_SETTINGS);
+                // The default network of the app will be changed back to wifi when the VPN network
+                // preference feature is disabled.
+                defaultNetworkCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
+                        NETWORK_CALLBACK_TIMEOUT_MS,
+                        entry -> defaultNetwork.equals(entry.getNetwork()));
+            }, /* cleanup */ () -> {
+                mCM.unregisterNetworkCallback(defaultNetworkCallback);
             });
     }
 
@@ -1754,12 +1811,9 @@ public class VpnTest {
     }
 
     private class DetailedBlockedStatusCallback extends TestableNetworkCallback {
-        public void expectAvailableCallbacks(Network network) {
+        public void expectAvailableCallbacksWithBlockedReasonNone(Network network) {
             super.expectAvailableCallbacks(network, false /* suspended */, true /* validated */,
                     BLOCKED_REASON_NONE, NETWORK_CALLBACK_TIMEOUT_MS);
-        }
-        public void expectBlockedStatusCallback(Network network, int blockedStatus) {
-            super.expectBlockedStatusCallback(blockedStatus, network, NETWORK_CALLBACK_TIMEOUT_MS);
         }
         public void onBlockedStatusChanged(Network network, int blockedReasons) {
             getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));

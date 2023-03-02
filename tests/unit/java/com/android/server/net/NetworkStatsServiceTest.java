@@ -995,8 +995,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         forcePollAndWaitForIdle();
 
         // Verify service recorded history.
-        assertUidTotal(templateMetered5g, UID_RED, 128L, 2L, 128L, 2L, 0);
-        assertUidTotal(templateNonMetered5g, UID_RED, 256, 3L, 128L, 5L, 0);
+        assertUidTotal(templateMetered5g, UID_RED, 384L, 5L, 256L, 7L, 0);
+        assertUidTotal(templateNonMetered5g, UID_RED, 0L, 0L, 0L, 0L, 0);
     }
 
     @Test
@@ -2198,7 +2198,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     private NetworkStatsCollection getLegacyCollection(String prefix, boolean includeTags) {
         final NetworkStatsRecorder recorder = makeTestRecorder(mLegacyStatsDir, prefix,
-                mSettings.getDevConfig(), includeTags, false);
+                mSettings.getXtConfig(), includeTags, false);
         return recorder.getOrLoadCompleteLocked();
     }
 
@@ -2255,12 +2255,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     }
 
     private void mockNetworkStatsSummary(NetworkStats summary) throws Exception {
-        mockNetworkStatsSummaryDev(summary.clone());
         mockNetworkStatsSummaryXt(summary.clone());
-    }
-
-    private void mockNetworkStatsSummaryDev(NetworkStats summary) throws Exception {
-        doReturn(summary).when(mStatsFactory).readNetworkStatsSummaryDev();
     }
 
     private void mockNetworkStatsSummaryXt(NetworkStats summary) throws Exception {
@@ -2293,13 +2288,11 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         doReturn(false).when(mSettings).getCombineSubtypeEnabled();
 
         final Config config = new Config(bucketDuration, deleteAge, deleteAge);
-        doReturn(config).when(mSettings).getDevConfig();
         doReturn(config).when(mSettings).getXtConfig();
         doReturn(config).when(mSettings).getUidConfig();
         doReturn(config).when(mSettings).getUidTagConfig();
 
         doReturn(MB_IN_BYTES).when(mSettings).getGlobalAlertBytes(anyLong());
-        doReturn(MB_IN_BYTES).when(mSettings).getDevPersistBytes(anyLong());
         doReturn(MB_IN_BYTES).when(mSettings).getXtPersistBytes(anyLong());
         doReturn(MB_IN_BYTES).when(mSettings).getUidPersistBytes(anyLong());
         doReturn(MB_IN_BYTES).when(mSettings).getUidTagPersistBytes(anyLong());

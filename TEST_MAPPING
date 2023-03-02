@@ -58,10 +58,24 @@
       ]
     },
     {
+      "name": "CtsNetTestCasesMaxTargetSdk33",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
       "name": "bpf_existence_test"
     },
     {
       "name": "connectivity_native_test"
+    },
+    {
+      "name": "CtsNetHttpTestCases"
     },
     {
       "name": "libclat_test"
@@ -99,6 +113,11 @@
     },
     {
       "name": "FrameworksNetDeflakeTest"
+    },
+    // Run in postsubmit to confirm test passes continously since this is a new test setup
+    // TODO: move tests to presubmit
+    {
+      "name": "NetHttpTests"
     }
   ],
   "mainline-presubmit": [
@@ -126,6 +145,17 @@
     },
     {
       "name": "CtsNetTestCasesMaxTargetSdk31[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk33[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
