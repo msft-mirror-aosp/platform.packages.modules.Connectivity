@@ -53,6 +53,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.net.INetd;
 import android.net.Network;
+import android.net.connectivity.ConnectivityCompatChanges;
 import android.net.mdns.aidl.DiscoveryInfo;
 import android.net.mdns.aidl.GetAddressInfo;
 import android.net.mdns.aidl.IMDnsEventListener;
@@ -187,7 +188,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @DisableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @DisableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testPreSClients() throws Exception {
         // Pre S client connected, the daemon should be started.
         connectClient(mService);
@@ -214,7 +215,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testNoDaemonStartedWhenClientsConnect() throws Exception {
         // Creating an NsdManager will not cause daemon startup.
         connectClient(mService);
@@ -248,7 +249,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testClientRequestsAreGCedAtDisconnection() throws Exception {
         final NsdManager client = connectClient(mService);
         final INsdManagerCallback cb1 = getCallback();
@@ -291,7 +292,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testCleanupDelayNoRequestActive() throws Exception {
         final NsdManager client = connectClient(mService);
 
@@ -931,7 +932,7 @@ public class NsdServiceTest {
         waitForIdle();
         verify(mDiscoveryManager).unregisterListener(eq(serviceTypeWithLocalDomain), any());
         verify(discListener, timeout(TIMEOUT_MS)).onDiscoveryStopped(SERVICE_TYPE);
-        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).stopMonitoringSockets();
+        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).requestStopWhenInactive();
     }
 
     @Test
@@ -1015,7 +1016,7 @@ public class NsdServiceTest {
         // Verify the listener has been unregistered.
         verify(mDiscoveryManager, timeout(TIMEOUT_MS))
                 .unregisterListener(eq(constructedServiceType), any());
-        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).stopMonitoringSockets();
+        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).requestStopWhenInactive();
     }
 
     @Test
@@ -1089,7 +1090,7 @@ public class NsdServiceTest {
         verify(mAdvertiser).removeService(idCaptor.getValue());
         verify(regListener, timeout(TIMEOUT_MS)).onServiceUnregistered(
                 argThat(info -> matches(info, regInfo)));
-        verify(mSocketProvider, timeout(TIMEOUT_MS)).stopMonitoringSockets();
+        verify(mSocketProvider, timeout(TIMEOUT_MS)).requestStopWhenInactive();
     }
 
     @Test

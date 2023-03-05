@@ -20,6 +20,8 @@ import android.app.compat.CompatChanges
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
 import android.net.LinkProperties
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.net.Network
 import android.net.NetworkAgentConfig
 import android.net.NetworkCapabilities
@@ -30,6 +32,7 @@ import android.net.NetworkRequest
 import android.net.TestNetworkInterface
 import android.net.TestNetworkManager
 import android.net.TestNetworkSpecifier
+import android.net.connectivity.ConnectivityCompatChanges
 import android.net.cts.NsdManagerTest.NsdDiscoveryRecord.DiscoveryEvent.DiscoveryStarted
 import android.net.cts.NsdManagerTest.NsdDiscoveryRecord.DiscoveryEvent.DiscoveryStopped
 import android.net.cts.NsdManagerTest.NsdDiscoveryRecord.DiscoveryEvent.ServiceFound
@@ -40,8 +43,8 @@ import android.net.cts.NsdManagerTest.NsdRegistrationRecord.RegistrationEvent.Re
 import android.net.cts.NsdManagerTest.NsdRegistrationRecord.RegistrationEvent.ServiceRegistered
 import android.net.cts.NsdManagerTest.NsdRegistrationRecord.RegistrationEvent.ServiceUnregistered
 import android.net.cts.NsdManagerTest.NsdRegistrationRecord.RegistrationEvent.UnregistrationFailed
-import android.net.cts.NsdManagerTest.NsdResolveRecord.ResolveEvent.ResolveFailed
 import android.net.cts.NsdManagerTest.NsdResolveRecord.ResolveEvent.ResolutionStopped
+import android.net.cts.NsdManagerTest.NsdResolveRecord.ResolveEvent.ResolveFailed
 import android.net.cts.NsdManagerTest.NsdResolveRecord.ResolveEvent.ServiceResolved
 import android.net.cts.NsdManagerTest.NsdResolveRecord.ResolveEvent.StopResolutionFailed
 import android.net.cts.NsdManagerTest.NsdServiceInfoCallbackRecord.ServiceInfoCallbackEvent.RegisterCallbackFailed
@@ -62,6 +65,8 @@ import android.platform.test.annotations.AppModeFull
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.AndroidJUnit4
+import com.android.compatibility.common.util.PollingCheck
+import com.android.compatibility.common.util.PropertyUtil
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.net.module.util.TrackRecord
 import com.android.networkstack.apishim.NsdShimImpl
@@ -71,14 +76,17 @@ import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.TestableNetworkAgent
 import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.filters.CtsNetTestCasesMaxTargetSdk30
+import com.android.testutils.filters.CtsNetTestCasesMaxTargetSdk33
 import com.android.testutils.runAsShell
 import com.android.testutils.tryTest
 import com.android.testutils.waitForIdle
 import java.io.File
+import java.io.IOException
 import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
 import java.util.Random
 import java.util.concurrent.Executor
+import kotlin.math.min
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -762,6 +770,69 @@ class NsdManagerTest {
         }
     }
 
+    private fun checkConnectSocketToMdnsd(shouldFail: Boolean) {
+        val discoveryRecord = NsdDiscoveryRecord()
+        val localSocket = LocalSocket()
+        tryTest {
+            // Discover any service from NsdManager to enforce NsdService to start the mdnsd.
+            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryRecord)
+            discoveryRecord.expectCallback<DiscoveryStarted>()
+
+            // Checks the /dev/socket/mdnsd is created.
+            val socket = File("/dev/socket/mdnsd")
+            val doesSocketExist = PollingCheck.waitFor(
+                TIMEOUT_MS,
+                {
+                    socket.exists()
+                },
+                { doesSocketExist ->
+                    doesSocketExist
+                },
+            )
+
+            // If the socket is not created, then no need to check the access.
+            if (doesSocketExist) {
+                // Create a LocalSocket and try to connect to mdnsd.
+                assertFalse("LocalSocket is connected.", localSocket.isConnected)
+                val address = LocalSocketAddress("mdnsd", LocalSocketAddress.Namespace.RESERVED)
+                if (shouldFail) {
+                    assertFailsWith<IOException>("Expect fail but socket connected") {
+                        localSocket.connect(address)
+                    }
+                } else {
+                    localSocket.connect(address)
+                    assertTrue("LocalSocket is not connected.", localSocket.isConnected)
+                }
+            }
+        } cleanup {
+            localSocket.close()
+            nsdManager.stopServiceDiscovery(discoveryRecord)
+            discoveryRecord.expectCallback<DiscoveryStopped>()
+        }
+    }
+
+    /**
+     * Starting from Android U, the access to the /dev/socket/mdnsd is blocked by the
+     * sepolicy(b/265364111).
+     */
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.TIRAMISU)
+    @Test
+    fun testCannotConnectSocketToMdnsd() {
+        val targetSdkVersion = context.packageManager
+                .getTargetSdkVersion(context.applicationInfo.packageName)
+        assumeTrue(targetSdkVersion > Build.VERSION_CODES.TIRAMISU)
+        val firstApiLevel = min(PropertyUtil.getFirstApiLevel(), PropertyUtil.getVendorApiLevel())
+        // The sepolicy is implemented in the vendor image, so the access may not be blocked if
+        // the vendor image is not update to date.
+        assumeTrue(firstApiLevel > Build.VERSION_CODES.TIRAMISU)
+        checkConnectSocketToMdnsd(shouldFail = true)
+    }
+
+    @Test @CtsNetTestCasesMaxTargetSdk33("mdnsd socket is accessible up to target SDK 33")
+    fun testCanConnectSocketToMdnsd() {
+        checkConnectSocketToMdnsd(shouldFail = false)
+    }
+
     @Test @CtsNetTestCasesMaxTargetSdk30("Socket is started with the service up to target SDK 30")
     fun testManagerCreatesLegacySocket() {
         nsdManager // Ensure the lazy-init member is initialized, so NsdManager is created
@@ -783,7 +854,7 @@ class NsdManagerTest {
         // when the compat change is disabled.
         // Note that before T the compat constant had a different int value.
         assertFalse(CompatChanges.isChangeEnabled(
-                NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER))
+                ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER))
     }
 
     @Test
