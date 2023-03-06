@@ -16,13 +16,19 @@
 
 package android.net.http.cts.util;
 
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.core.AnyOf.anyOf;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeThat;
+import static org.junit.Assume.assumeTrue;
 
 import android.net.http.CallbackException;
 import android.net.http.HttpException;
@@ -232,6 +238,19 @@ public class TestUrlRequestCallback extends UrlRequest.Callback {
     }
 
     /**
+     * Waits for a terminal callback to complete execution before skipping the test if the
+     * callback is not the expected one
+     *
+     * @param expectedStep the expected callback step
+     */
+    public void assumeCallback(ResponseStep expectedStep) {
+        if (isTerminalCallback(expectedStep)) {
+            assumeTrue("Did not receive terminal callback before timeout", blockForDone());
+        }
+        assumeThat(expectedStep, equalTo(mResponseStep));
+    }
+
+    /**
      * Blocks the calling thread until one of the final states has been called.
      * This is called before the callback has finished executed.
      */
@@ -272,8 +291,9 @@ public class TestUrlRequestCallback extends UrlRequest.Callback {
             UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
         checkExecutorThread();
         assertFalse(request.isDone());
-        assertTrue(mResponseStep == ResponseStep.NOTHING
-                || mResponseStep == ResponseStep.ON_RECEIVED_REDIRECT);
+        assertThat(mResponseStep, anyOf(
+                equalTo(ResponseStep.NOTHING),
+                equalTo(ResponseStep.ON_RECEIVED_REDIRECT)));
         assertNull(mError);
 
         mResponseStep = ResponseStep.ON_RECEIVED_REDIRECT;
@@ -290,8 +310,9 @@ public class TestUrlRequestCallback extends UrlRequest.Callback {
     public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
         checkExecutorThread();
         assertFalse(request.isDone());
-        assertTrue(mResponseStep == ResponseStep.NOTHING
-                || mResponseStep == ResponseStep.ON_RECEIVED_REDIRECT);
+        assertThat(mResponseStep, anyOf(
+                equalTo(ResponseStep.NOTHING),
+                equalTo(ResponseStep.ON_RECEIVED_REDIRECT)));
         assertNull(mError);
 
         mResponseStep = ResponseStep.ON_RESPONSE_STARTED;
@@ -306,8 +327,9 @@ public class TestUrlRequestCallback extends UrlRequest.Callback {
     public void onReadCompleted(UrlRequest request, UrlResponseInfo info, ByteBuffer byteBuffer) {
         checkExecutorThread();
         assertFalse(request.isDone());
-        assertTrue(mResponseStep == ResponseStep.ON_RESPONSE_STARTED
-                || mResponseStep == ResponseStep.ON_READ_COMPLETED);
+        assertThat(mResponseStep, anyOf(
+                equalTo(ResponseStep.ON_RESPONSE_STARTED),
+                equalTo(ResponseStep.ON_READ_COMPLETED)));
         assertNull(mError);
 
         mResponseStep = ResponseStep.ON_READ_COMPLETED;
@@ -333,8 +355,9 @@ public class TestUrlRequestCallback extends UrlRequest.Callback {
     public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
         checkExecutorThread();
         assertTrue(request.isDone());
-        assertTrue(mResponseStep == ResponseStep.ON_RESPONSE_STARTED
-                || mResponseStep == ResponseStep.ON_READ_COMPLETED);
+        assertThat(mResponseStep, anyOf(
+                equalTo(ResponseStep.ON_RESPONSE_STARTED),
+                equalTo(ResponseStep.ON_READ_COMPLETED)));
         assertFalse(mOnErrorCalled);
         assertFalse(mOnCanceledCalled);
         assertNull(mError);
@@ -357,7 +380,7 @@ public class TestUrlRequestCallback extends UrlRequest.Callback {
         checkExecutorThread();
         assertTrue(request.isDone());
         // Shouldn't happen after success.
-        assertTrue(mResponseStep != ResponseStep.ON_SUCCEEDED);
+        assertNotEquals(ResponseStep.ON_SUCCEEDED, mResponseStep);
         // Should happen at most once for a single request.
         assertFalse(mOnErrorCalled);
         assertFalse(mOnCanceledCalled);
