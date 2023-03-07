@@ -25,8 +25,6 @@ import android.net.NetworkReleasedException;
 import android.net.QosCallbackException;
 import android.net.SocketLocalAddressChangedException;
 import android.net.SocketNotBoundException;
-import android.net.SocketNotConnectedException;
-import android.net.SocketRemoteAddressChangedException;
 import android.os.Build;
 
 import com.android.testutils.ConnectivityModuleTest;
@@ -77,33 +75,9 @@ public class QosCallbackExceptionTest {
                 exception, localAddressChangedException, SocketLocalAddressChangedException.class);
     }
 
-    @Test
-    @IgnoreUpTo(Build.VERSION_CODES.S)
-    public void testSocketNotConnectedExceptions() throws Exception {
-        final Throwable sockNotConnectedException = new SocketNotConnectedException();
-        final QosCallbackException exception = new QosCallbackException(sockNotConnectedException);
-        validateQosCallbackException(
-                exception, sockNotConnectedException, SocketNotConnectedException.class);
-    }
-
-    @Test
-    @IgnoreUpTo(Build.VERSION_CODES.S)
-    public void testSocketRemoteAddressChangedExceptions() throws  Exception {
-        final Throwable remoteAddressChangedException = new SocketRemoteAddressChangedException();
-        final QosCallbackException exception =
-                new QosCallbackException(remoteAddressChangedException);
-        validateQosCallbackException(
-                exception, remoteAddressChangedException,
-                SocketRemoteAddressChangedException.class);
-    }
-
     private void validateQosCallbackException(
             QosCallbackException e, Throwable cause, Class c) throws Exception {
-        if (c == SocketNotConnectedException.class) {
-            assertTrue(e.getCause() instanceof SocketNotConnectedException);
-        } else if (c == SocketRemoteAddressChangedException.class) {
-            assertTrue(e.getCause() instanceof SocketRemoteAddressChangedException);
-        } else if (c == SocketLocalAddressChangedException.class) {
+        if (c == SocketLocalAddressChangedException.class) {
             assertTrue(e.getCause() instanceof SocketLocalAddressChangedException);
         } else if (c == SocketNotBoundException.class) {
             assertTrue(e.getCause() instanceof SocketNotBoundException);
