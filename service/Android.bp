@@ -22,7 +22,6 @@ package {
 aidl_interface {
     name: "connectivity_native_aidl_interface",
     local_include_dir: "binder",
-    vendor_available: true,
     srcs: [
         "binder/android/net/connectivity/aidl/*.aidl",
     ],
@@ -147,6 +146,7 @@ java_library {
     ],
     libs: [
         "framework-annotations-lib",
+        "framework-configinfrastructure",
         "framework-connectivity-pre-jarjar",
         // The framework-connectivity-t library is only available on T+ platforms
         // so any calls to it must be protected with a check to ensure that it is
@@ -157,7 +157,9 @@ java_library {
         // against the implementation because the two libraries are in the same
         // APEX.
         "framework-connectivity-t.stubs.module_lib",
-        "framework-tethering",
+        // TODO: figure out why just using "framework-tethering" uses the stubs, even though both
+        // service-connectivity and framework-tethering are in the same APEX.
+        "framework-tethering.impl",
         "framework-wifi",
         "unsupportedappusage",
         "ServiceConnectivityResources",
@@ -166,9 +168,10 @@ java_library {
     static_libs: [
         // Do not add libs here if they are already included
         // in framework-connectivity
+        "androidx.annotation_annotation",
         "connectivity-net-module-utils-bpf",
         "connectivity_native_aidl_interface-lateststable-java",
-        "dnsresolver_aidl_interface-V9-java",
+        "dnsresolver_aidl_interface-V11-java",
         "modules-utils-shell-command-handler",
         "net-utils-device-common",
         "net-utils-device-common-bpf",
@@ -179,6 +182,7 @@ java_library {
         "networkstack-client",
         "PlatformProperties",
         "service-connectivity-protos",
+        "service-connectivity-stats-protos",
         "NetworkStackApiStableShims",
     ],
     apex_available: [
@@ -187,25 +191,6 @@ java_library {
     lint: { strict_updatability_linting: true },
     visibility: [
         "//packages/modules/Connectivity/service-t",
-        "//packages/modules/Connectivity/tests:__subpackages__",
-    ],
-}
-
-// TODO: Remove this temporary library and put code into module when test coverage is enough.
-java_library {
-    name: "service-mdns",
-    sdk_version: "system_server_current",
-    min_sdk_version: "30",
-    srcs: [
-        "mdns/**/*.java",
-    ],
-    libs: [
-        "framework-annotations-lib",
-        "framework-connectivity-pre-jarjar",
-        "framework-wifi",
-        "service-connectivity-pre-jarjar",
-    ],
-    visibility: [
         "//packages/modules/Connectivity/tests:__subpackages__",
     ],
 }
@@ -256,7 +241,7 @@ java_defaults {
         "framework-annotations-lib",
         "framework-connectivity.impl",
         "framework-connectivity-t.impl",
-        "framework-tethering",
+        "framework-tethering.impl",
         "framework-wifi",
         "libprotobuf-java-nano",
     ],
@@ -288,6 +273,20 @@ java_library {
     name: "service-connectivity",
     defaults: ["service-connectivity-defaults"],
     installable: true,
+}
+
+java_library_static {
+    name: "service-connectivity-stats-protos",
+    sdk_version: "system_current",
+    min_sdk_version: "30",
+    proto: {
+        type: "lite",
+    },
+    srcs: [
+        "src/com/android/metrics/stats.proto",
+    ],
+    static_libs: ["ConnectivityServiceprotos"],
+    apex_available: ["com.android.tethering"],
 }
 
 genrule {
