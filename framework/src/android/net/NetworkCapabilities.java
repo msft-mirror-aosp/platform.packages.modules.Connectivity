@@ -1224,6 +1224,7 @@ public final class NetworkCapabilities implements Parcelable {
 
     /**
      * Indicates this network uses a Thread transport.
+     * @hide
      */
     public static final int TRANSPORT_THREAD = 9;
 

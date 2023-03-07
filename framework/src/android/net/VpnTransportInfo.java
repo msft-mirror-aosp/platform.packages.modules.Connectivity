@@ -17,7 +17,6 @@
 package android.net;
 
 import static android.annotation.SystemApi.Client.MODULE_LIBRARIES;
-import static android.annotation.SystemApi.Client.PRIVILEGED_APPS;
 import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
 
 import android.annotation.NonNull;
@@ -42,7 +41,7 @@ import java.util.Objects;
  *
  * @hide
  */
-@SystemApi(client = PRIVILEGED_APPS)
+@SystemApi(client = MODULE_LIBRARIES)
 public final class VpnTransportInfo implements TransportInfo, Parcelable {
     /** Type of this VPN. */
     private final int mType;
@@ -76,12 +75,6 @@ public final class VpnTransportInfo implements TransportInfo, Parcelable {
             mBypassable, mLongLivedTcpConnectionsExpensive);
     }
 
-    /**
-     * @deprecated please use {@link VpnTransportInfo(int,String,boolean,boolean)}.
-     * @hide
-     */
-    @Deprecated
-    @SystemApi(client = MODULE_LIBRARIES)
     public VpnTransportInfo(int type, @Nullable String sessionId) {
         // When the module runs on older SDKs, |bypassable| will always be false since the old Vpn
         // code will call this constructor. For Settings VPNs, this is always correct as they are
@@ -95,6 +88,7 @@ public final class VpnTransportInfo implements TransportInfo, Parcelable {
 
     /**
      * Construct a new VpnTransportInfo object.
+     * @hide
      */
     public VpnTransportInfo(int type, @Nullable String sessionId, boolean bypassable,
             boolean longLivedTcpConnectionsExpensive) {
@@ -109,6 +103,7 @@ public final class VpnTransportInfo implements TransportInfo, Parcelable {
      *
      * This method is not supported in SDK below U, and will throw
      * {@code UnsupportedOperationException} if called.
+     * @hide
      */
     @RequiresApi(UPSIDE_DOWN_CAKE)
     public boolean isBypassable() {
@@ -145,6 +140,7 @@ public final class VpnTransportInfo implements TransportInfo, Parcelable {
      * connections to choose to use the VPN by default, but also do not expect this
      * comes at the price of drastically reduced battery life. This method provides
      * a hint about whether the battery cost of opening such a connection is high.
+     * @hide
      */
     public boolean areLongLivedTcpConnectionsExpensive() {
         return mLongLivedTcpConnectionsExpensive;
