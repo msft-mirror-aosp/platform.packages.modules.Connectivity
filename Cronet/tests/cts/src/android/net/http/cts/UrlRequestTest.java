@@ -70,7 +70,7 @@ public class UrlRequestTest {
     }
 
     private UrlRequest.Builder createUrlRequestBuilder(String url) {
-        return mHttpEngine.newUrlRequestBuilder(url, mCallback, mCallback.getExecutor());
+        return mHttpEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
     }
 
     @Test
@@ -113,8 +113,9 @@ public class UrlRequestTest {
         String testData = "test";
         UrlRequest.Builder builder = createUrlRequestBuilder(mTestServer.getEchoBodyUrl());
 
-        TestUploadDataProvider dataProvider = new TestUploadDataProvider(
-                TestUploadDataProvider.SuccessCallbackMode.SYNC, mCallback.getExecutor());
+        TestUploadDataProvider dataProvider =
+                new TestUploadDataProvider(
+                        TestUploadDataProvider.SuccessCallbackMode.SYNC, mCallback.getExecutor());
         dataProvider.addRead(testData.getBytes());
         builder.setUploadDataProvider(dataProvider, mCallback.getExecutor());
         builder.addHeader("Content-Type", "text/html");

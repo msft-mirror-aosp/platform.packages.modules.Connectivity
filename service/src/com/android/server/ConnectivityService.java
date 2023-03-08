@@ -5052,9 +5052,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     public void setTestLowTcpPollingTimerForKeepalive(long timeMs) {
         enforceSettingsPermission();
-        if (!Build.isDebuggable()) {
-            throw new IllegalStateException("Is not supported in non-debuggable build");
-        }
 
         if (timeMs > System.currentTimeMillis() + MAX_TEST_LOW_TCP_POLLING_UNTIL_MS) {
             throw new IllegalArgumentException("Argument should not exceed "
@@ -6688,8 +6685,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         @Override
         public void binderDied() {
-            log("ConnectivityService NetworkRequestInfo binderDied(" +
-                    "uid/pid:" + mUid + "/" + mPid + ", " + mRequests + ", " + mBinder + ")");
             // As an immutable collection, mRequests cannot change by the time the
             // lambda is evaluated on the handler thread so calling .get() from a binder thread
             // is acceptable. Use handleReleaseNetworkRequest and not directly
