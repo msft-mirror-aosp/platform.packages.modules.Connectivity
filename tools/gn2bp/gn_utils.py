@@ -46,12 +46,26 @@ ODR_VIOLATION_IGNORE_TARGETS = {
 }
 ARCH_REGEX = r'(android_x86_64|android_x86|android_arm|android_arm64|host)'
 RESPONSE_FILE = '{{response_file_name}}'
+TESTING_SUFFIX = "__testing"
+AIDL_INCLUDE_DIRS_REGEX = r'--includes=\[(.*)\]'
 
 def repo_root():
   """Returns an absolute path to the repository root."""
   return os.path.join(
       os.path.realpath(os.path.dirname(__file__)), os.path.pardir)
 
+
+def _clean_string(str):
+  return str.replace('\\', '').replace('../../', '').replace('"', '').strip()
+
+
+def _extract_includes_from_aidl_args(args):
+  for arg in args:
+    is_match = re.match(AIDL_INCLUDE_DIRS_REGEX, arg)
+    if is_match:
+      local_includes = is_match.group(1).split(",")
+      return [_clean_string(local_include) for local_include in local_includes]
+  return []
 
 def label_to_path(label):
   """Turn a GN output label (e.g., //some_dir/file.cc) into a path."""
@@ -119,6 +133,7 @@ class GnParser(object):
         self.deps = set()
         self.transitive_static_libs_deps = set()
         self.source_set_deps = set()
+        self.ldflags = set()
 
         # These are valid only for type == 'action'
         self.inputs = set()
@@ -207,7 +222,7 @@ class GnParser(object):
                   'libs', 'proto_paths'):
         self.__dict__[key].update(other.__dict__.get(key, []))
 
-      for key_in_arch in ('cflags', 'defines', 'include_dirs', 'source_set_deps'):
+      for key_in_arch in ('cflags', 'defines', 'include_dirs', 'source_set_deps', 'ldflags'):
         self.arch[arch].__dict__[key_in_arch].update(
           other.arch[arch].__dict__.get(key_in_arch, []))
 
@@ -250,8 +265,11 @@ class GnParser(object):
         return
 
       for key in ('sources', 'cflags', 'defines', 'include_dirs', 'deps', 'source_set_deps',
-                  'inputs', 'outputs', 'args', 'script', 'response_file_contents'):
+                  'inputs', 'outputs', 'args', 'script', 'response_file_contents', 'ldflags'):
         self._finalize_attribute(key)
+
+    def get_target_name(self):
+      return self.name[self.name.find(":") + 1:]
 
 
   def __init__(self, builtin_deps):
@@ -262,6 +280,7 @@ class GnParser(object):
     self.actions = {}
     self.proto_libs = {}
     self.java_sources = collections.defaultdict(set)
+    self.aidl_local_include_dirs = set()
     self.java_actions = collections.defaultdict(set)
 
   def _get_response_file_contents(self, action_desc):
@@ -308,7 +327,7 @@ class GnParser(object):
 
     return self.all_targets[label_without_toolchain(gn_target_name)]
 
-  def parse_gn_desc(self, gn_desc, gn_target_name, java_group_name=None):
+  def parse_gn_desc(self, gn_desc, gn_target_name, java_group_name=None, is_test_target=False):
     """Parses a gn desc tree and resolves all target dependencies.
 
         It bubbles up variables from source_set dependencies as described in the
@@ -323,6 +342,9 @@ class GnParser(object):
 
     if self._is_java_group(type_, target_name):
       java_group_name = target_name
+
+    if is_test_target:
+      target_name += TESTING_SUFFIX
 
     target = self.all_targets.get(target_name)
     if target is None:
@@ -392,7 +414,7 @@ class GnParser(object):
 
     target.arch[arch].cflags.update(desc.get('cflags', []) + desc.get('cflags_cc', []))
     target.libs.update(desc.get('libs', []))
-    target.ldflags.update(desc.get('ldflags', []))
+    target.arch[arch].ldflags.update(desc.get('ldflags', []))
     target.arch[arch].defines.update(desc.get('defines', []))
     target.arch[arch].include_dirs.update(desc.get('include_dirs', []))
     target.output_name = desc.get('output_name', None)
@@ -401,20 +423,12 @@ class GnParser(object):
 
     # Recurse in dependencies.
     for gn_dep_name in desc.get('deps', []):
-      dep = self.parse_gn_desc(gn_desc, gn_dep_name, java_group_name)
+      dep = self.parse_gn_desc(gn_desc, gn_dep_name, java_group_name, is_test_target)
       if dep.type == 'proto_library':
         target.proto_deps.add(dep.name)
         target.transitive_proto_deps.add(dep.name)
         target.proto_paths.update(dep.proto_paths)
         target.transitive_proto_deps.update(dep.transitive_proto_deps)
-      elif dep.type == 'source_set':
-        target.arch[arch].source_set_deps.add(dep.name)
-        target.arch[arch].source_set_deps.update(dep.arch[arch].source_set_deps)
-        # flatten source_set deps
-        if target.is_linker_unit_type():
-          # This ensure that all transitive source set dependencies are
-          # propagated upward to the linker units.
-          target.arch[arch].deps.update(target.arch[arch].source_set_deps)
       elif dep.type == 'group':
         target.update(dep, arch)  # Bubble up groups's cflags/ldflags etc.
       elif dep.type in ['action', 'action_foreach', 'copy']:
@@ -428,12 +442,11 @@ class GnParser(object):
         # java_library.
         pass
 
-      # Source set bubble up transitive source sets but can't be combined with this
-      # if they are combined then source sets will bubble up static libraries
-      # while we only want to have source sets bubble up only source sets.
-      if dep.type == 'static_library':
-        # Bubble up static_libs. Necessary, since soong does not propagate
+      if dep.type in ['static_library', 'source_set']:
+        # Bubble up static_libs and source_set. Necessary, since soong does not propagate
         # static_libs up the build tree.
+        # Source sets are later translated to static_libraries, so it makes sense
+        # to reuse transitive_static_libs_deps.
         target.arch[arch].transitive_static_libs_deps.add(dep.name)
 
       if arch in dep.arch:
@@ -451,15 +464,23 @@ class GnParser(object):
         if dep.name.endswith('__compile_java'):
           log.debug('Adding java sources for %s', dep.name)
           java_srcs = [src for src in dep.inputs if _is_java_source(src)]
-          self.java_sources[java_group_name].update(java_srcs)
+          if not is_test_target:
+            # TODO(aymanm): Fix collecting sources for testing modules for java.
+            # Don't collect java source files for test targets.
+            # We only need a specific set of java sources which are hardcoded in gen_android_bp
+            self.java_sources[java_group_name].update(java_srcs)
       if dep.type in ["action"] and target.type == "java_group":
-        # //base:base_java_aidl generates srcjar from .aidl files. But java_library in soong can
-        # directly have .aidl files in srcs. So adding .aidl files to the java_sources.
+        # GN uses an action to compile aidl files. However, this is not needed in soong
+        # as soong can directly have .aidl files in srcs. So adding .aidl files to the java_sources.
         # TODO: Find a better way/place to do this.
-        if dep.name == '//base:base_java_aidl':
+        if '_aidl' in dep.name:
           self.java_sources[java_group_name].update(dep.arch[arch].sources)
+          self.aidl_local_include_dirs.update(_extract_includes_from_aidl_args(dep.arch[arch].args))
         else:
-          self.java_actions[java_group_name].add(dep.name)
+          if not is_test_target:
+            # TODO(aymanm): Fix collecting actions for testing modules for java.
+            # Don't collect java actions for test targets.
+            self.java_actions[java_group_name].add(dep.name)
     return target
 
   def get_proto_exports(self, proto_desc):

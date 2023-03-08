@@ -156,7 +156,7 @@ java_sdk_library {
         "//frameworks/opt/telephony/tests/telephonytests",
         "//packages/modules/CaptivePortalLogin/tests",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
-        "//packages/modules/Connectivity/nearby/tests:__subpackages__",
+        "//packages/modules/Connectivity/nearby:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
@@ -164,6 +164,7 @@ java_sdk_library {
     ],
 }
 
+// This rule is not used anymore(b/268440216).
 platform_compat_config {
     name: "connectivity-t-platform-compat-config",
     src: ":framework-connectivity-t",

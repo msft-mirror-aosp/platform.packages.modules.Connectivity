@@ -35,8 +35,8 @@ import android.net.http.cts.util.TestUploadDataProvider;
 import android.net.http.cts.util.TestUrlRequestCallback;
 import android.net.http.cts.util.TestUrlRequestCallback.ResponseStep;
 
-import androidx.test.platform.app.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
+import androidx.test.core.app.ApplicationProvider;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
 
 import org.junit.After;
 import org.junit.Before;
@@ -51,7 +51,7 @@ public class UrlRequestTest {
 
     @Before
     public void setUp() throws Exception {
-        Context context = InstrumentationRegistry.getInstrumentation().getContext();
+        Context context = ApplicationProvider.getApplicationContext();
         skipIfNoInternetConnection(context);
         HttpEngine.Builder builder = new HttpEngine.Builder(context);
         mHttpEngine = builder.build();
@@ -70,7 +70,7 @@ public class UrlRequestTest {
     }
 
     private UrlRequest.Builder createUrlRequestBuilder(String url) {
-        return mHttpEngine.newUrlRequestBuilder(url, mCallback, mCallback.getExecutor());
+        return mHttpEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
     }
 
     @Test
@@ -113,8 +113,9 @@ public class UrlRequestTest {
         String testData = "test";
         UrlRequest.Builder builder = createUrlRequestBuilder(mTestServer.getEchoBodyUrl());
 
-        TestUploadDataProvider dataProvider = new TestUploadDataProvider(
-                TestUploadDataProvider.SuccessCallbackMode.SYNC, mCallback.getExecutor());
+        TestUploadDataProvider dataProvider =
+                new TestUploadDataProvider(
+                        TestUploadDataProvider.SuccessCallbackMode.SYNC, mCallback.getExecutor());
         dataProvider.addRead(testData.getBytes());
         builder.setUploadDataProvider(dataProvider, mCallback.getExecutor());
         builder.addHeader("Content-Type", "text/html");
@@ -124,5 +125,11 @@ public class UrlRequestTest {
         assertOKStatusCode(mCallback.mResponseInfo);
         assertEquals(testData, mCallback.mResponseAsString);
         dataProvider.assertClosed();
+    }
+
+    @Test
+    public void testUrlRequestFail_FailedCalled() throws Exception {
+        createUrlRequestBuilder("http://0.0.0.0:0/").build().start();
+        mCallback.expectCallback(ResponseStep.ON_FAILED);
     }
 }
