@@ -21,6 +21,7 @@ import static android.net.nsd.NsdManager.FAILURE_BAD_PARAMETERS;
 import static android.net.nsd.NsdManager.FAILURE_INTERNAL_ERROR;
 import static android.net.nsd.NsdManager.FAILURE_OPERATION_NOT_RUNNING;
 
+import static com.android.server.NsdService.constructServiceType;
 import static com.android.testutils.ContextUtils.mockService;
 
 import static libcore.junit.util.compat.CoreCompatChangeRule.DisableCompatChanges;
@@ -45,6 +46,7 @@ import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.compat.testing.PlatformCompatChangeRule;
@@ -52,6 +54,7 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.net.INetd;
 import android.net.Network;
+import android.net.connectivity.ConnectivityCompatChanges;
 import android.net.mdns.aidl.DiscoveryInfo;
 import android.net.mdns.aidl.GetAddressInfo;
 import android.net.mdns.aidl.IMDnsEventListener;
@@ -98,6 +101,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.LinkedList;
 import java.util.List;
@@ -170,6 +174,9 @@ public class NsdServiceTest {
         doReturn(true).when(mMockMDnsM).resolve(
                 anyInt(), anyString(), anyString(), anyString(), anyInt());
         doReturn(false).when(mDeps).isMdnsDiscoveryManagerEnabled(any(Context.class));
+        doReturn(mDiscoveryManager).when(mDeps).makeMdnsDiscoveryManager(any(), any());
+        doReturn(mSocketProvider).when(mDeps).makeMdnsSocketProvider(any(), any());
+        doReturn(mAdvertiser).when(mDeps).makeMdnsAdvertiser(any(), any(), any());
 
         mService = makeService();
     }
@@ -183,7 +190,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @DisableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @DisableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testPreSClients() throws Exception {
         // Pre S client connected, the daemon should be started.
         connectClient(mService);
@@ -210,7 +217,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testNoDaemonStartedWhenClientsConnect() throws Exception {
         // Creating an NsdManager will not cause daemon startup.
         connectClient(mService);
@@ -244,7 +251,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testClientRequestsAreGCedAtDisconnection() throws Exception {
         final NsdManager client = connectClient(mService);
         final INsdManagerCallback cb1 = getCallback();
@@ -287,7 +294,7 @@ public class NsdServiceTest {
     }
 
     @Test
-    @EnableCompatChanges(NsdManager.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
+    @EnableCompatChanges(ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     public void testCleanupDelayNoRequestActive() throws Exception {
         final NsdManager client = connectClient(mService);
 
@@ -625,7 +632,7 @@ public class NsdServiceTest {
         waitForIdle();
 
         verify(mMockMDnsM).stopOperation(resolveId);
-        verify(resolveListener, timeout(TIMEOUT_MS)).onResolveStopped(argThat(ns ->
+        verify(resolveListener, timeout(TIMEOUT_MS)).onResolutionStopped(argThat(ns ->
                 request.getServiceName().equals(ns.getServiceName())
                         && request.getServiceType().equals(ns.getServiceType())));
     }
@@ -692,125 +699,108 @@ public class NsdServiceTest {
         waitForIdle();
 
         verify(mMockMDnsM).stopOperation(getAddrId);
-        verify(resolveListener, timeout(TIMEOUT_MS)).onResolveStopped(argThat(ns ->
+        verify(resolveListener, timeout(TIMEOUT_MS)).onResolutionStopped(argThat(ns ->
                 request.getServiceName().equals(ns.getServiceName())
                         && request.getServiceType().equals(ns.getServiceType())));
     }
 
     private void verifyUpdatedServiceInfo(NsdServiceInfo info, String serviceName,
-            String serviceType, String address, int port, int interfaceIndex, Network network) {
+            String serviceType, List<InetAddress> address, int port, int interfaceIndex,
+            Network network) {
         assertEquals(serviceName, info.getServiceName());
         assertEquals(serviceType, info.getServiceType());
-        assertTrue(info.getHostAddresses().contains(parseNumericAddress(address)));
+        assertEquals(address, info.getHostAddresses());
         assertEquals(port, info.getPort());
         assertEquals(network, info.getNetwork());
         assertEquals(interfaceIndex, info.getInterfaceIndex());
     }
 
     @Test
-    public void testRegisterAndUnregisterServiceInfoCallback() throws RemoteException {
+    public void testRegisterAndUnregisterServiceInfoCallback() {
         final NsdManager client = connectClient(mService);
         final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
         final NsdManager.ServiceInfoCallback serviceInfoCallback = mock(
                 NsdManager.ServiceInfoCallback.class);
+        final String serviceTypeWithLocalDomain = SERVICE_TYPE + ".local";
+        final Network network = new Network(999);
+        request.setNetwork(network);
         client.registerServiceInfoCallback(request, Runnable::run, serviceInfoCallback);
         waitForIdle();
+        // Verify the registration callback start.
+        final ArgumentCaptor<MdnsServiceBrowserListener> listenerCaptor =
+                ArgumentCaptor.forClass(MdnsServiceBrowserListener.class);
+        verify(mSocketProvider).startMonitoringSockets();
+        verify(mDiscoveryManager).registerListener(eq(serviceTypeWithLocalDomain),
+                listenerCaptor.capture(), argThat(options -> network.equals(options.getNetwork())));
 
-        final IMDnsEventListener eventListener = getEventListener();
-        final ArgumentCaptor<Integer> resolvIdCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(mMockMDnsM).resolve(resolvIdCaptor.capture(), eq(SERVICE_NAME), eq(SERVICE_TYPE),
-                eq("local.") /* domain */, eq(IFACE_IDX_ANY));
-
-        // Resolve service successfully.
-        final ResolutionInfo resolutionInfo = new ResolutionInfo(
-                resolvIdCaptor.getValue(),
-                IMDnsEventListener.SERVICE_RESOLVED,
-                null /* serviceName */,
-                null /* serviceType */,
-                null /* domain */,
-                SERVICE_FULL_NAME,
-                DOMAIN_NAME,
+        final MdnsServiceBrowserListener listener = listenerCaptor.getValue();
+        final MdnsServiceInfo mdnsServiceInfo = new MdnsServiceInfo(
+                SERVICE_NAME,
+                serviceTypeWithLocalDomain.split("\\."),
+                List.of(), /* subtypes */
+                new String[]{"android", "local"}, /* hostName */
                 PORT,
-                new byte[0] /* txtRecord */,
-                IFACE_IDX_ANY);
-        doReturn(true).when(mMockMDnsM).getServiceAddress(anyInt(), any(), anyInt());
-        eventListener.onServiceResolutionStatus(resolutionInfo);
-        waitForIdle();
+                List.of(IPV4_ADDRESS),
+                List.of(IPV6_ADDRESS),
+                List.of() /* textStrings */,
+                List.of() /* textEntries */,
+                1234,
+                network);
 
-        final ArgumentCaptor<Integer> getAddrIdCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(mMockMDnsM).getServiceAddress(getAddrIdCaptor.capture(), eq(DOMAIN_NAME),
-                eq(IFACE_IDX_ANY));
-
-        // First address info
-        final String v4Address = "192.0.2.1";
-        final String v6Address = "2001:db8::";
-        final GetAddressInfo addressInfo1 = new GetAddressInfo(
-                getAddrIdCaptor.getValue(),
-                IMDnsEventListener.SERVICE_GET_ADDR_SUCCESS,
-                SERVICE_FULL_NAME,
-                v4Address,
-                IFACE_IDX_ANY,
-                999 /* netId */);
-        eventListener.onGettingServiceAddressStatus(addressInfo1);
-        waitForIdle();
-
+        // Verify onServiceFound callback
+        listener.onServiceFound(mdnsServiceInfo);
         final ArgumentCaptor<NsdServiceInfo> updateInfoCaptor =
                 ArgumentCaptor.forClass(NsdServiceInfo.class);
         verify(serviceInfoCallback, timeout(TIMEOUT_MS).times(1))
                 .onServiceUpdated(updateInfoCaptor.capture());
         verifyUpdatedServiceInfo(updateInfoCaptor.getAllValues().get(0) /* info */, SERVICE_NAME,
-                "." + SERVICE_TYPE, v4Address, PORT, IFACE_IDX_ANY, new Network(999));
+                SERVICE_TYPE,
+                List.of(parseNumericAddress(IPV4_ADDRESS), parseNumericAddress(IPV6_ADDRESS)),
+                PORT, IFACE_IDX_ANY, new Network(999));
 
-        // Second address info
-        final GetAddressInfo addressInfo2 = new GetAddressInfo(
-                getAddrIdCaptor.getValue(),
-                IMDnsEventListener.SERVICE_GET_ADDR_SUCCESS,
-                SERVICE_FULL_NAME,
-                v6Address,
-                IFACE_IDX_ANY,
-                999 /* netId */);
-        eventListener.onGettingServiceAddressStatus(addressInfo2);
-        waitForIdle();
+        // Service addresses changed.
+        final String v4Address = "192.0.2.1";
+        final String v6Address = "2001:db8::1";
+        final MdnsServiceInfo updatedServiceInfo = new MdnsServiceInfo(
+                SERVICE_NAME,
+                serviceTypeWithLocalDomain.split("\\."),
+                List.of(), /* subtypes */
+                new String[]{"android", "local"}, /* hostName */
+                PORT,
+                List.of(v4Address),
+                List.of(v6Address),
+                List.of() /* textStrings */,
+                List.of() /* textEntries */,
+                1234,
+                network);
 
+        // Verify onServiceUpdated callback.
+        listener.onServiceUpdated(updatedServiceInfo);
         verify(serviceInfoCallback, timeout(TIMEOUT_MS).times(2))
                 .onServiceUpdated(updateInfoCaptor.capture());
-        verifyUpdatedServiceInfo(updateInfoCaptor.getAllValues().get(1) /* info */, SERVICE_NAME,
-                "." + SERVICE_TYPE, v6Address, PORT, IFACE_IDX_ANY, new Network(999));
+        verifyUpdatedServiceInfo(updateInfoCaptor.getAllValues().get(2) /* info */, SERVICE_NAME,
+                SERVICE_TYPE,
+                List.of(parseNumericAddress(v4Address), parseNumericAddress(v6Address)),
+                PORT, IFACE_IDX_ANY, new Network(999));
 
+        // Verify service callback unregistration.
         client.unregisterServiceInfoCallback(serviceInfoCallback);
         waitForIdle();
-
         verify(serviceInfoCallback, timeout(TIMEOUT_MS)).onServiceInfoCallbackUnregistered();
     }
 
     @Test
-    public void testRegisterServiceCallbackFailed() throws Exception {
+    public void testRegisterServiceCallbackFailed() {
         final NsdManager client = connectClient(mService);
-        final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
-        final NsdManager.ServiceInfoCallback subscribeListener = mock(
+        final String invalidServiceType = "a_service";
+        final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, invalidServiceType);
+        final NsdManager.ServiceInfoCallback serviceInfoCallback = mock(
                 NsdManager.ServiceInfoCallback.class);
-        client.registerServiceInfoCallback(request, Runnable::run, subscribeListener);
+        client.registerServiceInfoCallback(request, Runnable::run, serviceInfoCallback);
         waitForIdle();
 
-        final IMDnsEventListener eventListener = getEventListener();
-        final ArgumentCaptor<Integer> resolvIdCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(mMockMDnsM).resolve(resolvIdCaptor.capture(), eq(SERVICE_NAME), eq(SERVICE_TYPE),
-                eq("local.") /* domain */, eq(IFACE_IDX_ANY));
-
-        // Fail to resolve service.
-        final ResolutionInfo resolutionFailedInfo = new ResolutionInfo(
-                resolvIdCaptor.getValue(),
-                IMDnsEventListener.SERVICE_RESOLUTION_FAILED,
-                null /* serviceName */,
-                null /* serviceType */,
-                null /* domain */,
-                null /* serviceFullName */,
-                null /* domainName */,
-                0 /* port */,
-                new byte[0] /* txtRecord */,
-                IFACE_IDX_ANY);
-        eventListener.onServiceResolutionStatus(resolutionFailedInfo);
-        verify(subscribeListener, timeout(TIMEOUT_MS))
+        // Fail to register service callback.
+        verify(serviceInfoCallback, timeout(TIMEOUT_MS))
                 .onServiceInfoCallbackRegistrationFailed(eq(FAILURE_BAD_PARAMETERS));
     }
 
@@ -824,40 +814,50 @@ public class NsdServiceTest {
                 client.unregisterServiceInfoCallback(serviceInfoCallback));
     }
 
-    private void makeServiceWithMdnsDiscoveryManagerEnabled() {
+    private void setMdnsDiscoveryManagerEnabled() {
         doReturn(true).when(mDeps).isMdnsDiscoveryManagerEnabled(any(Context.class));
-        doReturn(mDiscoveryManager).when(mDeps).makeMdnsDiscoveryManager(any(), any());
-        doReturn(mSocketProvider).when(mDeps).makeMdnsSocketProvider(any(), any());
-
-        mService = makeService();
-        verify(mDeps).makeMdnsDiscoveryManager(any(), any());
-        verify(mDeps).makeMdnsSocketProvider(any(), any());
     }
 
-    private void makeServiceWithMdnsAdvertiserEnabled() {
+    private void setMdnsAdvertiserEnabled() {
         doReturn(true).when(mDeps).isMdnsAdvertiserEnabled(any(Context.class));
-        doReturn(mAdvertiser).when(mDeps).makeMdnsAdvertiser(any(), any(), any());
-        doReturn(mSocketProvider).when(mDeps).makeMdnsSocketProvider(any(), any());
-
-        mService = makeService();
-        verify(mDeps).makeMdnsAdvertiser(any(), any(), any());
-        verify(mDeps).makeMdnsSocketProvider(any(), any());
     }
 
     @Test
     public void testMdnsDiscoveryManagerFeature() {
         // Create NsdService w/o feature enabled.
-        connectClient(mService);
-        verify(mDeps, never()).makeMdnsDiscoveryManager(any(), any());
-        verify(mDeps, never()).makeMdnsSocketProvider(any(), any());
+        final NsdManager client = connectClient(mService);
+        final DiscoveryListener discListenerWithoutFeature = mock(DiscoveryListener.class);
+        client.discoverServices(SERVICE_TYPE, PROTOCOL, discListenerWithoutFeature);
+        waitForIdle();
 
-        // Create NsdService again w/ feature enabled.
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        final ArgumentCaptor<Integer> legacyIdCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(mMockMDnsM).discover(legacyIdCaptor.capture(), any(), anyInt());
+        verifyNoMoreInteractions(mDiscoveryManager);
+
+        setMdnsDiscoveryManagerEnabled();
+        final DiscoveryListener discListenerWithFeature = mock(DiscoveryListener.class);
+        client.discoverServices(SERVICE_TYPE, PROTOCOL, discListenerWithFeature);
+        waitForIdle();
+
+        final String serviceTypeWithLocalDomain = SERVICE_TYPE + ".local";
+        final ArgumentCaptor<MdnsServiceBrowserListener> listenerCaptor =
+                ArgumentCaptor.forClass(MdnsServiceBrowserListener.class);
+        verify(mDiscoveryManager).registerListener(eq(serviceTypeWithLocalDomain),
+                listenerCaptor.capture(), any());
+
+        client.stopServiceDiscovery(discListenerWithoutFeature);
+        waitForIdle();
+        verify(mMockMDnsM).stopOperation(legacyIdCaptor.getValue());
+
+        client.stopServiceDiscovery(discListenerWithFeature);
+        waitForIdle();
+        verify(mDiscoveryManager).unregisterListener(serviceTypeWithLocalDomain,
+                listenerCaptor.getValue());
     }
 
     @Test
     public void testDiscoveryWithMdnsDiscoveryManager() {
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        setMdnsDiscoveryManagerEnabled();
 
         final NsdManager client = connectClient(mService);
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
@@ -880,8 +880,8 @@ public class NsdServiceTest {
                 List.of(), /* subtypes */
                 new String[] {"android", "local"}, /* hostName */
                 12345, /* port */
-                IPV4_ADDRESS,
-                IPV6_ADDRESS,
+                List.of(IPV4_ADDRESS),
+                List.of(IPV6_ADDRESS),
                 List.of(), /* textStrings */
                 List.of(), /* textEntries */
                 1234, /* interfaceIndex */
@@ -900,8 +900,8 @@ public class NsdServiceTest {
                 null, /* subtypes */
                 null, /* hostName */
                 0, /* port */
-                null, /* ipv4Address */
-                null, /* ipv6Address */
+                List.of(), /* ipv4Address */
+                List.of(), /* ipv6Address */
                 null, /* textStrings */
                 null, /* textEntries */
                 1234, /* interfaceIndex */
@@ -917,12 +917,12 @@ public class NsdServiceTest {
         waitForIdle();
         verify(mDiscoveryManager).unregisterListener(eq(serviceTypeWithLocalDomain), any());
         verify(discListener, timeout(TIMEOUT_MS)).onDiscoveryStopped(SERVICE_TYPE);
-        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).stopMonitoringSockets();
+        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).requestStopWhenInactive();
     }
 
     @Test
     public void testDiscoveryWithMdnsDiscoveryManager_FailedWithInvalidServiceType() {
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        setMdnsDiscoveryManagerEnabled();
 
         final NsdManager client = connectClient(mService);
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
@@ -951,7 +951,7 @@ public class NsdServiceTest {
 
     @Test
     public void testResolutionWithMdnsDiscoveryManager() throws UnknownHostException {
-        makeServiceWithMdnsDiscoveryManagerEnabled();
+        setMdnsDiscoveryManagerEnabled();
 
         final NsdManager client = connectClient(mService);
         final ResolveListener resolveListener = mock(ResolveListener.class);
@@ -966,7 +966,9 @@ public class NsdServiceTest {
         waitForIdle();
         verify(mSocketProvider).startMonitoringSockets();
         verify(mDiscoveryManager).registerListener(eq(constructedServiceType),
-                listenerCaptor.capture(), argThat(options -> network.equals(options.getNetwork())));
+                listenerCaptor.capture(), argThat(options ->
+                        network.equals(options.getNetwork())
+                                && SERVICE_NAME.equals(options.getResolveInstanceName())));
 
         final MdnsServiceBrowserListener listener = listenerCaptor.getValue();
         final MdnsServiceInfo mdnsServiceInfo = new MdnsServiceInfo(
@@ -975,8 +977,8 @@ public class NsdServiceTest {
                 List.of(), /* subtypes */
                 new String[]{"android", "local"}, /* hostName */
                 PORT,
-                IPV4_ADDRESS,
-                IPV6_ADDRESS,
+                List.of(IPV4_ADDRESS),
+                List.of("2001:db8::1", "2001:db8::2"),
                 List.of() /* textStrings */,
                 List.of(MdnsServiceInfo.TextEntry.fromBytes(new byte[]{
                         'k', 'e', 'y', '=', (byte) 0xFF, (byte) 0xFE})) /* textEntries */,
@@ -996,17 +998,105 @@ public class NsdServiceTest {
         assertEquals(1, info.getAttributes().size());
         assertArrayEquals(new byte[]{(byte) 0xFF, (byte) 0xFE}, info.getAttributes().get("key"));
         assertEquals(parseNumericAddress(IPV4_ADDRESS), info.getHost());
+        assertEquals(3, info.getHostAddresses().size());
+        assertTrue(info.getHostAddresses().stream().anyMatch(
+                address -> address.equals(parseNumericAddress("2001:db8::1"))));
+        assertTrue(info.getHostAddresses().stream().anyMatch(
+                address -> address.equals(parseNumericAddress("2001:db8::2"))));
         assertEquals(network, info.getNetwork());
 
         // Verify the listener has been unregistered.
         verify(mDiscoveryManager, timeout(TIMEOUT_MS))
                 .unregisterListener(eq(constructedServiceType), any());
-        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).stopMonitoringSockets();
+        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).requestStopWhenInactive();
+    }
+
+    @Test
+    public void testMdnsAdvertiserFeatureFlagging() {
+        // Create NsdService w/o feature enabled.
+        final NsdManager client = connectClient(mService);
+        final NsdServiceInfo regInfo = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
+        regInfo.setHost(parseNumericAddress("192.0.2.123"));
+        regInfo.setPort(12345);
+        final RegistrationListener regListenerWithoutFeature = mock(RegistrationListener.class);
+        client.registerService(regInfo, PROTOCOL, regListenerWithoutFeature);
+        waitForIdle();
+
+        final ArgumentCaptor<Integer> legacyIdCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(mMockMDnsM).registerService(legacyIdCaptor.capture(), any(), any(), anyInt(),
+                any(), anyInt());
+        verifyNoMoreInteractions(mAdvertiser);
+
+        setMdnsAdvertiserEnabled();
+        final RegistrationListener regListenerWithFeature = mock(RegistrationListener.class);
+        client.registerService(regInfo, PROTOCOL, regListenerWithFeature);
+        waitForIdle();
+
+        final ArgumentCaptor<Integer> serviceIdCaptor = ArgumentCaptor.forClass(Integer.class);
+        verify(mAdvertiser).addService(serviceIdCaptor.capture(),
+                argThat(info -> matches(info, regInfo)));
+
+        client.unregisterService(regListenerWithoutFeature);
+        waitForIdle();
+        verify(mMockMDnsM).stopOperation(legacyIdCaptor.getValue());
+        verify(mAdvertiser, never()).removeService(anyInt());
+
+        client.unregisterService(regListenerWithFeature);
+        waitForIdle();
+        verify(mAdvertiser).removeService(serviceIdCaptor.getValue());
+    }
+
+    @Test
+    public void testTypeSpecificFeatureFlagging() {
+        doReturn("_type1._tcp:flag1,_type2._tcp:flag2").when(mDeps).getTypeAllowlistFlags();
+        doReturn(true).when(mDeps).isFeatureEnabled(any(),
+                eq("mdns_discovery_manager_allowlist_flag1_version"));
+        doReturn(true).when(mDeps).isFeatureEnabled(any(),
+                eq("mdns_advertiser_allowlist_flag2_version"));
+
+        final NsdManager client = connectClient(mService);
+        final NsdServiceInfo service1 = new NsdServiceInfo(SERVICE_NAME, "_type1._tcp");
+        service1.setHostAddresses(List.of(parseNumericAddress("2001:db8::123")));
+        service1.setPort(1234);
+        final NsdServiceInfo service2 = new NsdServiceInfo(SERVICE_NAME, "_type2._tcp");
+        service2.setHostAddresses(List.of(parseNumericAddress("2001:db8::123")));
+        service2.setPort(1234);
+
+        client.discoverServices(service1.getServiceType(),
+                NsdManager.PROTOCOL_DNS_SD, mock(DiscoveryListener.class));
+        client.discoverServices(service2.getServiceType(),
+                NsdManager.PROTOCOL_DNS_SD, mock(DiscoveryListener.class));
+        waitForIdle();
+
+        // The DiscoveryManager is enabled for _type1 but not _type2
+        verify(mDiscoveryManager).registerListener(eq("_type1._tcp.local"), any(), any());
+        verify(mDiscoveryManager, never()).registerListener(
+                eq("_type2._tcp.local"), any(), any());
+
+        client.resolveService(service1, mock(ResolveListener.class));
+        client.resolveService(service2, mock(ResolveListener.class));
+        waitForIdle();
+
+        // Same behavior for resolve
+        verify(mDiscoveryManager, times(2)).registerListener(
+                eq("_type1._tcp.local"), any(), any());
+        verify(mDiscoveryManager, never()).registerListener(
+                eq("_type2._tcp.local"), any(), any());
+
+        client.registerService(service1, NsdManager.PROTOCOL_DNS_SD,
+                mock(RegistrationListener.class));
+        client.registerService(service2, NsdManager.PROTOCOL_DNS_SD,
+                mock(RegistrationListener.class));
+        waitForIdle();
+
+        // The advertiser is enabled for _type2 but not _type1
+        verify(mAdvertiser, never()).addService(anyInt(), argThat(info -> matches(info, service1)));
+        verify(mAdvertiser).addService(anyInt(), argThat(info -> matches(info, service2)));
     }
 
     @Test
     public void testAdvertiseWithMdnsAdvertiser() {
-        makeServiceWithMdnsAdvertiserEnabled();
+        setMdnsAdvertiserEnabled();
 
         final NsdManager client = connectClient(mService);
         final RegistrationListener regListener = mock(RegistrationListener.class);
@@ -1040,12 +1130,12 @@ public class NsdServiceTest {
         verify(mAdvertiser).removeService(idCaptor.getValue());
         verify(regListener, timeout(TIMEOUT_MS)).onServiceUnregistered(
                 argThat(info -> matches(info, regInfo)));
-        verify(mSocketProvider, timeout(TIMEOUT_MS)).stopMonitoringSockets();
+        verify(mSocketProvider, timeout(TIMEOUT_MS)).requestStopWhenInactive();
     }
 
     @Test
     public void testAdvertiseWithMdnsAdvertiser_FailedWithInvalidServiceType() {
-        makeServiceWithMdnsAdvertiserEnabled();
+        setMdnsAdvertiserEnabled();
 
         final NsdManager client = connectClient(mService);
         final RegistrationListener regListener = mock(RegistrationListener.class);
@@ -1070,7 +1160,7 @@ public class NsdServiceTest {
 
     @Test
     public void testAdvertiseWithMdnsAdvertiser_LongServiceName() {
-        makeServiceWithMdnsAdvertiserEnabled();
+        setMdnsAdvertiserEnabled();
 
         final NsdManager client = connectClient(mService);
         final RegistrationListener regListener = mock(RegistrationListener.class);
@@ -1098,6 +1188,50 @@ public class NsdServiceTest {
 
         verify(regListener, timeout(TIMEOUT_MS)).onServiceRegistered(
                 argThat(info -> matches(info, new NsdServiceInfo(regInfo.getServiceName(), null))));
+    }
+
+    @Test
+    public void testStopServiceResolutionWithMdnsDiscoveryManager() {
+        setMdnsDiscoveryManagerEnabled();
+
+        final NsdManager client = connectClient(mService);
+        final ResolveListener resolveListener = mock(ResolveListener.class);
+        final Network network = new Network(999);
+        final String serviceType = "_nsd._service._tcp";
+        final String constructedServiceType = "_nsd._sub._service._tcp.local";
+        final ArgumentCaptor<MdnsServiceBrowserListener> listenerCaptor =
+                ArgumentCaptor.forClass(MdnsServiceBrowserListener.class);
+        final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, serviceType);
+        request.setNetwork(network);
+        client.resolveService(request, resolveListener);
+        waitForIdle();
+        verify(mSocketProvider).startMonitoringSockets();
+        verify(mDiscoveryManager).registerListener(eq(constructedServiceType),
+                listenerCaptor.capture(), argThat(options -> network.equals(options.getNetwork())));
+
+        client.stopServiceResolution(resolveListener);
+        waitForIdle();
+
+        // Verify the listener has been unregistered.
+        verify(mDiscoveryManager, timeout(TIMEOUT_MS))
+                .unregisterListener(eq(constructedServiceType), eq(listenerCaptor.getValue()));
+        verify(resolveListener, timeout(TIMEOUT_MS)).onResolutionStopped(argThat(ns ->
+                request.getServiceName().equals(ns.getServiceName())
+                        && request.getServiceType().equals(ns.getServiceType())));
+        verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).requestStopWhenInactive();
+    }
+
+    @Test
+    public void testConstructServiceType() {
+        final String serviceType1 = "test._tcp";
+        final String serviceType2 = "_test._quic";
+        final String serviceType3 = "_123._udp.";
+        final String serviceType4 = "_TEST._999._tcp.";
+
+        assertEquals(null, constructServiceType(serviceType1));
+        assertEquals(null, constructServiceType(serviceType2));
+        assertEquals("_123._udp", constructServiceType(serviceType3));
+        assertEquals("_TEST._sub._999._tcp", constructServiceType(serviceType4));
     }
 
     private void waitForIdle() {

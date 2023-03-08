@@ -16,7 +16,7 @@
 
 package android.nearby.aidl;
 
-import android.nearby.NearbyDeviceParcelable;
+import android.nearby.OffloadCapability;
 
 /**
  * Listener for offload queries.
@@ -25,5 +25,5 @@ import android.nearby.NearbyDeviceParcelable;
  */
 oneway interface IOffloadCallback {
         /** Invokes when ContextHub transaction completes. */
-        void onQueryComplete(boolean isOffloadSupported);
+        void onQueryComplete(in OffloadCapability capability);
 }

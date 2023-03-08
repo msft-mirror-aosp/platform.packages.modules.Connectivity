@@ -16,12 +16,15 @@
 
 package com.android.server.nearby.fastpair;
 
+import static com.android.nearby.halfsheet.constants.Constant.ACTION_FAST_PAIR;
 import static com.android.nearby.halfsheet.constants.Constant.ACTION_FAST_PAIR_HALF_SHEET_BAN_STATE_RESET;
 import static com.android.nearby.halfsheet.constants.Constant.ACTION_FAST_PAIR_HALF_SHEET_CANCEL;
 import static com.android.nearby.halfsheet.constants.Constant.ACTION_HALF_SHEET_FOREGROUND_STATE;
 import static com.android.nearby.halfsheet.constants.Constant.EXTRA_HALF_SHEET_FOREGROUND;
 import static com.android.nearby.halfsheet.constants.FastPairConstants.EXTRA_MODEL_ID;
 import static com.android.server.nearby.fastpair.Constant.TAG;
+
+import static com.google.common.io.BaseEncoding.base16;
 
 import android.annotation.Nullable;
 import android.annotation.WorkerThread;
@@ -30,7 +33,6 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothManager;
 import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -40,8 +42,6 @@ import android.nearby.NearbyDevice;
 import android.nearby.NearbyManager;
 import android.nearby.ScanCallback;
 import android.nearby.ScanRequest;
-import android.net.Uri;
-import android.provider.Settings;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -102,7 +102,8 @@ public class FastPairManager {
     final LocatorContextWrapper mLocatorContextWrapper;
     final IntentFilter mIntentFilter;
     final Locator mLocator;
-    private boolean mScanEnabled;
+    private boolean mScanEnabled = false;
+    private final FastPairCacheManager mFastPairCacheManager;
 
     private final BroadcastReceiver mScreenBroadcastReceiver = new BroadcastReceiver() {
         @Override
@@ -147,9 +148,29 @@ public class FastPairManager {
                     }
                     Locator.get(mLocatorContextWrapper, FastPairHalfSheetManager.class)
                             .dismiss(modelId);
-
+                    break;
+                case ACTION_FAST_PAIR:
+                    Log.d(TAG, "onReceive: ACTION_FAST_PAIR");
+                    String itemId = intent.getStringExtra(UserActionHandler.EXTRA_ITEM_ID);
+                    String accountKeyString = intent
+                            .getStringExtra(UserActionHandler.EXTRA_FAST_PAIR_SECRET);
+                    if (itemId == null || accountKeyString == null) {
+                        Log.d(TAG, "skip pair action, item id "
+                                + "or fast pair account key not found");
+                        break;
+                    }
+                    try {
+                        FastPairController controller =
+                                Locator.getFromContextWrapper(mLocatorContextWrapper,
+                                        FastPairController.class);
+                        if (mFastPairCacheManager != null) {
+                            controller.pair(mFastPairCacheManager.getDiscoveryItem(itemId),
+                                    base16().decode(accountKeyString), /* companionApp= */ null);
+                        }
+                    } catch (IllegalStateException e) {
+                        Log.e(TAG, "Cannot find FastPairController class", e);
+                    }
             }
-
         }
     };
 
@@ -160,6 +181,8 @@ public class FastPairManager {
         mLocator.bind(new FastPairModule());
         Rpcs.GetObservedDeviceResponse getObservedDeviceResponse =
                 Rpcs.GetObservedDeviceResponse.newBuilder().build();
+        mFastPairCacheManager =
+                Locator.getFromContextWrapper(mLocatorContextWrapper, FastPairCacheManager.class);
     }
 
     final ScanCallback mScanCallback = new ScanCallback() {
@@ -199,14 +222,10 @@ public class FastPairManager {
         mIntentFilter.addAction(ACTION_FAST_PAIR_HALF_SHEET_CANCEL);
         mIntentFilter.addAction(ACTION_FAST_PAIR_HALF_SHEET_BAN_STATE_RESET);
         mIntentFilter.addAction(ACTION_HALF_SHEET_FOREGROUND_STATE);
+        mIntentFilter.addAction(ACTION_FAST_PAIR);
 
         mLocatorContextWrapper.getContext().registerReceiver(mScreenBroadcastReceiver,
                 mIntentFilter, Context.RECEIVER_EXPORTED);
-
-        Locator.getFromContextWrapper(mLocatorContextWrapper, FastPairCacheManager.class);
-        // Default false for now.
-        mScanEnabled = NearbyManager.isFastPairScanEnabled(mLocatorContextWrapper.getContext());
-        registerFastPairScanChangeContentObserver(mLocatorContextWrapper.getContentResolver());
     }
 
     /**
@@ -307,6 +326,13 @@ public class FastPairManager {
                     context, item.getMacAddress(),
                     prefsBuilder.build(),
                     null);
+            connection.setOnPairedCallback(
+                    address -> {
+                        Log.v(TAG, "connection on paired callback;");
+                        // TODO(b/259150992) add fill Bluetooth metadata values logic
+                        pairingProgressHandlerBase.onPairedCallbackCalled(
+                                connection, accountKey, footprints, address);
+                    });
             pairingProgressHandlerBase.onPairingSetupCompleted();
 
             FastPairConnection.SharedSecret sharedSecret;
@@ -401,37 +427,6 @@ public class FastPairManager {
         }
     }
 
-    private void registerFastPairScanChangeContentObserver(ContentResolver resolver) {
-        if (mFastPairScanChangeContentObserver != null) {
-            unregisterFastPairScanChangeContentObserver(resolver);
-        }
-        mFastPairScanChangeContentObserver = new ContentObserver(ForegroundThread.getHandler()) {
-            @Override
-            public void onChange(boolean selfChange, Uri uri) {
-                super.onChange(selfChange, uri);
-                setScanEnabled(
-                        NearbyManager.isFastPairScanEnabled(mLocatorContextWrapper.getContext()));
-            }
-        };
-        try {
-            resolver.registerContentObserver(
-                    Settings.Secure.getUriFor(NearbyManager.FAST_PAIR_SCAN_ENABLED),
-                    /* notifyForDescendants= */ false,
-                    mFastPairScanChangeContentObserver);
-        } catch (SecurityException e) {
-            Log.e(TAG, "Failed to register content observer for fast pair scan.", e);
-        }
-    }
-
-    private void unregisterFastPairScanChangeContentObserver(ContentResolver resolver) {
-        try {
-            resolver.unregisterContentObserver(mFastPairScanChangeContentObserver);
-            mFastPairScanChangeContentObserver = null;
-        } catch (SecurityException | NullPointerException | IllegalArgumentException e) {
-            Log.w(TAG, "Failed to unregister FastPairScanChange content observer.", e);
-        }
-    }
-
     /**
      * Processed task in a background thread
      */
@@ -459,13 +454,6 @@ public class FastPairManager {
         return (NearbyManager) mLocatorContextWrapper
                 .getApplicationContext().getSystemService(Context.NEARBY_SERVICE);
     }
-    private void setScanEnabled(boolean scanEnabled) {
-        if (mScanEnabled == scanEnabled) {
-            return;
-        }
-        mScanEnabled = scanEnabled;
-        invalidateScan();
-    }
 
     /**
      * Starts or stops scanning according to mAllowScan value.
@@ -474,7 +462,7 @@ public class FastPairManager {
         NearbyManager nearbyManager = getNearbyManager();
         if (nearbyManager == null) {
             Log.w(TAG, "invalidateScan: "
-                    + "failed to start or stop scannning because NearbyManager is null.");
+                    + "failed to start or stop scanning because NearbyManager is null.");
             return;
         }
         if (mScanEnabled) {
@@ -504,8 +492,7 @@ public class FastPairManager {
                 processBackgroundTask(new Runnable() {
                     @Override
                     public void run() {
-                        mLocatorContextWrapper.getLocator().get(FastPairCacheManager.class)
-                                .removeStoredFastPairItem(device.getAddress());
+                        mFastPairCacheManager.removeStoredFastPairItem(device.getAddress());
                     }
                 });
             }

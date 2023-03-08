@@ -35,6 +35,7 @@ import android.nearby.BroadcastCallback;
 import android.nearby.BroadcastRequest;
 import android.nearby.NearbyDevice;
 import android.nearby.NearbyManager;
+import android.nearby.OffloadCapability;
 import android.nearby.PresenceBroadcastRequest;
 import android.nearby.PrivateCredential;
 import android.nearby.ScanCallback;
@@ -165,19 +166,10 @@ public class NearbyManagerTest {
     }
 
     @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void setFastPairScanEnabled() {
-        mNearbyManager.setFastPairScanEnabled(mContext, true);
-        assertThat(mNearbyManager.isFastPairScanEnabled(mContext)).isTrue();
-        mNearbyManager.setFastPairScanEnabled(mContext, false);
-        assertThat(mNearbyManager.isFastPairScanEnabled(mContext)).isFalse();
-    }
-
-    @Test
-    @SdkSuppress(minSdkVersion = 34, codeName = "U")
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void queryOffloadScanSupport() {
         OffloadCallback callback = new OffloadCallback();
-        mNearbyManager.queryOffloadScanSupport(EXECUTOR, callback);
+        mNearbyManager.queryOffloadCapability(EXECUTOR, callback);
     }
 
     private void enableBluetooth() {
@@ -188,9 +180,9 @@ public class NearbyManagerTest {
         }
     }
 
-    private class OffloadCallback implements Consumer<Boolean> {
+    private static class OffloadCallback implements Consumer<OffloadCapability> {
         @Override
-        public void accept(Boolean aBoolean) {
+        public void accept(OffloadCapability aBoolean) {
             // no-op for now
         }
     }

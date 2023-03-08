@@ -21,7 +21,6 @@ import static android.annotation.SystemApi.Client.PRIVILEGED_APPS;
 import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
-import android.annotation.Nullable;
 import android.annotation.SystemApi;
 import android.os.Binder;
 import android.os.ParcelFileDescriptor;
@@ -63,6 +62,12 @@ public abstract class SocketKeepalive implements AutoCloseable {
      */
     @SystemApi
     public static final int SUCCESS = 0;
+
+    /**
+     * Success when trying to suspend.
+     * @hide
+     */
+    public static final int SUCCESS_PAUSED = 1;
 
     /**
      * No keepalive. This should only be internally as it indicates There is no keepalive.
@@ -249,9 +254,6 @@ public abstract class SocketKeepalive implements AutoCloseable {
     @NonNull protected final Executor mExecutor;
     /** @hide */
     @NonNull protected final ISocketKeepaliveCallback mCallback;
-    // TODO: remove slot since mCallback could be used to identify which keepalive to stop.
-    /** @hide */
-    @Nullable protected Integer mSlot;
 
     /** @hide */
     public SocketKeepalive(@NonNull IConnectivityManager service, @NonNull Network network,
@@ -263,12 +265,23 @@ public abstract class SocketKeepalive implements AutoCloseable {
         mExecutor = executor;
         mCallback = new ISocketKeepaliveCallback.Stub() {
             @Override
-            public void onStarted(int slot) {
+            public void onStarted() {
                 final long token = Binder.clearCallingIdentity();
                 try {
                     mExecutor.execute(() -> {
-                        mSlot = slot;
                         callback.onStarted();
+                    });
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
+            }
+
+            @Override
+            public void onResumed() {
+                final long token = Binder.clearCallingIdentity();
+                try {
+                    mExecutor.execute(() -> {
+                        callback.onResumed();
                     });
                 } finally {
                     Binder.restoreCallingIdentity(token);
@@ -280,8 +293,19 @@ public abstract class SocketKeepalive implements AutoCloseable {
                 final long token = Binder.clearCallingIdentity();
                 try {
                     executor.execute(() -> {
-                        mSlot = null;
                         callback.onStopped();
+                    });
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
+            }
+
+            @Override
+            public void onPaused() {
+                final long token = Binder.clearCallingIdentity();
+                try {
+                    executor.execute(() -> {
+                        callback.onPaused();
                     });
                 } finally {
                     Binder.restoreCallingIdentity(token);
@@ -293,7 +317,6 @@ public abstract class SocketKeepalive implements AutoCloseable {
                 final long token = Binder.clearCallingIdentity();
                 try {
                     executor.execute(() -> {
-                        mSlot = null;
                         callback.onError(error);
                     });
                 } finally {
@@ -306,7 +329,6 @@ public abstract class SocketKeepalive implements AutoCloseable {
                 final long token = Binder.clearCallingIdentity();
                 try {
                     executor.execute(() -> {
-                        mSlot = null;
                         callback.onDataReceived();
                     });
                 } finally {
@@ -333,7 +355,7 @@ public abstract class SocketKeepalive implements AutoCloseable {
      */
     public final void start(@IntRange(from = MIN_INTERVAL_SEC, to = MAX_INTERVAL_SEC)
             int intervalSec) {
-        startImpl(intervalSec, 0 /* flags */);
+        startImpl(intervalSec, 0 /* flags */, null /* underpinnedNetwork */);
     }
 
     /**
@@ -352,16 +374,18 @@ public abstract class SocketKeepalive implements AutoCloseable {
      *                    the supplied {@link Callback} will see a call to
      *                    {@link Callback#onError(int)} with {@link #ERROR_INVALID_INTERVAL}.
      * @param flags Flags to enable/disable available options on this keepalive.
+     * @param underpinnedNetwork The underpinned network of this keepalive.
      * @hide
      */
     @SystemApi(client = PRIVILEGED_APPS)
     public final void start(@IntRange(from = MIN_INTERVAL_SEC, to = MAX_INTERVAL_SEC)
-            int intervalSec, @StartFlags int flags) {
-        startImpl(intervalSec, flags);
+            int intervalSec, @StartFlags int flags, @NonNull Network underpinnedNetwork) {
+        startImpl(intervalSec, flags, underpinnedNetwork);
     }
 
     /** @hide */
-    protected abstract void startImpl(int intervalSec, @StartFlags int flags);
+    protected abstract void startImpl(int intervalSec, @StartFlags int flags,
+            Network underpinnedNetwork);
 
     /**
      * Requests that keepalive be stopped. The application must wait for {@link Callback#onStopped}
@@ -395,8 +419,18 @@ public abstract class SocketKeepalive implements AutoCloseable {
     public static class Callback {
         /** The requested keepalive was successfully started. */
         public void onStarted() {}
+        /**
+         * The keepalive was resumed by the system after being suspended.
+         * @hide
+         **/
+        public void onResumed() {}
         /** The keepalive was successfully stopped. */
         public void onStopped() {}
+        /**
+         * The keepalive was paused by the system because it's not necessary right now.
+         * @hide
+         **/
+        public void onPaused() {}
         /** An error occurred. */
         public void onError(@ErrorCode int error) {}
         /** The keepalive on a TCP socket was stopped because the socket received data. This is
