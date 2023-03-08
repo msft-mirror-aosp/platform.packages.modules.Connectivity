@@ -20,6 +20,8 @@ import android.app.compat.CompatChanges
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
 import android.net.LinkProperties
+import android.net.LocalSocket
+import android.net.LocalSocketAddress
 import android.net.Network
 import android.net.NetworkAgentConfig
 import android.net.NetworkCapabilities
@@ -63,6 +65,8 @@ import android.platform.test.annotations.AppModeFull
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.AndroidJUnit4
+import com.android.compatibility.common.util.PollingCheck
+import com.android.compatibility.common.util.PropertyUtil
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.net.module.util.TrackRecord
 import com.android.networkstack.apishim.NsdShimImpl
@@ -72,14 +76,17 @@ import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.TestableNetworkAgent
 import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.filters.CtsNetTestCasesMaxTargetSdk30
+import com.android.testutils.filters.CtsNetTestCasesMaxTargetSdk33
 import com.android.testutils.runAsShell
 import com.android.testutils.tryTest
 import com.android.testutils.waitForIdle
 import java.io.File
+import java.io.IOException
 import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
 import java.util.Random
 import java.util.concurrent.Executor
+import kotlin.math.min
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -763,6 +770,69 @@ class NsdManagerTest {
         }
     }
 
+    private fun checkConnectSocketToMdnsd(shouldFail: Boolean) {
+        val discoveryRecord = NsdDiscoveryRecord()
+        val localSocket = LocalSocket()
+        tryTest {
+            // Discover any service from NsdManager to enforce NsdService to start the mdnsd.
+            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryRecord)
+            discoveryRecord.expectCallback<DiscoveryStarted>()
+
+            // Checks the /dev/socket/mdnsd is created.
+            val socket = File("/dev/socket/mdnsd")
+            val doesSocketExist = PollingCheck.waitFor(
+                TIMEOUT_MS,
+                {
+                    socket.exists()
+                },
+                { doesSocketExist ->
+                    doesSocketExist
+                },
+            )
+
+            // If the socket is not created, then no need to check the access.
+            if (doesSocketExist) {
+                // Create a LocalSocket and try to connect to mdnsd.
+                assertFalse("LocalSocket is connected.", localSocket.isConnected)
+                val address = LocalSocketAddress("mdnsd", LocalSocketAddress.Namespace.RESERVED)
+                if (shouldFail) {
+                    assertFailsWith<IOException>("Expect fail but socket connected") {
+                        localSocket.connect(address)
+                    }
+                } else {
+                    localSocket.connect(address)
+                    assertTrue("LocalSocket is not connected.", localSocket.isConnected)
+                }
+            }
+        } cleanup {
+            localSocket.close()
+            nsdManager.stopServiceDiscovery(discoveryRecord)
+            discoveryRecord.expectCallback<DiscoveryStopped>()
+        }
+    }
+
+    /**
+     * Starting from Android U, the access to the /dev/socket/mdnsd is blocked by the
+     * sepolicy(b/265364111).
+     */
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.TIRAMISU)
+    @Test
+    fun testCannotConnectSocketToMdnsd() {
+        val targetSdkVersion = context.packageManager
+                .getTargetSdkVersion(context.applicationInfo.packageName)
+        assumeTrue(targetSdkVersion > Build.VERSION_CODES.TIRAMISU)
+        val firstApiLevel = min(PropertyUtil.getFirstApiLevel(), PropertyUtil.getVendorApiLevel())
+        // The sepolicy is implemented in the vendor image, so the access may not be blocked if
+        // the vendor image is not update to date.
+        assumeTrue(firstApiLevel > Build.VERSION_CODES.TIRAMISU)
+        checkConnectSocketToMdnsd(shouldFail = true)
+    }
+
+    @Test @CtsNetTestCasesMaxTargetSdk33("mdnsd socket is accessible up to target SDK 33")
+    fun testCanConnectSocketToMdnsd() {
+        checkConnectSocketToMdnsd(shouldFail = false)
+    }
+
     @Test @CtsNetTestCasesMaxTargetSdk30("Socket is started with the service up to target SDK 30")
     fun testManagerCreatesLegacySocket() {
         nsdManager // Ensure the lazy-init member is initialized, so NsdManager is created
@@ -809,7 +879,7 @@ class NsdManagerTest {
 
     @Test
     fun testRegisterServiceInfoCallback() {
-        // This test requires shims supporting U+ APIs (NsdManager.subscribeService)
+        // This test requires shims supporting U+ APIs (NsdManager.registerServiceInfoCallback)
         assumeTrue(TestUtils.shouldTestUApis())
 
         // Ensure Wi-Fi network connected and get addresses
@@ -839,16 +909,14 @@ class NsdManagerTest {
             val foundInfo = discoveryRecord.waitForServiceDiscovered(
                     serviceName, wifiNetwork)
 
-            // Subscribe to service and check the addresses are the same as Wi-Fi addresses
+            // Register service callback and check the addresses are the same as Wi-Fi addresses
             nsdShim.registerServiceInfoCallback(nsdManager, foundInfo, { it.run() }, cbRecord)
-            for (i in addresses.indices) {
-                val subscribeCb = cbRecord.expectCallback<ServiceUpdated>()
-                assertEquals(foundInfo.serviceName, subscribeCb.serviceInfo.serviceName)
-                val hostAddresses = subscribeCb.serviceInfo.hostAddresses
-                assertEquals(i + 1, hostAddresses.size)
-                for (hostAddress in hostAddresses) {
-                    assertTrue(addresses.contains(hostAddress))
-                }
+            val serviceInfoCb = cbRecord.expectCallback<ServiceUpdated>()
+            assertEquals(foundInfo.serviceName, serviceInfoCb.serviceInfo.serviceName)
+            val hostAddresses = serviceInfoCb.serviceInfo.hostAddresses
+            assertEquals(addresses.size, hostAddresses.size)
+            for (hostAddress in hostAddresses) {
+                assertTrue(addresses.contains(hostAddress))
             }
         } cleanupStep {
             nsdManager.unregisterService(registrationRecord)
