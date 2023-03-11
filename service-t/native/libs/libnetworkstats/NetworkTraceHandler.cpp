@@ -33,6 +33,7 @@ PERFETTO_DEFINE_DATA_SOURCE_STATIC_MEMBERS(android::bpf::NetworkTraceHandler);
 
 namespace android {
 namespace bpf {
+using ::android::bpf::internal::NetworkTracePoller;
 using ::perfetto::protos::pbzero::NetworkPacketEvent;
 using ::perfetto::protos::pbzero::NetworkPacketTraceConfig;
 using ::perfetto::protos::pbzero::TracePacket;
@@ -55,13 +56,12 @@ void NetworkTraceHandler::InitPerfettoTracing() {
   NetworkTraceHandler::RegisterDataSource();
 }
 
-NetworkTraceHandler::NetworkTraceHandler()
-    : NetworkTraceHandler([this](const PacketTrace& pkt) {
-        NetworkTraceHandler::Trace(
-            [this, pkt](NetworkTraceHandler::TraceContext ctx) {
-              Fill(pkt, *ctx.NewTracePacket());
-            });
-      }) {}
+// static
+NetworkTracePoller NetworkTraceHandler::sPoller([](const PacketTrace& pkt) {
+  NetworkTraceHandler::Trace([pkt](NetworkTraceHandler::TraceContext ctx) {
+    NetworkTraceHandler::Fill(pkt, *ctx.NewTracePacket());
+  });
+});
 
 void NetworkTraceHandler::OnSetup(const SetupArgs& args) {
   const std::string& raw = args.config->network_packet_trace_config_raw();
@@ -75,21 +75,15 @@ void NetworkTraceHandler::OnSetup(const SetupArgs& args) {
 }
 
 void NetworkTraceHandler::OnStart(const StartArgs&) {
-  if (!Start()) return;
-  mTaskRunner = perfetto::Platform::GetDefaultPlatform()->CreateTaskRunner({});
-  Loop();
+  mStarted = sPoller.Start(mPollMs);
 }
 
 void NetworkTraceHandler::OnStop(const StopArgs&) {
-  Stop();
-  mTaskRunner.reset();
+  if (mStarted) sPoller.Stop();
+  mStarted = false;
 }
 
-void NetworkTraceHandler::Loop() {
-  mTaskRunner->PostDelayedTask([this]() { Loop(); }, mPollMs);
-  ConsumeAll();
-}
-
+// static class method
 void NetworkTraceHandler::Fill(const PacketTrace& src, TracePacket& dst) {
   dst.set_timestamp(src.timestampNs);
   auto* event = dst.set_network_packet();
@@ -111,61 +105,6 @@ void NetworkTraceHandler::Fill(const PacketTrace& src, TracePacket& dst) {
   } else {
     event->set_interface("error");
   }
-}
-
-bool NetworkTraceHandler::Start() {
-  ALOGD("Starting datasource");
-
-  auto status = mConfigurationMap.init(PACKET_TRACE_ENABLED_MAP_PATH);
-  if (!status.ok()) {
-    ALOGW("Failed to bind config map: %s", status.error().message().c_str());
-    return false;
-  }
-
-  auto rb = BpfRingbuf<PacketTrace>::Create(PACKET_TRACE_RINGBUF_PATH);
-  if (!rb.ok()) {
-    ALOGW("Failed to create ringbuf: %s", rb.error().message().c_str());
-    return false;
-  }
-
-  mRingBuffer = std::move(*rb);
-
-  auto res = mConfigurationMap.writeValue(0, true, BPF_ANY);
-  if (!res.ok()) {
-    ALOGW("Failed to enable tracing: %s", res.error().message().c_str());
-    return false;
-  }
-
-  return true;
-}
-
-bool NetworkTraceHandler::Stop() {
-  ALOGD("Stopping datasource");
-
-  auto res = mConfigurationMap.writeValue(0, false, BPF_ANY);
-  if (!res.ok()) {
-    ALOGW("Failed to disable tracing: %s", res.error().message().c_str());
-    return false;
-  }
-
-  mRingBuffer.reset();
-
-  return true;
-}
-
-bool NetworkTraceHandler::ConsumeAll() {
-  if (mRingBuffer == nullptr) {
-    ALOGW("Tracing is not active");
-    return false;
-  }
-
-  base::Result<int> ret = mRingBuffer->ConsumeAll(mCallback);
-  if (!ret.ok()) {
-    ALOGW("Failed to poll ringbuf: %s", ret.error().message().c_str());
-    return false;
-  }
-
-  return true;
 }
 
 }  // namespace bpf
