@@ -57,6 +57,7 @@ public class MdnsServiceTypeClient {
     private final MdnsSocketClientBase socketClient;
     private final MdnsResponseDecoder responseDecoder;
     private final ScheduledExecutorService executor;
+    @Nullable private final Network network;
     private final Object lock = new Object();
     private final ArrayMap<MdnsServiceBrowserListener, MdnsSearchOptions> listeners =
             new ArrayMap<>();
@@ -88,8 +89,9 @@ public class MdnsServiceTypeClient {
     public MdnsServiceTypeClient(
             @NonNull String serviceType,
             @NonNull MdnsSocketClientBase socketClient,
-            @NonNull ScheduledExecutorService executor) {
-        this(serviceType, socketClient, executor, new MdnsResponseDecoder.Clock());
+            @NonNull ScheduledExecutorService executor,
+            @Nullable Network network) {
+        this(serviceType, socketClient, executor, new MdnsResponseDecoder.Clock(), network);
     }
 
     @VisibleForTesting
@@ -97,13 +99,15 @@ public class MdnsServiceTypeClient {
             @NonNull String serviceType,
             @NonNull MdnsSocketClientBase socketClient,
             @NonNull ScheduledExecutorService executor,
-            @NonNull MdnsResponseDecoder.Clock clock) {
+            @NonNull MdnsResponseDecoder.Clock clock,
+            @Nullable Network network) {
         this.serviceType = serviceType;
         this.socketClient = socketClient;
         this.executor = executor;
         this.serviceTypeLabels = TextUtils.split(serviceType, "\\.");
         this.responseDecoder = new MdnsResponseDecoder(clock, serviceTypeLabels);
         this.clock = clock;
+        this.network = network;
     }
 
     private static MdnsServiceInfo buildMdnsServiceInfoFromResponse(
@@ -115,15 +119,19 @@ public class MdnsServiceTypeClient {
             port = response.getServiceRecord().getServicePort();
         }
 
-        String ipv4Address = null;
-        String ipv6Address = null;
+        final List<String> ipv4Addresses = new ArrayList<>();
+        final List<String> ipv6Addresses = new ArrayList<>();
         if (response.hasInet4AddressRecord()) {
-            Inet4Address inet4Address = response.getInet4AddressRecord().getInet4Address();
-            ipv4Address = (inet4Address == null) ? null : inet4Address.getHostAddress();
+            for (MdnsInetAddressRecord inetAddressRecord : response.getInet4AddressRecords()) {
+                final Inet4Address inet4Address = inetAddressRecord.getInet4Address();
+                ipv4Addresses.add((inet4Address == null) ? null : inet4Address.getHostAddress());
+            }
         }
         if (response.hasInet6AddressRecord()) {
-            Inet6Address inet6Address = response.getInet6AddressRecord().getInet6Address();
-            ipv6Address = (inet6Address == null) ? null : inet6Address.getHostAddress();
+            for (MdnsInetAddressRecord inetAddressRecord : response.getInet6AddressRecords()) {
+                final Inet6Address inet6Address = inetAddressRecord.getInet6Address();
+                ipv6Addresses.add((inet6Address == null) ? null : inet6Address.getHostAddress());
+            }
         }
         String serviceInstanceName = response.getServiceInstanceName();
         if (serviceInstanceName == null) {
@@ -143,8 +151,8 @@ public class MdnsServiceTypeClient {
                 response.getSubtypes(),
                 hostName,
                 port,
-                ipv4Address,
-                ipv6Address,
+                ipv4Addresses,
+                ipv6Addresses,
                 textStrings,
                 textEntries,
                 response.getInterfaceIndex(),
@@ -200,7 +208,9 @@ public class MdnsServiceTypeClient {
      */
     public boolean stopSendAndReceive(@NonNull MdnsServiceBrowserListener listener) {
         synchronized (lock) {
-            listeners.remove(listener);
+            if (listeners.remove(listener) == null) {
+                return listeners.isEmpty();
+            }
             if (listeners.isEmpty() && requestTaskFuture != null) {
                 requestTaskFuture.cancel(true);
                 requestTaskFuture = null;

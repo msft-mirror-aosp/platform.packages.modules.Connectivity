@@ -17,50 +17,50 @@
 package android.net.http.cts
 
 import android.content.Context
-import android.net.http.CallbackException
 import android.net.http.HttpEngine
 import android.net.http.cts.util.HttpCtsTestServer
 import android.net.http.cts.util.TestUrlRequestCallback
-import android.net.http.cts.util.TestUrlRequestCallback.FailureType
 import android.net.http.cts.util.TestUrlRequestCallback.ResponseStep
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
-import kotlin.test.assertSame
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
-class CallbackExceptionTest {
+class UrlResponseInfoTest {
 
     @Test
-    fun testCallbackException_returnsInputParameters() {
-        val message = "failed"
-        val cause = Throwable("exception")
-        val callbackException = object : CallbackException(message, cause) {}
-
-        assertEquals(message, callbackException.message)
-        assertSame(cause, callbackException.cause)
-    }
-
-    @Test
-    fun testCallbackException_thrownFromUrlRequest() {
+    fun testUrlResponseInfo_apisReturnCorrectInfo() {
+        // start the engine and send a request
         val context: Context = ApplicationProvider.getApplicationContext()
         val server = HttpCtsTestServer(context)
         val httpEngine = HttpEngine.Builder(context).build()
         val callback = TestUrlRequestCallback()
-        callback.setFailure(FailureType.THROW_SYNC, ResponseStep.ON_RESPONSE_STARTED)
-        val request = httpEngine
-            .newUrlRequestBuilder(server.successUrl, callback.executor, callback)
-            .build()
+        val url = server.successUrl
+        val request = httpEngine.newUrlRequestBuilder(url, callback.executor, callback).build()
 
         request.start()
-        callback.blockForDone()
+        callback.expectCallback(ResponseStep.ON_SUCCEEDED)
 
-        assertTrue(request.isDone)
-        assertIs<CallbackException>(callback.mError)
+        val info = callback.mResponseInfo
+        assertFalse(info.headers.asList.isEmpty())
+        assertEquals(200, info.httpStatusCode)
+        assertTrue(info.receivedByteCount > 0)
+        assertEquals(url, info.url)
+        assertEquals(listOf(url), info.urlChain)
+        assertFalse(info.wasCached())
+
+        // TODO Current test server does not set these values. Uncomment when we use one that does.
+        // assertEquals("OK", info.httpStatusText)
+        // assertEquals("http/1.1", info.negotiatedProtocol)
+
+        // cronet defaults to port 0 when no proxy is specified.
+        // This is not a behaviour we want to enforce since null is reasonable too.
+        // assertEquals(":0", info.proxyServer)
+
         server.shutdown()
         httpEngine.shutdown()
     }
