@@ -16,7 +16,7 @@
 
 package android.net;
 
-//import android.annotation.SystemApi;
+import android.annotation.SystemApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 
@@ -25,6 +25,7 @@ import com.android.internal.annotations.VisibleForTesting;
  *
  * @hide
  */
+@SystemApi
 public class SocketRemoteAddressChangedException extends Exception {
     @VisibleForTesting
     public SocketRemoteAddressChangedException() {
