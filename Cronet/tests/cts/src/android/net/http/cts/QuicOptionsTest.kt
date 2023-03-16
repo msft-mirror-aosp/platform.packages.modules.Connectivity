@@ -18,6 +18,7 @@ package android.net.http.cts
 import android.net.http.QuicOptions
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.google.common.truth.Truth.assertThat
+import java.time.Duration
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -26,10 +27,9 @@ class QuicOptionsTest {
     @Test
     fun testQuicOptions_defaultValues() {
         val quicOptions = QuicOptions.Builder().build()
-        assertThat(quicOptions.quicHostAllowlist).isEmpty()
+        assertThat(quicOptions.allowedQuicHosts).isEmpty()
         assertThat(quicOptions.handshakeUserAgent).isNull()
-        // TODO(danstahr): idleConnectionTimeout getter should be public
-        // assertThat(quicOptions.idleConnectionTimeout).isNull()
+        assertThat(quicOptions.idleConnectionTimeout).isNull()
         assertThat(quicOptions.inMemoryServerConfigsCacheSize).isNull()
     }
 
@@ -41,13 +41,11 @@ class QuicOptionsTest {
                 .addAllowedQuicHost("foo")
                 .addAllowedQuicHost("baz")
                 .build()
-        assertThat(quicOptions.quicHostAllowlist)
+        assertThat(quicOptions.allowedQuicHosts)
                 .containsExactly("foo", "bar", "baz")
                 .inOrder()
     }
 
-    // TODO(danstahr): idleConnectionTimeout getter should be public
-    /*
     @Test
     fun testQuicOptions_idleConnectionTimeout_returnsSetValue() {
         val timeout = Duration.ofMinutes(10)
@@ -57,7 +55,6 @@ class QuicOptionsTest {
         assertThat(quicOptions.idleConnectionTimeout)
                 .isEqualTo(timeout)
     }
-    */
 
     @Test
     fun testQuicOptions_inMemoryServerConfigsCacheSize_returnsSetValue() {
