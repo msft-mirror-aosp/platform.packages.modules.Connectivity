@@ -29,6 +29,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.net.http.HeaderBlock;
 import android.net.http.HttpEngine;
 import android.net.http.HttpException;
 import android.net.http.InlineExecutionProhibitedException;
@@ -43,7 +44,10 @@ import android.net.http.cts.util.TestUploadDataProvider;
 import android.net.http.cts.util.TestUrlRequestCallback;
 import android.net.http.cts.util.TestUrlRequestCallback.ResponseStep;
 import android.net.http.cts.util.UploadDataProviders;
+import android.webkit.cts.CtsTestServer;
 
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 
@@ -57,11 +61,16 @@ import org.junit.runner.RunWith;
 import java.net.URLEncoder;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @RunWith(AndroidJUnit4.class)
 public class UrlRequestTest {
@@ -286,6 +295,24 @@ public class UrlRequestTest {
     }
 
     @Test
+    public void testUrlRequest_redirects() throws Exception {
+        int expectedNumRedirects = 5;
+        String url =
+                mTestServer.getRedirectingAssetUrl("html/hello_world.html", expectedNumRedirects);
+
+        UrlRequest request = createUrlRequestBuilder(url).build();
+        request.start();
+
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+        UrlResponseInfo info = mCallback.mResponseInfo;
+        assertOKStatusCode(info);
+        assertThat(mCallback.mResponseAsString).contains("hello world");
+        assertThat(info.getUrlChain()).hasSize(expectedNumRedirects + 1);
+        assertThat(info.getUrlChain().get(0)).isEqualTo(url);
+        assertThat(info.getUrlChain().get(expectedNumRedirects)).isEqualTo(info.getUrl());
+    }
+
+    @Test
     public void testUrlRequestPost_withRedirect() throws Exception {
         String body = Strings.repeat(
                 "Hello, this is a really interesting body, so write this 100 times.", 100);
@@ -310,7 +337,51 @@ public class UrlRequestTest {
         assertThat(mCallback.mResponseAsString).isEqualTo(body);
     }
 
-    private static class StubUrlRequestCallback extends UrlRequest.Callback {
+    @Test
+    public void testUrlRequest_customHeaders() throws Exception {
+        UrlRequest.Builder builder = createUrlRequestBuilder(mTestServer.getEchoHeadersUrl());
+
+        List<Map.Entry<String, String>> expectedHeaders = Arrays.asList(
+                Map.entry("Authorization", "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
+                Map.entry("Max-Forwards", "10"),
+                Map.entry("X-Client-Data", "random custom header content"));
+
+        for (Map.Entry<String, String> header : expectedHeaders) {
+            builder.addHeader(header.getKey(), header.getValue());
+        }
+
+        builder.build().start();
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+
+        assertOKStatusCode(mCallback.mResponseInfo);
+
+        List<Map.Entry<String, String>> echoedHeaders =
+                extractEchoedHeaders(mCallback.mResponseInfo.getHeaders());
+
+        // The implementation might decide to add more headers like accepted encodings it handles
+        // internally so the server is likely to see more headers than explicitly set
+        // by the developer.
+        assertThat(echoedHeaders)
+                .containsAtLeastElementsIn(expectedHeaders);
+    }
+
+    private static List<Map.Entry<String, String>> extractEchoedHeaders(HeaderBlock headers) {
+        return headers.getAsList()
+                .stream()
+                .flatMap(input -> {
+                    if (input.getKey().startsWith(CtsTestServer.ECHOED_RESPONSE_HEADER_PREFIX)) {
+                        String strippedKey =
+                                input.getKey().substring(
+                                        CtsTestServer.ECHOED_RESPONSE_HEADER_PREFIX.length());
+                        return Stream.of(Map.entry(strippedKey, input.getValue()));
+                    } else {
+                        return Stream.empty();
+                    }
+                })
+                .collect(Collectors.toList());
+    }
+
+    private static class StubUrlRequestCallback implements UrlRequest.Callback {
 
         @Override
         public void onRedirectReceived(
@@ -337,6 +408,11 @@ public class UrlRequestTest {
         @Override
         public void onFailed(UrlRequest request, UrlResponseInfo info, HttpException error) {
             throw new UnsupportedOperationException(error);
+        }
+
+        @Override
+        public void onCanceled(@NonNull UrlRequest request, @Nullable UrlResponseInfo info) {
+            throw new UnsupportedOperationException();
         }
     }
 

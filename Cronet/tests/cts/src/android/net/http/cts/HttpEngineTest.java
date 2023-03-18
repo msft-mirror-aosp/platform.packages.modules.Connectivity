@@ -29,6 +29,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.net.Network;
+import android.net.http.ConnectionMigrationOptions;
+import android.net.http.DnsOptions;
 import android.net.http.HttpEngine;
 import android.net.http.UrlRequest;
 import android.net.http.UrlResponseInfo;
@@ -43,6 +46,7 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mockito;
 
 @RunWith(AndroidJUnit4.class)
 public class HttpEngineTest {
@@ -51,6 +55,7 @@ public class HttpEngineTest {
 
     private HttpEngine.Builder mEngineBuilder;
     private TestUrlRequestCallback mCallback;
+    private HttpCtsTestServer mTestServer;
     private UrlRequest mRequest;
     private HttpEngine mEngine;
     private Context mContext;
@@ -61,6 +66,7 @@ public class HttpEngineTest {
         skipIfNoInternetConnection(mContext);
         mEngineBuilder = new HttpEngine.Builder(mContext);
         mCallback = new TestUrlRequestCallback();
+        mTestServer = new HttpCtsTestServer(mContext);
     }
 
     @After
@@ -71,6 +77,9 @@ public class HttpEngineTest {
         }
         if (mEngine != null) {
             mEngine.shutdown();
+        }
+        if (mTestServer != null) {
+            mTestServer.shutdown();
         }
     }
 
@@ -96,8 +105,9 @@ public class HttpEngineTest {
 
     @Test
     public void testHttpEngine_EnableHttpCache() {
-        // We need a server which sets cache-control != no-cache.
-        String url = "https://www.example.com";
+        String url = mTestServer.getCacheableTestDownloadUrl(
+                /* downloadId */ "cacheable-download",
+                /* numBytes */ 10);
         mEngine =
                 mEngineBuilder
                         .setStoragePath(mContext.getApplicationInfo().dataDir)
@@ -109,9 +119,7 @@ public class HttpEngineTest {
                 mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
-        // This tests uses a non-hermetic server. Instead of asserting, assume the next callback.
-        // This way, if the request were to fail, the test would just be skipped instead of failing.
-        mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
         UrlResponseInfo info = mCallback.mResponseInfo;
         assumeOKStatusCode(info);
         assertFalse(info.wasCached());
@@ -120,7 +128,7 @@ public class HttpEngineTest {
         builder = mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
-        mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
         info = mCallback.mResponseInfo;
         assertOKStatusCode(info);
         assertTrue(info.wasCached());
@@ -144,11 +152,12 @@ public class HttpEngineTest {
 
     @Test
     public void testHttpEngine_EnablePublicKeyPinningBypassForLocalTrustAnchors() {
+        String url = mTestServer.getSuccessUrl();
         // For known hosts, requests should succeed whether we're bypassing the local trust anchor
         // or not.
         mEngine = mEngineBuilder.setEnablePublicKeyPinningBypassForLocalTrustAnchors(false).build();
         UrlRequest.Builder builder =
-                mEngine.newUrlRequestBuilder(URL, mCallback.getExecutor(), mCallback);
+                mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
         mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
@@ -156,7 +165,7 @@ public class HttpEngineTest {
         mEngine.shutdown();
         mEngine = mEngineBuilder.setEnablePublicKeyPinningBypassForLocalTrustAnchors(true).build();
         mCallback = new TestUrlRequestCallback();
-        builder = mEngine.newUrlRequestBuilder(URL, mCallback.getExecutor(), mCallback);
+        builder = mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
         mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
@@ -202,6 +211,7 @@ public class HttpEngineTest {
     @Test
     public void testHttpEngine_GetDefaultUserAgent() throws Exception {
         assertThat(mEngineBuilder.getDefaultUserAgent(), containsString("AndroidHttpClient"));
+        assertThat(mEngineBuilder.getDefaultUserAgent()).contains(HttpEngine.getVersionString());
     }
 
     @Test
@@ -252,5 +262,81 @@ public class HttpEngineTest {
         return userAgentResponseBody
                 .replaceFirst(".*<title>", "")
                 .replaceFirst("</title>.*", "");
+    }
+
+    @Test
+    public void testHttpEngine_bindToNetwork() throws Exception {
+        // Create a fake Android.net.Network. Since that network doesn't exist, binding to
+        // that should end up in a failed request.
+        Network mockNetwork = Mockito.mock(Network.class);
+        Mockito.when(mockNetwork.getNetworkHandle()).thenReturn(123L);
+        String url = mTestServer.getSuccessUrl();
+
+        mEngine = mEngineBuilder.build();
+        mEngine.bindToNetwork(mockNetwork);
+        UrlRequest.Builder builder =
+                mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
+        mRequest = builder.build();
+        mRequest.start();
+
+        mCallback.expectCallback(ResponseStep.ON_FAILED);
+    }
+
+    @Test
+    public void testHttpEngine_unbindFromNetwork() throws Exception {
+        // Create a fake Android.net.Network. Since that network doesn't exist, binding to
+        // that should end up in a failed request.
+        Network mockNetwork = Mockito.mock(Network.class);
+        Mockito.when(mockNetwork.getNetworkHandle()).thenReturn(123L);
+        String url = mTestServer.getSuccessUrl();
+
+        mEngine = mEngineBuilder.build();
+        // Bind to the fake network but then unbind. This should result in a successful
+        // request.
+        mEngine.bindToNetwork(mockNetwork);
+        mEngine.bindToNetwork(null);
+        UrlRequest.Builder builder =
+                mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
+        mRequest = builder.build();
+        mRequest.start();
+
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+        UrlResponseInfo info = mCallback.mResponseInfo;
+        assertOKStatusCode(info);
+    }
+
+    @Test
+    public void testHttpEngine_setConnectionMigrationOptions_requestSucceeds() {
+        ConnectionMigrationOptions options = new ConnectionMigrationOptions.Builder().build();
+        mEngine = mEngineBuilder.setConnectionMigrationOptions(options).build();
+        UrlRequest.Builder builder =
+                mEngine.newUrlRequestBuilder(
+                        mTestServer.getSuccessUrl(), mCallback.getExecutor(), mCallback);
+        mRequest = builder.build();
+        mRequest.start();
+
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+        UrlResponseInfo info = mCallback.mResponseInfo;
+        assertOKStatusCode(info);
+    }
+
+    @Test
+    public void testHttpEngine_setDnsOptions_requestSucceeds() {
+        DnsOptions options = new DnsOptions.Builder().build();
+        mEngine = mEngineBuilder.setDnsOptions(options).build();
+        UrlRequest.Builder builder =
+                mEngine.newUrlRequestBuilder(
+                        mTestServer.getSuccessUrl(), mCallback.getExecutor(), mCallback);
+        mRequest = builder.build();
+        mRequest.start();
+
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+        UrlResponseInfo info = mCallback.mResponseInfo;
+        assertOKStatusCode(info);
+    }
+
+    @Test
+    public void getVersionString_notEmpty() {
+        assertThat(HttpEngine.getVersionString()).isNotEmpty();
     }
 }
