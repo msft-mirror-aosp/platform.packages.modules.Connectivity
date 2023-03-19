@@ -177,14 +177,21 @@ static jint com_android_server_connectivity_ClatCoordinator_openPacketSocket(JNI
                                                                               jobject clazz) {
     // Will eventually be bound to htons(ETH_P_IPV6) protocol,
     // but only after appropriate bpf filter is attached.
-    int sock = socket(AF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    const int sock = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, 0);
     if (sock < 0) {
         throwIOException(env, "packet socket failed", errno);
         return -1;
     }
-    int on = 1;
+    const int on = 1;
+    // enable tpacket_auxdata cmsg delivery, which includes L2 header length
     if (setsockopt(sock, SOL_PACKET, PACKET_AUXDATA, &on, sizeof(on))) {
         throwIOException(env, "packet socket auxdata enablement failed", errno);
+        close(sock);
+        return -1;
+    }
+    // needed for virtio_net_hdr prepending, which includes checksum metadata
+    if (setsockopt(sock, SOL_PACKET, PACKET_VNET_HDR, &on, sizeof(on))) {
+        throwIOException(env, "packet socket vnet_hdr enablement failed", errno);
         close(sock);
         return -1;
     }
