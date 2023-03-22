@@ -26,6 +26,7 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
@@ -33,6 +34,7 @@ import android.net.Network;
 import android.net.http.ConnectionMigrationOptions;
 import android.net.http.DnsOptions;
 import android.net.http.HttpEngine;
+import android.net.http.QuicOptions;
 import android.net.http.UrlRequest;
 import android.net.http.UrlResponseInfo;
 import android.net.http.cts.util.HttpCtsTestServer;
@@ -47,6 +49,11 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mockito;
+
+import java.time.Instant;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Set;
 
 @RunWith(AndroidJUnit4.class)
 public class HttpEngineTest {
@@ -105,22 +112,21 @@ public class HttpEngineTest {
 
     @Test
     public void testHttpEngine_EnableHttpCache() {
-        // We need a server which sets cache-control != no-cache.
-        String url = "https://www.example.com";
+        String url = mTestServer.getCacheableTestDownloadUrl(
+                /* downloadId */ "cacheable-download",
+                /* numBytes */ 10);
         mEngine =
                 mEngineBuilder
                         .setStoragePath(mContext.getApplicationInfo().dataDir)
-                        .setEnableHttpCache(HttpEngine.Builder.HTTP_CACHE_DISK,
-                                            /* maxSize */ 100 * 1024)
+                        .setEnableHttpCache(
+                                HttpEngine.Builder.HTTP_CACHE_DISK, /* maxSize */ 100 * 1024)
                         .build();
 
         UrlRequest.Builder builder =
                 mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
-        // This tests uses a non-hermetic server. Instead of asserting, assume the next callback.
-        // This way, if the request were to fail, the test would just be skipped instead of failing.
-        mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
         UrlResponseInfo info = mCallback.mResponseInfo;
         assumeOKStatusCode(info);
         assertFalse(info.wasCached());
@@ -129,7 +135,7 @@ public class HttpEngineTest {
         builder = mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
-        mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
         info = mCallback.mResponseInfo;
         assertOKStatusCode(info);
         assertTrue(info.wasCached());
@@ -153,11 +159,12 @@ public class HttpEngineTest {
 
     @Test
     public void testHttpEngine_EnablePublicKeyPinningBypassForLocalTrustAnchors() {
+        String url = mTestServer.getSuccessUrl();
         // For known hosts, requests should succeed whether we're bypassing the local trust anchor
         // or not.
         mEngine = mEngineBuilder.setEnablePublicKeyPinningBypassForLocalTrustAnchors(false).build();
         UrlRequest.Builder builder =
-                mEngine.newUrlRequestBuilder(URL, mCallback.getExecutor(), mCallback);
+                mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
         mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
@@ -165,7 +172,7 @@ public class HttpEngineTest {
         mEngine.shutdown();
         mEngine = mEngineBuilder.setEnablePublicKeyPinningBypassForLocalTrustAnchors(true).build();
         mCallback = new TestUrlRequestCallback();
-        builder = mEngine.newUrlRequestBuilder(URL, mCallback.getExecutor(), mCallback);
+        builder = mEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
         mRequest = builder.build();
         mRequest.start();
         mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
@@ -179,6 +186,38 @@ public class HttpEngineTest {
         // The former doesn't make sense for a CTS test as it would depend on the underlying
         // implementation. The latter is something we should support once we write a proper test
         // server.
+    }
+
+    private byte[] generateSha256() {
+        byte[] sha256 = new byte[32];
+        Arrays.fill(sha256, (byte) 58);
+        return sha256;
+    }
+
+    private Instant instantInFuture(int secondsIntoFuture) {
+        Calendar cal = Calendar.getInstance();
+        cal.add(Calendar.SECOND, secondsIntoFuture);
+        return cal.getTime().toInstant();
+    }
+
+    @Test
+    public void testHttpEngine_AddPublicKeyPins() {
+        // CtsTestServer, when set in SslMode.NO_CLIENT_AUTH (required to trigger
+        // certificate verification, needed by this test), uses a certificate that
+        // doesn't match the hostname. For this reason, CtsTestServer cannot be used
+        // by this test.
+        Instant expirationInstant = instantInFuture(/* secondsIntoFuture */ 100);
+        boolean includeSubdomains = true;
+        Set<byte[]> pinsSha256 = Set.of(generateSha256());
+        mEngine = mEngineBuilder.addPublicKeyPins(
+                HOST, pinsSha256, includeSubdomains, expirationInstant).build();
+
+        UrlRequest.Builder builder =
+                mEngine.newUrlRequestBuilder(URL, mCallback.getExecutor(), mCallback);
+        mRequest = builder.build();
+        mRequest.start();
+        mCallback.expectCallback(ResponseStep.ON_FAILED);
+        assertNotNull("Expected an error", mCallback.mError);
     }
 
     @Test
@@ -211,6 +250,7 @@ public class HttpEngineTest {
     @Test
     public void testHttpEngine_GetDefaultUserAgent() throws Exception {
         assertThat(mEngineBuilder.getDefaultUserAgent(), containsString("AndroidHttpClient"));
+        assertThat(mEngineBuilder.getDefaultUserAgent()).contains(HttpEngine.getVersionString());
     }
 
     @Test
@@ -258,9 +298,7 @@ public class HttpEngineTest {
     private static String extractUserAgent(String userAgentResponseBody) {
         // If someone wants to be evil and have the title HTML tag a part of the user agent,
         // they'll have to fix this method :)
-        return userAgentResponseBody
-                .replaceFirst(".*<title>", "")
-                .replaceFirst("</title>.*", "");
+        return userAgentResponseBody.replaceFirst(".*<title>", "").replaceFirst("</title>.*", "");
     }
 
     @Test
@@ -331,6 +369,59 @@ public class HttpEngineTest {
 
         mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
         UrlResponseInfo info = mCallback.mResponseInfo;
+        assertOKStatusCode(info);
+    }
+
+    @Test
+    public void getVersionString_notEmpty() {
+        assertThat(HttpEngine.getVersionString()).isNotEmpty();
+    }
+
+    @Test
+    public void testHttpEngine_SetQuicOptions_RequestSucceedsWithQuic() throws Exception {
+        QuicOptions options = new QuicOptions.Builder().build();
+        mEngine = mEngineBuilder
+                .setEnableQuic(true)
+                .addQuicHint(HOST, 443, 443)
+                .setQuicOptions(options)
+                .build();
+
+        // The hint doesn't guarantee that QUIC will win the race, just that it will race TCP.
+        // We send multiple requests to reduce the flakiness of the test.
+        boolean quicWasUsed = false;
+        for (int i = 0; i < 5; i++) {
+            mCallback = new TestUrlRequestCallback();
+            UrlRequest.Builder builder =
+                    mEngine.newUrlRequestBuilder(URL, mCallback.getExecutor(), mCallback);
+            mRequest = builder.build();
+            mRequest.start();
+            mCallback.blockForDone();
+
+            quicWasUsed = isQuic(mCallback.mResponseInfo.getNegotiatedProtocol());
+            if (quicWasUsed) {
+                break;
+            }
+        }
+
+        assertTrue(quicWasUsed);
+        // This tests uses a non-hermetic server. Instead of asserting, assume the next callback.
+        // This way, if the request were to fail, the test would just be skipped instead of failing.
+        assumeOKStatusCode(mCallback.mResponseInfo);
+    }
+
+    @Test
+    public void testHttpEngine_enableBrotli_brotliAdvertised() {
+        mEngine = mEngineBuilder.setEnableBrotli(true).build();
+        mRequest =
+                mEngine.newUrlRequestBuilder(
+                        mTestServer.getEchoHeadersUrl(), mCallback.getExecutor(), mCallback)
+                        .build();
+        mRequest.start();
+
+        mCallback.assumeCallback(ResponseStep.ON_SUCCEEDED);
+        UrlResponseInfo info = mCallback.mResponseInfo;
+        assertThat(info.getHeaders().getAsMap().get("x-request-header-Accept-Encoding").toString())
+                .contains("br");
         assertOKStatusCode(info);
     }
 }
