@@ -62,6 +62,28 @@ public final class ConnectivityCompatChanges {
     // This was a platform change ID with value 191844585L before T
     public static final long RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER = 235355681L;
 
+    /**
+     * The self certified capabilities check should be enabled after android 13.
+     *
+     * <p> See {@link android.net.NetworkCapabilities} for more details.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.TIRAMISU)
+    public static final long ENABLE_SELF_CERTIFIED_CAPABILITIES_DECLARATION = 266524688;
+
+    /**
+     * Apps targeting < Android 14 use a legacy NSD backend.
+     *
+     * The legacy apps use a legacy native daemon as NsdManager backend, but other apps use a
+     * platform-integrated mDNS implementation as backend.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.TIRAMISU)
+    public static final long ENABLE_PLATFORM_MDNS_BACKEND = 270306772L;
     private ConnectivityCompatChanges() {
     }
 }
