@@ -50,6 +50,7 @@ DEFAULT_TARGETS = [
 DEFAULT_TESTS = [
   '//components/cronet/android:cronet_unittests_android__library',
   '//net:net_unittests__library',
+  '//components/cronet/android:cronet_tests',
 ]
 
 EXTRAS_ANDROID_BP_FILE = "Android.extras.bp"
@@ -235,6 +236,9 @@ def enable_zlib(module, arch):
     module.arch[arch].shared_libs.add('libz')
 
 def enable_boringssl(module, arch):
+  # Do not add boringssl targets to cc_genrules. This happens, because protobuf targets are
+  # originally static_libraries, but later get converted to a cc_genrule.
+  if module.is_genrule(): return
   if arch is None:
     shared_libs = module.shared_libs
   else:
@@ -289,6 +293,12 @@ tethering_apex = "com.android.tethering"
 
 # Name of cronet api target
 java_api_target_name = "//components/cronet/android:cronet_api_java"
+
+# Visibility set for package default
+package_default_visibility = ":__subpackages__"
+
+# Visibility set for modules used from Connectivity
+connectivity_visibility = "//packages/modules/Connectivity:__subpackages__"
 
 # ----------------------------------------------------------------------------
 # End of configuration.
@@ -441,6 +451,7 @@ class Module(object):
     self.target['android_arm'] = Target('android_arm')
     self.target['android_arm64'] = Target('android_arm64')
     self.target['host'] = Target('host')
+    self.target['glibc'] = Target('glibc')
     self.stl = None
     self.cpp_std = None
     self.dist = dict()
@@ -472,9 +483,10 @@ class Module(object):
     self.processor_class = None
     self.sdk_version = None
     self.javacflags = set()
-    self.license_kinds = set()
-    self.license_text = set()
+    self.c_std = None
     self.default_applicable_licenses = set()
+    self.default_visibility = []
+    self.visibility = []
 
   def to_string(self, output):
     if self.comment:
@@ -531,9 +543,10 @@ class Module(object):
     self._output_field(output, 'processor_class')
     self._output_field(output, 'sdk_version')
     self._output_field(output, 'javacflags')
-    self._output_field(output, 'license_kinds')
-    self._output_field(output, 'license_text')
+    self._output_field(output, 'c_std')
     self._output_field(output, 'default_applicable_licenses')
+    self._output_field(output, 'default_visibility')
+    self._output_field(output, 'visibility')
     if self.rtti:
       self._output_field(output, 'rtti')
 
@@ -1723,6 +1736,7 @@ def create_java_module(blueprint, gn, is_test_target):
       module.srcs.add(':' + create_action_module(blueprint, target, 'java_genrule', is_test_target).name)
   preprocessor_module = create_java_jni_preprocessor(blueprint)
   module.plugins.add(preprocessor_module.name)
+  module.visibility.append(connectivity_visibility)
   blueprint.add_module(module)
   return module
 
@@ -1738,6 +1752,7 @@ def create_java_api_module(blueprint, gn):
     ':' + create_action_module(blueprint, gn.get_target(dep), 'java_genrule', False).name
     for dep in get_api_java_actions(gn)])
   blueprint.add_module(source_module)
+  source_module.visibility.append(connectivity_visibility)
   return source_module
 
 def update_jni_registration_module(module, gn):
@@ -1745,6 +1760,28 @@ def update_jni_registration_module(module, gn):
   module.srcs.update([gn_utils.label_to_path(source)
                       for source in get_non_api_java_sources(gn)
                       if source.endswith('.java')])
+
+
+def turn_off_allocator_shim_for_musl(module):
+  allocation_shim = "base/allocator/partition_allocator/shim/allocator_shim.cc"
+  allocator_shim_files = {
+    allocation_shim,
+    "base/allocator/partition_allocator/shim/allocator_shim_default_dispatch_to_glibc.cc",
+  }
+  module.srcs -= allocator_shim_files
+  for arch in module.target.values():
+    arch.srcs -= allocator_shim_files
+  module.target['android'].srcs.add(allocation_shim)
+  if gn_utils.TESTING_SUFFIX in module.name:
+    # allocator_shim_default_dispatch_to_glibc is only added to the __testing version of base
+    # since base_base__testing is compiled for host. When compiling for host. Soong compiles
+    # using glibc or musl(experimental). We currently only support compiling for glibc.
+    module.target['glibc'].srcs.update(allocator_shim_files)
+  else:
+    # allocator_shim_default_dispatch_to_glibc does not exist in the prod version of base
+    # `base_base` since this only compiles for android and bionic is used. Bionic is the equivalent
+    # of glibc but for android.
+    module.target['glibc'].srcs.add(allocation_shim)
 
 def create_blueprint_for_targets(gn, targets, test_targets):
   """Generate a blueprint for a list of GN targets."""
@@ -1754,6 +1791,7 @@ def create_blueprint_for_targets(gn, targets, test_targets):
   defaults = Module('cc_defaults', defaults_module, '//gn:default_deps')
   defaults.cflags = [
       '-DGOOGLE_PROTOBUF_NO_RTTI',
+      '-DBORINGSSL_SHARED_LIBRARY',
       '-Wno-error=return-type',
       '-Wno-non-virtual-dtor',
       '-Wno-macro-redefined',
@@ -1767,6 +1805,7 @@ def create_blueprint_for_targets(gn, targets, test_targets):
       '-fPIC',
       '-Wno-c++11-narrowing',
   ]
+  defaults.c_std = 'gnu11'
   # Chromium builds do not add a dependency for headers found inside the
   # sysroot, so they are added globally via defaults.
   defaults.target['android'].header_libs = [
@@ -1790,10 +1829,14 @@ def create_blueprint_for_targets(gn, targets, test_targets):
   blueprint.add_module(defaults)
 
   for target in targets:
-    create_modules_from_target(blueprint, gn, target, is_test_target=False)
+    module = create_modules_from_target(blueprint, gn, target, is_test_target=False)
+    if module:
+      module.visibility.append(connectivity_visibility)
 
   for test_target in test_targets:
-    create_modules_from_target(blueprint, gn, test_target + gn_utils.TESTING_SUFFIX, is_test_target=True)
+    module = create_modules_from_target(blueprint, gn, test_target + gn_utils.TESTING_SUFFIX, is_test_target=True)
+    if module:
+      module.visibility.append(connectivity_visibility)
 
   create_java_api_module(blueprint, gn)
   java_module = create_java_module(blueprint, gn, is_test_target=False)
@@ -1803,6 +1846,8 @@ def create_blueprint_for_targets(gn, targets, test_targets):
   for module in blueprint.modules.values():
     if 'cronet_jni_registration' in module.name:
       update_jni_registration_module(module, gn)
+    if module.name in ['cronet_aml_base_base', 'cronet_aml_base_base' + gn_utils.TESTING_SUFFIX]:
+      turn_off_allocator_shim_for_musl(module)
 
   # Merge in additional hardcoded arguments.
   for module in blueprint.modules.values():
@@ -1824,11 +1869,12 @@ def create_blueprint_for_targets(gn, targets, test_targets):
 
   return blueprint
 
-def create_default_license_module(blueprint):
-  default_license = Module("package", "", "PACKAGE")
-  default_license.comment = "The actual license can be found in Android.extras.bp"
-  default_license.default_applicable_licenses.add(CRONET_LICENSE_NAME)
-  blueprint.add_module(default_license)
+def create_package_module(blueprint):
+  package = Module("package", "", "PACKAGE")
+  package.comment = "The actual license can be found in Android.extras.bp"
+  package.default_applicable_licenses.add(CRONET_LICENSE_NAME)
+  package.default_visibility.append(package_default_visibility)
+  blueprint.add_module(package)
 
 def main():
   parser = argparse.ArgumentParser(
@@ -1882,7 +1928,7 @@ def main():
   # Add any proto groups to the blueprint.
   for l_name, t_names in proto_groups.items():
     create_proto_group_modules(blueprint, gn, l_name, t_names)
-  create_default_license_module(blueprint)
+  create_package_module(blueprint)
   output = [
       """// Copyright (C) 2022 The Android Open Source Project
 //
