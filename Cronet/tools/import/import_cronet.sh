@@ -24,6 +24,8 @@
 #   -n rev: The new revision to import.
 #   -f: Force copybara to ignore a failure to find the last imported revision.
 
+set -e -x
+
 OPTSTRING=fl:n:
 
 usage() {
@@ -36,7 +38,7 @@ EOF
 COPYBARA_FOLDER_ORIGIN="/tmp/copybara-origin"
 
 #######################################
-# Create upstream-import branch in external/cronet.
+# Create local upstream-import branch in external/cronet.
 # Globals:
 #   ANDROID_BUILD_TOP
 # Arguments:
@@ -44,10 +46,8 @@ COPYBARA_FOLDER_ORIGIN="/tmp/copybara-origin"
 #######################################
 setup_upstream_import_branch() {
     local git_dir="${ANDROID_BUILD_TOP}/external/cronet"
-    local initial_empty_repo_sha="d1add53d6e90815f363c91d433735556ce79b0d2"
 
-    # Suppress error message if branch already exists.
-    (cd "${git_dir}" && git branch upstream-import "${initial_empty_repo_sha}") 2>/dev/null
+    (cd "${git_dir}" && git fetch aosp upstream-import:upstream-import)
 }
 
 #######################################
@@ -57,13 +57,18 @@ setup_upstream_import_branch() {
 # Arguments:
 #   new_rev, string
 #######################################
-setup_folder_origin() {
+setup_folder_origin() (
     local _new_rev=$1
     mkdir -p "${COPYBARA_FOLDER_ORIGIN}"
     cd "${COPYBARA_FOLDER_ORIGIN}"
 
-    # For this to work _new_rev must be a branch or a tag.
-    git clone --depth=1 --branch "${_new_rev}" https://chromium.googlesource.com/chromium/src.git
+    if [ -d src ]; then
+        (cd src && git fetch --tags && git checkout "${_new_rev}")
+    else
+        # For this to work _new_rev must be a branch or a tag.
+        git clone --depth=1 --branch "${_new_rev}" https://chromium.googlesource.com/chromium/src.git
+    fi
+
 
     cat <<EOF >.gclient
 solutions = [
@@ -80,9 +85,10 @@ EOF
     cd src
     # Set appropriate gclient flags to speed up syncing.
     gclient sync \
-        --no-history
-        --shallow
-}
+        --no-history \
+        --shallow \
+        --delete_unversioned_trees
+)
 
 #######################################
 # Runs the copybara import of Chromium
