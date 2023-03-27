@@ -54,6 +54,7 @@ java_sdk_library {
         "//packages/modules/CaptivePortalLogin/tests",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/Cronet/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
@@ -75,12 +76,12 @@ java_defaults {
 
 java_defaults {
     name: "CronetJavaDefaultsEnabled",
-    srcs: ["//external/cronet:cronet_aml_api_sources"],
+    srcs: [":cronet_aml_api_sources"],
     libs: [
         "androidx.annotation_annotation",
     ],
     impl_only_static_libs: [
-        "//external/cronet:cronet_aml_java",
+        "cronet_aml_java",
     ],
     api_dir: "cronet_enabled/api",
 }
@@ -101,8 +102,8 @@ java_defaults {
 java_defaults {
   name: "CronetJavaPrejarjarDefaultsEnabled",
   static_libs: [
-    "//external/cronet:cronet_aml_api_java",
-    "//external/cronet:cronet_aml_java"
+    "cronet_aml_api_java",
+    "cronet_aml_java"
   ],
 }
 
