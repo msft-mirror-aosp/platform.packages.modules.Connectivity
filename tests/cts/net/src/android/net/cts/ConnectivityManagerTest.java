@@ -2385,9 +2385,10 @@ public class ConnectivityManagerTest {
         }
         public void eventuallyExpectBlockedStatusCallback(Network network, int blockedStatus) {
             super.eventuallyExpect(CallbackEntry.BLOCKED_STATUS_INT, NETWORK_CALLBACK_TIMEOUT_MS,
-                    (it) -> it.getNetwork().equals(network) && it.getBlocked() == blockedStatus);
+                    (it) -> it.getNetwork().equals(network) && it.getReason() == blockedStatus);
         }
         public void onBlockedStatusChanged(Network network, int blockedReasons) {
+            Log.v(TAG, "onBlockedStatusChanged " + network + " " + blockedReasons);
             getHistory().add(new CallbackEntry.BlockedStatusInt(network, blockedReasons));
         }
         private void assertNoBlockedStatusCallback() {
@@ -2408,7 +2409,11 @@ public class ConnectivityManagerTest {
         }
     }
 
-    private void doTestBlockedStatusCallback() throws Exception {
+    @Test
+    public void testBlockedStatusCallback() throws Exception {
+        // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
+        // shims, and @IgnoreUpTo does not check that.
+        assumeTrue(TestUtils.shouldTestSApis());
         // The test will need a stable active network that is persistent during the test.
         // Try to connect to a wifi network and wait for it becomes the default network before
         // starting the test to prevent from sudden active network change caused by previous
@@ -2426,48 +2431,45 @@ public class ConnectivityManagerTest {
         final Handler handler = new Handler(Looper.getMainLooper());
 
         registerDefaultNetworkCallback(myUidCallback, handler);
-        registerDefaultNetworkCallbackForUid(otherUid, otherUidCallback, handler);
+        runWithShellPermissionIdentity(() -> registerDefaultNetworkCallbackForUid(
+                otherUid, otherUidCallback, handler), NETWORK_SETTINGS);
 
-        final Network defaultNetwork = mCm.getActiveNetwork();
+        final Network defaultNetwork = myUidCallback.expect(CallbackEntry.AVAILABLE).getNetwork();
         final List<DetailedBlockedStatusCallback> allCallbacks =
                 List.of(myUidCallback, otherUidCallback);
         for (DetailedBlockedStatusCallback callback : allCallbacks) {
-            callback.expectAvailableCallbacksWithBlockedReasonNone(defaultNetwork);
+            callback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
         }
 
         final Range<Integer> myUidRange = new Range<>(myUid, myUid);
         final Range<Integer> otherUidRange = new Range<>(otherUid, otherUid);
 
-        setRequireVpnForUids(true, List.of(myUidRange));
+        runWithShellPermissionIdentity(() -> setRequireVpnForUids(
+                true, List.of(myUidRange)), NETWORK_SETTINGS);
         myUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork,
                 BLOCKED_REASON_LOCKDOWN_VPN);
         otherUidCallback.assertNoBlockedStatusCallback();
 
-        setRequireVpnForUids(true, List.of(myUidRange, otherUidRange));
+        runWithShellPermissionIdentity(() -> setRequireVpnForUids(
+                true, List.of(myUidRange, otherUidRange)), NETWORK_SETTINGS);
         myUidCallback.assertNoBlockedStatusCallback();
         otherUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork,
                 BLOCKED_REASON_LOCKDOWN_VPN);
 
         // setRequireVpnForUids does no deduplication or refcounting. Removing myUidRange does not
         // unblock myUid because it was added to the blocked ranges twice.
-        setRequireVpnForUids(false, List.of(myUidRange));
+        runWithShellPermissionIdentity(() ->
+                setRequireVpnForUids(false, List.of(myUidRange)), NETWORK_SETTINGS);
         myUidCallback.assertNoBlockedStatusCallback();
         otherUidCallback.assertNoBlockedStatusCallback();
 
-        setRequireVpnForUids(false, List.of(myUidRange, otherUidRange));
+        runWithShellPermissionIdentity(() -> setRequireVpnForUids(
+                false, List.of(myUidRange, otherUidRange)), NETWORK_SETTINGS);
         myUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
         otherUidCallback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
 
         myUidCallback.assertNoBlockedStatusCallback();
         otherUidCallback.assertNoBlockedStatusCallback();
-    }
-
-    @Test
-    public void testBlockedStatusCallback() {
-        // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
-        // shims, and @IgnoreUpTo does not check that.
-        assumeTrue(TestUtils.shouldTestSApis());
-        runWithShellPermissionIdentity(() -> doTestBlockedStatusCallback(), NETWORK_SETTINGS);
     }
 
     @Test
@@ -2706,6 +2708,7 @@ public class ConnectivityManagerTest {
         // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
         // shims, and @IgnoreUpTo does not check that.
         assumeTrue(TestUtils.shouldTestSApis());
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
         final TestNetworkTracker tnt = callWithShellPermissionIdentity(
                 () -> initTestNetwork(mContext, TEST_LINKADDR, NETWORK_CALLBACK_TIMEOUT_MS));
@@ -2719,7 +2722,8 @@ public class ConnectivityManagerTest {
                     OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY);
             registerTestOemNetworkPreferenceCallbacks(defaultCallback, systemDefaultCallback);
             waitForAvailable(defaultCallback, tnt.getNetwork());
-            waitForAvailable(systemDefaultCallback, wifiNetwork);
+            systemDefaultCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
+                    NETWORK_CALLBACK_TIMEOUT_MS, cb -> wifiNetwork.equals(cb.getNetwork()));
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
                 defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
@@ -3372,7 +3376,7 @@ public class ConnectivityManagerTest {
     }
 
     private void checkFirewallBlocking(final DatagramSocket srcSock, final DatagramSocket dstSock,
-            final boolean expectBlock) throws Exception {
+            final boolean expectBlock, final int chain) throws Exception {
         final Random random = new Random();
         final byte[] sendData = new byte[100];
         random.nextBytes(sendData);
@@ -3385,11 +3389,17 @@ public class ConnectivityManagerTest {
             if (expectBlock) {
                 return;
             }
-            fail("Expect not to be blocked by firewall but sending packet was blocked");
+            fail("Expect not to be blocked by firewall but sending packet was blocked:"
+                    + " chain=" + chain
+                    + " chainEnabled=" + mCm.getFirewallChainEnabled(chain)
+                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
         }
 
         if (expectBlock) {
-            fail("Expect to be blocked by firewall but sending packet was not blocked");
+            fail("Expect to be blocked by firewall but sending packet was not blocked:"
+                    + " chain=" + chain
+                    + " chainEnabled=" + mCm.getFirewallChainEnabled(chain)
+                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
         }
 
         dstSock.receive(pkt);
@@ -3398,6 +3408,9 @@ public class ConnectivityManagerTest {
 
     private static final boolean EXPECT_PASS = false;
     private static final boolean EXPECT_BLOCK = true;
+
+    // ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+    // DENYLIST means the firewall allows all by default, uids must be explicitly denyed
     private static final boolean ALLOWLIST = true;
     private static final boolean DENYLIST = false;
 
@@ -3409,34 +3422,40 @@ public class ConnectivityManagerTest {
         runWithShellPermissionIdentity(() -> {
             // Firewall chain status will be restored after the test.
             final boolean wasChainEnabled = mCm.getFirewallChainEnabled(chain);
+            final int previousUidFirewallRule = mCm.getUidFirewallRule(chain, myUid);
             final DatagramSocket srcSock = new DatagramSocket();
             final DatagramSocket dstSock = new DatagramSocket();
             testAndCleanup(() -> {
                 if (wasChainEnabled) {
                     mCm.setFirewallChainEnabled(chain, false /* enable */);
                 }
+                if (previousUidFirewallRule == ruleToAddMatch) {
+                    mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
+                }
                 dstSock.setSoTimeout(SOCKET_TIMEOUT_MS);
 
                 // Chain disabled, UID not on chain.
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS, chain);
 
                 // Chain enabled, UID not on chain.
                 mCm.setFirewallChainEnabled(chain, true /* enable */);
                 assertTrue(mCm.getFirewallChainEnabled(chain));
-                checkFirewallBlocking(srcSock, dstSock, isAllowList ? EXPECT_BLOCK : EXPECT_PASS);
+                checkFirewallBlocking(
+                        srcSock, dstSock, isAllowList ? EXPECT_BLOCK : EXPECT_PASS, chain);
 
                 // Chain enabled, UID on chain.
                 mCm.setUidFirewallRule(chain, myUid, ruleToAddMatch);
-                checkFirewallBlocking(srcSock, dstSock, isAllowList ?  EXPECT_PASS : EXPECT_BLOCK);
+                checkFirewallBlocking(
+                        srcSock, dstSock, isAllowList ?  EXPECT_PASS : EXPECT_BLOCK, chain);
 
                 // Chain disabled, UID on chain.
                 mCm.setFirewallChainEnabled(chain, false /* enable */);
                 assertFalse(mCm.getFirewallChainEnabled(chain));
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS, chain);
 
                 // Chain disabled, UID not on chain.
                 mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
-                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS);
+                checkFirewallBlocking(srcSock, dstSock, EXPECT_PASS, chain);
             }, /* cleanup */ () -> {
                     srcSock.close();
                     dstSock.close();
@@ -3444,8 +3463,9 @@ public class ConnectivityManagerTest {
                     // Restore the global chain status
                     mCm.setFirewallChainEnabled(chain, wasChainEnabled);
                 }, /* cleanup */ () -> {
+                    // Restore the uid firewall rule status
                     try {
-                        mCm.setUidFirewallRule(chain, myUid, ruleToRemoveMatch);
+                        mCm.setUidFirewallRule(chain, myUid, previousUidFirewallRule);
                     } catch (IllegalStateException ignored) {
                         // Removing match causes an exception when the rule entry for the uid does
                         // not exist. But this is fine and can be ignored.
@@ -3456,17 +3476,49 @@ public class ConnectivityManagerTest {
 
     @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
     @AppModeFull(reason = "Socket cannot bind in instant app mode")
-    public void testFirewallBlocking() {
-        // ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+    public void testFirewallBlockingDozable() {
         doTestFirewallBlocking(FIREWALL_CHAIN_DOZABLE, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_POWERSAVE, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_RESTRICTED, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_LOW_POWER_STANDBY, ALLOWLIST);
+    }
 
-        // DENYLIST means the firewall allows all by default, uids must be explicitly denyed
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingPowersave() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_POWERSAVE, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingRestricted() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_RESTRICTED, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingLowPowerStandby() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_LOW_POWER_STANDBY, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingStandby() {
         doTestFirewallBlocking(FIREWALL_CHAIN_STANDBY, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny1() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_1, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny2() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_2, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny3() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_3, DENYLIST);
     }
 

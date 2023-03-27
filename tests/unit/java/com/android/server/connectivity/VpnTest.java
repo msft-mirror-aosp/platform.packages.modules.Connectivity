@@ -25,13 +25,35 @@ import static android.net.ConnectivityDiagnosticsManager.DataStallReport;
 import static android.net.ConnectivityManager.NetworkCallback;
 import static android.net.INetd.IF_STATE_DOWN;
 import static android.net.INetd.IF_STATE_UP;
+import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.RouteInfo.RTN_UNREACHABLE;
 import static android.net.VpnManager.TYPE_VPN_PLATFORM;
+import static android.net.cts.util.IkeSessionTestUtils.CHILD_PARAMS;
+import static android.net.cts.util.IkeSessionTestUtils.TEST_IDENTITY;
+import static android.net.cts.util.IkeSessionTestUtils.TEST_KEEPALIVE_TIMEOUT_UNSET;
+import static android.net.cts.util.IkeSessionTestUtils.getTestIkeSessionParams;
 import static android.net.ipsec.ike.IkeSessionConfiguration.EXTENSION_TYPE_MOBIKE;
+import static android.net.ipsec.ike.IkeSessionParams.ESP_ENCAP_TYPE_AUTO;
+import static android.net.ipsec.ike.IkeSessionParams.ESP_ENCAP_TYPE_NONE;
+import static android.net.ipsec.ike.IkeSessionParams.ESP_ENCAP_TYPE_UDP;
+import static android.net.ipsec.ike.IkeSessionParams.ESP_IP_VERSION_AUTO;
+import static android.net.ipsec.ike.IkeSessionParams.ESP_IP_VERSION_IPV4;
+import static android.net.ipsec.ike.IkeSessionParams.ESP_IP_VERSION_IPV6;
 import static android.os.Build.VERSION_CODES.S_V2;
 import static android.os.UserHandle.PER_USER_RANGE;
+import static android.telephony.CarrierConfigManager.KEY_CARRIER_CONFIG_APPLIED_BOOL;
+import static android.telephony.CarrierConfigManager.KEY_MIN_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT;
+import static android.telephony.CarrierConfigManager.KEY_PREFERRED_IKE_PROTOCOL_INT;
 
 import static com.android.net.module.util.NetworkStackConstants.IPV6_MIN_MTU;
+import static com.android.server.connectivity.Vpn.AUTOMATIC_KEEPALIVE_DELAY_SECONDS;
+import static com.android.server.connectivity.Vpn.DEFAULT_LONG_LIVED_TCP_CONNS_EXPENSIVE_TIMEOUT_SEC;
+import static com.android.server.connectivity.Vpn.DEFAULT_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT;
+import static com.android.server.connectivity.Vpn.PREFERRED_IKE_PROTOCOL_AUTO;
+import static com.android.server.connectivity.Vpn.PREFERRED_IKE_PROTOCOL_IPV4_UDP;
+import static com.android.server.connectivity.Vpn.PREFERRED_IKE_PROTOCOL_IPV6_ESP;
+import static com.android.server.connectivity.Vpn.PREFERRED_IKE_PROTOCOL_IPV6_UDP;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import static com.android.testutils.MiscAsserts.assertThrows;
@@ -99,6 +121,7 @@ import android.net.NetworkAgentConfig;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo.DetailedState;
 import android.net.RouteInfo;
+import android.net.TelephonyNetworkSpecifier;
 import android.net.UidRangeParcel;
 import android.net.VpnManager;
 import android.net.VpnProfileState;
@@ -106,15 +129,19 @@ import android.net.VpnService;
 import android.net.VpnTransportInfo;
 import android.net.ipsec.ike.ChildSessionCallback;
 import android.net.ipsec.ike.ChildSessionConfiguration;
+import android.net.ipsec.ike.IkeFqdnIdentification;
 import android.net.ipsec.ike.IkeSessionCallback;
 import android.net.ipsec.ike.IkeSessionConfiguration;
 import android.net.ipsec.ike.IkeSessionConnectionInfo;
+import android.net.ipsec.ike.IkeSessionParams;
 import android.net.ipsec.ike.IkeTrafficSelector;
+import android.net.ipsec.ike.IkeTunnelConnectionParams;
 import android.net.ipsec.ike.exceptions.IkeException;
 import android.net.ipsec.ike.exceptions.IkeNetworkLostException;
 import android.net.ipsec.ike.exceptions.IkeNonProtocolException;
 import android.net.ipsec.ike.exceptions.IkeProtocolException;
 import android.net.ipsec.ike.exceptions.IkeTimeoutException;
+import android.net.wifi.WifiInfo;
 import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
 import android.os.ConditionVariable;
@@ -128,6 +155,10 @@ import android.os.UserManager;
 import android.os.test.TestLooper;
 import android.provider.Settings;
 import android.security.Credentials;
+import android.telephony.CarrierConfigManager;
+import android.telephony.SubscriptionInfo;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.util.ArrayMap;
 import android.util.ArraySet;
 import android.util.Pair;
@@ -252,6 +283,11 @@ public class VpnTest extends VpnTestBase {
             "VPNAPPEXCLUDED_27_com.testvpn.vpn";
     static final String PKGS_BYTES = getPackageByteString(List.of(PKGS));
     private static final Range<Integer> PRIMARY_USER_RANGE = uidRangeForUser(PRIMARY_USER.id);
+    // Same as IkeSessionParams#IKE_NATT_KEEPALIVE_DELAY_SEC_DEFAULT
+    private static final int IKE_NATT_KEEPALIVE_DELAY_SEC_DEFAULT = 10;
+    private static final int TEST_KEEPALIVE_TIMER = 800;
+    private static final int TEST_SUB_ID = 1234;
+    private static final String TEST_MCCMNC = "12345";
 
     @Mock(answer = Answers.RETURNS_DEEP_STUBS) private Context mContext;
     @Mock private UserManager mUserManager;
@@ -266,6 +302,10 @@ public class VpnTest extends VpnTestBase {
     @Mock private Vpn.VpnNetworkAgentWrapper mMockNetworkAgent;
     @Mock private ConnectivityManager mConnectivityManager;
     @Mock private ConnectivityDiagnosticsManager mCdm;
+    @Mock private TelephonyManager mTelephonyManager;
+    @Mock private TelephonyManager mTmPerSub;
+    @Mock private CarrierConfigManager mConfigManager;
+    @Mock private SubscriptionManager mSubscriptionManager;
     @Mock private IpSecService mIpSecService;
     @Mock private VpnProfileStore mVpnProfileStore;
     @Mock private ScheduledThreadPoolExecutor mExecutor;
@@ -274,7 +314,6 @@ public class VpnTest extends VpnTestBase {
     private final VpnProfile mVpnProfile;
 
     private IpSecManager mIpSecManager;
-
     private TestDeps mTestDeps;
 
     public VpnTest() throws Exception {
@@ -310,6 +349,11 @@ public class VpnTest extends VpnTestBase {
         mockService(IpSecManager.class, Context.IPSEC_SERVICE, mIpSecManager);
         mockService(ConnectivityDiagnosticsManager.class, Context.CONNECTIVITY_DIAGNOSTICS_SERVICE,
                 mCdm);
+        mockService(TelephonyManager.class, Context.TELEPHONY_SERVICE, mTelephonyManager);
+        mockService(CarrierConfigManager.class, Context.CARRIER_CONFIG_SERVICE, mConfigManager);
+        mockService(SubscriptionManager.class, Context.TELEPHONY_SUBSCRIPTION_SERVICE,
+                mSubscriptionManager);
+        doReturn(mTmPerSub).when(mTelephonyManager).createForSubscriptionId(anyInt());
         when(mContext.getString(R.string.config_customVpnAlwaysOnDisconnectedDialogComponent))
                 .thenReturn(Resources.getSystem().getString(
                         R.string.config_customVpnAlwaysOnDisconnectedDialogComponent));
@@ -1812,6 +1856,18 @@ public class VpnTest extends VpnTestBase {
 
     private PlatformVpnSnapshot verifySetupPlatformVpn(
             IkeSessionConfiguration ikeConfig, boolean mtuSupportsIpv6) throws Exception {
+        return verifySetupPlatformVpn(mVpnProfile, ikeConfig, mtuSupportsIpv6);
+    }
+
+    private PlatformVpnSnapshot verifySetupPlatformVpn(VpnProfile vpnProfile,
+            IkeSessionConfiguration ikeConfig, boolean mtuSupportsIpv6) throws Exception {
+        return verifySetupPlatformVpn(vpnProfile, ikeConfig, mtuSupportsIpv6,
+                false /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    private PlatformVpnSnapshot verifySetupPlatformVpn(VpnProfile vpnProfile,
+            IkeSessionConfiguration ikeConfig, boolean mtuSupportsIpv6,
+            boolean areLongLivedTcpConnectionsExpensive) throws Exception {
         if (!mtuSupportsIpv6) {
             doReturn(IPV6_MIN_MTU - 1).when(mTestDeps).calculateVpnMtu(any(), anyInt(), anyInt(),
                     anyBoolean());
@@ -1820,10 +1876,11 @@ public class VpnTest extends VpnTestBase {
         doReturn(mMockNetworkAgent).when(mTestDeps)
                 .newNetworkAgent(
                         any(), any(), anyString(), any(), any(), any(), any(), any(), any());
+        doReturn(TEST_NETWORK).when(mMockNetworkAgent).getNetwork();
 
         final Vpn vpn = createVpnAndSetupUidChecks(AppOpsManager.OPSTR_ACTIVATE_PLATFORM_VPN);
         when(mVpnProfileStore.get(vpn.getProfileNameForPackage(TEST_VPN_PKG)))
-                .thenReturn(mVpnProfile.encode());
+                .thenReturn(vpnProfile.encode());
 
         vpn.startVpnProfile(TEST_VPN_PKG);
         final NetworkCallback nwCb = triggerOnAvailableAndGetCallback();
@@ -1850,7 +1907,7 @@ public class VpnTest extends VpnTestBase {
         verify(mTestDeps).newNetworkAgent(
                 any(), any(), anyString(), ncCaptor.capture(), lpCaptor.capture(),
                 any(), nacCaptor.capture(), any(), any());
-
+        verify(mIkeSessionWrapper).setUnderpinnedNetwork(TEST_NETWORK);
         // Check LinkProperties
         final LinkProperties lp = lpCaptor.getValue();
         final List<RouteInfo> expectedRoutes =
@@ -1893,8 +1950,10 @@ public class VpnTest extends VpnTestBase {
 
         // Check if allowBypass is set or not.
         assertTrue(nacCaptor.getValue().isBypassableVpn());
-        assertTrue(((VpnTransportInfo) ncCaptor.getValue().getTransportInfo()).isBypassable());
-
+        final VpnTransportInfo info = (VpnTransportInfo) ncCaptor.getValue().getTransportInfo();
+        assertTrue(info.isBypassable());
+        assertEquals(areLongLivedTcpConnectionsExpensive,
+                info.areLongLivedTcpConnectionsExpensive());
         return new PlatformVpnSnapshot(vpn, nwCb, ikeCb, childCb);
     }
 
@@ -1903,6 +1962,318 @@ public class VpnTest extends VpnTestBase {
         final PlatformVpnSnapshot vpnSnapShot = verifySetupPlatformVpn(
                 createIkeConfig(createIkeConnectInfo(), true /* isMobikeEnabled */));
         vpnSnapShot.vpn.mVpnRunner.exitVpnRunner();
+    }
+
+    @Test
+    public void testMigrateIkeSession_FromIkeTunnConnParams_AutoTimerNoTimer() throws Exception {
+        doTestMigrateIkeSession_FromIkeTunnConnParams(
+                false /* isAutomaticIpVersionSelectionEnabled */,
+                true /* isAutomaticNattKeepaliveTimerEnabled */,
+                TEST_KEEPALIVE_TIMEOUT_UNSET /* keepaliveInProfile */,
+                ESP_IP_VERSION_AUTO /* ipVersionInProfile */,
+                ESP_ENCAP_TYPE_AUTO /* encapTypeInProfile */);
+    }
+
+    @Test
+    public void testMigrateIkeSession_FromIkeTunnConnParams_AutoTimerTimerSet() throws Exception {
+        doTestMigrateIkeSession_FromIkeTunnConnParams(
+                false /* isAutomaticIpVersionSelectionEnabled */,
+                true /* isAutomaticNattKeepaliveTimerEnabled */,
+                TEST_KEEPALIVE_TIMER /* keepaliveInProfile */,
+                ESP_IP_VERSION_AUTO /* ipVersionInProfile */,
+                ESP_ENCAP_TYPE_AUTO /* encapTypeInProfile */);
+    }
+
+    @Test
+    public void testMigrateIkeSession_FromIkeTunnConnParams_AutoIp() throws Exception {
+        doTestMigrateIkeSession_FromIkeTunnConnParams(
+                true /* isAutomaticIpVersionSelectionEnabled */,
+                false /* isAutomaticNattKeepaliveTimerEnabled */,
+                TEST_KEEPALIVE_TIMEOUT_UNSET /* keepaliveInProfile */,
+                ESP_IP_VERSION_AUTO /* ipVersionInProfile */,
+                ESP_ENCAP_TYPE_AUTO /* encapTypeInProfile */);
+    }
+
+    @Test
+    public void testMigrateIkeSession_FromIkeTunnConnParams_AssignedIpProtocol() throws Exception {
+        doTestMigrateIkeSession_FromIkeTunnConnParams(
+                false /* isAutomaticIpVersionSelectionEnabled */,
+                false /* isAutomaticNattKeepaliveTimerEnabled */,
+                TEST_KEEPALIVE_TIMEOUT_UNSET /* keepaliveInProfile */,
+                ESP_IP_VERSION_IPV4 /* ipVersionInProfile */,
+                ESP_ENCAP_TYPE_UDP /* encapTypeInProfile */);
+    }
+
+    @Test
+    public void testMigrateIkeSession_FromNotIkeTunnConnParams_AutoTimer() throws Exception {
+        doTestMigrateIkeSession_FromNotIkeTunnConnParams(
+                false /* isAutomaticIpVersionSelectionEnabled */,
+                true /* isAutomaticNattKeepaliveTimerEnabled */);
+    }
+
+    @Test
+    public void testMigrateIkeSession_FromNotIkeTunnConnParams_AutoIp() throws Exception {
+        doTestMigrateIkeSession_FromNotIkeTunnConnParams(
+                true /* isAutomaticIpVersionSelectionEnabled */,
+                false /* isAutomaticNattKeepaliveTimerEnabled */);
+    }
+
+    private void doTestMigrateIkeSession_FromNotIkeTunnConnParams(
+            boolean isAutomaticIpVersionSelectionEnabled,
+            boolean isAutomaticNattKeepaliveTimerEnabled) throws Exception {
+        final Ikev2VpnProfile ikeProfile =
+                new Ikev2VpnProfile.Builder(TEST_VPN_SERVER, TEST_VPN_IDENTITY)
+                        .setAuthPsk(TEST_VPN_PSK)
+                        .setBypassable(true /* isBypassable */)
+                        .setAutomaticNattKeepaliveTimerEnabled(isAutomaticNattKeepaliveTimerEnabled)
+                        .setAutomaticIpVersionSelectionEnabled(isAutomaticIpVersionSelectionEnabled)
+                        .build();
+
+        final int expectedKeepalive = isAutomaticNattKeepaliveTimerEnabled
+                ? AUTOMATIC_KEEPALIVE_DELAY_SECONDS
+                : DEFAULT_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT;
+        doTestMigrateIkeSession(ikeProfile.toVpnProfile(),
+                expectedKeepalive,
+                ESP_IP_VERSION_AUTO /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_AUTO /* expectedEncapType */);
+    }
+
+    private void doTestMigrateIkeSession_FromIkeTunnConnParams(
+            boolean isAutomaticIpVersionSelectionEnabled,
+            boolean isAutomaticNattKeepaliveTimerEnabled,
+            int keepaliveInProfile,
+            int ipVersionInProfile,
+            int encapTypeInProfile) throws Exception {
+        // TODO: Update helper function in IkeSessionTestUtils to support building IkeSessionParams
+        // with IP version and encap type when mainline-prod branch support these two APIs.
+        final IkeSessionParams params = getTestIkeSessionParams(true /* testIpv6 */,
+                new IkeFqdnIdentification(TEST_IDENTITY), keepaliveInProfile);
+        final IkeSessionParams ikeSessionParams = new IkeSessionParams.Builder(params)
+                .setIpVersion(ipVersionInProfile)
+                .setEncapType(encapTypeInProfile)
+                .build();
+
+        final IkeTunnelConnectionParams tunnelParams =
+                new IkeTunnelConnectionParams(ikeSessionParams, CHILD_PARAMS);
+        final Ikev2VpnProfile ikeProfile = new Ikev2VpnProfile.Builder(tunnelParams)
+                .setBypassable(true)
+                .setAutomaticNattKeepaliveTimerEnabled(isAutomaticNattKeepaliveTimerEnabled)
+                .setAutomaticIpVersionSelectionEnabled(isAutomaticIpVersionSelectionEnabled)
+                .build();
+
+        final int expectedKeepalive = isAutomaticNattKeepaliveTimerEnabled
+                ? AUTOMATIC_KEEPALIVE_DELAY_SECONDS
+                : ikeSessionParams.getNattKeepAliveDelaySeconds();
+        final int expectedIpVersion = isAutomaticIpVersionSelectionEnabled
+                ? ESP_IP_VERSION_AUTO
+                : ikeSessionParams.getIpVersion();
+        final int expectedEncapType = isAutomaticIpVersionSelectionEnabled
+                ? ESP_ENCAP_TYPE_AUTO
+                : ikeSessionParams.getEncapType();
+        doTestMigrateIkeSession(ikeProfile.toVpnProfile(), expectedKeepalive,
+                expectedIpVersion, expectedEncapType);
+    }
+
+    private void doTestMigrateIkeSession(VpnProfile profile,
+            int expectedKeepalive, int expectedIpVersion, int expectedEncapType) throws Exception {
+        final PlatformVpnSnapshot vpnSnapShot =
+                verifySetupPlatformVpn(profile,
+                        createIkeConfig(createIkeConnectInfo(), true /* isMobikeEnabled */),
+                        false /* mtuSupportsIpv6 */,
+                        expectedKeepalive < DEFAULT_LONG_LIVED_TCP_CONNS_EXPENSIVE_TIMEOUT_SEC);
+        // Simulate a new network coming up
+        vpnSnapShot.nwCb.onAvailable(TEST_NETWORK_2);
+        verify(mIkeSessionWrapper, never()).setNetwork(any(), anyInt(), anyInt(), anyInt());
+
+        vpnSnapShot.nwCb.onCapabilitiesChanged(
+                TEST_NETWORK_2, new NetworkCapabilities.Builder().build());
+        // Verify MOBIKE is triggered
+        verify(mIkeSessionWrapper).setNetwork(TEST_NETWORK_2,
+                expectedIpVersion, expectedEncapType, expectedKeepalive);
+
+        vpnSnapShot.vpn.mVpnRunner.exitVpnRunner();
+    }
+
+    private void mockCarrierConfig(int subId, int simStatus, int keepaliveTimer, int ikeProtocol) {
+        final SubscriptionInfo subscriptionInfo = mock(SubscriptionInfo.class);
+        doReturn(subId).when(subscriptionInfo).getSubscriptionId();
+        doReturn(List.of(subscriptionInfo)).when(mSubscriptionManager)
+                .getActiveSubscriptionInfoList();
+
+        doReturn(simStatus).when(mTmPerSub).getSimApplicationState();
+        doReturn(TEST_MCCMNC).when(mTmPerSub).getSimOperator(subId);
+
+        final PersistableBundle persistableBundle = new PersistableBundle();
+        persistableBundle.putInt(KEY_MIN_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT, keepaliveTimer);
+        persistableBundle.putInt(KEY_PREFERRED_IKE_PROTOCOL_INT, ikeProtocol);
+        // For CarrierConfigManager.isConfigForIdentifiedCarrier check
+        persistableBundle.putBoolean(KEY_CARRIER_CONFIG_APPLIED_BOOL, true);
+        doReturn(persistableBundle).when(mConfigManager).getConfigForSubId(subId);
+    }
+
+    private CarrierConfigManager.CarrierConfigChangeListener getCarrierConfigListener() {
+        final ArgumentCaptor<CarrierConfigManager.CarrierConfigChangeListener> listenerCaptor =
+                ArgumentCaptor.forClass(CarrierConfigManager.CarrierConfigChangeListener.class);
+
+        verify(mConfigManager).registerCarrierConfigChangeListener(any(), listenerCaptor.capture());
+
+        return listenerCaptor.getValue();
+    }
+
+    @Test
+    public void testNattKeepaliveTimerFromCarrierConfig_noSubId() throws Exception {
+        doTestReadCarrierConfig(new NetworkCapabilities(),
+                TelephonyManager.SIM_STATE_LOADED,
+                PREFERRED_IKE_PROTOCOL_IPV4_UDP,
+                AUTOMATIC_KEEPALIVE_DELAY_SECONDS /* expectedKeepaliveTimer */,
+                ESP_IP_VERSION_AUTO /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_AUTO /* expectedEncapType */,
+                false /* expectedReadFromCarrierConfig*/,
+                true /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    @Test
+    public void testNattKeepaliveTimerFromCarrierConfig_simAbsent() throws Exception {
+        doTestReadCarrierConfig(new NetworkCapabilities.Builder().build(),
+                TelephonyManager.SIM_STATE_ABSENT,
+                PREFERRED_IKE_PROTOCOL_IPV4_UDP,
+                AUTOMATIC_KEEPALIVE_DELAY_SECONDS /* expectedKeepaliveTimer */,
+                ESP_IP_VERSION_AUTO /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_AUTO /* expectedEncapType */,
+                false /* expectedReadFromCarrierConfig*/,
+                true /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    @Test
+    public void testNattKeepaliveTimerFromCarrierConfig() throws Exception {
+        doTestReadCarrierConfig(createTestCellNc(),
+                TelephonyManager.SIM_STATE_LOADED,
+                PREFERRED_IKE_PROTOCOL_AUTO,
+                TEST_KEEPALIVE_TIMER /* expectedKeepaliveTimer */,
+                ESP_IP_VERSION_AUTO /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_AUTO /* expectedEncapType */,
+                true /* expectedReadFromCarrierConfig*/,
+                false /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    @Test
+    public void testNattKeepaliveTimerFromCarrierConfig_NotCell() throws Exception {
+        final NetworkCapabilities nc = new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_WIFI)
+                .setTransportInfo(new WifiInfo.Builder().build())
+                .build();
+        doTestReadCarrierConfig(nc,
+                TelephonyManager.SIM_STATE_LOADED,
+                PREFERRED_IKE_PROTOCOL_IPV4_UDP,
+                AUTOMATIC_KEEPALIVE_DELAY_SECONDS /* expectedKeepaliveTimer */,
+                ESP_IP_VERSION_AUTO /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_AUTO /* expectedEncapType */,
+                false /* expectedReadFromCarrierConfig*/,
+                true /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    @Test
+    public void testPreferredIpProtocolFromCarrierConfig_v4UDP() throws Exception {
+        doTestReadCarrierConfig(createTestCellNc(),
+                TelephonyManager.SIM_STATE_LOADED,
+                PREFERRED_IKE_PROTOCOL_IPV4_UDP,
+                TEST_KEEPALIVE_TIMER /* expectedKeepaliveTimer */,
+                ESP_IP_VERSION_IPV4 /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_UDP /* expectedEncapType */,
+                true /* expectedReadFromCarrierConfig*/,
+                false /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    @Test
+    public void testPreferredIpProtocolFromCarrierConfig_v6ESP() throws Exception {
+        doTestReadCarrierConfig(createTestCellNc(),
+                TelephonyManager.SIM_STATE_LOADED,
+                PREFERRED_IKE_PROTOCOL_IPV6_ESP,
+                TEST_KEEPALIVE_TIMER /* expectedKeepaliveTimer */,
+                ESP_IP_VERSION_IPV6 /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_NONE /* expectedEncapType */,
+                true /* expectedReadFromCarrierConfig*/,
+                false /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    @Test
+    public void testPreferredIpProtocolFromCarrierConfig_v6UDP() throws Exception {
+        doTestReadCarrierConfig(createTestCellNc(),
+                TelephonyManager.SIM_STATE_LOADED,
+                PREFERRED_IKE_PROTOCOL_IPV6_UDP,
+                TEST_KEEPALIVE_TIMER /* expectedKeepaliveTimer */,
+                ESP_IP_VERSION_IPV6 /* expectedIpVersion */,
+                ESP_ENCAP_TYPE_UDP /* expectedEncapType */,
+                true /* expectedReadFromCarrierConfig*/,
+                false /* areLongLivedTcpConnectionsExpensive */);
+    }
+
+    private NetworkCapabilities createTestCellNc() {
+        return new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_CELLULAR)
+                .setNetworkSpecifier(new TelephonyNetworkSpecifier.Builder()
+                        .setSubscriptionId(TEST_SUB_ID)
+                        .build())
+                .build();
+    }
+
+    private void doTestReadCarrierConfig(NetworkCapabilities nc, int simState, int preferredIpProto,
+            int expectedKeepaliveTimer, int expectedIpVersion, int expectedEncapType,
+            boolean expectedReadFromCarrierConfig,
+            boolean areLongLivedTcpConnectionsExpensive)
+            throws Exception {
+        final Ikev2VpnProfile ikeProfile =
+                new Ikev2VpnProfile.Builder(TEST_VPN_SERVER, TEST_VPN_IDENTITY)
+                        .setAuthPsk(TEST_VPN_PSK)
+                        .setBypassable(true /* isBypassable */)
+                        .setAutomaticNattKeepaliveTimerEnabled(true)
+                        .setAutomaticIpVersionSelectionEnabled(true)
+                        .build();
+
+        final PlatformVpnSnapshot vpnSnapShot =
+                verifySetupPlatformVpn(ikeProfile.toVpnProfile(),
+                        createIkeConfig(createIkeConnectInfo(), true /* isMobikeEnabled */),
+                        false /* mtuSupportsIpv6 */,
+                        true /* areLongLivedTcpConnectionsExpensive */);
+
+        final CarrierConfigManager.CarrierConfigChangeListener listener =
+                getCarrierConfigListener();
+
+        // Simulate a new network coming up
+        vpnSnapShot.nwCb.onAvailable(TEST_NETWORK_2);
+        // Migration will not be started until receiving network capabilities change.
+        verify(mIkeSessionWrapper, never()).setNetwork(any(), anyInt(), anyInt(), anyInt());
+
+        reset(mIkeSessionWrapper);
+        mockCarrierConfig(TEST_SUB_ID, simState, TEST_KEEPALIVE_TIMER, preferredIpProto);
+        vpnSnapShot.nwCb.onCapabilitiesChanged(TEST_NETWORK_2, nc);
+        verify(mIkeSessionWrapper).setNetwork(TEST_NETWORK_2,
+                expectedIpVersion, expectedEncapType, expectedKeepaliveTimer);
+        if (expectedReadFromCarrierConfig) {
+            final ArgumentCaptor<NetworkCapabilities> ncCaptor =
+                    ArgumentCaptor.forClass(NetworkCapabilities.class);
+            verify(mMockNetworkAgent).doSendNetworkCapabilities(ncCaptor.capture());
+
+            final VpnTransportInfo info =
+                    (VpnTransportInfo) ncCaptor.getValue().getTransportInfo();
+            assertEquals(areLongLivedTcpConnectionsExpensive,
+                    info.areLongLivedTcpConnectionsExpensive());
+        } else {
+            verify(mMockNetworkAgent, never()).doSendNetworkCapabilities(any());
+        }
+
+        reset(mExecutor);
+        reset(mIkeSessionWrapper);
+        reset(mMockNetworkAgent);
+
+        // Trigger carrier config change
+        listener.onCarrierConfigChanged(1 /* logicalSlotIndex */, TEST_SUB_ID,
+                -1 /* carrierId */, -1 /* specificCarrierId */);
+        verify(mIkeSessionWrapper).setNetwork(TEST_NETWORK_2,
+                expectedIpVersion, expectedEncapType, expectedKeepaliveTimer);
+        // Expect no NetworkCapabilities change.
+        // Call to doSendNetworkCapabilities() will not be triggered.
+        verify(mMockNetworkAgent, never()).doSendNetworkCapabilities(any());
     }
 
     @Test
@@ -1930,9 +2301,15 @@ public class VpnTest extends VpnTestBase {
         // Mock new network comes up and the cleanup task is cancelled
         vpnSnapShot.nwCb.onAvailable(TEST_NETWORK_2);
         verify(mScheduledFuture).cancel(anyBoolean());
+        verify(mIkeSessionWrapper, never()).setNetwork(any(), anyInt(), anyInt(), anyInt());
 
+        vpnSnapShot.nwCb.onCapabilitiesChanged(TEST_NETWORK_2,
+                new NetworkCapabilities.Builder().build());
         // Verify MOBIKE is triggered
-        verify(mIkeSessionWrapper).setNetwork(TEST_NETWORK_2);
+        verify(mIkeSessionWrapper).setNetwork(eq(TEST_NETWORK_2),
+                eq(ESP_IP_VERSION_AUTO) /* ipVersion */,
+                eq(ESP_ENCAP_TYPE_AUTO) /* encapType */,
+                eq(DEFAULT_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT) /* keepaliveDelay */);
 
         // Mock the MOBIKE procedure
         vpnSnapShot.ikeCb.onIkeSessionConnectionInfoChanged(createIkeConnectInfo_2());
@@ -2022,7 +2399,11 @@ public class VpnTest extends VpnTestBase {
         // Mock network switch
         vpnSnapShot.nwCb.onLost(TEST_NETWORK);
         vpnSnapShot.nwCb.onAvailable(TEST_NETWORK_2);
+        // The old IKE Session will not be killed until receiving network capabilities change.
+        verify(mIkeSessionWrapper, never()).kill();
 
+        vpnSnapShot.nwCb.onCapabilitiesChanged(
+                TEST_NETWORK_2, new NetworkCapabilities.Builder().build());
         // Verify the old IKE Session is killed
         verify(mIkeSessionWrapper).kill();
 
@@ -2112,7 +2493,8 @@ public class VpnTest extends VpnTestBase {
 
     private void verifyMobikeTriggered(List<Network> expected) {
         final ArgumentCaptor<Network> networkCaptor = ArgumentCaptor.forClass(Network.class);
-        verify(mIkeSessionWrapper).setNetwork(networkCaptor.capture());
+        verify(mIkeSessionWrapper).setNetwork(networkCaptor.capture(),
+                anyInt() /* ipVersion */, anyInt() /* encapType */, anyInt() /* keepaliveDelay */);
         assertEquals(expected, Collections.singletonList(networkCaptor.getValue()));
     }
 
@@ -2128,7 +2510,8 @@ public class VpnTest extends VpnTestBase {
         connectivityDiagCallback.onDataStallSuspected(report);
 
         // Should not trigger MOBIKE if MOBIKE is not enabled
-        verify(mIkeSessionWrapper, never()).setNetwork(any());
+        verify(mIkeSessionWrapper, never()).setNetwork(any() /* network */,
+                anyInt() /* ipVersion */, anyInt() /* encapType */, anyInt() /* keepaliveDelay */);
     }
 
     @Test
@@ -2148,7 +2531,8 @@ public class VpnTest extends VpnTestBase {
         // Expect to skip other data stall event if MOBIKE was started.
         reset(mIkeSessionWrapper);
         connectivityDiagCallback.onDataStallSuspected(report);
-        verify(mIkeSessionWrapper, never()).setNetwork(any());
+        verify(mIkeSessionWrapper, never()).setNetwork(any() /* network */,
+                anyInt() /* ipVersion */, anyInt() /* encapType */, anyInt() /* keepaliveDelay */);
 
         reset(mIkev2SessionCreator);
 
