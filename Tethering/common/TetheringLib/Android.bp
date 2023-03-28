@@ -54,6 +54,7 @@ java_sdk_library {
         "//packages/modules/CaptivePortalLogin/tests",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/Cronet/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
@@ -65,6 +66,7 @@ java_sdk_library {
 
     hostdex: true, // for hiddenapi check
     permitted_packages: ["android.net"],
+    lint: { strict_updatability_linting: true },
 }
 
 java_defaults {
@@ -81,20 +83,11 @@ java_defaults {
     impl_only_static_libs: [
         "cronet_aml_java",
     ],
-    // STOPSHIP(b/265674359): fix all Cronet lint warnings and re-enable lint
-    // directly in framework-tethering
-    lint: {
-         enabled: false,
-    },
-    api_lint: {
-        enabled: false,
-    },
     api_dir: "cronet_enabled/api",
 }
 
 java_defaults {
   name: "CronetJavaDefaultsDisabled",
-  lint: { strict_updatability_linting: true },
 }
 
 java_defaults {
@@ -135,7 +128,7 @@ java_genrule {
     out: ["framework_tethering_jarjar_rules.txt"],
     cmd: "$(location jarjar-rules-generator) " +
         "$(location :framework-tethering-pre-jarjar{.jar}) " +
-        "--apistubs $(location :framework-tethering.stubs.module_lib{.jar}) " + 
+        "--apistubs $(location :framework-tethering.stubs.module_lib{.jar}) " +
         "--prefix android.net.http.internal " +
         "--excludes $(location jarjar-excludes.txt) " +
         "--output $(out)",
@@ -159,6 +152,7 @@ java_defaults {
 
 filegroup {
     name: "framework-tethering-srcs",
+    defaults: ["framework-sources-module-defaults"],
     srcs: [
         "src/**/*.aidl",
         "src/**/*.java",
