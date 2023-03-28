@@ -864,7 +864,8 @@ public class ConnectivityServiceTest {
                     verify(mBroadcastOptionsShim).setDeliveryGroupMatchingKey(
                             eq(CONNECTIVITY_ACTION),
                             eq(createDeliveryGroupKeyForConnectivityAction(ni)));
-                    verify(mBroadcastOptionsShim).setDeferUntilActive(eq(true));
+                    verify(mBroadcastOptionsShim).setDeferralPolicy(
+                            eq(ConstantsShim.DEFERRAL_POLICY_UNTIL_ACTIVE));
                 } catch (UnsupportedApiLevelException e) {
                     throw new RuntimeException(e);
                 }
@@ -2218,7 +2219,9 @@ public class ConnectivityServiceTest {
         ConnectivityResources.setResourcesContextForTest(null);
 
         mCsHandlerThread.quitSafely();
+        mCsHandlerThread.join();
         mAlarmManagerThread.quitSafely();
+        mAlarmManagerThread.join();
     }
 
     private void mockDefaultPackages() throws Exception {
@@ -10125,6 +10128,7 @@ public class ConnectivityServiceTest {
         b2.expectBroadcast();
 
         VMSHandlerThread.quitSafely();
+        VMSHandlerThread.join();
     }
 
     @Test @IgnoreUpTo(Build.VERSION_CODES.S_V2)
@@ -16973,6 +16977,7 @@ public class ConnectivityServiceTest {
         } finally {
             cellFactory.terminate();
             handlerThread.quitSafely();
+            handlerThread.join();
         }
     }
 
