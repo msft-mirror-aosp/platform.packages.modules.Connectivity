@@ -17,30 +17,52 @@
 package android.net.http.cts
 
 import android.net.http.ConnectionMigrationOptions
+import android.net.http.ConnectionMigrationOptions.MIGRATION_OPTION_ENABLED
+import android.net.http.ConnectionMigrationOptions.MIGRATION_OPTION_UNSPECIFIED
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import kotlin.test.Test
-import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import kotlin.test.assertEquals
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class ConnectionMigrationOptionsTest {
 
     @Test
+    fun testConnectionMigrationOptions_defaultValues() {
+        val options =
+                ConnectionMigrationOptions.Builder().build()
+
+        assertEquals(MIGRATION_OPTION_UNSPECIFIED, options.allowNonDefaultNetworkUsage)
+        assertEquals(MIGRATION_OPTION_UNSPECIFIED, options.defaultNetworkMigration)
+        assertEquals(MIGRATION_OPTION_UNSPECIFIED, options.pathDegradationMigration)
+    }
+
+    @Test
     fun testConnectionMigrationOptions_enableDefaultNetworkMigration_returnSetValue() {
         val options =
-            ConnectionMigrationOptions.Builder().setEnableDefaultNetworkMigration(true).build()
+            ConnectionMigrationOptions.Builder()
+                    .setDefaultNetworkMigration(MIGRATION_OPTION_ENABLED)
+                    .build()
 
-        assertNotNull(options.enableDefaultNetworkMigration)
-        assertTrue(options.enableDefaultNetworkMigration!!)
+        assertEquals(MIGRATION_OPTION_ENABLED, options.defaultNetworkMigration)
     }
 
     @Test
     fun testConnectionMigrationOptions_enablePathDegradationMigration_returnSetValue() {
         val options =
-            ConnectionMigrationOptions.Builder().setEnablePathDegradationMigration(true).build()
+            ConnectionMigrationOptions.Builder()
+                    .setPathDegradationMigration(MIGRATION_OPTION_ENABLED)
+                    .build()
 
-        assertNotNull(options.enablePathDegradationMigration)
-        assertTrue(options.enablePathDegradationMigration!!)
+        assertEquals(MIGRATION_OPTION_ENABLED, options.pathDegradationMigration)
+    }
+
+    @Test
+    fun testConnectionMigrationOptions_allowNonDefaultNetworkUsage_returnSetValue() {
+        val options =
+                ConnectionMigrationOptions.Builder()
+                        .setAllowNonDefaultNetworkUsage(MIGRATION_OPTION_ENABLED).build()
+
+        assertEquals(MIGRATION_OPTION_ENABLED, options.allowNonDefaultNetworkUsage)
     }
 }

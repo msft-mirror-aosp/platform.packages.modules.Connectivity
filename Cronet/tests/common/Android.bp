@@ -27,13 +27,17 @@ package {
 android_test {
     name: "NetHttpCoverageTests",
     defaults: ["CronetTestJavaDefaults"],
-    sdk_version: "test_current",
+    enforce_default_target_sdk_version: true,
+    min_sdk_version: "30",
     test_suites: ["general-tests", "mts-tethering"],
     static_libs: [
         "modules-utils-native-coverage-listener",
         "CtsNetHttpTestsLib",
         "NetHttpTestsLibPreJarJar",
     ],
-    jarjar_rules: ":framework-tethering-jarjar-rules",
+    jarjar_rules: ":net-http-test-jarjar-rules",
     compile_multilib: "both", // Include both the 32 and 64 bit versions
+    jni_libs: [
+       "cronet_aml_components_cronet_android_cronet_tests__testing"
+    ],
 }
