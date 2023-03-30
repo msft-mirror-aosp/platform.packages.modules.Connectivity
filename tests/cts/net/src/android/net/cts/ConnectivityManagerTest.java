@@ -2434,11 +2434,11 @@ public class ConnectivityManagerTest {
         runWithShellPermissionIdentity(() -> registerDefaultNetworkCallbackForUid(
                 otherUid, otherUidCallback, handler), NETWORK_SETTINGS);
 
-        final Network defaultNetwork = mCm.getActiveNetwork();
+        final Network defaultNetwork = myUidCallback.expect(CallbackEntry.AVAILABLE).getNetwork();
         final List<DetailedBlockedStatusCallback> allCallbacks =
                 List.of(myUidCallback, otherUidCallback);
         for (DetailedBlockedStatusCallback callback : allCallbacks) {
-            callback.expectAvailableCallbacksWithBlockedReasonNone(defaultNetwork);
+            callback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
         }
 
         final Range<Integer> myUidRange = new Range<>(myUid, myUid);
@@ -2708,6 +2708,7 @@ public class ConnectivityManagerTest {
         // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
         // shims, and @IgnoreUpTo does not check that.
         assumeTrue(TestUtils.shouldTestSApis());
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
         final TestNetworkTracker tnt = callWithShellPermissionIdentity(
                 () -> initTestNetwork(mContext, TEST_LINKADDR, NETWORK_CALLBACK_TIMEOUT_MS));
@@ -2721,7 +2722,8 @@ public class ConnectivityManagerTest {
                     OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY);
             registerTestOemNetworkPreferenceCallbacks(defaultCallback, systemDefaultCallback);
             waitForAvailable(defaultCallback, tnt.getNetwork());
-            waitForAvailable(systemDefaultCallback, wifiNetwork);
+            systemDefaultCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
+                    NETWORK_CALLBACK_TIMEOUT_MS, cb -> wifiNetwork.equals(cb.getNetwork()));
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
                 defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
@@ -3406,6 +3408,9 @@ public class ConnectivityManagerTest {
 
     private static final boolean EXPECT_PASS = false;
     private static final boolean EXPECT_BLOCK = true;
+
+    // ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+    // DENYLIST means the firewall allows all by default, uids must be explicitly denyed
     private static final boolean ALLOWLIST = true;
     private static final boolean DENYLIST = false;
 
@@ -3471,17 +3476,49 @@ public class ConnectivityManagerTest {
 
     @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
     @AppModeFull(reason = "Socket cannot bind in instant app mode")
-    public void testFirewallBlocking() {
-        // ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+    public void testFirewallBlockingDozable() {
         doTestFirewallBlocking(FIREWALL_CHAIN_DOZABLE, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_POWERSAVE, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_RESTRICTED, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_LOW_POWER_STANDBY, ALLOWLIST);
+    }
 
-        // DENYLIST means the firewall allows all by default, uids must be explicitly denyed
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingPowersave() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_POWERSAVE, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingRestricted() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_RESTRICTED, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingLowPowerStandby() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_LOW_POWER_STANDBY, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingStandby() {
         doTestFirewallBlocking(FIREWALL_CHAIN_STANDBY, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny1() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_1, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny2() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_2, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny3() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_3, DENYLIST);
     }
 
