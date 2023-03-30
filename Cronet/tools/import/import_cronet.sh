@@ -19,40 +19,115 @@
 #  Environment:
 #   ANDROID_BUILD_TOP: path the root of the current Android directory.
 #  Arguments:
-#   -l: The last revision that was imported.
-#   -n: The new revision to import.
+#   -l rev: The last revision that was imported.
+#  Optional Arguments:
+#   -n rev: The new revision to import.
+#   -f: Force copybara to ignore a failure to find the last imported revision.
 
-OPTSTRING=l:n:
+set -e -x
+
+OPTSTRING=fl:n:
 
 usage() {
     cat <<EOF
-Usage: import_cronet.sh -l last-rev -n new-rev
+Usage: import_cronet.sh -n new-rev [-l last-rev] [-f]
 EOF
     exit 1
 }
+
+COPYBARA_FOLDER_ORIGIN="/tmp/copybara-origin"
+
+#######################################
+# Create local upstream-import branch in external/cronet.
+# Globals:
+#   ANDROID_BUILD_TOP
+# Arguments:
+#   none
+#######################################
+setup_upstream_import_branch() {
+    local git_dir="${ANDROID_BUILD_TOP}/external/cronet"
+
+    (cd "${git_dir}" && git fetch aosp upstream-import:upstream-import)
+}
+
+#######################################
+# Setup folder.origin for copybara inside /tmp
+# Globals:
+#   COPYBARA_FOLDER_ORIGIN
+# Arguments:
+#   new_rev, string
+#######################################
+setup_folder_origin() (
+    local _new_rev=$1
+    mkdir -p "${COPYBARA_FOLDER_ORIGIN}"
+    cd "${COPYBARA_FOLDER_ORIGIN}"
+
+    if [ -d src ]; then
+        (cd src && git fetch --tags && git checkout "${_new_rev}")
+    else
+        # For this to work _new_rev must be a branch or a tag.
+        git clone --depth=1 --branch "${_new_rev}" https://chromium.googlesource.com/chromium/src.git
+    fi
+
+
+    cat <<EOF >.gclient
+solutions = [
+  {
+    "name": "src",
+    "url": "https://chromium.googlesource.com/chromium/src.git",
+    "managed": False,
+    "custom_deps": {},
+    "custom_vars": {},
+  },
+]
+target_os = ["android"]
+EOF
+    cd src
+    # Set appropriate gclient flags to speed up syncing.
+    gclient sync \
+        --no-history \
+        --shallow \
+        --delete_unversioned_trees
+)
 
 #######################################
 # Runs the copybara import of Chromium
 # Globals:
 #   ANDROID_BUILD_TOP
+#   COPYBARA_FOLDER_ORIGIN
 # Arguments:
-#   last_rev, string
-#   new_rev, string
+#   last_rev, string or empty
+#   force, string or empty
 #######################################
 do_run_copybara() {
     local _last_rev=$1
-    local _new_rev=$2
+    local _force=$2
+
+    local -a flags
+    flags+=(--git-destination-url="file://${ANDROID_BUILD_TOP}/external/cronet")
+    flags+=(--repo-timeout 3m)
+
+    # buildtools/third_party/libc++ contains an invalid symlink
+    flags+=(--folder-origin-ignore-invalid-symlinks)
+    flags+=(--git-no-verify)
+
+    if [ ! -z "${_force}" ]; then
+        flags+=(--force)
+    fi
+
+    if [ ! -z "${_last_rev}" ]; then
+        flags+=(--last-rev "${_last_rev}")
+    fi
 
     /google/bin/releases/copybara/public/copybara/copybara \
-        --git-destination-url="file://${ANDROID_BUILD_TOP}/external/cronet" \
-        --last-rev "${_last_rev}" \
-        --repo-timeout 3h \
+        "${flags[@]}" \
         "${ANDROID_BUILD_TOP}/packages/modules/Connectivity/Cronet/tools/import/copy.bara.sky" \
-        import_cronet "${_new_rev}"
+        import_cronet "${COPYBARA_FOLDER_ORIGIN}/src"
 }
 
 while getopts $OPTSTRING opt; do
     case "${opt}" in
+        f) force=true ;;
         l) last_rev="${OPTARG}" ;;
         n) new_rev="${OPTARG}" ;;
         ?) usage ;;
@@ -60,17 +135,12 @@ while getopts $OPTSTRING opt; do
     esac
 done
 
-# TODO: Get last-rev from METADATA file.
-# Setting last-rev may only be required for the first commit.
-if [ -z "${last_rev}" ]; then
-    echo "-l argument required"
-    usage
-fi
-
 if [ -z "${new_rev}" ]; then
     echo "-n argument required"
     usage
 fi
 
-do_run_copybara "${last_rev}" "${new_rev}"
+setup_upstream_import_branch
+setup_folder_origin "${new_rev}"
+do_run_copybara "${last_rev}" "${force}"
 
