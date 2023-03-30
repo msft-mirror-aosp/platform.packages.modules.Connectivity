@@ -29,6 +29,7 @@ import static android.net.ConnectivityManager.TYPE_MOBILE_DUN;
 import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_DUN;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.TRANSPORT_BLUETOOTH;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
@@ -67,7 +68,7 @@ import static com.android.modules.utils.build.SdkLevel.isAtLeastS;
 import static com.android.modules.utils.build.SdkLevel.isAtLeastT;
 import static com.android.net.module.util.Inet4AddressUtils.inet4AddressToIntHTH;
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_0;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_HIDL_1_0;
 import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_NONE;
 import static com.android.networkstack.tethering.TestConnectivityManager.BROADCAST_FIRST;
 import static com.android.networkstack.tethering.TestConnectivityManager.CALLBACKS_FIRST;
@@ -648,8 +649,7 @@ public class TetheringTest {
         mInterfaceConfiguration.flags = new String[0];
         when(mRouterAdvertisementDaemon.start())
                 .thenReturn(true);
-        initOffloadConfiguration(true /* offloadConfig */, OFFLOAD_HAL_VERSION_1_0,
-                0 /* defaultDisabled */);
+        initOffloadConfiguration(OFFLOAD_HAL_VERSION_HIDL_1_0, 0 /* defaultDisabled */);
         when(mOffloadHardwareInterface.getForwardedStats(any())).thenReturn(mForwardedStats);
 
         mServiceContext = new TestContext(mContext);
@@ -2000,6 +2000,7 @@ public class TetheringTest {
         verify(mWifiManager).updateInterfaceIpState(
                 TEST_WLAN_IFNAME, WifiManager.IFACE_IP_MODE_CONFIGURATION_ERROR);
 
+        verify(mTetheringMetrics, times(0)).maybeUpdateUpstreamType(any());
         verify(mTetheringMetrics, times(2)).updateErrorCode(eq(TETHERING_WIFI),
                 eq(TETHER_ERROR_INTERNAL_ERROR));
         verify(mTetheringMetrics, times(2)).sendReport(eq(TETHERING_WIFI));
@@ -2344,25 +2345,15 @@ public class TetheringTest {
         mLooper.dispatchAll();
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_STOPPED);
 
-        // 1. Offload fail if no OffloadConfig.
-        initOffloadConfiguration(false /* offloadConfig */, OFFLOAD_HAL_VERSION_1_0,
-                0 /* defaultDisabled */);
+        // 1. Offload fail if no IOffloadHal.
+        initOffloadConfiguration(OFFLOAD_HAL_VERSION_NONE, 0 /* defaultDisabled */);
         runUsbTethering(upstreamState);
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_FAILED);
         runStopUSBTethering();
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_STOPPED);
         reset(mUsbManager, mIPv6TetheringCoordinator);
-        // 2. Offload fail if no OffloadControl.
-        initOffloadConfiguration(true /* offloadConfig */, OFFLOAD_HAL_VERSION_NONE,
-                0 /* defaultDisabled */);
-        runUsbTethering(upstreamState);
-        callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_FAILED);
-        runStopUSBTethering();
-        callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_STOPPED);
-        reset(mUsbManager, mIPv6TetheringCoordinator);
-        // 3. Offload fail if disabled by settings.
-        initOffloadConfiguration(true /* offloadConfig */, OFFLOAD_HAL_VERSION_1_0,
-                1 /* defaultDisabled */);
+        // 2. Offload fail if disabled by settings.
+        initOffloadConfiguration(OFFLOAD_HAL_VERSION_HIDL_1_0, 1 /* defaultDisabled */);
         runUsbTethering(upstreamState);
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_FAILED);
         runStopUSBTethering();
@@ -2377,11 +2368,10 @@ public class TetheringTest {
         verify(mUsbManager).setCurrentFunctions(UsbManager.FUNCTION_NONE);
     }
 
-    private void initOffloadConfiguration(final boolean offloadConfig,
-            @OffloadHardwareInterface.OffloadHalVersion final int offloadControlVersion,
+    private void initOffloadConfiguration(
+            @OffloadHardwareInterface.OffloadHalVersion final int offloadHalVersion,
             final int defaultDisabled) {
-        when(mOffloadHardwareInterface.initOffloadConfig()).thenReturn(offloadConfig);
-        when(mOffloadHardwareInterface.initOffloadControl(any())).thenReturn(offloadControlVersion);
+        when(mOffloadHardwareInterface.initOffload(any())).thenReturn(offloadHalVersion);
         when(mOffloadHardwareInterface.getDefaultTetherOffloadDisabled()).thenReturn(
                 defaultDisabled);
     }
@@ -2678,35 +2668,67 @@ public class TetheringTest {
     public void testUpstreamNetworkChanged() {
         final Tethering.TetherMainSM stateMachine = (Tethering.TetherMainSM)
                 mTetheringDependencies.mUpstreamNetworkMonitorSM;
+        final InOrder inOrder = inOrder(mNotificationUpdater);
+
         // Gain upstream.
         final UpstreamNetworkState upstreamState = buildMobileIPv4UpstreamState();
         initTetheringUpstream(upstreamState);
         stateMachine.chooseUpstreamType(true);
         mTetheringEventCallback.expectUpstreamChanged(upstreamState.network);
-        verify(mNotificationUpdater)
+        inOrder.verify(mNotificationUpdater)
                 .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
+
+        // Set the upstream with the same network ID but different object and the same capability.
+        final UpstreamNetworkState upstreamState2 = buildMobileIPv4UpstreamState();
+        initTetheringUpstream(upstreamState2);
+        stateMachine.chooseUpstreamType(true);
+        // Bug: duplicated upstream change event.
+        mTetheringEventCallback.expectUpstreamChanged(upstreamState2.network);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState2.networkCapabilities);
+
+        // Set the upstream with the same network ID but different object and different capability.
+        final UpstreamNetworkState upstreamState3 = buildMobileIPv4UpstreamState();
+        assertFalse(upstreamState3.networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED));
+        upstreamState3.networkCapabilities.addCapability(NET_CAPABILITY_VALIDATED);
+        initTetheringUpstream(upstreamState3);
+        stateMachine.chooseUpstreamType(true);
+        // Bug: duplicated upstream change event.
+        mTetheringEventCallback.expectUpstreamChanged(upstreamState3.network);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState3.networkCapabilities);
 
         // Lose upstream.
         initTetheringUpstream(null);
         stateMachine.chooseUpstreamType(true);
         mTetheringEventCallback.expectUpstreamChanged(NULL_NETWORK);
-        verify(mNotificationUpdater).onUpstreamCapabilitiesChanged(null);
+        inOrder.verify(mNotificationUpdater).onUpstreamCapabilitiesChanged(null);
     }
 
     @Test
     public void testUpstreamCapabilitiesChanged() {
         final Tethering.TetherMainSM stateMachine = (Tethering.TetherMainSM)
                 mTetheringDependencies.mUpstreamNetworkMonitorSM;
+        final InOrder inOrder = inOrder(mNotificationUpdater);
         final UpstreamNetworkState upstreamState = buildMobileIPv4UpstreamState();
         initTetheringUpstream(upstreamState);
+
         stateMachine.chooseUpstreamType(true);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
 
         stateMachine.handleUpstreamNetworkMonitorCallback(EVENT_ON_CAPABILITIES, upstreamState);
-        // Should have two onUpstreamCapabilitiesChanged().
-        // One is called by reportUpstreamChanged(). One is called by EVENT_ON_CAPABILITIES.
-        verify(mNotificationUpdater, times(2))
+        inOrder.verify(mNotificationUpdater)
                 .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
-        reset(mNotificationUpdater);
+
+        // Verify that onUpstreamCapabilitiesChanged is called if current upstream network
+        // capabilities changed.
+        // Expect that capability is changed with new capability VALIDATED.
+        assertFalse(upstreamState.networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED));
+        upstreamState.networkCapabilities.addCapability(NET_CAPABILITY_VALIDATED);
+        stateMachine.handleUpstreamNetworkMonitorCallback(EVENT_ON_CAPABILITIES, upstreamState);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
 
         // Verify that onUpstreamCapabilitiesChanged won't be called if not current upstream network
         // capabilities changed.
@@ -2714,7 +2736,7 @@ public class TetheringTest {
                 upstreamState.linkProperties, upstreamState.networkCapabilities,
                 new Network(WIFI_NETID));
         stateMachine.handleUpstreamNetworkMonitorCallback(EVENT_ON_CAPABILITIES, upstreamState2);
-        verify(mNotificationUpdater, never()).onUpstreamCapabilitiesChanged(any());
+        inOrder.verify(mNotificationUpdater, never()).onUpstreamCapabilitiesChanged(any());
     }
 
     @Test
@@ -3344,6 +3366,7 @@ public class TetheringTest {
         verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS).times(1)).startWithCallbacks(
                 any(), any());
         verify(mTetheringMetrics).createBuilder(eq(TETHERING_NCM), anyString());
+        verify(mTetheringMetrics, times(1)).maybeUpdateUpstreamType(any());
 
         // Change the USB tethering function to NCM. Because the USB tethering function was set to
         // RNDIS (the default), tethering is stopped.
@@ -3360,6 +3383,7 @@ public class TetheringTest {
         mLooper.dispatchAll();
         ncmResult.assertHasResult();
         verify(mTetheringMetrics, times(2)).createBuilder(eq(TETHERING_NCM), anyString());
+        verify(mTetheringMetrics, times(1)).maybeUpdateUpstreamType(any());
         verify(mTetheringMetrics).updateErrorCode(eq(TETHERING_NCM),
                 eq(TETHER_ERROR_SERVICE_UNAVAIL));
         verify(mTetheringMetrics, times(2)).sendReport(eq(TETHERING_NCM));

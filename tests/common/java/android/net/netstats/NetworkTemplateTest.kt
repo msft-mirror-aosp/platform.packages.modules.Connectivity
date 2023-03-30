@@ -95,6 +95,13 @@ class NetworkTemplateTest {
             NetworkTemplate.Builder(MATCH_CARRIER).build()
         }
 
+        // Verify carrier and mobile template cannot contain one of subscriber Id is null.
+        listOf(MATCH_MOBILE, MATCH_CARRIER).forEach {
+            assertFailsWith<IllegalArgumentException> {
+                NetworkTemplate.Builder(it).setSubscriberIds(setOf(null)).build()
+            }
+        }
+
         // Verify template which matches metered cellular networks,
         // regardless of IMSI. See buildTemplateMobileWildcard.
         NetworkTemplate.Builder(MATCH_MOBILE).setMeteredness(METERED_YES).build().let {
