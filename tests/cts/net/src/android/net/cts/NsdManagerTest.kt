@@ -19,6 +19,8 @@ import android.Manifest.permission.MANAGE_TEST_NETWORKS
 import android.app.compat.CompatChanges
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
+import android.net.InetAddresses.parseNumericAddress
+import android.net.LinkAddress
 import android.net.LinkProperties
 import android.net.LocalSocket
 import android.net.LocalSocketAddress
@@ -27,6 +29,7 @@ import android.net.NetworkAgentConfig
 import android.net.NetworkCapabilities
 import android.net.NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED
 import android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED
+import android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED
 import android.net.NetworkCapabilities.TRANSPORT_TEST
 import android.net.NetworkRequest
 import android.net.TestNetworkInterface
@@ -62,18 +65,29 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.Process.myTid
 import android.platform.test.annotations.AppModeFull
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants.AF_INET6
+import android.system.OsConstants.EADDRNOTAVAIL
+import android.system.OsConstants.ENETUNREACH
+import android.system.OsConstants.IPPROTO_UDP
+import android.system.OsConstants.SOCK_DGRAM
 import android.util.Log
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.runner.AndroidJUnit4
 import com.android.compatibility.common.util.PollingCheck
 import com.android.compatibility.common.util.PropertyUtil
+import com.android.modules.utils.build.SdkLevel.isAtLeastU
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.net.module.util.TrackRecord
 import com.android.networkstack.apishim.NsdShimImpl
 import com.android.networkstack.apishim.common.NsdShim
 import com.android.testutils.ConnectivityModuleTest
 import com.android.testutils.DevSdkIgnoreRule
+import com.android.testutils.RecorderCallback.CallbackEntry.CapabilitiesChanged
+import com.android.testutils.RecorderCallback.CallbackEntry.LinkPropertiesChanged
 import com.android.testutils.TestableNetworkAgent
+import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnNetworkCreated
 import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.filters.CtsNetTestCasesMaxTargetSdk30
 import com.android.testutils.filters.CtsNetTestCasesMaxTargetSdk33
@@ -82,6 +96,7 @@ import com.android.testutils.tryTest
 import com.android.testutils.waitForIdle
 import java.io.File
 import java.io.IOException
+import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
 import java.util.Random
@@ -299,6 +314,7 @@ class NsdManagerTest {
         }
 
         override fun onStopResolutionFailed(si: NsdServiceInfo, err: Int) {
+            super.onStopResolutionFailed(si, err)
             add(StopResolutionFailed(si, err))
         }
     }
@@ -353,24 +369,56 @@ class NsdManagerTest {
                 .build(), cb)
         val agent = registerTestNetworkAgent(iface.interfaceName)
         val network = agent.network ?: fail("Registered agent should have a network")
+
+        cb.eventuallyExpect<LinkPropertiesChanged>(TIMEOUT_MS) {
+            it.lp.linkAddresses.isNotEmpty()
+        }
+
         // The network has no INTERNET capability, so will be marked validated immediately
-        cb.expectAvailableThenValidatedCallbacks(network, TIMEOUT_MS)
+        // It does not matter if validated capabilities come before/after the link addresses change
+        cb.eventuallyExpect<CapabilitiesChanged>(TIMEOUT_MS, from = 0) {
+            it.caps.hasCapability(NET_CAPABILITY_VALIDATED)
+        }
         return TestTapNetwork(iface, cb, agent, network)
     }
 
     private fun registerTestNetworkAgent(ifaceName: String): TestableNetworkAgent {
+        val lp = LinkProperties().apply {
+            interfaceName = ifaceName
+        }
+
         val agent = TestableNetworkAgent(context, handlerThread.looper,
                 NetworkCapabilities().apply {
                     removeCapability(NET_CAPABILITY_TRUSTED)
                     addTransportType(TRANSPORT_TEST)
                     setNetworkSpecifier(TestNetworkSpecifier(ifaceName))
-                },
-                LinkProperties().apply {
-                    interfaceName = ifaceName
-                },
-                NetworkAgentConfig.Builder().build())
-        agent.register()
+                }, lp, NetworkAgentConfig.Builder().build())
+        val network = agent.register()
         agent.markConnected()
+        agent.expectCallback<OnNetworkCreated>()
+
+        // Wait until the link-local address can be used. Address flags are not available without
+        // elevated permissions, so check that bindSocket works.
+        PollingCheck.check("No usable v6 address on interface after $TIMEOUT_MS ms", TIMEOUT_MS) {
+            val sock = Os.socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP)
+            tryTest {
+                network.bindSocket(sock)
+                Os.connect(sock, parseNumericAddress("ff02::fb%$ifaceName"), 12345)
+                true
+            }.catch<ErrnoException> {
+                if (it.errno != ENETUNREACH && it.errno != EADDRNOTAVAIL) {
+                    throw it
+                }
+                false
+            } cleanup {
+                Os.close(sock)
+            }
+        }
+
+        lp.setLinkAddresses(NetworkInterface.getByName(ifaceName).interfaceAddresses.map {
+            LinkAddress(it.address, it.networkPrefixLength.toInt())
+        })
+        agent.sendLinkProperties(lp)
         return agent
     }
 
@@ -378,12 +426,14 @@ class NsdManagerTest {
     fun tearDown() {
         if (TestUtils.shouldTestTApis()) {
             runAsShell(MANAGE_TEST_NETWORKS) {
-                testNetwork1.close(cm)
-                testNetwork2.close(cm)
+                // Avoid throwing here if initializing failed in setUp
+                if (this::testNetwork1.isInitialized) testNetwork1.close(cm)
+                if (this::testNetwork2.isInitialized) testNetwork2.close(cm)
             }
         }
         handlerThread.waitForIdle(TIMEOUT_MS)
         handlerThread.quitSafely()
+        handlerThread.join()
     }
 
     @Test
@@ -465,7 +515,12 @@ class NsdManagerTest {
         assertTrue(resolvedService.attributes.containsKey("nullBinaryDataAttr"))
         assertNull(resolvedService.attributes["nullBinaryDataAttr"])
         assertTrue(resolvedService.attributes.containsKey("emptyBinaryDataAttr"))
-        assertNull(resolvedService.attributes["emptyBinaryDataAttr"])
+        // TODO: change the check to target SDK U when this is what the code implements
+        if (isAtLeastU()) {
+            assertArrayEquals(byteArrayOf(), resolvedService.attributes["emptyBinaryDataAttr"])
+        } else {
+            assertNull(resolvedService.attributes["emptyBinaryDataAttr"])
+        }
         assertEquals(localPort, resolvedService.port)
 
         // Unregister the service
@@ -879,12 +934,10 @@ class NsdManagerTest {
 
     @Test
     fun testRegisterServiceInfoCallback() {
-        // This test requires shims supporting U+ APIs (NsdManager.subscribeService)
+        // This test requires shims supporting U+ APIs (NsdManager.registerServiceInfoCallback)
         assumeTrue(TestUtils.shouldTestUApis())
 
-        // Ensure Wi-Fi network connected and get addresses
-        val wifiNetwork = ctsNetUtils.ensureWifiConnected()
-        val lp = cm.getLinkProperties(wifiNetwork)
+        val lp = cm.getLinkProperties(testNetwork1.network)
         assertNotNull(lp)
         val addresses = lp.addresses
         assertFalse(addresses.isEmpty())
@@ -892,33 +945,31 @@ class NsdManagerTest {
         val si = NsdServiceInfo().apply {
             serviceType = this@NsdManagerTest.serviceType
             serviceName = this@NsdManagerTest.serviceName
-            network = wifiNetwork
+            network = testNetwork1.network
             port = 12345 // Test won't try to connect so port does not matter
         }
 
-        // Register service on Wi-Fi network
+        // Register service on the network
         val registrationRecord = NsdRegistrationRecord()
         registerService(registrationRecord, si)
 
         val discoveryRecord = NsdDiscoveryRecord()
         val cbRecord = NsdServiceInfoCallbackRecord()
         tryTest {
-            // Discover service on Wi-Fi network.
+            // Discover service on the network.
             nsdShim.discoverServices(nsdManager, serviceType, NsdManager.PROTOCOL_DNS_SD,
-                    wifiNetwork, Executor { it.run() }, discoveryRecord)
+                    testNetwork1.network, Executor { it.run() }, discoveryRecord)
             val foundInfo = discoveryRecord.waitForServiceDiscovered(
-                    serviceName, wifiNetwork)
+                    serviceName, testNetwork1.network)
 
-            // Subscribe to service and check the addresses are the same as Wi-Fi addresses
+            // Register service callback and check the addresses are the same as network addresses
             nsdShim.registerServiceInfoCallback(nsdManager, foundInfo, { it.run() }, cbRecord)
-            for (i in addresses.indices) {
-                val subscribeCb = cbRecord.expectCallback<ServiceUpdated>()
-                assertEquals(foundInfo.serviceName, subscribeCb.serviceInfo.serviceName)
-                val hostAddresses = subscribeCb.serviceInfo.hostAddresses
-                assertEquals(i + 1, hostAddresses.size)
-                for (hostAddress in hostAddresses) {
-                    assertTrue(addresses.contains(hostAddress))
-                }
+            val serviceInfoCb = cbRecord.expectCallback<ServiceUpdated>()
+            assertEquals(foundInfo.serviceName, serviceInfoCb.serviceInfo.serviceName)
+            val hostAddresses = serviceInfoCb.serviceInfo.hostAddresses
+            assertEquals(addresses.size, hostAddresses.size)
+            for (hostAddress in hostAddresses) {
+                assertTrue(addresses.contains(hostAddress))
             }
         } cleanupStep {
             nsdManager.unregisterService(registrationRecord)
@@ -933,6 +984,24 @@ class NsdManagerTest {
             nsdManager.stopServiceDiscovery(discoveryRecord)
             discoveryRecord.expectCallback<DiscoveryStopped>()
         }
+    }
+
+    @Test
+    fun testStopServiceResolutionFailedCallback() {
+        // This test requires shims supporting U+ APIs (NsdManager.stopServiceResolution)
+        assumeTrue(TestUtils.shouldTestUApis())
+
+        // It's not possible to make ResolutionListener#onStopResolutionFailed callback sending
+        // because it is only sent in very edge-case scenarios when the legacy implementation is
+        // used, and the legacy implementation is never used in the current AOSP builds. Considering
+        // that this callback isn't expected to be sent at all at the moment, and this is just an
+        // interface with no implementation. To verify this callback, just call
+        // onStopResolutionFailed on the record directly then verify it is received.
+        val resolveRecord = NsdResolveRecord()
+        resolveRecord.onStopResolutionFailed(
+                NsdServiceInfo(), NsdManager.FAILURE_OPERATION_NOT_RUNNING)
+        val failedCb = resolveRecord.expectCallback<StopResolutionFailed>()
+        assertEquals(NsdManager.FAILURE_OPERATION_NOT_RUNNING, failedCb.errorCode)
     }
 
     /**

@@ -16,12 +16,17 @@
 
 package android.net.http.cts.util;
 
+import static org.hamcrest.Matchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeThat;
+import static org.junit.Assume.assumeTrue;
 
 import android.net.http.BidirectionalStream;
+import android.net.http.HeaderBlock;
 import android.net.http.HttpException;
 import android.net.http.UrlResponseInfo;
 import android.os.ConditionVariable;
@@ -39,7 +44,8 @@ import java.util.concurrent.ThreadFactory;
  * the stream completes on another thread. Allows to cancel, block stream or throw an exception from
  * an arbitrary step.
  */
-public class TestBidirectionalStreamCallback extends BidirectionalStream.Callback {
+public class TestBidirectionalStreamCallback implements BidirectionalStream.Callback {
+    private static final int TIMEOUT_MS = 12_000;
     public UrlResponseInfo mResponseInfo;
     public HttpException mError;
 
@@ -51,7 +57,7 @@ public class TestBidirectionalStreamCallback extends BidirectionalStream.Callbac
     public int mHttpResponseDataLength;
     public String mResponseAsString = "";
 
-    public UrlResponseInfo.HeaderBlock mTrailers;
+    public HeaderBlock mTrailers;
 
     private static final int READ_BUFFER_SIZE = 32 * 1024;
 
@@ -135,6 +141,17 @@ public class TestBidirectionalStreamCallback extends BidirectionalStream.Callbac
         THROW_SYNC
     }
 
+    private boolean isTerminalCallback(ResponseStep step) {
+        switch (step) {
+            case ON_SUCCEEDED:
+            case ON_CANCELED:
+            case ON_FAILED:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     public TestBidirectionalStreamCallback() {
         mUseDirectExecutor = false;
         mDirectExecutor = null;
@@ -154,8 +171,41 @@ public class TestBidirectionalStreamCallback extends BidirectionalStream.Callbac
         mFailureType = failureType;
     }
 
-    public void blockForDone() {
-        mDone.block();
+    public boolean blockForDone() {
+        return mDone.block(TIMEOUT_MS);
+    }
+
+    /**
+     * Waits for a terminal callback to complete execution before failing if the callback is not the
+     * expected one
+     *
+     * @param expectedStep the expected callback step
+     */
+    public void expectCallback(ResponseStep expectedStep) {
+        if (isTerminalCallback(expectedStep)) {
+            assertTrue(String.format(
+                            "Request timed out. Expected %s callback. Current callback is %s",
+                            expectedStep, mResponseStep),
+                    blockForDone());
+        }
+        assertSame(expectedStep, mResponseStep);
+    }
+
+    /**
+     * Waits for a terminal callback to complete execution before skipping the test if the callback
+     * is not the expected one
+     *
+     * @param expectedStep the expected callback step
+     */
+    public void assumeCallback(ResponseStep expectedStep) {
+        if (isTerminalCallback(expectedStep)) {
+            assumeTrue(
+                    String.format(
+                            "Request timed out. Expected %s callback. Current callback is %s",
+                            expectedStep, mResponseStep),
+                    blockForDone());
+        }
+        assumeThat(expectedStep, equalTo(mResponseStep));
     }
 
     public void waitForNextReadStep() {
@@ -288,7 +338,7 @@ public class TestBidirectionalStreamCallback extends BidirectionalStream.Callbac
     public void onResponseTrailersReceived(
             BidirectionalStream stream,
             UrlResponseInfo info,
-            UrlResponseInfo.HeaderBlock trailers) {
+            HeaderBlock trailers) {
         checkOnValidThread();
         assertFalse(stream.isDone());
         assertNull(mError);

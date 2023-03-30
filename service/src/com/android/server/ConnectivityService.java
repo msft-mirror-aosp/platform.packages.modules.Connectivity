@@ -911,7 +911,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     // This is the cache for the packageName -> ApplicationSelfCertifiedNetworkCapabilities. This
     // value can be accessed from both handler thread and any random binder thread. Therefore,
-    // accessing this value requires holding a lock.
+    // accessing this value requires holding a lock. The cache is the same across all the users.
     @GuardedBy("mSelfCertifiedCapabilityCache")
     private final Map<String, ApplicationSelfCertifiedNetworkCapabilities>
             mSelfCertifiedCapabilityCache = new HashMap<>();
@@ -3133,7 +3133,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             optsShim.setDeliveryGroupPolicy(ConstantsShim.DELIVERY_GROUP_POLICY_MOST_RECENT);
             optsShim.setDeliveryGroupMatchingKey(ConnectivityManager.CONNECTIVITY_ACTION,
                     createDeliveryGroupKeyForConnectivityAction(info));
-            optsShim.setDeferUntilActive(true);
+            optsShim.setDeferralPolicy(ConstantsShim.DEFERRAL_POLICY_UNTIL_ACTIVE);
         } catch (UnsupportedApiLevelException e) {
             Log.wtf(TAG, "Using unsupported API" + e);
         }
@@ -5052,9 +5052,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     public void setTestLowTcpPollingTimerForKeepalive(long timeMs) {
         enforceSettingsPermission();
-        if (!Build.isDebuggable()) {
-            throw new IllegalStateException("Is not supported in non-debuggable build");
-        }
 
         if (timeMs > System.currentTimeMillis() + MAX_TEST_LOW_TCP_POLLING_UNTIL_MS) {
             throw new IllegalArgumentException("Argument should not exceed "
@@ -6688,8 +6685,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         @Override
         public void binderDied() {
-            log("ConnectivityService NetworkRequestInfo binderDied(" +
-                    "uid/pid:" + mUid + "/" + mPid + ", " + mRequests + ", " + mBinder + ")");
             // As an immutable collection, mRequests cannot change by the time the
             // lambda is evaluated on the handler thread so calling .get() from a binder thread
             // is acceptable. Use handleReleaseNetworkRequest and not directly
@@ -7006,6 +7001,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return;
         }
         ApplicationSelfCertifiedNetworkCapabilities applicationNetworkCapabilities;
+        final long ident = Binder.clearCallingIdentity();
         try {
             synchronized (mSelfCertifiedCapabilityCache) {
                 applicationNetworkCapabilities = mSelfCertifiedCapabilityCache.get(
@@ -7032,6 +7028,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             + " property");
         } catch (XmlPullParserException | IOException | InvalidTagException e) {
             throw new SecurityException(e.getMessage());
+        } finally {
+            Binder.restoreCallingIdentity(ident);
         }
 
         applicationNetworkCapabilities.enforceSelfCertifiedNetworkCapabilitiesDeclared(
@@ -8472,6 +8470,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         exemptUids[1] = nai.networkCapabilities.getOwnerUid();
         UidRangeParcel[] ranges = toUidRangeStableParcels(uidRanges);
 
+        // Close sockets before modifying uid ranges so that RST packets can reach to the server.
         maybeCloseSockets(nai, ranges, exemptUids);
         try {
             if (add) {
@@ -8485,6 +8484,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             loge("Exception while " + (add ? "adding" : "removing") + " uid ranges " + uidRanges +
                     " on netId " + nai.network.netId + ". " + e);
         }
+        // Close sockets that established connection while requesting netd.
         maybeCloseSockets(nai, ranges, exemptUids);
     }
 
@@ -10734,6 +10734,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         callback));
     }
 
+    private boolean hasUnderlyingTestNetworks(NetworkCapabilities nc) {
+        final List<Network> underlyingNetworks = nc.getUnderlyingNetworks();
+        if (underlyingNetworks == null) return false;
+
+        for (Network network : underlyingNetworks) {
+            if (getNetworkCapabilitiesInternal(network).hasTransport(TRANSPORT_TEST)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public void simulateDataStall(int detectionMethod, long timestampMillis,
             @NonNull Network network, @NonNull PersistableBundle extras) {
@@ -10744,14 +10756,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_STACK);
         final NetworkCapabilities nc = getNetworkCapabilitiesInternal(network);
-        if (!nc.hasTransport(TRANSPORT_TEST)) {
-            throw new SecurityException("Data Stall simulation is only possible for test networks");
+        if (!nc.hasTransport(TRANSPORT_TEST) && !hasUnderlyingTestNetworks(nc)) {
+            throw new SecurityException(
+                    "Data Stall simulation is only possible for test networks or networks built on"
+                            + " top of test networks");
         }
 
         final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
-        if (nai == null || nai.creatorUid != mDeps.getCallingUid()) {
-            throw new SecurityException("Data Stall simulation is only possible for network "
-                + "creators");
+        if (nai == null
+                || (nai.creatorUid != mDeps.getCallingUid()
+                        && nai.creatorUid != Process.SYSTEM_UID)) {
+            throw new SecurityException(
+                    "Data Stall simulation is only possible for network " + "creators");
         }
 
         // Instead of passing the data stall directly to the ConnectivityDiagnostics handler, treat
