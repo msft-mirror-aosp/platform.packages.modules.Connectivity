@@ -24,8 +24,6 @@
 #   -n rev: The new revision to import.
 #   -f: Force copybara to ignore a failure to find the last imported revision.
 
-set -e -x
-
 OPTSTRING=fl:n:
 
 usage() {
@@ -57,7 +55,7 @@ setup_upstream_import_branch() {
 # Arguments:
 #   new_rev, string
 #######################################
-setup_folder_origin() (
+setup_folder_origin() {
     local _new_rev=$1
     mkdir -p "${COPYBARA_FOLDER_ORIGIN}"
     cd "${COPYBARA_FOLDER_ORIGIN}"
@@ -85,10 +83,9 @@ EOF
     cd src
     # Set appropriate gclient flags to speed up syncing.
     gclient sync \
-        --no-history \
-        --shallow \
-        --delete_unversioned_trees
-)
+        --no-history
+        --shallow
+}
 
 #######################################
 # Runs the copybara import of Chromium

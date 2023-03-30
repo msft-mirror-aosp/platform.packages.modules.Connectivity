@@ -64,16 +64,18 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     @VisibleForTesting
     public static final int NANOAPP_MESSAGE_TYPE_CONFIG = 5;
 
+    private static final int FP_ACCOUNT_KEY_LENGTH = 16;
+
     private final ChreCommunication mChreCommunication;
     private final ChreCallback mChreCallback;
     private final Object mLock = new Object();
 
     private boolean mChreStarted = false;
+    private Blefilter.BleFilters mFilters = null;
     private Context mContext;
     private NearbyConfiguration mNearbyConfiguration;
     private final IntentFilter mIntentFilter;
-    // Null when CHRE not started and the filters are never set. Empty the list every time the scan
-    // stops.
+    // Null when the filters are never set
     @GuardedBy("mLock")
     @Nullable
     private List<ScanFilter> mScanFilters;
@@ -118,8 +120,7 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         Log.d(TAG, "Stop CHRE scan");
         synchronized (mLock) {
             if (mScanFilters != null) {
-                // Cleaning the filters by assigning an empty list
-                mScanFilters = List.of();
+                mScanFilters = null;
             }
             updateFiltersLocked();
         }
@@ -177,6 +178,7 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         }
         if (mChreStarted) {
             sendFilters(filtersBuilder.build());
+            mFilters = null;
         }
     }
 
@@ -234,6 +236,10 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                     mIntentFilter.addAction(Intent.ACTION_SCREEN_OFF);
                     mContext.registerReceiver(mScreenBroadcastReceiver, mIntentFilter);
                     mChreStarted = true;
+                    if (mFilters != null) {
+                        sendFilters(mFilters);
+                        mFilters = null;
+                    }
                 }
             }
         }
