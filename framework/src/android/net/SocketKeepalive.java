@@ -16,8 +16,6 @@
 
 package android.net;
 
-import static android.annotation.SystemApi.Client.PRIVILEGED_APPS;
-
 import android.annotation.IntDef;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
@@ -192,7 +190,6 @@ public abstract class SocketKeepalive implements AutoCloseable {
      * This only works with {@link NattSocketKeepalive}.
      * @hide
      */
-    @SystemApi
     public static final int FLAG_AUTOMATIC_ON_OFF = 1 << 0;
 
     /** @hide */
@@ -380,7 +377,6 @@ public abstract class SocketKeepalive implements AutoCloseable {
      *                           tunnel running over mNetwork.
      * @hide
      */
-    @SystemApi(client = PRIVILEGED_APPS)
     public final void start(@IntRange(from = MIN_INTERVAL_SEC, to = MAX_INTERVAL_SEC)
             int intervalSec, @StartFlags int flags, @Nullable Network underpinnedNetwork) {
         startImpl(intervalSec, flags, underpinnedNetwork);
