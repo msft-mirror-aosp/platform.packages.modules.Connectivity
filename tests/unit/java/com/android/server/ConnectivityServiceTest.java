@@ -864,7 +864,8 @@ public class ConnectivityServiceTest {
                     verify(mBroadcastOptionsShim).setDeliveryGroupMatchingKey(
                             eq(CONNECTIVITY_ACTION),
                             eq(createDeliveryGroupKeyForConnectivityAction(ni)));
-                    verify(mBroadcastOptionsShim).setDeferUntilActive(eq(true));
+                    verify(mBroadcastOptionsShim).setDeferralPolicy(
+                            eq(ConstantsShim.DEFERRAL_POLICY_UNTIL_ACTIVE));
                 } catch (UnsupportedApiLevelException e) {
                     throw new RuntimeException(e);
                 }
@@ -2218,7 +2219,9 @@ public class ConnectivityServiceTest {
         ConnectivityResources.setResourcesContextForTest(null);
 
         mCsHandlerThread.quitSafely();
+        mCsHandlerThread.join();
         mAlarmManagerThread.quitSafely();
+        mAlarmManagerThread.join();
     }
 
     private void mockDefaultPackages() throws Exception {
@@ -3814,13 +3817,13 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testExplicitlySelected() throws Exception {
-        NetworkRequest request = new NetworkRequest.Builder()
+        final NetworkRequest request = new NetworkRequest.Builder()
                 .clearCapabilities().addCapability(NET_CAPABILITY_INTERNET)
                 .build();
-        TestNetworkCallback callback = new TestNetworkCallback();
+        final TestNetworkCallback callback = new TestNetworkCallback();
         mCm.registerNetworkCallback(request, callback);
 
-        // Bring up validated cell.
+        // Bring up validated cell
         mCellAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
         mCellAgent.connect(true);
         callback.expectAvailableThenValidatedCallbacks(mCellAgent);
@@ -3878,6 +3881,12 @@ public class ConnectivityServiceTest {
         assertEquals(mWiFiAgent.getNetwork(), mCm.getActiveNetwork());
         expectUnvalidationCheckWillNotNotify(mWiFiAgent);
 
+        // Now request cell so it doesn't disconnect during the test
+        final NetworkRequest cellRequest = new NetworkRequest.Builder()
+                .clearCapabilities().addTransportType(TRANSPORT_CELLULAR).build();
+        final TestNetworkCallback cellCallback = new TestNetworkCallback();
+        mCm.requestNetwork(cellRequest, cellCallback);
+
         mEthernetAgent = new TestNetworkAgentWrapper(TRANSPORT_ETHERNET);
         mEthernetAgent.connect(true);
         callback.expectAvailableCallbacksUnvalidated(mEthernetAgent);
@@ -3919,6 +3928,7 @@ public class ConnectivityServiceTest {
 
         callback.expect(LOST, mWiFiAgent);
         callback.expect(LOST, mCellAgent);
+        mCm.unregisterNetworkCallback(cellCallback);
     }
 
     private void doTestFirstEvaluation(
@@ -10125,6 +10135,7 @@ public class ConnectivityServiceTest {
         b2.expectBroadcast();
 
         VMSHandlerThread.quitSafely();
+        VMSHandlerThread.join();
     }
 
     @Test @IgnoreUpTo(Build.VERSION_CODES.S_V2)
@@ -16973,6 +16984,7 @@ public class ConnectivityServiceTest {
         } finally {
             cellFactory.terminate();
             handlerThread.quitSafely();
+            handlerThread.join();
         }
     }
 

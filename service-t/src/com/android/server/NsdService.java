@@ -22,6 +22,8 @@ import static android.net.nsd.NsdManager.MDNS_SERVICE_EVENT;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
 import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 
+import static com.android.modules.utils.build.SdkLevel.isAtLeastU;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -51,7 +53,6 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.text.TextUtils;
 import android.util.Log;
-import android.util.Pair;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -71,6 +72,7 @@ import com.android.server.connectivity.mdns.MdnsSocketProvider;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
@@ -395,13 +397,12 @@ public class NsdService extends INsdManager.Stub {
                 final int clientId = msg.arg2;
                 switch (msg.what) {
                     case NsdManager.REGISTER_CLIENT:
-                        final Pair<NsdServiceConnector, INsdManagerCallback> arg =
-                                (Pair<NsdServiceConnector, INsdManagerCallback>) msg.obj;
-                        final INsdManagerCallback cb = arg.second;
+                        final ConnectorArgs arg = (ConnectorArgs) msg.obj;
+                        final INsdManagerCallback cb = arg.callback;
                         try {
-                            cb.asBinder().linkToDeath(arg.first, 0);
-                            cInfo = new ClientInfo(cb);
-                            mClients.put(arg.first, cInfo);
+                            cb.asBinder().linkToDeath(arg.connector, 0);
+                            cInfo = new ClientInfo(cb, arg.useJavaBackend);
+                            mClients.put(arg.connector, cInfo);
                         } catch (RemoteException e) {
                             Log.w(TAG, "Client " + clientId + " has already died");
                         }
@@ -606,7 +607,8 @@ public class NsdService extends INsdManager.Stub {
                         final NsdServiceInfo info = args.serviceInfo;
                         id = getUniqueId();
                         final String serviceType = constructServiceType(info.getServiceType());
-                        if (mDeps.isMdnsDiscoveryManagerEnabled(mContext)
+                        if (clientInfo.mUseJavaBackend
+                                || mDeps.isMdnsDiscoveryManagerEnabled(mContext)
                                 || useDiscoveryManagerForType(serviceType)) {
                             if (serviceType == null) {
                                 clientInfo.onDiscoverServicesFailed(clientId,
@@ -700,7 +702,8 @@ public class NsdService extends INsdManager.Stub {
                         final NsdServiceInfo serviceInfo = args.serviceInfo;
                         final String serviceType = serviceInfo.getServiceType();
                         final String registerServiceType = constructServiceType(serviceType);
-                        if (mDeps.isMdnsAdvertiserEnabled(mContext)
+                        if (clientInfo.mUseJavaBackend
+                                || mDeps.isMdnsAdvertiserEnabled(mContext)
                                 || useAdvertiserForType(registerServiceType)) {
                             if (registerServiceType == null) {
                                 Log.e(TAG, "Invalid service type: " + serviceType);
@@ -780,7 +783,8 @@ public class NsdService extends INsdManager.Stub {
                         final NsdServiceInfo info = args.serviceInfo;
                         id = getUniqueId();
                         final String serviceType = constructServiceType(info.getServiceType());
-                        if (mDeps.isMdnsDiscoveryManagerEnabled(mContext)
+                        if (clientInfo.mUseJavaBackend
+                                ||  mDeps.isMdnsDiscoveryManagerEnabled(mContext)
                                 || useDiscoveryManagerForType(serviceType)) {
                             if (serviceType == null) {
                                 clientInfo.onResolveServiceFailed(clientId,
@@ -1152,22 +1156,7 @@ public class NsdService extends INsdManager.Stub {
                                 Log.e(TAG, "Invalid attribute", e);
                             }
                         }
-                        final List<InetAddress> addresses = new ArrayList<>();
-                        for (String ipv4Address : serviceInfo.getIpv4Addresses()) {
-                            try {
-                                addresses.add(InetAddresses.parseNumericAddress(ipv4Address));
-                            } catch (IllegalArgumentException e) {
-                                Log.wtf(TAG, "Invalid ipv4 address", e);
-                            }
-                        }
-                        for (String ipv6Address : serviceInfo.getIpv6Addresses()) {
-                            try {
-                                addresses.add(InetAddresses.parseNumericAddress(ipv6Address));
-                            } catch (IllegalArgumentException e) {
-                                Log.wtf(TAG, "Invalid ipv6 address", e);
-                            }
-                        }
-
+                        final List<InetAddress> addresses = getInetAddresses(serviceInfo);
                         if (addresses.size() != 0) {
                             info.setHostAddresses(addresses);
                             clientInfo.onResolveServiceSucceeded(clientId, info);
@@ -1199,21 +1188,7 @@ public class NsdService extends INsdManager.Stub {
                             }
                         }
 
-                        final List<InetAddress> addresses = new ArrayList<>();
-                        for (String ipv4Address : serviceInfo.getIpv4Addresses()) {
-                            try {
-                                addresses.add(InetAddresses.parseNumericAddress(ipv4Address));
-                            } catch (IllegalArgumentException e) {
-                                Log.wtf(TAG, "Invalid ipv4 address", e);
-                            }
-                        }
-                        for (String ipv6Address : serviceInfo.getIpv6Addresses()) {
-                            try {
-                                addresses.add(InetAddresses.parseNumericAddress(ipv6Address));
-                            } catch (IllegalArgumentException e) {
-                                Log.wtf(TAG, "Invalid ipv6 address", e);
-                            }
-                        }
+                        final List<InetAddress> addresses = getInetAddresses(serviceInfo);
                         info.setHostAddresses(addresses);
                         clientInfo.onServiceUpdated(clientId, info);
                         break;
@@ -1227,6 +1202,36 @@ public class NsdService extends INsdManager.Stub {
                 return true;
             }
        }
+    }
+
+    @NonNull
+    private static List<InetAddress> getInetAddresses(@NonNull MdnsServiceInfo serviceInfo) {
+        final List<String> v4Addrs = serviceInfo.getIpv4Addresses();
+        final List<String> v6Addrs = serviceInfo.getIpv6Addresses();
+        final List<InetAddress> addresses = new ArrayList<>(v4Addrs.size() + v6Addrs.size());
+        for (String ipv4Address : v4Addrs) {
+            try {
+                addresses.add(InetAddresses.parseNumericAddress(ipv4Address));
+            } catch (IllegalArgumentException e) {
+                Log.wtf(TAG, "Invalid ipv4 address", e);
+            }
+        }
+        for (String ipv6Address : v6Addrs) {
+            try {
+                final InetAddress addr = InetAddresses.parseNumericAddress(ipv6Address);
+                if (addr.isLinkLocalAddress()) {
+                    final Inet6Address v6Addr = Inet6Address.getByAddress(
+                            null /* host */, addr.getAddress(),
+                            serviceInfo.getInterfaceIndex());
+                    addresses.add(v6Addr);
+                } else {
+                    addresses.add(addr);
+                }
+            } catch (IllegalArgumentException | UnknownHostException e) {
+                Log.wtf(TAG, "Invalid ipv6 address", e);
+            }
+        }
+        return addresses;
     }
 
     private static void setServiceNetworkForCallback(NsdServiceInfo info, int netId, int ifaceIdx) {
@@ -1343,8 +1348,9 @@ public class NsdService extends INsdManager.Stub {
          * @return true if the MdnsDiscoveryManager feature is enabled.
          */
         public boolean isMdnsDiscoveryManagerEnabled(Context context) {
-            return DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_CONNECTIVITY,
-                    MDNS_DISCOVERY_MANAGER_VERSION, false /* defaultEnabled */);
+            return isAtLeastU() || DeviceConfigUtils.isFeatureEnabled(context,
+                    NAMESPACE_CONNECTIVITY, MDNS_DISCOVERY_MANAGER_VERSION,
+                    false /* defaultEnabled */);
         }
 
         /**
@@ -1354,8 +1360,8 @@ public class NsdService extends INsdManager.Stub {
          * @return true if the MdnsAdvertiser feature is enabled.
          */
         public boolean isMdnsAdvertiserEnabled(Context context) {
-            return DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_CONNECTIVITY,
-                    MDNS_ADVERTISER_VERSION, false /* defaultEnabled */);
+            return isAtLeastU() || DeviceConfigUtils.isFeatureEnabled(context,
+                    NAMESPACE_CONNECTIVITY, MDNS_ADVERTISER_VERSION, false /* defaultEnabled */);
         }
 
         /**
@@ -1529,12 +1535,27 @@ public class NsdService extends INsdManager.Stub {
         }
     }
 
+    private static class ConnectorArgs {
+        @NonNull public final NsdServiceConnector connector;
+        @NonNull public final INsdManagerCallback callback;
+        public final boolean useJavaBackend;
+
+        ConnectorArgs(@NonNull NsdServiceConnector connector, @NonNull INsdManagerCallback callback,
+                boolean useJavaBackend) {
+            this.connector = connector;
+            this.callback = callback;
+            this.useJavaBackend = useJavaBackend;
+        }
+    }
+
     @Override
-    public INsdServiceConnector connect(INsdManagerCallback cb) {
+    public INsdServiceConnector connect(INsdManagerCallback cb, boolean useJavaBackend) {
         mContext.enforceCallingOrSelfPermission(android.Manifest.permission.INTERNET, "NsdService");
+        if (DBG) Log.d(TAG, "New client connect. useJavaBackend=" + useJavaBackend);
         final INsdServiceConnector connector = new NsdServiceConnector();
         mNsdStateMachine.sendMessage(mNsdStateMachine.obtainMessage(
-                NsdManager.REGISTER_CLIENT, new Pair<>(connector, cb)));
+                NsdManager.REGISTER_CLIENT,
+                new ConnectorArgs((NsdServiceConnector) connector, cb, useJavaBackend)));
         return connector;
     }
 
@@ -1790,9 +1811,12 @@ public class NsdService extends INsdManager.Stub {
 
         // The target SDK of this client < Build.VERSION_CODES.S
         private boolean mIsPreSClient = false;
+        // The flag of using java backend if the client's target SDK >= U
+        private final boolean mUseJavaBackend;
 
-        private ClientInfo(INsdManagerCallback cb) {
+        private ClientInfo(INsdManagerCallback cb, boolean useJavaBackend) {
             mCb = cb;
+            mUseJavaBackend = useJavaBackend;
             if (DBG) Log.d(TAG, "New client");
         }
 
