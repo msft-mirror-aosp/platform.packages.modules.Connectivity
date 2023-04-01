@@ -96,6 +96,8 @@ import com.android.testutils.tryTest
 import com.android.testutils.waitForIdle
 import java.io.File
 import java.io.IOException
+import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
@@ -132,6 +134,7 @@ private val nsdShim = NsdShimImpl.newInstance()
 
 @AppModeFull(reason = "Socket cannot bind in instant app mode")
 @RunWith(AndroidJUnit4::class)
+@ConnectivityModuleTest
 class NsdManagerTest {
     // Rule used to filter CtsNetTestCasesMaxTargetSdkXX
     @get:Rule
@@ -314,6 +317,7 @@ class NsdManagerTest {
         }
 
         override fun onStopResolutionFailed(si: NsdServiceInfo, err: Int) {
+            super.onStopResolutionFailed(si, err)
             add(StopResolutionFailed(si, err))
         }
     }
@@ -696,6 +700,20 @@ class NsdManagerTest {
         }
     }
 
+    private fun checkAddressScopeId(iface: TestNetworkInterface, address: List<InetAddress>) {
+        val targetSdkVersion = context.packageManager
+            .getTargetSdkVersion(context.applicationInfo.packageName)
+        if (targetSdkVersion <= Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+        val ifaceIdx = NetworkInterface.getByName(iface.interfaceName).index
+        address.forEach {
+            if (it is Inet6Address && it.isLinkLocalAddress) {
+                assertEquals(ifaceIdx, it.scopeId)
+            }
+        }
+    }
+
     @Test
     fun testNsdManager_ResolveOnNetwork() {
         // This test requires shims supporting T+ APIs (NsdServiceInfo.network)
@@ -731,6 +749,7 @@ class NsdManagerTest {
                 assertEquals(registeredInfo.serviceName, it.serviceName)
                 assertEquals(si.port, it.port)
                 assertEquals(testNetwork1.network, nsdShim.getNetwork(it))
+                checkAddressScopeId(testNetwork1.iface, it.hostAddresses)
             }
             // TODO: check that MDNS packets are sent only on testNetwork1.
         } cleanupStep {
@@ -970,6 +989,7 @@ class NsdManagerTest {
             for (hostAddress in hostAddresses) {
                 assertTrue(addresses.contains(hostAddress))
             }
+            checkAddressScopeId(testNetwork1.iface, serviceInfoCb.serviceInfo.hostAddresses)
         } cleanupStep {
             nsdManager.unregisterService(registrationRecord)
             registrationRecord.expectCallback<ServiceUnregistered>()
@@ -983,6 +1003,24 @@ class NsdManagerTest {
             nsdManager.stopServiceDiscovery(discoveryRecord)
             discoveryRecord.expectCallback<DiscoveryStopped>()
         }
+    }
+
+    @Test
+    fun testStopServiceResolutionFailedCallback() {
+        // This test requires shims supporting U+ APIs (NsdManager.stopServiceResolution)
+        assumeTrue(TestUtils.shouldTestUApis())
+
+        // It's not possible to make ResolutionListener#onStopResolutionFailed callback sending
+        // because it is only sent in very edge-case scenarios when the legacy implementation is
+        // used, and the legacy implementation is never used in the current AOSP builds. Considering
+        // that this callback isn't expected to be sent at all at the moment, and this is just an
+        // interface with no implementation. To verify this callback, just call
+        // onStopResolutionFailed on the record directly then verify it is received.
+        val resolveRecord = NsdResolveRecord()
+        resolveRecord.onStopResolutionFailed(
+                NsdServiceInfo(), NsdManager.FAILURE_OPERATION_NOT_RUNNING)
+        val failedCb = resolveRecord.expectCallback<StopResolutionFailed>()
+        assertEquals(NsdManager.FAILURE_OPERATION_NOT_RUNNING, failedCb.errorCode)
     }
 
     /**
