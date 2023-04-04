@@ -16,6 +16,8 @@
 
 package com.android.cts.net;
 
+import android.platform.test.annotations.RequiresDevice;
+
 public class HostsideVpnTests extends HostsideNetworkTestCase {
 
     @Override
@@ -47,6 +49,10 @@ public class HostsideVpnTests extends HostsideNetworkTestCase {
 
     public void testAppDisallowed() throws Exception {
         runDeviceTests(TEST_PKG, TEST_PKG + ".VpnTest", "testAppDisallowed");
+    }
+
+    public void testSocketClosed() throws Exception {
+        runDeviceTests(TEST_PKG, TEST_PKG + ".VpnTest", "testSocketClosed");
     }
 
     public void testGetConnectionOwnerUidSecurity() throws Exception {
@@ -87,6 +93,18 @@ public class HostsideVpnTests extends HostsideNetworkTestCase {
     public void testAlwaysMeteredVpnWithNullUnderlyingNetwork() throws Exception {
         runDeviceTests(
                 TEST_PKG, TEST_PKG + ".VpnTest", "testAlwaysMeteredVpnWithNullUnderlyingNetwork");
+    }
+
+    @RequiresDevice // Keepalive is not supported on virtual hardware
+    public void testAutomaticOnOffKeepaliveModeClose() throws Exception {
+        runDeviceTests(
+                TEST_PKG, TEST_PKG + ".VpnTest", "testAutomaticOnOffKeepaliveModeClose");
+    }
+
+    @RequiresDevice // Keepalive is not supported on virtual hardware
+    public void testAutomaticOnOffKeepaliveModeNoClose() throws Exception {
+        runDeviceTests(
+                TEST_PKG, TEST_PKG + ".VpnTest", "testAutomaticOnOffKeepaliveModeNoClose");
     }
 
     public void testAlwaysMeteredVpnWithNonNullUnderlyingNetwork() throws Exception {
