@@ -49,7 +49,7 @@ struct BundleEq {
 // loss). When state is cleared, the state object is replaced with a new default
 // constructed instance.
 struct NetworkTraceState {
-  bool cleared;
+  bool cleared = true;
   std::unordered_map<BundleKey, uint64_t, BundleHash, BundleEq> iids;
 };
 
@@ -69,6 +69,9 @@ class NetworkTraceHandler
 
   // Connects to the system Perfetto daemon and registers the trace handler.
   static void InitPerfettoTracing();
+
+  // When isTest is true, skip non-hermetic code.
+  NetworkTraceHandler(bool isTest = false) : mIsTest(isTest) {}
 
   // perfetto::DataSource overrides:
   void OnSetup(const SetupArgs& args) override;
@@ -92,6 +95,7 @@ class NetworkTraceHandler
 
   static internal::NetworkTracePoller sPoller;
   bool mStarted;
+  bool mIsTest;
 
   // Values from config, see proto for details.
   uint32_t mPollMs;
