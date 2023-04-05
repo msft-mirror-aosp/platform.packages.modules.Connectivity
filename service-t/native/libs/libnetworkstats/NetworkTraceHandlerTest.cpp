@@ -14,208 +14,381 @@
  * limitations under the License.
  */
 
-#include <android-base/unique_fd.h>
-#include <android/multinetwork.h>
-#include <arpa/inet.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <inttypes.h>
-#include <net/if.h>
-#include <netinet/tcp.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #include <vector>
 
 #include "netdbpf/NetworkTraceHandler.h"
-
-using ::testing::AllOf;
-using ::testing::AnyOf;
-using ::testing::Each;
-using ::testing::Eq;
-using ::testing::Field;
-using ::testing::Test;
+#include "protos/perfetto/config/android/network_trace_config.gen.h"
+#include "protos/perfetto/trace/android/network_trace.pb.h"
+#include "protos/perfetto/trace/trace.pb.h"
+#include "protos/perfetto/trace/trace_packet.pb.h"
 
 namespace android {
 namespace bpf {
-// Use uint32 max to cause the handler to never Loop. Instead, the tests will
-// manually drive things by calling ConsumeAll explicitly.
-constexpr uint32_t kNeverPoll = std::numeric_limits<uint32_t>::max();
+using ::perfetto::protos::NetworkPacketEvent;
+using ::perfetto::protos::NetworkPacketTraceConfig;
+using ::perfetto::protos::Trace;
+using ::perfetto::protos::TracePacket;
+using ::perfetto::protos::TrafficDirection;
 
-__be16 bindAndListen(int s) {
-  sockaddr_in sin = {.sin_family = AF_INET};
-  socklen_t len = sizeof(sin);
-  if (bind(s, (sockaddr*)&sin, sizeof(sin))) return 0;
-  if (listen(s, 1)) return 0;
-  if (getsockname(s, (sockaddr*)&sin, &len)) return 0;
-  return sin.sin_port;
-}
+class NetworkTraceHandlerTest : public testing::Test {
+ protected:
+  // Starts a tracing session with the handler under test.
+  std::unique_ptr<perfetto::TracingSession> StartTracing(
+      NetworkPacketTraceConfig settings) {
+    perfetto::TracingInitArgs args;
+    args.backends = perfetto::kInProcessBackend;
+    perfetto::Tracing::Initialize(args);
 
-// This takes tcp flag constants from the standard library and makes them usable
-// with the flags we get from BPF. The standard library flags are big endian
-// whereas the BPF flags are reported in host byte order. BPF also trims the
-// flags down to the 8 single-bit flag bits (fin, syn, rst, etc).
-constexpr inline uint8_t FlagToHost(__be32 be_unix_flags) {
-  return ntohl(be_unix_flags) >> 16;
-}
+    perfetto::DataSourceDescriptor dsd;
+    dsd.set_name("test.network_packets");
+    NetworkTraceHandler::Register(dsd, /*isTest=*/true);
 
-// Pretty prints all fields for a list of packets (useful for debugging).
-struct PacketPrinter {
-  const std::vector<PacketTrace>& data;
-  static constexpr char kTcpFlagNames[] = "FSRPAUEC";
+    perfetto::TraceConfig cfg;
+    cfg.add_buffers()->set_size_kb(1024);
+    auto* config = cfg.add_data_sources()->mutable_config();
+    config->set_name("test.network_packets");
+    config->set_network_packet_trace_config_raw(settings.SerializeAsString());
 
-  friend std::ostream& operator<<(std::ostream& os, const PacketPrinter& d) {
-    os << "Packet count: " << d.data.size();
-    for (const PacketTrace& info : d.data) {
-      os << "\nifidx=" << info.ifindex;
-      os << ", len=" << info.length;
-      os << ", uid=" << info.uid;
-      os << ", tag=" << info.tag;
-      os << ", sport=" << info.sport;
-      os << ", dport=" << info.dport;
-      os << ", direction=" << (info.egress ? "egress" : "ingress");
-      os << ", proto=" << static_cast<int>(info.ipProto);
-      os << ", ip=" << static_cast<int>(info.ipVersion);
-      os << ", flags=";
-      for (int i = 0; i < 8; i++) {
-        os << ((info.tcpFlags & (1 << i)) ? kTcpFlagNames[i] : '.');
+    auto session = perfetto::Tracing::NewTrace(perfetto::kInProcessBackend);
+    session->Setup(cfg);
+    session->StartBlocking();
+    return session;
+  }
+
+  // Stops the trace session and reports all relevant trace packets.
+  bool StopTracing(perfetto::TracingSession* session,
+                   std::vector<TracePacket>* output) {
+    session->StopBlocking();
+
+    Trace trace;
+    std::vector<char> raw_trace = session->ReadTraceBlocking();
+    if (!trace.ParseFromArray(raw_trace.data(), raw_trace.size())) {
+      ADD_FAILURE() << "trace.ParseFromArray failed";
+      return false;
+    }
+
+    // This is a real trace and includes irrelevant trace packets such as trace
+    // metadata. The following strips the results to just the packets we want.
+    for (const auto& pkt : trace.packet()) {
+      if (pkt.has_network_packet() || pkt.has_network_packet_bundle()) {
+        output->emplace_back(pkt);
       }
     }
-    return os;
+
+    return true;
+  }
+
+  // This runs a trace with a single call to Write.
+  bool TraceAndSortPackets(const std::vector<PacketTrace>& input,
+                           std::vector<TracePacket>* output,
+                           NetworkPacketTraceConfig config = {}) {
+    auto session = StartTracing(config);
+    NetworkTraceHandler::Trace([&](NetworkTraceHandler::TraceContext ctx) {
+      ctx.GetDataSourceLocked()->Write(input, ctx);
+      ctx.Flush();
+    });
+
+    if (!StopTracing(session.get(), output)) {
+      return false;
+    }
+
+    // Sort to provide deterministic ordering regardless of Perfetto internals
+    // or implementation-defined (e.g. hash map) reshuffling.
+    std::sort(output->begin(), output->end(),
+              [](const TracePacket& a, const TracePacket& b) {
+                return a.timestamp() < b.timestamp();
+              });
+
+    return true;
   }
 };
 
-class NetworkTracePollerTest : public testing::Test {
- protected:
-  void SetUp() {
-    if (access(PACKET_TRACE_RINGBUF_PATH, R_OK)) {
-      GTEST_SKIP() << "Network tracing is not enabled/loaded on this build.";
-    }
-    if (sizeof(void*) != 8) {
-      GTEST_SKIP() << "Network tracing requires 64-bit build.";
-    }
-  }
-};
+TEST_F(NetworkTraceHandlerTest, WriteBasicFields) {
+  std::vector<PacketTrace> input = {
+      PacketTrace{
+          .timestampNs = 1000,
+          .length = 100,
+          .uid = 10,
+          .tag = 123,
+          .ipProto = 6,
+          .tcpFlags = 1,
+      },
+  };
 
-TEST_F(NetworkTracePollerTest, PollWhileInactive) {
-  NetworkTracePoller handler([&](const PacketTrace& pkt) {});
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(TraceAndSortPackets(input, &events));
 
-  // One succeed after start and before stop.
-  EXPECT_FALSE(handler.ConsumeAll());
-  ASSERT_TRUE(handler.Start(kNeverPoll));
-  EXPECT_TRUE(handler.ConsumeAll());
-  ASSERT_TRUE(handler.Stop());
-  EXPECT_FALSE(handler.ConsumeAll());
+  ASSERT_EQ(events.size(), 1);
+  EXPECT_THAT(events[0].timestamp(), 1000);
+  EXPECT_THAT(events[0].network_packet().uid(), 10);
+  EXPECT_THAT(events[0].network_packet().tag(), 123);
+  EXPECT_THAT(events[0].network_packet().ip_proto(), 6);
+  EXPECT_THAT(events[0].network_packet().tcp_flags(), 1);
+  EXPECT_THAT(events[0].network_packet().length(), 100);
+  EXPECT_THAT(events[0].has_sequence_flags(), false);
 }
 
-TEST_F(NetworkTracePollerTest, ConcurrentSessions) {
-  // Simulate two concurrent sessions (two starts followed by two stops). Check
-  // that tracing is stopped only after both sessions finish.
-  NetworkTracePoller handler([&](const PacketTrace& pkt) {});
+TEST_F(NetworkTraceHandlerTest, WriteDirectionAndPorts) {
+  std::vector<PacketTrace> input = {
+      PacketTrace{
+          .timestampNs = 1,
+          .sport = htons(8080),
+          .dport = htons(443),
+          .egress = true,
+      },
+      PacketTrace{
+          .timestampNs = 2,
+          .sport = htons(443),
+          .dport = htons(8080),
+          .egress = false,
+      },
+  };
 
-  ASSERT_TRUE(handler.Start(kNeverPoll));
-  EXPECT_TRUE(handler.ConsumeAll());
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(TraceAndSortPackets(input, &events));
 
-  ASSERT_TRUE(handler.Start(kNeverPoll));
-  EXPECT_TRUE(handler.ConsumeAll());
-
-  ASSERT_TRUE(handler.Stop());
-  EXPECT_TRUE(handler.ConsumeAll());
-
-  ASSERT_TRUE(handler.Stop());
-  EXPECT_FALSE(handler.ConsumeAll());
+  ASSERT_EQ(events.size(), 2);
+  EXPECT_THAT(events[0].network_packet().local_port(), 8080);
+  EXPECT_THAT(events[0].network_packet().remote_port(), 443);
+  EXPECT_THAT(events[0].network_packet().direction(),
+              TrafficDirection::DIR_EGRESS);
+  EXPECT_THAT(events[1].network_packet().local_port(), 8080);
+  EXPECT_THAT(events[1].network_packet().remote_port(), 443);
+  EXPECT_THAT(events[1].network_packet().direction(),
+              TrafficDirection::DIR_INGRESS);
 }
 
-TEST_F(NetworkTracePollerTest, TraceTcpSession) {
-  __be16 server_port = 0;
-  std::vector<PacketTrace> packets;
+TEST_F(NetworkTraceHandlerTest, BasicBundling) {
+  // TODO: remove this once bundling becomes default. Until then, set arbitrary
+  // aggregation threshold to enable bundling.
+  NetworkPacketTraceConfig config;
+  config.set_aggregation_threshold(10);
 
-  // Record all packets with the bound address and current uid. This callback is
-  // involked only within ConsumeAll, at which point the port should have
-  // already been filled in and all packets have been processed.
-  NetworkTracePoller handler([&](const PacketTrace& pkt) {
-    if (pkt.sport != server_port && pkt.dport != server_port) return;
-    if (pkt.uid != getuid()) return;
-    packets.push_back(pkt);
+  std::vector<PacketTrace> input = {
+      PacketTrace{.uid = 123, .timestampNs = 2, .length = 200},
+      PacketTrace{.uid = 123, .timestampNs = 1, .length = 100},
+      PacketTrace{.uid = 123, .timestampNs = 4, .length = 300},
+
+      PacketTrace{.uid = 456, .timestampNs = 2, .length = 400},
+      PacketTrace{.uid = 456, .timestampNs = 4, .length = 100},
+  };
+
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(TraceAndSortPackets(input, &events, config));
+
+  ASSERT_EQ(events.size(), 2);
+
+  EXPECT_THAT(events[0].timestamp(), 1);
+  EXPECT_THAT(events[0].network_packet_bundle().ctx().uid(), 123);
+  EXPECT_THAT(events[0].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(200, 100, 300));
+  EXPECT_THAT(events[0].network_packet_bundle().packet_timestamps(),
+              testing::ElementsAre(1, 0, 3));
+
+  EXPECT_THAT(events[1].timestamp(), 2);
+  EXPECT_THAT(events[1].network_packet_bundle().ctx().uid(), 456);
+  EXPECT_THAT(events[1].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(400, 100));
+  EXPECT_THAT(events[1].network_packet_bundle().packet_timestamps(),
+              testing::ElementsAre(0, 2));
+}
+
+TEST_F(NetworkTraceHandlerTest, AggregationThreshold) {
+  // With an aggregation threshold of 3, the set of packets with uid=123 will
+  // be aggregated (3>=3) whereas packets with uid=456 get per-packet info.
+  NetworkPacketTraceConfig config;
+  config.set_aggregation_threshold(3);
+
+  std::vector<PacketTrace> input = {
+      PacketTrace{.uid = 123, .timestampNs = 2, .length = 200},
+      PacketTrace{.uid = 123, .timestampNs = 1, .length = 100},
+      PacketTrace{.uid = 123, .timestampNs = 4, .length = 300},
+
+      PacketTrace{.uid = 456, .timestampNs = 2, .length = 400},
+      PacketTrace{.uid = 456, .timestampNs = 4, .length = 100},
+  };
+
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(TraceAndSortPackets(input, &events, config));
+
+  ASSERT_EQ(events.size(), 2);
+
+  EXPECT_EQ(events[0].timestamp(), 1);
+  EXPECT_EQ(events[0].network_packet_bundle().ctx().uid(), 123);
+  EXPECT_EQ(events[0].network_packet_bundle().total_duration(), 3);
+  EXPECT_EQ(events[0].network_packet_bundle().total_packets(), 3);
+  EXPECT_EQ(events[0].network_packet_bundle().total_length(), 600);
+
+  EXPECT_EQ(events[1].timestamp(), 2);
+  EXPECT_EQ(events[1].network_packet_bundle().ctx().uid(), 456);
+  EXPECT_THAT(events[1].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(400, 100));
+  EXPECT_THAT(events[1].network_packet_bundle().packet_timestamps(),
+              testing::ElementsAre(0, 2));
+}
+
+TEST_F(NetworkTraceHandlerTest, DropLocalPort) {
+  NetworkPacketTraceConfig config;
+  config.set_drop_local_port(true);
+  config.set_aggregation_threshold(10);
+
+  __be16 a = htons(10000);
+  __be16 b = htons(10001);
+  std::vector<PacketTrace> input = {
+      // Recall that local is `src` for egress and `dst` for ingress.
+      PacketTrace{.timestampNs = 1, .length = 2, .egress = true, .sport = a},
+      PacketTrace{.timestampNs = 2, .length = 4, .egress = false, .dport = a},
+      PacketTrace{.timestampNs = 3, .length = 6, .egress = true, .sport = b},
+      PacketTrace{.timestampNs = 4, .length = 8, .egress = false, .dport = b},
+  };
+
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(TraceAndSortPackets(input, &events, config));
+  ASSERT_EQ(events.size(), 2);
+
+  // Despite having different local ports, drop and bundle by remaining fields.
+  EXPECT_EQ(events[0].network_packet_bundle().ctx().direction(),
+            TrafficDirection::DIR_EGRESS);
+  EXPECT_THAT(events[0].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(2, 6));
+
+  EXPECT_EQ(events[1].network_packet_bundle().ctx().direction(),
+            TrafficDirection::DIR_INGRESS);
+  EXPECT_THAT(events[1].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(4, 8));
+
+  // Local port shouldn't be in output.
+  EXPECT_FALSE(events[0].network_packet_bundle().ctx().has_local_port());
+  EXPECT_FALSE(events[1].network_packet_bundle().ctx().has_local_port());
+}
+
+TEST_F(NetworkTraceHandlerTest, DropRemotePort) {
+  NetworkPacketTraceConfig config;
+  config.set_drop_remote_port(true);
+  config.set_aggregation_threshold(10);
+
+  __be16 a = htons(443);
+  __be16 b = htons(80);
+  std::vector<PacketTrace> input = {
+      // Recall that remote is `dst` for egress and `src` for ingress.
+      PacketTrace{.timestampNs = 1, .length = 2, .egress = true, .dport = a},
+      PacketTrace{.timestampNs = 2, .length = 4, .egress = false, .sport = a},
+      PacketTrace{.timestampNs = 3, .length = 6, .egress = true, .dport = b},
+      PacketTrace{.timestampNs = 4, .length = 8, .egress = false, .sport = b},
+  };
+
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(TraceAndSortPackets(input, &events, config));
+  ASSERT_EQ(events.size(), 2);
+
+  // Despite having different remote ports, drop and bundle by remaining fields.
+  EXPECT_EQ(events[0].network_packet_bundle().ctx().direction(),
+            TrafficDirection::DIR_EGRESS);
+  EXPECT_THAT(events[0].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(2, 6));
+
+  EXPECT_EQ(events[1].network_packet_bundle().ctx().direction(),
+            TrafficDirection::DIR_INGRESS);
+  EXPECT_THAT(events[1].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(4, 8));
+
+  // Remote port shouldn't be in output.
+  EXPECT_FALSE(events[0].network_packet_bundle().ctx().has_remote_port());
+  EXPECT_FALSE(events[1].network_packet_bundle().ctx().has_remote_port());
+}
+
+TEST_F(NetworkTraceHandlerTest, DropTcpFlags) {
+  NetworkPacketTraceConfig config;
+  config.set_drop_tcp_flags(true);
+  config.set_aggregation_threshold(10);
+
+  std::vector<PacketTrace> input = {
+      PacketTrace{.timestampNs = 1, .uid = 123, .length = 1, .tcpFlags = 1},
+      PacketTrace{.timestampNs = 2, .uid = 123, .length = 2, .tcpFlags = 2},
+      PacketTrace{.timestampNs = 3, .uid = 456, .length = 3, .tcpFlags = 1},
+      PacketTrace{.timestampNs = 4, .uid = 456, .length = 4, .tcpFlags = 2},
+  };
+
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(TraceAndSortPackets(input, &events, config));
+
+  ASSERT_EQ(events.size(), 2);
+
+  // Despite having different tcp flags, drop and bundle by remaining fields.
+  EXPECT_EQ(events[0].network_packet_bundle().ctx().uid(), 123);
+  EXPECT_THAT(events[0].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(1, 2));
+
+  EXPECT_EQ(events[1].network_packet_bundle().ctx().uid(), 456);
+  EXPECT_THAT(events[1].network_packet_bundle().packet_lengths(),
+              testing::ElementsAre(3, 4));
+
+  // Tcp flags shouldn't be in output.
+  EXPECT_FALSE(events[0].network_packet_bundle().ctx().has_tcp_flags());
+  EXPECT_FALSE(events[1].network_packet_bundle().ctx().has_tcp_flags());
+}
+
+TEST_F(NetworkTraceHandlerTest, Interning) {
+  NetworkPacketTraceConfig config;
+  config.set_intern_limit(2);
+
+  // The test writes 4 packets coming from three sources (uids). With an intern
+  // limit of 2, the first two sources should be interned. This test splits this
+  // into individual writes since internally an unordered map is used and would
+  // otherwise non-deterministically choose what to intern (this is fine for
+  // real use, but not good for test assertions).
+  std::vector<std::vector<PacketTrace>> inputs = {
+      {PacketTrace{.timestampNs = 1, .uid = 123}},
+      {PacketTrace{.timestampNs = 2, .uid = 456}},
+      {PacketTrace{.timestampNs = 3, .uid = 789}},
+      {PacketTrace{.timestampNs = 4, .uid = 123}},
+  };
+
+  auto session = StartTracing(config);
+
+  NetworkTraceHandler::Trace([&](NetworkTraceHandler::TraceContext ctx) {
+    ctx.GetDataSourceLocked()->Write(inputs[0], ctx);
+    ctx.GetDataSourceLocked()->Write(inputs[1], ctx);
+    ctx.GetDataSourceLocked()->Write(inputs[2], ctx);
+    ctx.GetDataSourceLocked()->Write(inputs[3], ctx);
+    ctx.Flush();
   });
 
-  ASSERT_TRUE(handler.Start(kNeverPoll));
-  const uint32_t kClientTag = 2468;
-  const uint32_t kServerTag = 1357;
+  std::vector<TracePacket> events;
+  ASSERT_TRUE(StopTracing(session.get(), &events));
 
-  // Go through a typical connection sequence between two v4 sockets using tcp.
-  // This covers connection handshake, shutdown, and one data packet.
-  {
-    android::base::unique_fd clientsocket(socket(AF_INET, SOCK_STREAM, 0));
-    ASSERT_NE(-1, clientsocket) << "Failed to open client socket";
-    ASSERT_EQ(android_tag_socket(clientsocket, kClientTag), 0);
+  ASSERT_EQ(events.size(), 4);
 
-    android::base::unique_fd serversocket(socket(AF_INET, SOCK_STREAM, 0));
-    ASSERT_NE(-1, serversocket) << "Failed to open server socket";
-    ASSERT_EQ(android_tag_socket(serversocket, kServerTag), 0);
+  // First time seen, emit new interned data, bundle uses iid instead of ctx.
+  EXPECT_EQ(events[0].network_packet_bundle().iid(), 1);
+  ASSERT_EQ(events[0].interned_data().packet_context().size(), 1);
+  EXPECT_EQ(events[0].interned_data().packet_context(0).iid(), 1);
+  EXPECT_EQ(events[0].interned_data().packet_context(0).ctx().uid(), 123);
+  EXPECT_EQ(events[0].sequence_flags(),
+            TracePacket::SEQ_INCREMENTAL_STATE_CLEARED);
 
-    server_port = bindAndListen(serversocket);
-    ASSERT_NE(0, server_port) << "Can't bind to server port";
+  // First time seen, emit new interned data, bundle uses iid instead of ctx.
+  EXPECT_EQ(events[1].network_packet_bundle().iid(), 2);
+  ASSERT_EQ(events[1].interned_data().packet_context().size(), 1);
+  EXPECT_EQ(events[1].interned_data().packet_context(0).iid(), 2);
+  EXPECT_EQ(events[1].interned_data().packet_context(0).ctx().uid(), 456);
+  EXPECT_EQ(events[1].sequence_flags(),
+            TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
 
-    sockaddr_in addr = {.sin_family = AF_INET, .sin_port = server_port};
-    ASSERT_EQ(0, connect(clientsocket, (sockaddr*)&addr, sizeof(addr)))
-        << "connect to loopback failed: " << strerror(errno);
+  // Not enough room in intern table (limit 2), inline the context.
+  EXPECT_EQ(events[2].network_packet_bundle().ctx().uid(), 789);
+  EXPECT_EQ(events[2].interned_data().packet_context().size(), 0);
+  EXPECT_EQ(events[2].sequence_flags(),
+            TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
 
-    int accepted = accept(serversocket, nullptr, nullptr);
-    ASSERT_NE(-1, accepted) << "accept connection failed: " << strerror(errno);
-
-    const char data[] = "abcdefghijklmnopqrstuvwxyz";
-    EXPECT_EQ(send(clientsocket, data, sizeof(data), 0), sizeof(data))
-        << "failed to send message: " << strerror(errno);
-
-    char buff[100] = {};
-    EXPECT_EQ(recv(accepted, buff, sizeof(buff), 0), sizeof(data))
-        << "failed to receive message: " << strerror(errno);
-
-    EXPECT_EQ(std::string(data), std::string(buff));
-  }
-
-  ASSERT_TRUE(handler.ConsumeAll());
-  ASSERT_TRUE(handler.Stop());
-
-  // There are 12 packets in total (6 messages: each seen by client & server):
-  // 1. Client connects to server with syn
-  // 2. Server responds with syn ack
-  // 3. Client responds with ack
-  // 4. Client sends data with psh ack
-  // 5. Server acks the data packet
-  // 6. Client closes connection with fin ack
-  ASSERT_EQ(packets.size(), 12) << PacketPrinter{packets};
-
-  // All packets should be TCP packets.
-  EXPECT_THAT(packets, Each(Field(&PacketTrace::ipProto, Eq(IPPROTO_TCP))));
-
-  // Packet 1: client requests connection with server.
-  EXPECT_EQ(packets[0].egress, 1) << PacketPrinter{packets};
-  EXPECT_EQ(packets[0].dport, server_port) << PacketPrinter{packets};
-  EXPECT_EQ(packets[0].tag, kClientTag) << PacketPrinter{packets};
-  EXPECT_EQ(packets[0].tcpFlags, FlagToHost(TCP_FLAG_SYN))
-      << PacketPrinter{packets};
-
-  // Packet 2: server receives request from client.
-  EXPECT_EQ(packets[1].egress, 0) << PacketPrinter{packets};
-  EXPECT_EQ(packets[1].dport, server_port) << PacketPrinter{packets};
-  EXPECT_EQ(packets[1].tag, kServerTag) << PacketPrinter{packets};
-  EXPECT_EQ(packets[1].tcpFlags, FlagToHost(TCP_FLAG_SYN))
-      << PacketPrinter{packets};
-
-  // Packet 3: server replies back with syn ack.
-  EXPECT_EQ(packets[2].egress, 1) << PacketPrinter{packets};
-  EXPECT_EQ(packets[2].sport, server_port) << PacketPrinter{packets};
-  EXPECT_EQ(packets[2].tcpFlags, FlagToHost(TCP_FLAG_SYN | TCP_FLAG_ACK))
-      << PacketPrinter{packets};
-
-  // Packet 4: client receives the server's syn ack.
-  EXPECT_EQ(packets[3].egress, 0) << PacketPrinter{packets};
-  EXPECT_EQ(packets[3].sport, server_port) << PacketPrinter{packets};
-  EXPECT_EQ(packets[3].tcpFlags, FlagToHost(TCP_FLAG_SYN | TCP_FLAG_ACK))
-      << PacketPrinter{packets};
+  // Second time seen, no need to re-emit interned data, only record iid.
+  EXPECT_EQ(events[3].network_packet_bundle().iid(), 1);
+  EXPECT_EQ(events[3].interned_data().packet_context().size(), 0);
+  EXPECT_EQ(events[3].sequence_flags(),
+            TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
 }
 
 }  // namespace bpf
