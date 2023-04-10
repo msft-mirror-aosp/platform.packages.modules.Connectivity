@@ -28,6 +28,7 @@ import android.nearby.IScanListener;
 import android.nearby.NearbyDeviceParcelable;
 import android.nearby.NearbyManager;
 import android.nearby.PresenceScanFilter;
+import android.nearby.ScanCallback;
 import android.nearby.ScanFilter;
 import android.nearby.ScanRequest;
 import android.os.IBinder;
@@ -57,7 +58,9 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
     protected final Object mLock = new Object();
     private final Context mContext;
     private final BleDiscoveryProvider mBleDiscoveryProvider;
-    @Nullable private final ChreDiscoveryProvider mChreDiscoveryProvider;
+    @VisibleForTesting
+    @Nullable
+    final ChreDiscoveryProvider mChreDiscoveryProvider;
     private @ScanRequest.ScanMode int mScanMode;
     private final Injector mInjector;
 
@@ -80,7 +83,7 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                     Log.w(TAG, "[DiscoveryProviderManager] scan permission revoked "
                             + "- not forwarding results");
                     try {
-                        record.getScanListener().onError();
+                        record.getScanListener().onError(ScanCallback.ERROR_PERMISSION_DENIED);
                     } catch (RemoteException e) {
                         Log.w(TAG, "DiscoveryProviderManager failed to report error.", e);
                     }
@@ -110,6 +113,38 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                             record.hashCode(), record.getScanRequest(), nearbyDevice);
                 } catch (RemoteException e) {
                     Log.w(TAG, "DiscoveryProviderManager failed to report onDiscovered.", e);
+                }
+            }
+        }
+    }
+
+    @Override
+    public void onError(int errorCode) {
+        synchronized (mLock) {
+            AppOpsManager appOpsManager = Objects.requireNonNull(mInjector.getAppOpsManager());
+            for (IBinder listenerBinder : mScanTypeScanListenerRecordMap.keySet()) {
+                ScanListenerRecord record = mScanTypeScanListenerRecordMap.get(listenerBinder);
+                if (record == null) {
+                    Log.w(TAG, "DiscoveryProviderManager cannot find the scan record.");
+                    continue;
+                }
+                CallerIdentity callerIdentity = record.getCallerIdentity();
+                if (!DiscoveryPermissions.noteDiscoveryResultDelivery(
+                        appOpsManager, callerIdentity)) {
+                    Log.w(TAG, "[DiscoveryProviderManager] scan permission revoked "
+                            + "- not forwarding results");
+                    try {
+                        record.getScanListener().onError(ScanCallback.ERROR_PERMISSION_DENIED);
+                    } catch (RemoteException e) {
+                        Log.w(TAG, "DiscoveryProviderManager failed to report error.", e);
+                    }
+                    return;
+                }
+
+                try {
+                    record.getScanListener().onError(errorCode);
+                } catch (RemoteException e) {
+                    Log.w(TAG, "DiscoveryProviderManager failed to report onError.", e);
                 }
             }
         }
@@ -351,7 +386,8 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         mBleDiscoveryProvider.getController().stop();
     }
 
-    private void stopChreProvider() {
+    @VisibleForTesting
+    protected void stopChreProvider() {
         mChreDiscoveryProvider.getController().stop();
     }
 

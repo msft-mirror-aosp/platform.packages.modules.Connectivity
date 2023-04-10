@@ -55,7 +55,9 @@ public final class DataElement implements Parcelable {
             DataType.ACCOUNT_KEY_DATA,
             DataType.CONNECTION_STATUS,
             DataType.BATTERY,
-            DataType.SCAN_MODE
+            DataType.SCAN_MODE,
+            DataType.TEST_DE_BEGIN,
+            DataType.TEST_DE_END
     })
     public @interface DataType {
         int BLE_SERVICE_DATA = 100;
@@ -74,6 +76,11 @@ public final class DataElement implements Parcelable {
         int ACCOUNT_KEY_DATA = 9;
         int CONNECTION_STATUS = 10;
         int BATTERY = 11;
+        // Reserves test DE ranges from {@link DataElement.DataType#TEST_DE_BEGIN}
+        // to {@link DataElement.DataType#TEST_DE_END}, inclusive.
+        // Reserves 128 Test DEs.
+        int TEST_DE_BEGIN = Integer.MAX_VALUE - 127; // 2147483520
+        int TEST_DE_END = Integer.MAX_VALUE; // 2147483647
     }
 
     /**
@@ -106,6 +113,14 @@ public final class DataElement implements Parcelable {
                 || mKey == DataType.TRUSTED_IDENTITY
                 || mKey == DataType.PUBLIC_IDENTITY
                 || mKey == DataType.PROVISIONED_IDENTITY;
+    }
+
+    /**
+     * @return {@code true} if this is test data element type.
+     * @hide
+     */
+    public static boolean isTestDeType(int type) {
+        return type >= DataType.TEST_DE_BEGIN && type <= DataType.TEST_DE_END;
     }
 
     /**

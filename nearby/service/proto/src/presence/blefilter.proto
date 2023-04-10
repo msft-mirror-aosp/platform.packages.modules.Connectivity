@@ -62,9 +62,12 @@ message DataElement {
     DE_FAST_PAIR_ACCOUNT_KEY = 9;
     DE_CONNECTION_STATUS = 10;
     DE_BATTERY_STATUS = 11;
+    // Reserves 128 Test DEs.
+    DE_TEST_BEGIN = 2147483520;  // INT_MAX - 127
+    DE_TEST_END = 2147483647;    // INT_MAX
   }
 
-  optional ElementType key = 1;
+  optional int32 key = 1;
   optional bytes value = 2;
   optional uint32 value_length = 3;
 }
