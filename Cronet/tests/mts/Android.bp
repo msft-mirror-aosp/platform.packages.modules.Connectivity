@@ -47,7 +47,13 @@ android_library {
     ],
     libs: [
         "android.test.base",
-        "framework-tethering-pre-jarjar",
+        // Needed for direct access to tethering's hidden apis and to avoid `symbol not found`
+        // errors on some builds.
+        "framework-tethering.impl",
+        // android.net.Network apis
+        "framework-connectivity",
+        // android.net.TrafficStats apis
+        "framework-connectivity-t",
     ],
     lint: { test: true }
 }
