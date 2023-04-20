@@ -98,6 +98,7 @@ import static android.system.OsConstants.IPPROTO_UDP;
 
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
 import static com.android.net.module.util.NetworkMonitorUtils.isPrivateDnsValidationRequired;
+import static com.android.net.module.util.PermissionUtils.checkAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermission;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermissionOr;
@@ -463,7 +464,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private String mCurrentTcpBufferSizes;
 
     private static final SparseArray<String> sMagicDecoderRing = MessageUtils.findMessageNames(
-            new Class[] { ConnectivityService.class, NetworkAgent.class, NetworkAgentInfo.class });
+            new Class[] {
+                    ConnectivityService.class,
+                    NetworkAgent.class,
+                    NetworkAgentInfo.class,
+                    AutomaticOnOffKeepaliveTracker.class });
 
     private enum ReapUnvalidatedNetworks {
         // Tear down networks that have no chance (e.g. even if validated) of becoming
@@ -911,7 +916,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     // This is the cache for the packageName -> ApplicationSelfCertifiedNetworkCapabilities. This
     // value can be accessed from both handler thread and any random binder thread. Therefore,
-    // accessing this value requires holding a lock.
+    // accessing this value requires holding a lock. The cache is the same across all the users.
     @GuardedBy("mSelfCertifiedCapabilityCache")
     private final Map<String, ApplicationSelfCertifiedNetworkCapabilities>
             mSelfCertifiedCapabilityCache = new HashMap<>();
@@ -2324,11 +2329,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (newNc.getNetworkSpecifier() != null) {
             newNc.setNetworkSpecifier(newNc.getNetworkSpecifier().redact());
         }
-        if (!checkAnyPermissionOf(callerPid, callerUid, android.Manifest.permission.NETWORK_STACK,
+        if (!checkAnyPermissionOf(mContext, callerPid, callerUid,
+                android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)) {
             newNc.setAdministratorUids(new int[0]);
         }
-        if (!checkAnyPermissionOf(
+        if (!checkAnyPermissionOf(mContext,
                 callerPid, callerUid, android.Manifest.permission.NETWORK_FACTORY)) {
             newNc.setAllowedUids(new ArraySet<>());
             newNc.setSubscriptionIds(Collections.emptySet());
@@ -2837,15 +2843,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         setUidBlockedReasons(uid, blockedReasons);
     }
 
-    private boolean checkAnyPermissionOf(int pid, int uid, String... permissions) {
-        for (String permission : permissions) {
-            if (mContext.checkPermission(permission, pid, uid) == PERMISSION_GRANTED) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private void enforceInternetPermission() {
         mContext.enforceCallingOrSelfPermission(
                 android.Manifest.permission.INTERNET,
@@ -3004,13 +3001,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean checkNetworkStackPermission(int pid, int uid) {
-        return checkAnyPermissionOf(pid, uid,
+        return checkAnyPermissionOf(mContext, pid, uid,
                 android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
     private boolean checkNetworkSignalStrengthWakeupPermission(int pid, int uid) {
-        return checkAnyPermissionOf(pid, uid,
+        return checkAnyPermissionOf(mContext, pid, uid,
                 android.Manifest.permission.NETWORK_SIGNAL_STRENGTH_WAKEUP,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
                 android.Manifest.permission.NETWORK_SETTINGS);
@@ -3133,7 +3130,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             optsShim.setDeliveryGroupPolicy(ConstantsShim.DELIVERY_GROUP_POLICY_MOST_RECENT);
             optsShim.setDeliveryGroupMatchingKey(ConnectivityManager.CONNECTIVITY_ACTION,
                     createDeliveryGroupKeyForConnectivityAction(info));
-            optsShim.setDeferUntilActive(true);
+            optsShim.setDeferralPolicy(ConstantsShim.DEFERRAL_POLICY_UNTIL_ACTIVE);
         } catch (UnsupportedApiLevelException e) {
             Log.wtf(TAG, "Using unsupported API" + e);
         }
@@ -5008,7 +5005,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private RequestInfoPerUidCounter getRequestCounter(NetworkRequestInfo nri) {
-        return checkAnyPermissionOf(
+        return checkAnyPermissionOf(mContext,
                 nri.mPid, nri.mUid, NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
                 ? mSystemNetworkRequestCounter : mNetworkRequestCounter;
     }
@@ -5605,12 +5602,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     handleConfigureAlwaysOnNetworks();
                     break;
                 }
-                // Sent by KeepaliveTracker to process an app request on the state machine thread.
-                case NetworkAgent.CMD_START_SOCKET_KEEPALIVE: {
+                // Sent by AutomaticOnOffKeepaliveTracker to process an app request on the
+                // handler thread.
+                case AutomaticOnOffKeepaliveTracker.CMD_REQUEST_START_KEEPALIVE: {
                     mKeepaliveTracker.handleStartKeepalive(msg);
                     break;
                 }
-                case NetworkAgent.CMD_MONITOR_AUTOMATIC_KEEPALIVE: {
+                case AutomaticOnOffKeepaliveTracker.CMD_MONITOR_AUTOMATIC_KEEPALIVE: {
                     final AutomaticOnOffKeepalive ki =
                             mKeepaliveTracker.getKeepaliveForBinder((IBinder) msg.obj);
                     if (null == ki) return; // The callback was unregistered before the alarm fired
@@ -6685,8 +6683,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         @Override
         public void binderDied() {
-            log("ConnectivityService NetworkRequestInfo binderDied(" +
-                    "uid/pid:" + mUid + "/" + mPid + ", " + mRequests + ", " + mBinder + ")");
             // As an immutable collection, mRequests cannot change by the time the
             // lambda is evaluated on the handler thread so calling .get() from a binder thread
             // is acceptable. Use handleReleaseNetworkRequest and not directly
@@ -7003,6 +6999,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return;
         }
         ApplicationSelfCertifiedNetworkCapabilities applicationNetworkCapabilities;
+        final long ident = Binder.clearCallingIdentity();
         try {
             synchronized (mSelfCertifiedCapabilityCache) {
                 applicationNetworkCapabilities = mSelfCertifiedCapabilityCache.get(
@@ -7029,6 +7026,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             + " property");
         } catch (XmlPullParserException | IOException | InvalidTagException e) {
             throw new SecurityException(e.getMessage());
+        } finally {
+            Binder.restoreCallingIdentity(ident);
         }
 
         applicationNetworkCapabilities.enforceSelfCertifiedNetworkCapabilitiesDeclared(
@@ -8469,6 +8468,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         exemptUids[1] = nai.networkCapabilities.getOwnerUid();
         UidRangeParcel[] ranges = toUidRangeStableParcels(uidRanges);
 
+        // Close sockets before modifying uid ranges so that RST packets can reach to the server.
         maybeCloseSockets(nai, ranges, exemptUids);
         try {
             if (add) {
@@ -8482,6 +8482,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             loge("Exception while " + (add ? "adding" : "removing") + " uid ranges " + uidRanges +
                     " on netId " + nai.network.netId + ". " + e);
         }
+        // Close sockets that established connection while requesting netd.
         maybeCloseSockets(nai, ranges, exemptUids);
     }
 
@@ -10731,6 +10732,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         callback));
     }
 
+    private boolean hasUnderlyingTestNetworks(NetworkCapabilities nc) {
+        final List<Network> underlyingNetworks = nc.getUnderlyingNetworks();
+        if (underlyingNetworks == null) return false;
+
+        for (Network network : underlyingNetworks) {
+            if (getNetworkCapabilitiesInternal(network).hasTransport(TRANSPORT_TEST)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public void simulateDataStall(int detectionMethod, long timestampMillis,
             @NonNull Network network, @NonNull PersistableBundle extras) {
@@ -10741,14 +10754,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_STACK);
         final NetworkCapabilities nc = getNetworkCapabilitiesInternal(network);
-        if (!nc.hasTransport(TRANSPORT_TEST)) {
-            throw new SecurityException("Data Stall simulation is only possible for test networks");
+        if (!nc.hasTransport(TRANSPORT_TEST) && !hasUnderlyingTestNetworks(nc)) {
+            throw new SecurityException(
+                    "Data Stall simulation is only possible for test networks or networks built on"
+                            + " top of test networks");
         }
 
         final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
-        if (nai == null || nai.creatorUid != mDeps.getCallingUid()) {
-            throw new SecurityException("Data Stall simulation is only possible for network "
-                + "creators");
+        if (nai == null
+                || (nai.creatorUid != mDeps.getCallingUid()
+                        && nai.creatorUid != Process.SYSTEM_UID)) {
+            throw new SecurityException(
+                    "Data Stall simulation is only possible for network " + "creators");
         }
 
         // Instead of passing the data stall directly to the ConnectivityDiagnostics handler, treat
