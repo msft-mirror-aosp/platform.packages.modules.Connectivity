@@ -38,6 +38,13 @@ java_defaults {
     name: "ConnectivityNextEnableDefaults",
     enabled: true,
 }
+java_defaults {
+    name: "NetworkStackApiShimSettingsForCurrentBranch",
+    // API shims to include in the networking modules built from the branch. Branches that disable
+    // the "next" targets must use stable shims (latest stable API level) instead of current shims
+    // (X_current API level).
+    static_libs: ["NetworkStackApiCurrentShims"],
+}
 apex_defaults {
     name: "ConnectivityApexDefaults",
     // Tethering app to include in the AOSP apex. Branches that disable the "next" targets may use
@@ -67,7 +74,7 @@ apex_defaults {
 apex_defaults {
     name: "CronetInTetheringApexDefaultsEnabled",
     jni_libs: [
-        "//external/cronet:cronet_aml_components_cronet_android_cronet",
+        "cronet_aml_components_cronet_android_cronet",
         "//external/cronet/third_party/boringssl:libcrypto",
         "//external/cronet/third_party/boringssl:libssl",
     ],
@@ -75,7 +82,7 @@ apex_defaults {
         riscv64: {
             // TODO: remove this when there is a riscv64 libcronet
             exclude_jni_libs: [
-                "//external/cronet:cronet_aml_components_cronet_android_cronet",
+                "cronet_aml_components_cronet_android_cronet",
                 "//external/cronet/third_party/boringssl:libcrypto",
                 "//external/cronet/third_party/boringssl:libssl",
             ],
@@ -235,7 +242,6 @@ bootclasspath_fragment {
             "android.net.apf",
             "android.net.connectivity",
             "android.net.http.apihelpers",
-            "android.net.http.internal",
             "android.net.netstats.provider",
             "android.net.nsd",
             "android.net.wear",

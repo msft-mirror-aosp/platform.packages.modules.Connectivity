@@ -30,7 +30,6 @@ cronet_java_prejarjar_defaults = "CronetJavaPrejarjarDefaultsEnabled"
 java_sdk_library {
     name: "framework-tethering",
     defaults: [
-        "CronetJavaDefaults",
         "framework-tethering-defaults",
     ],
     impl_library_visibility: [
@@ -75,18 +74,18 @@ java_defaults {
 
 java_defaults {
     name: "CronetJavaDefaultsEnabled",
-    srcs: ["//external/cronet:cronet_aml_api_sources"],
+    srcs: [":cronet_aml_api_sources"],
     libs: [
         "androidx.annotation_annotation",
     ],
     impl_only_static_libs: [
-        "//external/cronet:cronet_aml_java",
+        "cronet_aml_java",
     ],
-    api_dir: "cronet_enabled/api",
 }
 
 java_defaults {
   name: "CronetJavaDefaultsDisabled",
+  api_dir: "cronet_disabled/api",
 }
 
 java_defaults {
@@ -101,8 +100,8 @@ java_defaults {
 java_defaults {
   name: "CronetJavaPrejarjarDefaultsEnabled",
   static_libs: [
-    "//external/cronet:cronet_aml_api_java",
-    "//external/cronet:cronet_aml_java"
+    "cronet_aml_api_java",
+    "cronet_aml_java"
   ],
 }
 
@@ -110,7 +109,6 @@ java_library {
   name: "framework-tethering-pre-jarjar",
   defaults: [
     "framework-tethering-defaults",
-    "CronetJavaPrejarjarDefaults",
   ],
 }
 

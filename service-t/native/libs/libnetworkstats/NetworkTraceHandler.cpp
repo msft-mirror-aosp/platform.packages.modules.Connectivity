@@ -101,6 +101,11 @@ void NetworkTraceHandler::RegisterDataSource() {
 void NetworkTraceHandler::InitPerfettoTracing() {
   perfetto::TracingInitArgs args = {};
   args.backends |= perfetto::kSystemBackend;
+  // The following line disables the Perfetto system consumer. Perfetto inlines
+  // the call to `Initialize` which allows the compiler to see that the branch
+  // with the SystemConsumerTracingBackend is not used. With LTO enabled, this
+  // strips the Perfetto consumer code and reduces the size of this binary by
+  // around 270KB total. Be careful when changing this value.
   args.enable_system_consumer = false;
   perfetto::Tracing::Initialize(args);
   NetworkTraceHandler::RegisterDataSource();
@@ -136,10 +141,12 @@ void NetworkTraceHandler::OnSetup(const SetupArgs& args) {
 }
 
 void NetworkTraceHandler::OnStart(const StartArgs&) {
+  if (mIsTest) return;  // Don't touch non-hermetic bpf in test.
   mStarted = sPoller.Start(mPollMs);
 }
 
 void NetworkTraceHandler::OnStop(const StopArgs&) {
+  if (mIsTest) return;  // Don't touch non-hermetic bpf in test.
   if (mStarted) sPoller.Stop();
   mStarted = false;
 }
@@ -179,23 +186,24 @@ void NetworkTraceHandler::Write(const std::vector<PacketTrace>& packets,
     bundle.bytes += pkt.length;
   }
 
-  // If state was cleared, emit a separate packet to indicate it. This uses the
-  // overall minTs so it is sorted before any packets that follow.
   NetworkTraceState* incr_state = ctx.GetIncrementalState();
-  if (!bundles.empty() && mInternLimit && incr_state->cleared) {
-    auto clear = ctx.NewTracePacket();
-    clear->set_sequence_flags(TracePacket::SEQ_INCREMENTAL_STATE_CLEARED);
-    clear->set_timestamp(minTs);
-    incr_state->cleared = false;
-  }
-
   for (const auto& kv : bundles) {
     const BundleKey& key = kv.first;
     const BundleDetails& details = kv.second;
 
     auto dst = ctx.NewTracePacket();
-    dst->set_sequence_flags(TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
     dst->set_timestamp(details.minTs);
+
+    // Incremental state is only used when interning. Set the flag based on
+    // whether state was cleared. Leave the flag empty in non-intern configs.
+    if (mInternLimit > 0) {
+      if (incr_state->cleared) {
+        dst->set_sequence_flags(TracePacket::SEQ_INCREMENTAL_STATE_CLEARED);
+        incr_state->cleared = false;
+      } else {
+        dst->set_sequence_flags(TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
+      }
+    }
 
     auto* event = FillWithInterning(incr_state, key, dst.get());
 
