@@ -19,39 +19,68 @@ package android.net.http.cts;
 import static android.net.http.cts.util.TestUtilsKt.assertOKStatusCode;
 import static android.net.http.cts.util.TestUtilsKt.skipIfNoInternetConnection;
 
+import static com.google.common.truth.Truth.assertThat;
+
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertTrue;
 
 import android.content.Context;
+import android.net.http.HeaderBlock;
 import android.net.http.HttpEngine;
+import android.net.http.HttpException;
+import android.net.http.InlineExecutionProhibitedException;
+import android.net.http.UploadDataProvider;
 import android.net.http.UrlRequest;
 import android.net.http.UrlRequest.Status;
 import android.net.http.UrlResponseInfo;
 import android.net.http.cts.util.HttpCtsTestServer;
 import android.net.http.cts.util.TestStatusListener;
-import android.net.http.cts.util.TestUploadDataProvider;
 import android.net.http.cts.util.TestUrlRequestCallback;
 import android.net.http.cts.util.TestUrlRequestCallback.ResponseStep;
+import android.net.http.cts.util.UploadDataProviders;
+import android.webkit.cts.CtsTestServer;
 
-import androidx.test.platform.app.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+import androidx.test.core.app.ApplicationProvider;
+import androidx.test.ext.junit.runners.AndroidJUnit4;
+
+import com.google.common.base.Strings;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.net.URLEncoder;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 @RunWith(AndroidJUnit4.class)
 public class UrlRequestTest {
+    private static final Executor DIRECT_EXECUTOR = Runnable::run;
+
     private TestUrlRequestCallback mCallback;
     private HttpCtsTestServer mTestServer;
     private HttpEngine mHttpEngine;
 
     @Before
     public void setUp() throws Exception {
-        Context context = InstrumentationRegistry.getInstrumentation().getContext();
+        Context context = ApplicationProvider.getApplicationContext();
         skipIfNoInternetConnection(context);
         HttpEngine.Builder builder = new HttpEngine.Builder(context);
         mHttpEngine = builder.build();
@@ -70,7 +99,7 @@ public class UrlRequestTest {
     }
 
     private UrlRequest.Builder createUrlRequestBuilder(String url) {
-        return mHttpEngine.newUrlRequestBuilder(url, mCallback, mCallback.getExecutor());
+        return mHttpEngine.newUrlRequestBuilder(url, mCallback.getExecutor(), mCallback);
     }
 
     @Test
@@ -109,13 +138,11 @@ public class UrlRequestTest {
     }
 
     @Test
-    public void testUrlRequestPost_EchoRequestBody() throws Exception {
+    public void testUrlRequestPost_EchoRequestBody() {
         String testData = "test";
         UrlRequest.Builder builder = createUrlRequestBuilder(mTestServer.getEchoBodyUrl());
 
-        TestUploadDataProvider dataProvider = new TestUploadDataProvider(
-                TestUploadDataProvider.SuccessCallbackMode.SYNC, mCallback.getExecutor());
-        dataProvider.addRead(testData.getBytes());
+        UploadDataProvider dataProvider = UploadDataProviders.create(testData);
         builder.setUploadDataProvider(dataProvider, mCallback.getExecutor());
         builder.addHeader("Content-Type", "text/html");
         builder.build().start();
@@ -123,12 +150,263 @@ public class UrlRequestTest {
 
         assertOKStatusCode(mCallback.mResponseInfo);
         assertEquals(testData, mCallback.mResponseAsString);
-        dataProvider.assertClosed();
     }
 
     @Test
-    public void testUrlRequestFail_FailedCalled() throws Exception {
+    public void testUrlRequestFail_FailedCalled() {
         createUrlRequestBuilder("http://0.0.0.0:0/").build().start();
         mCallback.expectCallback(ResponseStep.ON_FAILED);
+    }
+
+    @Test
+    public void testUrlRequest_directExecutor_allowed() throws InterruptedException {
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        callback.setAllowDirectExecutor(true);
+        UrlRequest.Builder builder = mHttpEngine.newUrlRequestBuilder(
+                mTestServer.getEchoBodyUrl(), DIRECT_EXECUTOR, callback);
+        UploadDataProvider dataProvider = UploadDataProviders.create("test");
+        builder.setUploadDataProvider(dataProvider, DIRECT_EXECUTOR);
+        builder.addHeader("Content-Type", "text/plain;charset=UTF-8");
+        builder.setDirectExecutorAllowed(true);
+        builder.build().start();
+        callback.blockForDone();
+
+        if (callback.mOnErrorCalled) {
+            throw new AssertionError("Expected no exception", callback.mError);
+        }
+
+        assertEquals(200, callback.mResponseInfo.getHttpStatusCode());
+        assertEquals("test", callback.mResponseAsString);
+    }
+
+    @Test
+    public void testUrlRequest_directExecutor_disallowed_uploadDataProvider() throws Exception {
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        // This applies just locally to the test callback, not to SUT
+        callback.setAllowDirectExecutor(true);
+
+        UrlRequest.Builder builder = mHttpEngine.newUrlRequestBuilder(
+                mTestServer.getEchoBodyUrl(), Executors.newSingleThreadExecutor(), callback);
+        UploadDataProvider dataProvider = UploadDataProviders.create("test");
+
+        builder.setUploadDataProvider(dataProvider, DIRECT_EXECUTOR)
+                .addHeader("Content-Type", "text/plain;charset=UTF-8")
+                .build()
+                .start();
+        callback.blockForDone();
+
+        assertTrue(callback.mOnErrorCalled);
+        assertTrue(callback.mError.getCause() instanceof InlineExecutionProhibitedException);
+    }
+
+    @Test
+    public void testUrlRequest_directExecutor_disallowed_responseCallback() throws Exception {
+        TestUrlRequestCallback callback = new TestUrlRequestCallback();
+        // This applies just locally to the test callback, not to SUT
+        callback.setAllowDirectExecutor(true);
+
+        UrlRequest.Builder builder = mHttpEngine.newUrlRequestBuilder(
+                mTestServer.getEchoBodyUrl(), DIRECT_EXECUTOR, callback);
+        UploadDataProvider dataProvider = UploadDataProviders.create("test");
+
+        builder.setUploadDataProvider(dataProvider, Executors.newSingleThreadExecutor())
+                .addHeader("Content-Type", "text/plain;charset=UTF-8")
+                .build()
+                .start();
+        callback.blockForDone();
+
+        assertTrue(callback.mOnErrorCalled);
+        assertTrue(callback.mError.getCause() instanceof InlineExecutionProhibitedException);
+    }
+
+    @Test
+    public void testUrlRequest_nonDirectByteBuffer() throws Exception {
+        BlockingQueue<HttpException> onFailedException = new ArrayBlockingQueue<>(1);
+
+        UrlRequest request =
+                mHttpEngine
+                        .newUrlRequestBuilder(
+                                mTestServer.getSuccessUrl(),
+                                Executors.newSingleThreadExecutor(),
+                                new StubUrlRequestCallback() {
+                                    @Override
+                                    public void onResponseStarted(
+                                            UrlRequest request, UrlResponseInfo info) {
+                                        // note: allocate, not allocateDirect
+                                        request.read(ByteBuffer.allocate(1024));
+                                    }
+
+                                    @Override
+                                    public void onFailed(
+                                            UrlRequest request,
+                                            UrlResponseInfo info,
+                                            HttpException error) {
+                                        onFailedException.add(error);
+                                    }
+                                })
+                        .build();
+        request.start();
+
+        HttpException e = onFailedException.poll(5, TimeUnit.SECONDS);
+        assertNotNull(e);
+        assertTrue(e.getCause() instanceof IllegalArgumentException);
+        assertTrue(e.getCause().getMessage().contains("direct"));
+    }
+
+    @Test
+    public void testUrlRequest_fullByteBuffer() throws Exception {
+        BlockingQueue<HttpException> onFailedException = new ArrayBlockingQueue<>(1);
+
+        UrlRequest request =
+                mHttpEngine
+                        .newUrlRequestBuilder(
+                                mTestServer.getSuccessUrl(),
+                                Executors.newSingleThreadExecutor(),
+                                new StubUrlRequestCallback() {
+                                    @Override
+                                    public void onResponseStarted(
+                                            UrlRequest request, UrlResponseInfo info) {
+                                        ByteBuffer bb = ByteBuffer.allocateDirect(1024);
+                                        bb.position(bb.limit());
+                                        request.read(bb);
+                                    }
+
+                                    @Override
+                                    public void onFailed(
+                                            UrlRequest request,
+                                            UrlResponseInfo info,
+                                            HttpException error) {
+                                        onFailedException.add(error);
+                                    }
+                                })
+                        .build();
+        request.start();
+
+        HttpException e = onFailedException.poll(5, TimeUnit.SECONDS);
+        assertNotNull(e);
+        assertTrue(e.getCause() instanceof IllegalArgumentException);
+        assertTrue(e.getCause().getMessage().contains("full"));
+    }
+
+    @Test
+    public void testUrlRequest_redirects() throws Exception {
+        int expectedNumRedirects = 5;
+        String url =
+                mTestServer.getRedirectingAssetUrl("html/hello_world.html", expectedNumRedirects);
+
+        UrlRequest request = createUrlRequestBuilder(url).build();
+        request.start();
+
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+        UrlResponseInfo info = mCallback.mResponseInfo;
+        assertOKStatusCode(info);
+        assertThat(mCallback.mResponseAsString).contains("hello world");
+        assertThat(info.getUrlChain()).hasSize(expectedNumRedirects + 1);
+        assertThat(info.getUrlChain().get(0)).isEqualTo(url);
+        assertThat(info.getUrlChain().get(expectedNumRedirects)).isEqualTo(info.getUrl());
+    }
+
+    @Test
+    public void testUrlRequestPost_withRedirect() throws Exception {
+        String body = Strings.repeat(
+                "Hello, this is a really interesting body, so write this 100 times.", 100);
+
+        String redirectUrlParameter =
+                URLEncoder.encode(mTestServer.getEchoBodyUrl(), "UTF-8");
+        createUrlRequestBuilder(
+                String.format(
+                        "%s/alt_redirect?dest=%s&statusCode=307",
+                        mTestServer.getBaseUri(),
+                        redirectUrlParameter))
+                .setHttpMethod("POST")
+                .addHeader("Content-Type", "text/plain")
+                .setUploadDataProvider(
+                        UploadDataProviders.create(body.getBytes(StandardCharsets.UTF_8)),
+                        mCallback.getExecutor())
+                .build()
+                .start();
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+
+        assertOKStatusCode(mCallback.mResponseInfo);
+        assertThat(mCallback.mResponseAsString).isEqualTo(body);
+    }
+
+    @Test
+    public void testUrlRequest_customHeaders() throws Exception {
+        UrlRequest.Builder builder = createUrlRequestBuilder(mTestServer.getEchoHeadersUrl());
+
+        List<Map.Entry<String, String>> expectedHeaders = Arrays.asList(
+                Map.entry("Authorization", "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ=="),
+                Map.entry("Max-Forwards", "10"),
+                Map.entry("X-Client-Data", "random custom header content"));
+
+        for (Map.Entry<String, String> header : expectedHeaders) {
+            builder.addHeader(header.getKey(), header.getValue());
+        }
+
+        builder.build().start();
+        mCallback.expectCallback(ResponseStep.ON_SUCCEEDED);
+
+        assertOKStatusCode(mCallback.mResponseInfo);
+
+        List<Map.Entry<String, String>> echoedHeaders =
+                extractEchoedHeaders(mCallback.mResponseInfo.getHeaders());
+
+        // The implementation might decide to add more headers like accepted encodings it handles
+        // internally so the server is likely to see more headers than explicitly set
+        // by the developer.
+        assertThat(echoedHeaders)
+                .containsAtLeastElementsIn(expectedHeaders);
+    }
+
+    private static List<Map.Entry<String, String>> extractEchoedHeaders(HeaderBlock headers) {
+        return headers.getAsList()
+                .stream()
+                .flatMap(input -> {
+                    if (input.getKey().startsWith(CtsTestServer.ECHOED_RESPONSE_HEADER_PREFIX)) {
+                        String strippedKey =
+                                input.getKey().substring(
+                                        CtsTestServer.ECHOED_RESPONSE_HEADER_PREFIX.length());
+                        return Stream.of(Map.entry(strippedKey, input.getValue()));
+                    } else {
+                        return Stream.empty();
+                    }
+                })
+                .collect(Collectors.toList());
+    }
+
+    private static class StubUrlRequestCallback implements UrlRequest.Callback {
+
+        @Override
+        public void onRedirectReceived(
+                UrlRequest request, UrlResponseInfo info, String newLocationUrl) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void onResponseStarted(UrlRequest request, UrlResponseInfo info) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void onReadCompleted(
+                UrlRequest request, UrlResponseInfo info, ByteBuffer byteBuffer) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void onSucceeded(UrlRequest request, UrlResponseInfo info) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public void onFailed(UrlRequest request, UrlResponseInfo info, HttpException error) {
+            throw new UnsupportedOperationException(error);
+        }
+
+        @Override
+        public void onCanceled(@NonNull UrlRequest request, @Nullable UrlResponseInfo info) {
+            throw new UnsupportedOperationException();
+        }
     }
 }

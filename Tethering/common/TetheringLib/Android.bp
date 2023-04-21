@@ -30,7 +30,6 @@ cronet_java_prejarjar_defaults = "CronetJavaPrejarjarDefaultsEnabled"
 java_sdk_library {
     name: "framework-tethering",
     defaults: [
-        "CronetJavaDefaults",
         "framework-tethering-defaults",
     ],
     impl_library_visibility: [
@@ -65,6 +64,7 @@ java_sdk_library {
 
     hostdex: true, // for hiddenapi check
     permitted_packages: ["android.net"],
+    lint: { strict_updatability_linting: true },
 }
 
 java_defaults {
@@ -81,20 +81,11 @@ java_defaults {
     impl_only_static_libs: [
         "cronet_aml_java",
     ],
-    // STOPSHIP(b/265674359): fix all Cronet lint warnings and re-enable lint
-    // directly in framework-tethering
-    lint: {
-         enabled: false,
-    },
-    api_lint: {
-        enabled: false,
-    },
-    api_dir: "cronet_enabled/api",
 }
 
 java_defaults {
   name: "CronetJavaDefaultsDisabled",
-  lint: { strict_updatability_linting: true },
+  api_dir: "cronet_disabled/api",
 }
 
 java_defaults {
@@ -118,7 +109,6 @@ java_library {
   name: "framework-tethering-pre-jarjar",
   defaults: [
     "framework-tethering-defaults",
-    "CronetJavaPrejarjarDefaults",
   ],
 }
 
@@ -135,7 +125,7 @@ java_genrule {
     out: ["framework_tethering_jarjar_rules.txt"],
     cmd: "$(location jarjar-rules-generator) " +
         "$(location :framework-tethering-pre-jarjar{.jar}) " +
-        "--apistubs $(location :framework-tethering.stubs.module_lib{.jar}) " + 
+        "--apistubs $(location :framework-tethering.stubs.module_lib{.jar}) " +
         "--prefix android.net.http.internal " +
         "--excludes $(location jarjar-excludes.txt) " +
         "--output $(out)",
@@ -159,6 +149,7 @@ java_defaults {
 
 filegroup {
     name: "framework-tethering-srcs",
+    defaults: ["framework-sources-module-defaults"],
     srcs: [
         "src/**/*.aidl",
         "src/**/*.java",

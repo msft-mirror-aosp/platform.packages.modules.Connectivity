@@ -58,13 +58,21 @@
       ]
     },
     {
+      "name": "CtsNetTestCasesMaxTargetSdk33",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
       "name": "bpf_existence_test"
     },
     {
       "name": "connectivity_native_test"
-    },
-    {
-      "name": "CtsNetHttpTestCases"
     },
     {
       "name": "libclat_test"
@@ -86,6 +94,16 @@
     },
     {
       "name": "FrameworksNetIntegrationTests"
+    },
+    // Runs both NetHttpTests and CtsNetHttpTestCases
+    {
+      "name": "NetHttpCoverageTests",
+      "options": [
+        {
+          // These sometimes take longer than 1 min which is the presubmit timeout
+          "exclude-annotation": "androidx.test.filters.LargeTest"
+        }
+      ]
     }
   ],
   "postsubmit": [
@@ -102,11 +120,6 @@
     },
     {
       "name": "FrameworksNetDeflakeTest"
-    },
-    // Run in postsubmit to confirm test passes continously since this is a new test setup
-    // TODO: move tests to presubmit
-    {
-      "name": "NetHttpTests"
     }
   ],
   "mainline-presubmit": [
@@ -134,6 +147,17 @@
     },
     {
       "name": "CtsNetTestCasesMaxTargetSdk31[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "CtsNetTestCasesMaxTargetSdk33[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
@@ -191,6 +215,15 @@
     },
     {
       "name": "libnetworkstats_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
+    },
+    {
+      "name": "NetHttpCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          // These sometimes take longer than 1 min which is the presubmit timeout
+          "exclude-annotation": "androidx.test.filters.LargeTest"
+        }
+      ]
     }
   ],
   "mainline-postsubmit": [

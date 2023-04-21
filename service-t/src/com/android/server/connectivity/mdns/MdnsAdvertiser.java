@@ -28,9 +28,12 @@ import android.util.Log;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.SharedLog;
 
+import java.io.PrintWriter;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 
@@ -42,6 +45,10 @@ import java.util.function.Consumer;
 public class MdnsAdvertiser {
     private static final String TAG = MdnsAdvertiser.class.getSimpleName();
     static final boolean DBG = Log.isLoggable(TAG, Log.DEBUG);
+
+    // Top-level domain for link-local queries, as per RFC6762 3.
+    private static final String LOCAL_TLD = "local";
+    private static final SharedLog LOGGER = new SharedLog(TAG);
 
     private final Looper mLooper;
     private final AdvertiserCallback mCb;
@@ -60,6 +67,8 @@ public class MdnsAdvertiser {
     private final SparseArray<Registration> mRegistrations = new SparseArray<>();
     private final Dependencies mDeps;
 
+    private String[] mDeviceHostName;
+
     /**
      * Dependencies for {@link MdnsAdvertiser}, useful for testing.
      */
@@ -71,11 +80,32 @@ public class MdnsAdvertiser {
         public MdnsInterfaceAdvertiser makeAdvertiser(@NonNull MdnsInterfaceSocket socket,
                 @NonNull List<LinkAddress> initialAddresses,
                 @NonNull Looper looper, @NonNull byte[] packetCreationBuffer,
-                @NonNull MdnsInterfaceAdvertiser.Callback cb) {
+                @NonNull MdnsInterfaceAdvertiser.Callback cb,
+                @NonNull String[] deviceHostName) {
             // Note NetworkInterface is final and not mockable
             final String logTag = socket.getInterface().getName();
             return new MdnsInterfaceAdvertiser(logTag, socket, initialAddresses, looper,
-                    packetCreationBuffer, cb);
+                    packetCreationBuffer, cb, deviceHostName, LOGGER.forSubComponent(logTag));
+        }
+
+        /**
+         * Generates a unique hostname to be used by the device.
+         */
+        @NonNull
+        public String[] generateHostname() {
+            // Generate a very-probably-unique hostname. This allows minimizing possible conflicts
+            // to the point that probing for it is no longer necessary (as per RFC6762 8.1 last
+            // paragraph), and does not leak more information than what could already be obtained by
+            // looking at the mDNS packets source address.
+            // This differs from historical behavior that just used "Android.local" for many
+            // devices, creating a lot of conflicts.
+            // Having a different hostname per interface is an acceptable option as per RFC6762 14.
+            // This hostname will change every time the interface is reconnected, so this does not
+            // allow tracking the device.
+            // TODO: consider deriving a hostname from other sources, such as the IPv6 addresses
+            // (reusing the same privacy-protecting mechanics).
+            return new String[] {
+                    "Android_" + UUID.randomUUID().toString().replace("-", ""), LOCAL_TLD };
         }
     }
 
@@ -102,9 +132,7 @@ public class MdnsAdvertiser {
 
         @Override
         public void onServiceConflict(@NonNull MdnsInterfaceAdvertiser advertiser, int serviceId) {
-            if (DBG) {
-                Log.v(TAG, "Found conflict, restarted probing for service " + serviceId);
-            }
+            LOGGER.i("Found conflict, restarted probing for service " + serviceId);
 
             final Registration registration = mRegistrations.get(serviceId);
             if (registration == null) return;
@@ -260,7 +288,7 @@ public class MdnsAdvertiser {
             MdnsInterfaceAdvertiser advertiser = mAllAdvertisers.get(socket);
             if (advertiser == null) {
                 advertiser = mDeps.makeAdvertiser(socket, addresses, mLooper, mPacketCreationBuffer,
-                        mInterfaceAdvertiserCb);
+                        mInterfaceAdvertiserCb, mDeviceHostName);
                 mAllAdvertisers.put(socket, advertiser);
                 advertiser.start();
             }
@@ -389,6 +417,7 @@ public class MdnsAdvertiser {
         mCb = cb;
         mSocketProvider = socketProvider;
         mDeps = deps;
+        mDeviceHostName = deps.generateHostname();
     }
 
     private void checkThread() {
@@ -411,9 +440,7 @@ public class MdnsAdvertiser {
             return;
         }
 
-        if (DBG) {
-            Log.i(TAG, "Adding service " + service + " with ID " + id);
-        }
+        LOGGER.i("Adding service " + service + " with ID " + id);
 
         final Network network = service.getNetwork();
         final Registration registration = new Registration(service);
@@ -445,16 +472,22 @@ public class MdnsAdvertiser {
     public void removeService(int id) {
         checkThread();
         if (!mRegistrations.contains(id)) return;
-        if (DBG) {
-            Log.i(TAG, "Removing service with ID " + id);
-        }
+        LOGGER.i("Removing service with ID " + id);
         for (int i = mAdvertiserRequests.size() - 1; i >= 0; i--) {
             final InterfaceAdvertiserRequest advertiser = mAdvertiserRequests.valueAt(i);
             advertiser.removeService(id);
         }
         mRegistrations.remove(id);
+        // Regenerates host name when registrations removed.
+        if (mRegistrations.size() == 0) {
+            mDeviceHostName = mDeps.generateHostname();
+        }
     }
 
+    /** Dump info to dumpsys */
+    public void dump(PrintWriter pw) {
+        LOGGER.reverseDump(pw);
+    }
     private static <K, V> boolean any(@NonNull ArrayMap<K, V> map,
             @NonNull BiPredicate<K, V> predicate) {
         for (int i = 0; i < map.size(); i++) {

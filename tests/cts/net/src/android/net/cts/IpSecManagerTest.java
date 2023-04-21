@@ -364,10 +364,20 @@ public class IpSecManagerTest extends IpSecBaseTest {
         });
     }
 
-    private void assumeExperimentalIpv6UdpEncapSupported() throws Exception {
+    private static boolean isIpv6UdpEncapSupportedByKernel() {
+        return isKernelVersionAtLeast("5.15.31")
+                || (isKernelVersionAtLeast("5.10.108") && !isKernelVersionAtLeast("5.15.0"));
+    }
+
+    // Packet private for use in IpSecManagerTunnelTest
+    static boolean isIpv6UdpEncapSupported() {
+        return SdkLevel.isAtLeastU() && isIpv6UdpEncapSupportedByKernel();
+    }
+
+    // Packet private for use in IpSecManagerTunnelTest
+    static void assumeExperimentalIpv6UdpEncapSupported() throws Exception {
         assumeTrue("Not supported before U", SdkLevel.isAtLeastU());
-        assumeTrue("Not supported by kernel", isKernelVersionAtLeast("5.15.31")
-                || (isKernelVersionAtLeast("5.10.108") && !isKernelVersionAtLeast("5.15.0")));
+        assumeTrue("Not supported by kernel", isIpv6UdpEncapSupportedByKernel());
     }
 
     @Test
@@ -395,7 +405,7 @@ public class IpSecManagerTest extends IpSecBaseTest {
     private static class StatsChecker {
         private static final double ERROR_MARGIN_BYTES = 1.05;
         private static final double ERROR_MARGIN_PKTS = 1.05;
-        private static final int MAX_WAIT_TIME_MILLIS = 1000;
+        private static final int MAX_WAIT_TIME_MILLIS = 3000;
 
         private static long uidTxBytes;
         private static long uidRxBytes;
