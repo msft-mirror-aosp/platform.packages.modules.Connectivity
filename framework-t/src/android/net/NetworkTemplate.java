@@ -61,6 +61,7 @@ import java.lang.annotation.RetentionPolicy;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -183,6 +184,23 @@ public final class NetworkTemplate implements Parcelable {
         }
     }
 
+    private static Set<String> setOf(@Nullable final String item) {
+        if (item == null) {
+            // Set.of will throw if item is null
+            final Set<String> set = new HashSet<>();
+            set.add(null);
+            return Collections.unmodifiableSet(set);
+        } else {
+            return Set.of(item);
+        }
+    }
+
+    private static void throwAtLeastU() {
+        if (SdkLevel.isAtLeastU()) {
+            throw new UnsupportedOperationException("Method not supported on Android U or above");
+        }
+    }
+
     /**
      * Template to match {@link ConnectivityManager#TYPE_MOBILE} networks with
      * the given IMSI.
@@ -195,7 +213,7 @@ public final class NetworkTemplate implements Parcelable {
             publicAlternatives = "Use {@code Builder} instead.")
     public static NetworkTemplate buildTemplateMobileAll(@NonNull String subscriberId) {
         return new NetworkTemplate.Builder(MATCH_MOBILE).setMeteredness(METERED_YES)
-                .setSubscriberIds(Set.of(subscriberId)).build();
+                .setSubscriberIds(setOf(subscriberId)).build();
     }
 
     /**
@@ -259,10 +277,9 @@ public final class NetworkTemplate implements Parcelable {
     // TODO(b/270089918): Remove this method. This can only be done after there are no more callers,
     //  including in OEM code which can access this by linking against the framework.
     public static NetworkTemplate buildTemplateBluetooth() {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException(
-                    "buildTemplateBluetooth is not supported on Android U devices or above");
-        }
+        // TODO : this is part of hidden-o txt, does that mean it should be annotated with
+        // @UnsupportedAppUsage(maxTargetSdk = O) ? If yes, can't throwAtLeastU() lest apps
+        // targeting O- crash on those devices.
         return new NetworkTemplate.Builder(MATCH_BLUETOOTH).build();
     }
 
@@ -275,10 +292,9 @@ public final class NetworkTemplate implements Parcelable {
     // TODO(b/270089918): Remove this method. This can only be done after there are no more callers,
     //  including in OEM code which can access this by linking against the framework.
     public static NetworkTemplate buildTemplateProxy() {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException(
-                    "buildTemplateProxy is not supported on Android U devices or above");
-        }
+        // TODO : this is part of hidden-o txt, does that mean it should be annotated with
+        // @UnsupportedAppUsage(maxTargetSdk = O) ? If yes, can't throwAtLeastU() lest apps
+        // targeting O- crash on those devices.
         return new NetworkTemplate(MATCH_PROXY, null, null);
     }
 
@@ -290,12 +306,10 @@ public final class NetworkTemplate implements Parcelable {
     // TODO(b/273963543): Remove this method. This can only be done after there are no more callers,
     //  including in OEM code which can access this by linking against the framework.
     public static NetworkTemplate buildTemplateCarrierMetered(@NonNull String subscriberId) {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException(
-                    "buildTemplateCarrierMetered is not supported on Android U devices or above");
-        }
+        throwAtLeastU();
         return new NetworkTemplate.Builder(MATCH_CARRIER)
-                // Set.of will throw if subscriberId is null
+                // Set.of will throw if subscriberId is null, which is the historical
+                // behavior and should be preserved.
                 .setSubscriberIds(Set.of(subscriberId))
                 .setMeteredness(METERED_YES)
                 .build();
@@ -312,10 +326,7 @@ public final class NetworkTemplate implements Parcelable {
     //  including in OEM code which can access this by linking against the framework.
     public static NetworkTemplate buildTemplateMobileWithRatType(@Nullable String subscriberId,
             int ratType, int metered) {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException("buildTemplateMobileWithRatType is not "
-                    + "supported on Android U devices or above");
-        }
+        throwAtLeastU();
         return new NetworkTemplate.Builder(MATCH_MOBILE)
                 .setSubscriberIds(TextUtils.isEmpty(subscriberId)
                         ? Collections.emptySet()
@@ -324,7 +335,6 @@ public final class NetworkTemplate implements Parcelable {
                 .setRatType(ratType)
                 .build();
     }
-
 
     /**
      * Template to match {@link ConnectivityManager#TYPE_WIFI} networks with the
@@ -337,12 +347,12 @@ public final class NetworkTemplate implements Parcelable {
     // TODO(b/273963543): Remove this method. This can only be done after there are no more callers,
     //  including in OEM code which can access this by linking against the framework.
     public static NetworkTemplate buildTemplateWifi(@NonNull String wifiNetworkKey) {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException("buildTemplateWifi is not "
-                    + "supported on Android U devices or above");
-        }
+        // TODO : this is part of hidden-o txt, does that mean it should be annotated with
+        // @UnsupportedAppUsage(maxTargetSdk = O) ? If yes, can't throwAtLeastU() lest apps
+        // targeting O- crash on those devices.
         return new NetworkTemplate.Builder(MATCH_WIFI)
-                // Set.of will throw if wifiNetworkKey is null
+                // Set.of will throw if wifiNetworkKey is null, which is the historical
+                // behavior and should be preserved.
                 .setWifiNetworkKeys(Set.of(wifiNetworkKey))
                 .build();
     }
@@ -364,14 +374,9 @@ public final class NetworkTemplate implements Parcelable {
     //  including in OEM code which can access this by linking against the framework.
     public static NetworkTemplate buildTemplateWifi(@Nullable String wifiNetworkKey,
             @Nullable String subscriberId) {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException("buildTemplateWifi is not "
-                    + "supported on Android U devices or above");
-        }
+        throwAtLeastU();
         return new NetworkTemplate.Builder(MATCH_WIFI)
-                .setSubscriberIds(subscriberId == null
-                        ? Collections.emptySet()
-                        : Set.of(subscriberId))
+                .setSubscriberIds(setOf(subscriberId))
                 .setWifiNetworkKeys(wifiNetworkKey == null
                         ? Collections.emptySet()
                         : Set.of(wifiNetworkKey))
@@ -410,12 +415,20 @@ public final class NetworkTemplate implements Parcelable {
             // subscriber ID.
             case MATCH_CARRIER:
                 if (matchSubscriberIds.length == 0) {
-                    throw new IllegalArgumentException("checkValidMatchSubscriberIds with empty"
-                            + " list of ids for rule" + getMatchRuleName(matchRule));
+                    throw new IllegalArgumentException("matchSubscriberIds may not contain"
+                            + " null for rule " + getMatchRuleName(matchRule));
                 }
-                // fall through
-            case MATCH_MOBILE:
                 if (CollectionUtils.contains(matchSubscriberIds, null)) {
+                    throw new IllegalArgumentException("matchSubscriberIds may not contain"
+                            + " null for rule " + getMatchRuleName(matchRule));
+                }
+                break;
+            case MATCH_MOBILE:
+                // Prevent from crash for b/273963543, where the OEMs still call into unsupported
+                // buildTemplateMobileAll with null subscriberId and get crashed.
+                final int firstSdk = Build.VERSION.DEVICE_INITIAL_SDK_INT;
+                if (firstSdk > Build.VERSION_CODES.TIRAMISU
+                        && CollectionUtils.contains(matchSubscriberIds, null)) {
                     throw new IllegalArgumentException("checkValidMatchSubscriberIds list of ids"
                             + " may not contain null for rule " + getMatchRuleName(matchRule));
                 }
@@ -448,10 +461,6 @@ public final class NetworkTemplate implements Parcelable {
         if (matchRule == 6 || matchRule == 7) {
             Log.e(TAG, "Use MATCH_MOBILE with empty subscriberIds or MATCH_WIFI with empty "
                     + "wifiNetworkKeys instead of template with matchRule=" + matchRule);
-            if (SdkLevel.isAtLeastU()) {
-                throw new UnsupportedOperationException(
-                        "Wildcard templates are not supported on Android U devices or above");
-            }
         }
     }
 
@@ -485,10 +494,9 @@ public final class NetworkTemplate implements Parcelable {
                 getMeterednessForBackwardsCompatibility(matchRule),
                 ROAMING_ALL, DEFAULT_NETWORK_ALL, NETWORK_TYPE_ALL,
                 OEM_MANAGED_ALL);
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException(
-                    "This constructor is not supported on Android U devices or above");
-        }
+        // TODO : this is part of hidden-o txt, does that mean it should be annotated with
+        // @UnsupportedAppUsage(maxTargetSdk = O) ? If yes, can't throwAtLeastU() lest apps
+        // targeting O- crash on those devices.
     }
 
     /** @hide */
@@ -503,10 +511,7 @@ public final class NetworkTemplate implements Parcelable {
         this(getBackwardsCompatibleMatchRule(matchRule),
                 matchSubscriberIds == null ? new String[]{} : matchSubscriberIds,
                 matchWifiNetworkKeys, metered, roaming, defaultNetwork, ratType, oemManaged);
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException(
-                    "This constructor is not supported on Android U devices or above");
-        }
+        throwAtLeastU();
     }
 
     /** @hide */
@@ -613,10 +618,9 @@ public final class NetworkTemplate implements Parcelable {
     //  including in OEM code which can access this by linking against the framework.
     /** @hide */
     public boolean isMatchRuleMobile() {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException(
-                    "isMatchRuleMobile is not supported on Android U devices or above");
-        }
+        // TODO : this is part of hidden-o txt, does that mean it should be annotated with
+        // @UnsupportedAppUsage(maxTargetSdk = O) ? If yes, can't throwAtLeastU() lest apps
+        // targeting O- crash on those devices.
         switch (mMatchRule) {
             case MATCH_MOBILE:
             // Old MATCH_MOBILE_WILDCARD
@@ -958,10 +962,7 @@ public final class NetworkTemplate implements Parcelable {
     // TODO(b/273963543): Remove this method. This can only be done after there are no more callers,
     //  including in OEM code which can access this by linking against the framework.
     public static NetworkTemplate normalize(NetworkTemplate template, List<String[]> mergedList) {
-        if (SdkLevel.isAtLeastU()) {
-            throw new UnsupportedOperationException(
-                    "normalize is not supported on Android U devices or above");
-        }
+        throwAtLeastU();
         return normalizeImpl(template, mergedList);
     }
 
