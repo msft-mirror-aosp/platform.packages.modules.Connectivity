@@ -33,14 +33,6 @@ using ::perfetto::protos::Trace;
 using ::perfetto::protos::TracePacket;
 using ::perfetto::protos::TrafficDirection;
 
-// This handler makes OnStart and OnStop a no-op so that tracing is not really
-// started on the device.
-class HandlerForTest : public NetworkTraceHandler {
- public:
-  void OnStart(const StartArgs&) override {}
-  void OnStop(const StopArgs&) override {}
-};
-
 class NetworkTraceHandlerTest : public testing::Test {
  protected:
   // Starts a tracing session with the handler under test.
@@ -52,7 +44,7 @@ class NetworkTraceHandlerTest : public testing::Test {
 
     perfetto::DataSourceDescriptor dsd;
     dsd.set_name("test.network_packets");
-    HandlerForTest::Register(dsd);
+    NetworkTraceHandler::Register(dsd, /*isTest=*/true);
 
     perfetto::TraceConfig cfg;
     cfg.add_buffers()->set_size_kb(1024);
@@ -94,7 +86,7 @@ class NetworkTraceHandlerTest : public testing::Test {
                            std::vector<TracePacket>* output,
                            NetworkPacketTraceConfig config = {}) {
     auto session = StartTracing(config);
-    HandlerForTest::Trace([&](HandlerForTest::TraceContext ctx) {
+    NetworkTraceHandler::Trace([&](NetworkTraceHandler::TraceContext ctx) {
       ctx.GetDataSourceLocked()->Write(input, ctx);
       ctx.Flush();
     });
@@ -136,6 +128,7 @@ TEST_F(NetworkTraceHandlerTest, WriteBasicFields) {
   EXPECT_THAT(events[0].network_packet().ip_proto(), 6);
   EXPECT_THAT(events[0].network_packet().tcp_flags(), 1);
   EXPECT_THAT(events[0].network_packet().length(), 100);
+  EXPECT_THAT(events[0].has_sequence_flags(), false);
 }
 
 TEST_F(NetworkTraceHandlerTest, WriteDirectionAndPorts) {
@@ -356,7 +349,7 @@ TEST_F(NetworkTraceHandlerTest, Interning) {
 
   auto session = StartTracing(config);
 
-  HandlerForTest::Trace([&](HandlerForTest::TraceContext ctx) {
+  NetworkTraceHandler::Trace([&](NetworkTraceHandler::TraceContext ctx) {
     ctx.GetDataSourceLocked()->Write(inputs[0], ctx);
     ctx.GetDataSourceLocked()->Write(inputs[1], ctx);
     ctx.GetDataSourceLocked()->Write(inputs[2], ctx);
@@ -374,20 +367,28 @@ TEST_F(NetworkTraceHandlerTest, Interning) {
   ASSERT_EQ(events[0].interned_data().packet_context().size(), 1);
   EXPECT_EQ(events[0].interned_data().packet_context(0).iid(), 1);
   EXPECT_EQ(events[0].interned_data().packet_context(0).ctx().uid(), 123);
+  EXPECT_EQ(events[0].sequence_flags(),
+            TracePacket::SEQ_INCREMENTAL_STATE_CLEARED);
 
   // First time seen, emit new interned data, bundle uses iid instead of ctx.
   EXPECT_EQ(events[1].network_packet_bundle().iid(), 2);
   ASSERT_EQ(events[1].interned_data().packet_context().size(), 1);
   EXPECT_EQ(events[1].interned_data().packet_context(0).iid(), 2);
   EXPECT_EQ(events[1].interned_data().packet_context(0).ctx().uid(), 456);
+  EXPECT_EQ(events[1].sequence_flags(),
+            TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
 
   // Not enough room in intern table (limit 2), inline the context.
   EXPECT_EQ(events[2].network_packet_bundle().ctx().uid(), 789);
   EXPECT_EQ(events[2].interned_data().packet_context().size(), 0);
+  EXPECT_EQ(events[2].sequence_flags(),
+            TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
 
   // Second time seen, no need to re-emit interned data, only record iid.
   EXPECT_EQ(events[3].network_packet_bundle().iid(), 1);
   EXPECT_EQ(events[3].interned_data().packet_context().size(), 0);
+  EXPECT_EQ(events[3].sequence_flags(),
+            TracePacket::SEQ_NEEDS_INCREMENTAL_STATE);
 }
 
 }  // namespace bpf
