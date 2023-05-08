@@ -100,6 +100,7 @@ public abstract class QosFilter {
      *                 flow assigned on {@link Network}. Only {@code IPPROTO_TCP} and {@code
      *                 IPPROTO_UDP} currently supported.
      * @return whether the parameters match the socket type of the filter
+     * @hide
      */
     // Since this method is added in U, it's required to be default method for binary compatibility
     // with existing @SystemApi.

@@ -666,6 +666,7 @@ public final class NsdManager {
     /**
      * Indicates that the stop operation failed because it is not running.
      * This failure is passed with {@link ResolveListener#onStopResolutionFailed}.
+     * @hide
      */
     public static final int FAILURE_OPERATION_NOT_RUNNING       = 5;
 
@@ -674,6 +675,7 @@ public final class NsdManager {
      *
      * This failure is passed with
      * {@link ServiceInfoCallback#onServiceInfoCallbackRegistrationFailed}.
+     * @hide
      */
     public static final int FAILURE_BAD_PARAMETERS              = 6;
 
@@ -752,6 +754,7 @@ public final class NsdManager {
          *
          * A stop resolution operation would call either onResolutionStopped or
          * onStopResolutionFailed once based on the result.
+         * @hide
          */
         default void onResolutionStopped(@NonNull NsdServiceInfo serviceInfo) { }
 
@@ -762,6 +765,7 @@ public final class NsdManager {
          *
          * A stop resolution operation would call either onResolutionStopped or
          * onStopResolutionFailed once based on the result.
+         * @hide
          */
         default void onStopResolutionFailed(@NonNull NsdServiceInfo serviceInfo,
                 @StopOperationFailureCode int errorCode) { }
@@ -772,6 +776,7 @@ public final class NsdManager {
      *
      * For use with {@link NsdManager#registerServiceInfoCallback} to register, and with
      * {@link NsdManager#unregisterServiceInfoCallback} to stop listening.
+     * @hide
      */
     public interface ServiceInfoCallback {
 
@@ -1244,13 +1249,12 @@ public final class NsdManager {
      * @param listener to receive callback upon success or failure. Cannot be null.
      * Cannot be in use for an active service resolution.
      *
-     * @deprecated the returned ServiceInfo may get stale at any time after resolution, including
+     * deprecated the returned ServiceInfo may get stale at any time after resolution, including
      * immediately after the callback is called, and may not contain some service information that
      * could be delivered later, like additional host addresses. Prefer using
      * {@link #registerServiceInfoCallback}, which will keep the application up-to-date with the
      * state of the service.
      */
-    @Deprecated
     public void resolveService(NsdServiceInfo serviceInfo, ResolveListener listener) {
         resolveService(serviceInfo, Runnable::run, listener);
     }
@@ -1263,13 +1267,12 @@ public final class NsdManager {
      * @param executor Executor to run listener callbacks with
      * @param listener to receive callback upon success or failure.
      *
-     * @deprecated the returned ServiceInfo may get stale at any time after resolution, including
+     * deprecated the returned ServiceInfo may get stale at any time after resolution, including
      * immediately after the callback is called, and may not contain some service information that
      * could be delivered later, like additional host addresses. Prefer using
      * {@link #registerServiceInfoCallback}, which will keep the application up-to-date with the
      * state of the service.
      */
-    @Deprecated
     public void resolveService(@NonNull NsdServiceInfo serviceInfo,
             @NonNull Executor executor, @NonNull ResolveListener listener) {
         checkServiceInfo(serviceInfo);
@@ -1294,6 +1297,7 @@ public final class NsdManager {
      *                 It identifies the resolution that should be stopped and notifies of a
      *                 successful or unsuccessful stop. Throws {@code IllegalArgumentException} if
      *                 the listener was not passed to resolveService before.
+     * @hide
      */
     public void stopServiceResolution(@NonNull ResolveListener listener) {
         int id = getListenerKey(listener);
@@ -1322,6 +1326,7 @@ public final class NsdManager {
      * @param serviceInfo the service to receive updates for
      * @param executor Executor to run callbacks with
      * @param listener to receive callback upon service update
+     * @hide
      */
     public void registerServiceInfoCallback(@NonNull NsdServiceInfo serviceInfo,
             @NonNull Executor executor, @NonNull ServiceInfoCallback listener) {
@@ -1349,6 +1354,7 @@ public final class NsdManager {
      *                 should be unregistered and notifies of a successful or unsuccessful stop.
      *                 Throws {@code IllegalArgumentException} if the listener was not passed to
      *                 {@link #registerServiceInfoCallback} before.
+     * @hide
      */
     public void unregisterServiceInfoCallback(@NonNull ServiceInfoCallback listener) {
         // Will throw IllegalArgumentException if the listener is not known

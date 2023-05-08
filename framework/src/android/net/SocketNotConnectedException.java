@@ -16,8 +16,6 @@
 
 package android.net;
 
-import android.annotation.SystemApi;
-
 import com.android.internal.annotations.VisibleForTesting;
 
 /**
@@ -25,7 +23,6 @@ import com.android.internal.annotations.VisibleForTesting;
  *
  * @hide
  */
-@SystemApi
 public class SocketNotConnectedException extends Exception {
     @VisibleForTesting
     public SocketNotConnectedException() {

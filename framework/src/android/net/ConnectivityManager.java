@@ -1284,7 +1284,6 @@ public class ConnectivityManager {
      * {@link android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS}).
      * @hide
      */
-    @SystemApi(client = MODULE_LIBRARIES)
     public static final int PROFILE_NETWORK_PREFERENCE_ENTERPRISE_BLOCKING = 3;
 
     /** @hide */
@@ -1489,7 +1488,6 @@ public class ConnectivityManager {
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
             android.Manifest.permission.NETWORK_STACK,
             android.Manifest.permission.NETWORK_SETTINGS})
-    @SystemApi(client = MODULE_LIBRARIES)
     public void setVpnDefaultForUids(@NonNull String session,
             @NonNull Collection<Range<Integer>> ranges) {
         Objects.requireNonNull(ranges);
@@ -4900,9 +4898,7 @@ public class ConnectivityManager {
     @SuppressLint({"ExecutorRegistration", "PairedRegistration"})
     @RequiresPermission(anyOf = {
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
-            android.Manifest.permission.NETWORK_SETTINGS,
-            android.Manifest.permission.NETWORK_SETUP_WIZARD,
-            android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS})
+            android.Manifest.permission.NETWORK_SETTINGS})
     public void registerSystemDefaultNetworkCallback(@NonNull NetworkCallback networkCallback,
             @NonNull Handler handler) {
         CallbackHandler cbHandler = new CallbackHandler(handler);

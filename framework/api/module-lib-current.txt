@@ -15,7 +15,7 @@ package android.net {
     method @Nullable @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public android.net.LinkProperties getRedactedLinkPropertiesForPackage(@NonNull android.net.LinkProperties, int, @NonNull String);
     method @Nullable @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public android.net.NetworkCapabilities getRedactedNetworkCapabilitiesForPackage(@NonNull android.net.NetworkCapabilities, int, @NonNull String);
     method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public void registerDefaultNetworkCallbackForUid(int, @NonNull android.net.ConnectivityManager.NetworkCallback, @NonNull android.os.Handler);
-    method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_SETUP_WIZARD, android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS}) public void registerSystemDefaultNetworkCallback(@NonNull android.net.ConnectivityManager.NetworkCallback, @NonNull android.os.Handler);
+    method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public void registerSystemDefaultNetworkCallback(@NonNull android.net.ConnectivityManager.NetworkCallback, @NonNull android.os.Handler);
     method @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public void removeUidFromMeteredNetworkAllowList(int);
     method @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public void removeUidFromMeteredNetworkDenyList(int);
     method @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public void replaceFirewallChain(int, @NonNull int[]);
@@ -31,7 +31,6 @@ package android.net {
     method @RequiresPermission(android.Manifest.permission.NETWORK_STACK) public void setProfileNetworkPreferences(@NonNull android.os.UserHandle, @NonNull java.util.List<android.net.ProfileNetworkPreference>, @Nullable java.util.concurrent.Executor, @Nullable Runnable);
     method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public void setRequireVpnForUids(boolean, @NonNull java.util.Collection<android.util.Range<java.lang.Integer>>);
     method @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public void setUidFirewallRule(int, int, int);
-    method @RequiresPermission(anyOf={android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK, android.Manifest.permission.NETWORK_STACK, android.Manifest.permission.NETWORK_SETTINGS}) public void setVpnDefaultForUids(@NonNull String, @NonNull java.util.Collection<android.util.Range<java.lang.Integer>>);
     method @RequiresPermission(anyOf={android.Manifest.permission.MANAGE_TEST_NETWORKS, android.Manifest.permission.NETWORK_STACK}) public void simulateDataStall(int, long, @NonNull android.net.Network, @NonNull android.os.PersistableBundle);
     method @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public void startCaptivePortalApp(@NonNull android.net.Network);
     method public void systemReady();
@@ -63,7 +62,6 @@ package android.net {
     field public static final int FIREWALL_RULE_DENY = 2; // 0x2
     field public static final int PROFILE_NETWORK_PREFERENCE_DEFAULT = 0; // 0x0
     field public static final int PROFILE_NETWORK_PREFERENCE_ENTERPRISE = 1; // 0x1
-    field public static final int PROFILE_NETWORK_PREFERENCE_ENTERPRISE_BLOCKING = 3; // 0x3
     field public static final int PROFILE_NETWORK_PREFERENCE_ENTERPRISE_NO_FALLBACK = 2; // 0x2
   }
 
@@ -202,8 +200,6 @@ package android.net {
     method public int describeContents();
     method @NonNull public android.os.ParcelFileDescriptor getFileDescriptor();
     method @NonNull public String getInterfaceName();
-    method @Nullable public android.net.MacAddress getMacAddress();
-    method public int getMtu();
     method public void writeToParcel(@NonNull android.os.Parcel, int);
     field @NonNull public static final android.os.Parcelable.Creator<android.net.TestNetworkInterface> CREATOR;
   }
@@ -230,9 +226,13 @@ package android.net {
   }
 
   public final class VpnTransportInfo implements android.os.Parcelable android.net.TransportInfo {
-    ctor @Deprecated public VpnTransportInfo(int, @Nullable String);
+    ctor public VpnTransportInfo(int, @Nullable String);
+    method public int describeContents();
     method @Nullable public String getSessionId();
+    method public int getType();
     method @NonNull public android.net.VpnTransportInfo makeCopy(long);
+    method public void writeToParcel(@NonNull android.os.Parcel, int);
+    field @NonNull public static final android.os.Parcelable.Creator<android.net.VpnTransportInfo> CREATOR;
   }
 
 }
