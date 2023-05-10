@@ -24,11 +24,19 @@ cc_library {
     host_supported: false,
     header_libs: ["bpf_connectivity_headers"],
     srcs: [
-        "BpfNetworkStats.cpp"
+        "BpfNetworkStats.cpp",
+        "NetworkTraceHandler.cpp",
+        "NetworkTracePoller.cpp",
     ],
     shared_libs: [
         "libbase",
         "liblog",
+    ],
+    static_libs: [
+        "libperfetto_client_experimental",
+    ],
+    export_static_lib_headers: [
+        "libperfetto_client_experimental",
     ],
     export_include_dirs: ["include"],
     cflags: [
@@ -54,6 +62,8 @@ cc_test {
     header_libs: ["bpf_connectivity_headers"],
     srcs: [
         "BpfNetworkStatsTest.cpp",
+        "NetworkTraceHandlerTest.cpp",
+        "NetworkTracePollerTest.cpp",
     ],
     cflags: [
         "-Wall",
@@ -64,10 +74,14 @@ cc_test {
     static_libs: [
         "libgmock",
         "libnetworkstats",
+        "libperfetto_client_experimental",
+        "libprotobuf-cpp-lite",
+        "perfetto_trace_protos",
     ],
     shared_libs: [
         "libbase",
         "liblog",
+        "libandroid_net",
     ],
     compile_multilib: "both",
     multilib: {

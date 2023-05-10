@@ -62,7 +62,7 @@ public class NearbyManager {
             ScanStatus.ERROR,
     })
     public @interface ScanStatus {
-        // Default, invalid state.
+        // The undetermined status, some modules may be initializing. Retry is suggested.
         int UNKNOWN = 0;
         // The successful state.
         int SUCCESS = 1;
@@ -103,6 +103,9 @@ public class NearbyManager {
         mService = service;
     }
 
+    // This can be null when NearbyDeviceParcelable field not set for Presence device
+    // or the scan type is not recognized.
+    @Nullable
     private static NearbyDevice toClientNearbyDevice(
             NearbyDeviceParcelable nearbyDeviceParcelable,
             @ScanRequest.ScanType int scanType) {
@@ -328,9 +331,9 @@ public class NearbyManager {
         public void onDiscovered(NearbyDeviceParcelable nearbyDeviceParcelable)
                 throws RemoteException {
             mExecutor.execute(() -> {
-                if (mScanCallback != null) {
-                    mScanCallback.onDiscovered(
-                            toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
+                NearbyDevice nearbyDevice = toClientNearbyDevice(nearbyDeviceParcelable, mScanType);
+                if (mScanCallback != null && nearbyDevice != null) {
+                    mScanCallback.onDiscovered(nearbyDevice);
                 }
             });
         }
@@ -339,7 +342,8 @@ public class NearbyManager {
         public void onUpdated(NearbyDeviceParcelable nearbyDeviceParcelable)
                 throws RemoteException {
             mExecutor.execute(() -> {
-                if (mScanCallback != null) {
+                NearbyDevice nearbyDevice = toClientNearbyDevice(nearbyDeviceParcelable, mScanType);
+                if (mScanCallback != null && nearbyDevice != null) {
                     mScanCallback.onUpdated(
                             toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
                 }
@@ -349,7 +353,8 @@ public class NearbyManager {
         @Override
         public void onLost(NearbyDeviceParcelable nearbyDeviceParcelable) throws RemoteException {
             mExecutor.execute(() -> {
-                if (mScanCallback != null) {
+                NearbyDevice nearbyDevice = toClientNearbyDevice(nearbyDeviceParcelable, mScanType);
+                if (mScanCallback != null && nearbyDevice != null) {
                     mScanCallback.onLost(
                             toClientNearbyDevice(nearbyDeviceParcelable, mScanType));
                 }

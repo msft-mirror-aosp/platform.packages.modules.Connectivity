@@ -371,15 +371,9 @@ public class EthernetTracker {
     }
 
     @VisibleForTesting(visibility = PACKAGE)
-    protected void enableInterface(@NonNull final String iface,
+    protected void setInterfaceEnabled(@NonNull final String iface, boolean enabled,
             @Nullable final EthernetCallback cb) {
-        mHandler.post(() -> updateInterfaceState(iface, true, cb));
-    }
-
-    @VisibleForTesting(visibility = PACKAGE)
-    protected void disableInterface(@NonNull final String iface,
-            @Nullable final EthernetCallback cb) {
-        mHandler.post(() -> updateInterfaceState(iface, false, cb));
+        mHandler.post(() -> updateInterfaceState(iface, enabled, cb));
     }
 
     IpConfiguration getIpConfiguration(String iface) {
@@ -391,7 +385,7 @@ public class EthernetTracker {
         return mFactory.hasInterface(iface);
     }
 
-    String[] getInterfaces(boolean includeRestricted) {
+    String[] getClientModeInterfaces(boolean includeRestricted) {
         return mFactory.getAvailableInterfaces(includeRestricted);
     }
 
@@ -434,8 +428,11 @@ public class EthernetTracker {
                 // Remote process has already died
                 return;
             }
-            for (String iface : getInterfaces(canUseRestrictedNetworks)) {
+            for (String iface : getClientModeInterfaces(canUseRestrictedNetworks)) {
                 unicastInterfaceStateChange(listener, iface);
+            }
+            if (mTetheringInterfaceMode == INTERFACE_MODE_SERVER) {
+                unicastInterfaceStateChange(listener, mTetheringInterface);
             }
 
             unicastEthernetStateChange(listener, mEthernetState);

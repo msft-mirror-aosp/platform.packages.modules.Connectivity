@@ -56,8 +56,10 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.os.UserHandle;
 import android.telephony.TelephonyManager;
+import android.testing.PollingCheck;
 import android.util.DisplayMetrics;
 import android.widget.TextView;
 
@@ -65,9 +67,11 @@ import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
+import androidx.test.uiautomator.By;
 import androidx.test.uiautomator.UiDevice;
 import androidx.test.uiautomator.UiObject;
 import androidx.test.uiautomator.UiSelector;
+import androidx.test.uiautomator.Until;
 
 import com.android.connectivity.resources.R;
 import com.android.server.connectivity.NetworkNotificationManager.NotificationType;
@@ -99,6 +103,8 @@ public class NetworkNotificationManagerTest {
     private static final int TEST_NOTIF_ID = 101;
     private static final String TEST_NOTIF_TAG = NetworkNotificationManager.tagFor(TEST_NOTIF_ID);
     private static final long TEST_TIMEOUT_MS = 10_000L;
+    private static final long UI_AUTOMATOR_WAIT_TIME_MILLIS = TEST_TIMEOUT_MS;
+
     static final NetworkCapabilities CELL_CAPABILITIES = new NetworkCapabilities();
     static final NetworkCapabilities WIFI_CAPABILITIES = new NetworkCapabilities();
     static final NetworkCapabilities VPN_CAPABILITIES = new NetworkCapabilities();
@@ -386,13 +392,28 @@ public class NetworkNotificationManagerTest {
                 R.bool.config_notifyNoInternetAsDialogWhenHighPriority);
 
         final Instrumentation instr = InstrumentationRegistry.getInstrumentation();
-        UiDevice.getInstance(instr).pressHome();
+        final UiDevice uiDevice =  UiDevice.getInstance(instr);
+        final Context ctx = instr.getContext();
+        final PowerManager pm = ctx.getSystemService(PowerManager.class);
+
+        // Wake up the device (it has no effect if the device is already awake).
+        uiDevice.executeShellCommand("input keyevent KEYCODE_WAKEUP");
+        uiDevice.executeShellCommand("wm dismiss-keyguard");
+        PollingCheck.check("Wait for the screen to be turned on failed, timeout=" + TEST_TIMEOUT_MS,
+                TEST_TIMEOUT_MS, () -> pm.isInteractive());
+        uiDevice.pressHome();
+
+        // UiDevice.getLauncherPackageName() requires the test manifest to have a <queries> tag for
+        // the launcher intent.
+        final String launcherPackageName = uiDevice.getLauncherPackageName();
+        assertTrue(String.format("Launcher (%s) is not shown", launcherPackageName),
+                uiDevice.wait(Until.hasObject(By.pkg(launcherPackageName)),
+                        UI_AUTOMATOR_WAIT_TIME_MILLIS));
 
         mManager.showNotification(TEST_NOTIF_ID, NETWORK_SWITCH, mWifiNai, mCellNai, null, false);
         // Non-"no internet" notifications are not affected
         verify(mNotificationManager).notify(eq(TEST_NOTIF_TAG), eq(NETWORK_SWITCH.eventId), any());
 
-        final Context ctx = instr.getContext();
         final String testAction = "com.android.connectivity.coverage.TEST_DIALOG";
         final Intent intent = new Intent(testAction)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -407,8 +428,7 @@ public class NetworkNotificationManagerTest {
         verify(mNotificationManager).cancel(TEST_NOTIF_TAG, NETWORK_SWITCH.eventId);
 
         // Verify that the activity is shown (the activity shows the action on screen)
-        final UiObject actionText = UiDevice.getInstance(instr).findObject(
-                new UiSelector().text(testAction));
+        final UiObject actionText = uiDevice.findObject(new UiSelector().text(testAction));
         assertTrue("Activity not shown", actionText.waitForExists(TEST_TIMEOUT_MS));
 
         // Tapping the text should dismiss the dialog

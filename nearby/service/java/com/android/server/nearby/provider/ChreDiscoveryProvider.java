@@ -20,10 +20,7 @@ import static android.nearby.ScanRequest.SCAN_TYPE_NEARBY_PRESENCE;
 
 import static com.android.server.nearby.NearbyService.TAG;
 
-import static service.proto.Blefilter.DataElement.ElementType.DE_BATTERY_STATUS;
-import static service.proto.Blefilter.DataElement.ElementType.DE_CONNECTION_STATUS;
-import static service.proto.Blefilter.DataElement.ElementType.DE_FAST_PAIR_ACCOUNT_KEY;
-
+import android.annotation.Nullable;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -38,11 +35,14 @@ import android.nearby.PublicCredential;
 import android.nearby.ScanFilter;
 import android.util.Log;
 
+import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.nearby.NearbyConfiguration;
 
 import com.google.protobuf.ByteString;
 
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.Executor;
 
 import service.proto.Blefilter;
@@ -51,31 +51,40 @@ import service.proto.Blefilter;
 public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     // Nanoapp ID reserved for Nearby Presence.
     /** @hide */
-    @VisibleForTesting public static final long NANOAPP_ID = 0x476f6f676c001031L;
+    @VisibleForTesting
+    public static final long NANOAPP_ID = 0x476f6f676c001031L;
     /** @hide */
-    @VisibleForTesting public static final int NANOAPP_MESSAGE_TYPE_FILTER = 3;
+    @VisibleForTesting
+    public static final int NANOAPP_MESSAGE_TYPE_FILTER = 3;
     /** @hide */
-    @VisibleForTesting public static final int NANOAPP_MESSAGE_TYPE_FILTER_RESULT = 4;
+    @VisibleForTesting
+    public static final int NANOAPP_MESSAGE_TYPE_FILTER_RESULT = 4;
     /** @hide */
-    @VisibleForTesting public static final int NANOAPP_MESSAGE_TYPE_CONFIG = 5;
-
-    private static final int PRESENCE_UUID = 0xFCF1;
-    private static final int FP_ACCOUNT_KEY_LENGTH = 16;
+    @VisibleForTesting
+    public static final int NANOAPP_MESSAGE_TYPE_CONFIG = 5;
 
     private final ChreCommunication mChreCommunication;
     private final ChreCallback mChreCallback;
+    private final Object mLock = new Object();
+
     private boolean mChreStarted = false;
-    private Blefilter.BleFilters mFilters = null;
     private Context mContext;
+    private NearbyConfiguration mNearbyConfiguration;
     private final IntentFilter mIntentFilter;
+    // Null when CHRE not started and the filters are never set. Empty the list every time the scan
+    // stops.
+    @GuardedBy("mLock")
+    @Nullable
+    private List<ScanFilter> mScanFilters;
 
     private final BroadcastReceiver mScreenBroadcastReceiver =
             new BroadcastReceiver() {
                 @Override
                 public void onReceive(Context context, Intent intent) {
-                    Log.d(TAG, "[ChreDiscoveryProvider] update nanoapp screen status.");
-                    Boolean screenOn =
-                            intent.getAction().equals(Intent.ACTION_SCREEN_ON) ? true : false;
+                    Boolean screenOn = intent.getAction().equals(Intent.ACTION_SCREEN_ON)
+                            || intent.getAction().equals(Intent.ACTION_USER_PRESENT);
+                    Log.d(TAG, String.format(
+                            "[ChreDiscoveryProvider] update nanoapp screen status: %B", screenOn));
                     sendScreenUpdate(screenOn);
                 }
             };
@@ -92,32 +101,55 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     /** Initialize the CHRE discovery provider. */
     public void init() {
         mChreCommunication.start(mChreCallback, Collections.singleton(NANOAPP_ID));
+        mNearbyConfiguration = new NearbyConfiguration();
     }
 
     @Override
     protected void onStart() {
         Log.d(TAG, "Start CHRE scan");
-        updateFilters();
+        synchronized (mLock) {
+            updateFiltersLocked();
+        }
     }
 
     @Override
     protected void onStop() {
         Log.d(TAG, "Stop CHRE scan");
-        mScanFilters.clear();
-        updateFilters();
+        synchronized (mLock) {
+            if (mScanFilters != null) {
+                // Cleaning the filters by assigning an empty list
+                mScanFilters = List.of();
+            }
+            updateFiltersLocked();
+        }
     }
 
     @Override
-    protected void invalidateScanMode() {
-        onStop();
-        onStart();
+    protected void onSetScanFilters(List<ScanFilter> filters) {
+        synchronized (mLock) {
+            mScanFilters = filters == null ? null : List.copyOf(filters);
+            updateFiltersLocked();
+        }
     }
 
-    public boolean available() {
+    /**
+     * @return {@code true} if CHRE is available and {@code null} when CHRE availability result
+     * has not been returned
+     */
+    @Nullable
+    public Boolean available() {
         return mChreCommunication.available();
     }
 
-    private synchronized void updateFilters() {
+    @VisibleForTesting
+    public List<ScanFilter> getFiltersLocked() {
+        synchronized (mLock) {
+            return mScanFilters == null ? null : List.copyOf(mScanFilters);
+        }
+    }
+
+    @GuardedBy("mLock")
+    private void updateFiltersLocked() {
         if (mScanFilters == null) {
             Log.e(TAG, "ScanFilters not set.");
             return;
@@ -132,6 +164,9 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
             for (DataElement dataElement : presenceScanFilter.getExtendedProperties()) {
                 if (dataElement.getKey() == DataElement.DataType.ACCOUNT_KEY_DATA) {
                     filterBuilder.addDataElement(toProtoDataElement(dataElement));
+                } else if (mNearbyConfiguration.isTestAppSupported()
+                        && DataElement.isTestDeType(dataElement.getKey())) {
+                    filterBuilder.addDataElement(toProtoDataElement(dataElement));
                 }
             }
             if (!presenceScanFilter.getPresenceActions().isEmpty()) {
@@ -141,13 +176,13 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         }
         if (mChreStarted) {
             sendFilters(filtersBuilder.build());
-            mFilters = null;
         }
     }
 
     private Blefilter.PublicateCertificate toProtoPublicCredential(PublicCredential credential) {
         Log.d(TAG, String.format("Returns a PublicCertificate with authenticity key size %d and"
-                + " encrypted metadata key tag size %d", credential.getAuthenticityKey().length,
+                        + " encrypted metadata key tag size %d",
+                credential.getAuthenticityKey().length,
                 credential.getEncryptedMetadataKeyTag().length));
         return Blefilter.PublicateCertificate.newBuilder()
                 .setAuthenticityKey(ByteString.copyFrom(credential.getAuthenticityKey()))
@@ -158,21 +193,21 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
 
     private Blefilter.DataElement toProtoDataElement(DataElement dataElement) {
         return Blefilter.DataElement.newBuilder()
-                        .setKey(
-                                Blefilter.DataElement.ElementType
-                                        .DE_FAST_PAIR_ACCOUNT_KEY)
-                        .setValue(ByteString.copyFrom(dataElement.getValue()))
-                        .setValueLength(FP_ACCOUNT_KEY_LENGTH)
-                        .build();
+                .setKey(dataElement.getKey())
+                .setValue(ByteString.copyFrom(dataElement.getValue()))
+                .setValueLength(dataElement.getValue().length)
+                .build();
     }
 
     private void sendFilters(Blefilter.BleFilters filters) {
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         NANOAPP_ID, NANOAPP_MESSAGE_TYPE_FILTER, filters.toByteArray());
-        if (!mChreCommunication.sendMessageToNanoApp(message)) {
-            Log.e(TAG, "Failed to send filters to CHRE.");
+        if (mChreCommunication.sendMessageToNanoApp(message)) {
+            Log.v(TAG, "Successfully sent filters to CHRE.");
+            return;
         }
+        Log.e(TAG, "Failed to send filters to CHRE.");
     }
 
     private void sendScreenUpdate(Boolean screenOn) {
@@ -180,9 +215,11 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         NANOAPP_ID, NANOAPP_MESSAGE_TYPE_CONFIG, config.toByteArray());
-        if (!mChreCommunication.sendMessageToNanoApp(message)) {
-            Log.e(TAG, "Failed to send config to CHRE.");
+        if (mChreCommunication.sendMessageToNanoApp(message)) {
+            Log.v(TAG, "Successfully sent config to CHRE.");
+            return;
         }
+        Log.e(TAG, "Failed to send config to CHRE.");
     }
 
     private class ChreCallback implements ChreCommunication.ContextHubCommsCallback {
@@ -193,13 +230,10 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                 synchronized (ChreDiscoveryProvider.this) {
                     Log.i(TAG, "CHRE communication started");
                     mIntentFilter.addAction(Intent.ACTION_SCREEN_ON);
+                    mIntentFilter.addAction(Intent.ACTION_USER_PRESENT);
                     mIntentFilter.addAction(Intent.ACTION_SCREEN_OFF);
                     mContext.registerReceiver(mScreenBroadcastReceiver, mIntentFilter);
                     mChreStarted = true;
-                    if (mFilters != null) {
-                        sendFilters(mFilters);
-                        mFilters = null;
-                    }
                 }
             }
         }
@@ -251,10 +285,10 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                         }
                         PresenceDevice.Builder presenceDeviceBuilder =
                                 new PresenceDevice.Builder(
-                                                String.valueOf(filterResult.hashCode()),
-                                                salt,
-                                                secretId,
-                                                encryptedMetaData)
+                                        String.valueOf(filterResult.hashCode()),
+                                        salt,
+                                        secretId,
+                                        encryptedMetaData)
                                         .setRssi(filterResult.getRssi())
                                         .addMedium(NearbyDevice.Medium.BLE);
                         // Data Elements reported from nanoapp added to Data Elements.
@@ -299,11 +333,11 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
 
                         PublicCredential publicCredential =
                                 new PublicCredential.Builder(
-                                                secretId,
-                                                authenticityKey,
-                                                publicKey,
-                                                encryptedMetaData,
-                                                encryptedMetaDataTag)
+                                        secretId,
+                                        authenticityKey,
+                                        publicKey,
+                                        encryptedMetaData,
+                                        encryptedMetaDataTag)
                                         .build();
 
                         NearbyDeviceParcelable device =
@@ -329,23 +363,22 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                 PresenceDevice.Builder presenceDeviceBuilder) {
             int endIndex = element.hasValueLength() ? element.getValueLength() :
                     element.getValue().size();
-            switch (element.getKey()) {
-                case DE_FAST_PAIR_ACCOUNT_KEY:
+            int key = element.getKey();
+            switch (key) {
+                case DataElement.DataType.ACCOUNT_KEY_DATA:
+                case DataElement.DataType.CONNECTION_STATUS:
+                case DataElement.DataType.BATTERY:
                     presenceDeviceBuilder.addExtendedProperty(
-                            new DataElement(DataElement.DataType.ACCOUNT_KEY_DATA,
-                                    element.getValue().substring(0, endIndex).toByteArray()));
-                    break;
-                case DE_CONNECTION_STATUS:
-                    presenceDeviceBuilder.addExtendedProperty(
-                            new DataElement(DataElement.DataType.CONNECTION_STATUS,
-                                    element.getValue().substring(0, endIndex).toByteArray()));
-                    break;
-                case DE_BATTERY_STATUS:
-                    presenceDeviceBuilder.addExtendedProperty(
-                            new DataElement(DataElement.DataType.BATTERY,
+                            new DataElement(key,
                                     element.getValue().substring(0, endIndex).toByteArray()));
                     break;
                 default:
+                    if (mNearbyConfiguration.isTestAppSupported()
+                            && DataElement.isTestDeType(key)) {
+                        presenceDeviceBuilder.addExtendedProperty(
+                                new DataElement(key,
+                                        element.getValue().substring(0, endIndex).toByteArray()));
+                    }
                     break;
             }
         }
