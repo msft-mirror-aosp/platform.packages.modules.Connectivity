@@ -26,9 +26,14 @@
 #include <nativehelper/JNIHelp.h>
 #include <net/if.h>
 #include <spawn.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <string>
+#include <unistd.h>
 
+#include <android-modules-utils/sdk_level.h>
 #include <bpf/BpfMap.h>
 #include <bpf/BpfUtils.h>
 #include <netjniutils/netjniutils.h>
@@ -45,14 +50,97 @@
 #define DEVICEPREFIX "v4-"
 
 namespace android {
-static const char* kClatdPath = "/apex/com.android.tethering/bin/for-system/clatd";
+
+static bool fatal = false;
+
+#define ALOGF(s ...) do { ALOGE(s); fatal = true; } while(0)
+
+enum verify { VERIFY_DIR, VERIFY_BIN, VERIFY_PROG, VERIFY_MAP_RO, VERIFY_MAP_RW };
+
+static void verifyPerms(const char * const path,
+                        const mode_t mode, const uid_t uid, const gid_t gid,
+                        const char * const ctxt,
+                        const verify vtype) {
+    struct stat s = {};
+
+    if (lstat(path, &s)) ALOGF("lstat '%s' errno=%d", path, errno);
+    if (s.st_mode != mode) ALOGF("'%s' mode is 0%o != 0%o", path, s.st_mode, mode);
+    if (s.st_uid != uid) ALOGF("'%s' uid is %d != %d", path, s.st_uid, uid);
+    if (s.st_gid != gid) ALOGF("'%s' gid is %d != %d", path, s.st_gid, gid);
+
+    char b[255] = {};
+    int v = lgetxattr(path, "security.selinux", &b, sizeof(b));
+    if (v < 0) ALOGF("lgetxattr '%s' errno=%d", path, errno);
+    if (strncmp(ctxt, b, sizeof(b))) ALOGF("context of '%s' is '%s' != '%s'", path, b, ctxt);
+
+    int fd = -1;
+
+    switch (vtype) {
+      case VERIFY_DIR: return;
+      case VERIFY_BIN: return;
+      case VERIFY_PROG:   fd = bpf::retrieveProgram(path); break;
+      case VERIFY_MAP_RO: fd = bpf::mapRetrieveRO(path); break;
+      case VERIFY_MAP_RW: fd = bpf::mapRetrieveRW(path); break;
+    }
+
+    if (fd < 0) ALOGF("bpf_obj_get '%s' failed, errno=%d", path, errno);
+
+    if (fd >= 0) close(fd);
+}
+
+#undef ALOGF
+
+static const char* kClatdDir = "/apex/com.android.tethering/bin/for-system";
+static const char* kClatdBin = "/apex/com.android.tethering/bin/for-system/clatd";
+
+#define V(path, md, uid, gid, ctx, vtype) \
+    verifyPerms((path), (md), AID_ ## uid, AID_ ## gid, "u:object_r:" ctx ":s0", VERIFY_ ## vtype)
+
+static void verifyClatPerms() {
+    // We might run as part of tests instead of as part of system server
+    if (getuid() != AID_SYSTEM) return;
+
+    // First verify the clatd directory and binary,
+    // since this is built into the apex file system image,
+    // failures here are 99% likely to be build problems.
+    V(kClatdDir, S_IFDIR|0750, ROOT, SYSTEM, "system_file", DIR);
+    V(kClatdBin, S_IFREG|S_ISUID|S_ISGID|0755, CLAT, CLAT, "clatd_exec", BIN);
+
+    // Move on to verifying that the bpf programs and maps are as expected.
+    // This relies on the kernel and bpfloader.
+
+    // Clat BPF was only mainlined during T.
+    if (!modules::sdklevel::IsAtLeastT()) return;
+
+    V("/sys/fs/bpf", S_IFDIR|S_ISVTX|0777, ROOT, ROOT, "fs_bpf", DIR);
+    V("/sys/fs/bpf/net_shared", S_IFDIR|S_ISVTX|0777, ROOT, ROOT, "fs_bpf_net_shared", DIR);
+
+    // pre-U we do not have selinux privs to getattr on bpf maps/progs
+    // so while the below *should* be as listed, we have no way to actually verify
+    if (!modules::sdklevel::IsAtLeastU()) return;
+
+#define V2(path, md, vtype) \
+    V("/sys/fs/bpf/net_shared/" path, (md), ROOT, SYSTEM, "fs_bpf_net_shared", vtype)
+
+    V2("prog_clatd_schedcls_egress4_clat_rawip",  S_IFREG|0440, PROG);
+    V2("prog_clatd_schedcls_ingress6_clat_rawip", S_IFREG|0440, PROG);
+    V2("prog_clatd_schedcls_ingress6_clat_ether", S_IFREG|0440, PROG);
+    V2("map_clatd_clat_egress4_map",              S_IFREG|0660, MAP_RW);
+    V2("map_clatd_clat_ingress6_map",             S_IFREG|0660, MAP_RW);
+
+#undef V2
+
+    if (fatal) abort();
+}
+
+#undef V
 
 static void throwIOException(JNIEnv* env, const char* msg, int error) {
     jniThrowExceptionFmt(env, "java/io/IOException", "%s: %s", msg, strerror(error));
 }
 
 jstring com_android_server_connectivity_ClatCoordinator_selectIpv4Address(JNIEnv* env,
-                                                                          jobject clazz,
+                                                                          jclass clazz,
                                                                           jstring v4addr,
                                                                           jint prefixlen) {
     ScopedUtfChars address(env, v4addr);
@@ -84,7 +172,7 @@ jstring com_android_server_connectivity_ClatCoordinator_selectIpv4Address(JNIEnv
 
 // Picks a random interface ID that is checksum neutral with the IPv4 address and the NAT64 prefix.
 jstring com_android_server_connectivity_ClatCoordinator_generateIpv6Address(
-        JNIEnv* env, jobject clazz, jstring ifaceStr, jstring v4Str, jstring prefix64Str,
+        JNIEnv* env, jclass clazz, jstring ifaceStr, jstring v4Str, jstring prefix64Str,
         jint mark) {
     ScopedUtfChars iface(env, ifaceStr);
     ScopedUtfChars addr4(env, v4Str);
@@ -125,7 +213,7 @@ jstring com_android_server_connectivity_ClatCoordinator_generateIpv6Address(
 }
 
 static jint com_android_server_connectivity_ClatCoordinator_createTunInterface(JNIEnv* env,
-                                                                               jobject clazz,
+                                                                               jclass clazz,
                                                                                jstring tuniface) {
     ScopedUtfChars v4interface(env, tuniface);
 
@@ -138,7 +226,7 @@ static jint com_android_server_connectivity_ClatCoordinator_createTunInterface(J
     }
 
     struct ifreq ifr = {
-            .ifr_flags = IFF_TUN,
+            .ifr_flags = static_cast<short>(IFF_TUN | IFF_TUN_EXCL),
     };
     strlcpy(ifr.ifr_name, v4interface.c_str(), sizeof(ifr.ifr_name));
 
@@ -152,7 +240,7 @@ static jint com_android_server_connectivity_ClatCoordinator_createTunInterface(J
     return fd;
 }
 
-static jint com_android_server_connectivity_ClatCoordinator_detectMtu(JNIEnv* env, jobject clazz,
+static jint com_android_server_connectivity_ClatCoordinator_detectMtu(JNIEnv* env, jclass clazz,
                                                                       jstring platSubnet,
                                                                       jint plat_suffix, jint mark) {
     ScopedUtfChars platSubnetStr(env, platSubnet);
@@ -174,17 +262,24 @@ static jint com_android_server_connectivity_ClatCoordinator_detectMtu(JNIEnv* en
 }
 
 static jint com_android_server_connectivity_ClatCoordinator_openPacketSocket(JNIEnv* env,
-                                                                              jobject clazz) {
+                                                                              jclass clazz) {
     // Will eventually be bound to htons(ETH_P_IPV6) protocol,
     // but only after appropriate bpf filter is attached.
-    int sock = socket(AF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    const int sock = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, 0);
     if (sock < 0) {
         throwIOException(env, "packet socket failed", errno);
         return -1;
     }
-    int on = 1;
+    const int on = 1;
+    // enable tpacket_auxdata cmsg delivery, which includes L2 header length
     if (setsockopt(sock, SOL_PACKET, PACKET_AUXDATA, &on, sizeof(on))) {
         throwIOException(env, "packet socket auxdata enablement failed", errno);
+        close(sock);
+        return -1;
+    }
+    // needed for virtio_net_hdr prepending, which includes checksum metadata
+    if (setsockopt(sock, SOL_PACKET, PACKET_VNET_HDR, &on, sizeof(on))) {
+        throwIOException(env, "packet socket vnet_hdr enablement failed", errno);
         close(sock);
         return -1;
     }
@@ -192,7 +287,7 @@ static jint com_android_server_connectivity_ClatCoordinator_openPacketSocket(JNI
 }
 
 static jint com_android_server_connectivity_ClatCoordinator_openRawSocket6(JNIEnv* env,
-                                                                           jobject clazz,
+                                                                           jclass clazz,
                                                                            jint mark) {
     int sock = socket(AF_INET6, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_RAW);
     if (sock < 0) {
@@ -211,7 +306,7 @@ static jint com_android_server_connectivity_ClatCoordinator_openRawSocket6(JNIEn
 }
 
 static void com_android_server_connectivity_ClatCoordinator_addAnycastSetsockopt(
-        JNIEnv* env, jobject clazz, jobject javaFd, jstring addr6, jint ifindex) {
+        JNIEnv* env, jclass clazz, jobject javaFd, jstring addr6, jint ifindex) {
     int sock = netjniutils::GetNativeFileDescriptor(env, javaFd);
     if (sock < 0) {
         jniThrowExceptionFmt(env, "java/io/IOException", "Invalid file descriptor");
@@ -237,7 +332,7 @@ static void com_android_server_connectivity_ClatCoordinator_addAnycastSetsockopt
 }
 
 static void com_android_server_connectivity_ClatCoordinator_configurePacketSocket(
-        JNIEnv* env, jobject clazz, jobject javaFd, jstring addr6, jint ifindex) {
+        JNIEnv* env, jclass clazz, jobject javaFd, jstring addr6, jint ifindex) {
     ScopedUtfChars addrStr(env, addr6);
 
     int sock = netjniutils::GetNativeFileDescriptor(env, javaFd);
@@ -261,7 +356,7 @@ static void com_android_server_connectivity_ClatCoordinator_configurePacketSocke
 }
 
 static jint com_android_server_connectivity_ClatCoordinator_startClatd(
-        JNIEnv* env, jobject clazz, jobject tunJavaFd, jobject readSockJavaFd,
+        JNIEnv* env, jclass clazz, jobject tunJavaFd, jobject readSockJavaFd,
         jobject writeSockJavaFd, jstring iface, jstring pfx96, jstring v4, jstring v6) {
     ScopedUtfChars ifaceStr(env, iface);
     ScopedUtfChars pfx96Str(env, pfx96);
@@ -358,7 +453,7 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
 
     // 5. actually perform vfork/dup2/execve
     pid_t pid;
-    if (int ret = posix_spawn(&pid, kClatdPath, &fa, &attr, (char* const*)args, nullptr)) {
+    if (int ret = posix_spawn(&pid, kClatdBin, &fa, &attr, (char* const*)args, nullptr)) {
         posix_spawnattr_destroy(&attr);
         posix_spawn_file_actions_destroy(&fa);
         throwIOException(env, "posix_spawn failed", ret);
@@ -377,11 +472,15 @@ static jint com_android_server_connectivity_ClatCoordinator_startClatd(
 static constexpr int WAITPID_ATTEMPTS = 50;
 static constexpr int WAITPID_RETRY_INTERVAL_US = 100000;
 
-static void stopClatdProcess(int pid) {
-    int err = kill(pid, SIGTERM);
-    if (err) {
-        err = errno;
+static void com_android_server_connectivity_ClatCoordinator_stopClatd(JNIEnv* env, jclass clazz,
+                                                                      jint pid) {
+    if (pid <= 0) {
+        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid pid");
+        return;
     }
+
+    int err = kill(pid, SIGTERM);
+    if (err) err = errno;
     if (err == ESRCH) {
         ALOGE("clatd child process %d unexpectedly disappeared", pid);
         return;
@@ -398,7 +497,9 @@ static void stopClatdProcess(int pid) {
     if (ret == 0) {
         ALOGE("Failed to SIGTERM clatd pid=%d, try SIGKILL", pid);
         // TODO: fix that kill failed or waitpid doesn't return.
-        kill(pid, SIGKILL);
+        if (kill(pid, SIGKILL)) {
+            ALOGE("Failed to SIGKILL clatd pid=%d: %s", pid, strerror(errno));
+        }
         ret = waitpid(pid, &status, 0);
     }
     if (ret == -1) {
@@ -408,25 +509,8 @@ static void stopClatdProcess(int pid) {
     }
 }
 
-static void com_android_server_connectivity_ClatCoordinator_stopClatd(JNIEnv* env, jobject clazz,
-                                                                      jstring iface, jstring pfx96,
-                                                                      jstring v4, jstring v6,
-                                                                      jint pid) {
-    ScopedUtfChars ifaceStr(env, iface);
-    ScopedUtfChars pfx96Str(env, pfx96);
-    ScopedUtfChars v4Str(env, v4);
-    ScopedUtfChars v6Str(env, v6);
-
-    if (pid <= 0) {
-        jniThrowExceptionFmt(env, "java/io/IOException", "Invalid pid");
-        return;
-    }
-
-    stopClatdProcess(pid);
-}
-
 static jlong com_android_server_connectivity_ClatCoordinator_getSocketCookie(
-        JNIEnv* env, jobject clazz, jobject sockJavaFd) {
+        JNIEnv* env, jclass clazz, jobject sockJavaFd) {
     int sockFd = netjniutils::GetNativeFileDescriptor(env, sockJavaFd);
     if (sockFd < 0) {
         jniThrowExceptionFmt(env, "java/io/IOException", "Invalid socket file descriptor");
@@ -434,7 +518,7 @@ static jlong com_android_server_connectivity_ClatCoordinator_getSocketCookie(
     }
 
     uint64_t sock_cookie = bpf::getSocketCookie(sockFd);
-    if (sock_cookie == bpf::NONEXISTENT_COOKIE) {
+    if (!sock_cookie) {
         throwIOException(env, "get socket cookie failed", errno);
         return -1;
     }
@@ -469,14 +553,14 @@ static const JNINativeMethod gMethods[] = {
          "(Ljava/io/FileDescriptor;Ljava/io/FileDescriptor;Ljava/io/FileDescriptor;Ljava/lang/"
          "String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)I",
          (void*)com_android_server_connectivity_ClatCoordinator_startClatd},
-        {"native_stopClatd",
-         "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)V",
+        {"native_stopClatd", "(I)V",
          (void*)com_android_server_connectivity_ClatCoordinator_stopClatd},
         {"native_getSocketCookie", "(Ljava/io/FileDescriptor;)J",
          (void*)com_android_server_connectivity_ClatCoordinator_getSocketCookie},
 };
 
 int register_com_android_server_connectivity_ClatCoordinator(JNIEnv* env) {
+    verifyClatPerms();
     return jniRegisterNativeMethods(env,
             "android/net/connectivity/com/android/server/connectivity/ClatCoordinator",
             gMethods, NELEM(gMethods));

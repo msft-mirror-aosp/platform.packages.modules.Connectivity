@@ -30,8 +30,8 @@
 #define __kernel_udphdr udphdr
 #include <linux/udp.h>
 
-// The resulting .o needs to load on the Android T beta 3 bpfloader
-#define BPFLOADER_MIN_VER BPFLOADER_T_BETA3_VERSION
+// The resulting .o needs to load on the Android T bpfloader
+#define BPFLOADER_MIN_VER BPFLOADER_T_VERSION
 
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
@@ -51,12 +51,6 @@ struct frag_hdr {
     __be16 frag_off;        // 13 bit offset, 2 bits zero, 1 bit "More Fragments"
     __be32 identification;
 };
-
-// constants for passing in to 'bool is_ethernet'
-static const bool RAWIP = false;
-static const bool ETHER = true;
-
-#define KVER_4_14 KVER(4, 14, 0)
 
 DEFINE_BPF_MAP_GRW(clat_ingress6_map, HASH, ClatIngress6Key, ClatIngress6Value, 16, AID_SYSTEM)
 
@@ -91,6 +85,12 @@ static inline __always_inline int nat64(struct __sk_buff* skb,
     if (ip6->version != 6) return TC_ACT_PIPE;
 
     // Maximum IPv6 payload length that can be translated to IPv4
+    // Note: technically this check is too strict for an IPv6 fragment,
+    // which by virtue of stripping the extra 8 byte fragment extension header,
+    // could thus be 8 bytes larger and still fit in an ipv4 packet post
+    // translation.  However... who ever heard of receiving ~64KB frags...
+    // fragments are kind of by definition smaller than ingress device mtu,
+    // and thus, on the internet, very very unlikely to exceed 1500 bytes.
     if (ntohs(ip6->payload_len) > 0xFFFF - sizeof(struct iphdr)) return TC_ACT_PIPE;
 
     ClatIngress6Key k = {

@@ -1655,7 +1655,8 @@ public class ConnectivityManagerTest {
         final NetworkCapabilities nc = mCm.getNetworkCapabilities(network);
 
         // Get number of supported concurrent keepalives for testing network.
-        final int[] keepalivesPerTransport = KeepaliveUtils.getSupportedKeepalives(mContext);
+        final int[] keepalivesPerTransport = runAsShell(NETWORK_SETTINGS,
+                () -> mCm.getSupportedKeepalives());
         return KeepaliveUtils.getSupportedKeepalivesForNetworkCapabilities(
                 keepalivesPerTransport, nc);
     }
@@ -1670,6 +1671,9 @@ public class ConnectivityManagerTest {
      * keepalives is set to 0.
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
+    // getSupportedKeepalives is available in updatable ConnectivityManager (S+)
+    // Also, this feature is not mainlined before S, and it's fine to skip on R- devices.
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
     @Test
     public void testKeepaliveWifiUnsupported() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
@@ -1686,6 +1690,9 @@ public class ConnectivityManagerTest {
     }
 
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
+    // getSupportedKeepalives is available in updatable ConnectivityManager (S+)
+    // Also, this feature is not mainlined before S, and it's fine to skip on R- devices.
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
     @Test
     @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testCreateTcpKeepalive() throws Exception {
@@ -1894,6 +1901,9 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
+    // getSupportedKeepalives is available in updatable ConnectivityManager (S+)
+    // Also, this feature is not mainlined before S, and it's fine to skip on R- devices.
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
     @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testSocketKeepaliveLimitWifi() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
@@ -1944,6 +1954,9 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot request network in instant app mode")
     @Test
+    // getSupportedKeepalives is available in updatable ConnectivityManager (S+)
+    // Also, this feature is not mainlined before S, and it's fine to skip on R- devices.
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
     @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testSocketKeepaliveLimitTelephony() throws Exception {
         if (!mPackageManager.hasSystemFeature(FEATURE_TELEPHONY)) {
@@ -1990,6 +2003,9 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
+    // getSupportedKeepalives is available in updatable ConnectivityManager (S+)
+    // Also, this feature is not mainlined before S, and it's fine to skip on R- devices.
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R) @ConnectivityModuleTest
     @RequiresDevice // Keepalive is not supported on virtual hardware
     public void testSocketKeepaliveUnprivileged() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
@@ -2112,7 +2128,12 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "NETWORK_AIRPLANE_MODE permission can't be granted to instant apps")
     @Test
     public void testSetAirplaneMode() throws Exception{
-        final boolean supportWifi = mPackageManager.hasSystemFeature(FEATURE_WIFI);
+        // Starting from T, wifi supports airplane mode enhancement which may not disconnect wifi
+        // when airplane mode is on. The actual behavior that the device will have could only be
+        // checked with hidden wifi APIs(see Settings.Secure.WIFI_APM_STATE). Thus, stop verifying
+        // wifi on T+ device.
+        final boolean verifyWifi = mPackageManager.hasSystemFeature(FEATURE_WIFI)
+                && !SdkLevel.isAtLeastT();
         final boolean supportTelephony = mPackageManager.hasSystemFeature(FEATURE_TELEPHONY);
         // store the current state of airplane mode
         final boolean isAirplaneModeEnabled = isAirplaneModeEnabled();
@@ -2123,7 +2144,7 @@ public class ConnectivityManagerTest {
         // Verify that networks are available as expected if wifi or cell is supported. Continue the
         // test if none of them are supported since test should still able to verify the permission
         // mechanism.
-        if (supportWifi) {
+        if (verifyWifi) {
             mCtsNetUtils.ensureWifiConnected();
             registerCallbackAndWaitForAvailable(makeWifiNetworkRequest(), wifiCb);
         }
@@ -2147,7 +2168,7 @@ public class ConnectivityManagerTest {
             // Verify that the enabling airplane mode takes effect as expected to prevent flakiness
             // caused by fast airplane mode switches. Ensure network lost before turning off
             // airplane mode.
-            if (supportWifi) waitForLost(wifiCb);
+            if (verifyWifi) waitForLost(wifiCb);
             if (supportTelephony) waitForLost(telephonyCb);
 
             // Verify we can disable Airplane Mode with correct permission:
@@ -2156,7 +2177,7 @@ public class ConnectivityManagerTest {
             // Verify that turning airplane mode off takes effect as expected.
             // connectToCell only registers a request, it cannot / does not need to be called twice
             mCtsNetUtils.ensureWifiConnected();
-            if (supportWifi) waitForAvailable(wifiCb);
+            if (verifyWifi) waitForAvailable(wifiCb);
             if (supportTelephony) waitForAvailable(telephonyCb);
         } finally {
             // Restore the previous state of airplane mode and permissions:
@@ -2176,15 +2197,12 @@ public class ConnectivityManagerTest {
                 c -> c instanceof CallbackEntry.Available);
     }
 
-    private void waitForAvailable(
+    private void waitForTransport(
             @NonNull final TestableNetworkCallback cb, final int expectedTransport) {
-        cb.eventuallyExpect(
-                CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
-                entry -> {
-                    final NetworkCapabilities nc = mCm.getNetworkCapabilities(entry.getNetwork());
-                    return nc.hasTransport(expectedTransport);
-                }
-        );
+        cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
+                NETWORK_CALLBACK_TIMEOUT_MS,
+                entry -> ((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                        .hasTransport(expectedTransport));
     }
 
     private void waitForAvailable(
@@ -2409,6 +2427,7 @@ public class ConnectivityManagerTest {
         }
     }
 
+    @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testBlockedStatusCallback() throws Exception {
         // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
@@ -2434,11 +2453,11 @@ public class ConnectivityManagerTest {
         runWithShellPermissionIdentity(() -> registerDefaultNetworkCallbackForUid(
                 otherUid, otherUidCallback, handler), NETWORK_SETTINGS);
 
-        final Network defaultNetwork = mCm.getActiveNetwork();
+        final Network defaultNetwork = myUidCallback.expect(CallbackEntry.AVAILABLE).getNetwork();
         final List<DetailedBlockedStatusCallback> allCallbacks =
                 List.of(myUidCallback, otherUidCallback);
         for (DetailedBlockedStatusCallback callback : allCallbacks) {
-            callback.expectAvailableCallbacksWithBlockedReasonNone(defaultNetwork);
+            callback.eventuallyExpectBlockedStatusCallback(defaultNetwork, BLOCKED_REASON_NONE);
         }
 
         final Range<Integer> myUidRange = new Range<>(myUid, myUid);
@@ -2554,16 +2573,23 @@ public class ConnectivityManagerTest {
                 tetherUtils.registerTetheringEventCallback();
         try {
             tetherEventCallback.assumeWifiTetheringSupported(mContext);
+            // To prevent WiFi-to-WiFi interruption while entering APM:
+            //  - If WiFi is retained while entering APM, hotspot will also remain enabled.
+            //  - If WiFi is off before APM or disabled while entering APM, hotspot will be
+            //    disabled.
+            //
+            // To ensure hotspot always be disabled after enabling APM, disable wifi before
+            // enabling the hotspot.
+            mCtsNetUtils.disableWifi();
 
-            final TestableNetworkCallback wifiCb = new TestableNetworkCallback();
-            mCtsNetUtils.ensureWifiConnected();
-            registerCallbackAndWaitForAvailable(makeWifiNetworkRequest(), wifiCb);
+            tetherUtils.startWifiTethering(tetherEventCallback);
             // Update setting to verify the behavior.
             setAirplaneMode(true);
-            // Verify wifi lost to make sure airplane mode takes effect. This could
+            // Verify softap lost to make sure airplane mode takes effect. This could
             // prevent the race condition between airplane mode enabled and the followed
             // up wifi tethering enabled.
-            waitForLost(wifiCb);
+            tetherEventCallback.expectNoTetheringActive();
+
             // start wifi tethering
             tetherUtils.startWifiTethering(tetherEventCallback);
 
@@ -2588,6 +2614,7 @@ public class ConnectivityManagerTest {
             ConnectivitySettingsManager.setPrivateDnsMode(mContext, curPrivateDnsMode);
             tetherUtils.unregisterTetheringEventCallback(tetherEventCallback);
             tetherUtils.stopAllTethering();
+            mCtsNetUtils.ensureWifiConnected();
         }
     }
 
@@ -2672,7 +2699,8 @@ public class ConnectivityManagerTest {
 
             // Validate that an unmetered network is used over other networks.
             waitForAvailable(defaultCallback, wifiNetwork);
-            waitForAvailable(systemDefaultCallback, wifiNetwork);
+            systemDefaultCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
+                    NETWORK_CALLBACK_TIMEOUT_MS, cb -> wifiNetwork.equals(cb.getNetwork()));
 
             // Validate that when setting unmetered to metered, unmetered is lost and replaced by
             // the network with the TEST transport. Also wait for validation here, in case there
@@ -2684,11 +2712,14 @@ public class ConnectivityManagerTest {
             // callbacks may be received. Eventually, metered Wi-Fi should be the final available
             // callback in any case therefore confirm its receipt before continuing to assure the
             // system is in the expected state.
-            waitForAvailable(systemDefaultCallback, TRANSPORT_WIFI);
+            waitForTransport(systemDefaultCallback, TRANSPORT_WIFI);
         }, /* cleanup */ () -> {
-            // Validate that removing the test network will fallback to the default network.
+                // Validate that removing the test network will fallback to the default network.
                 runWithShellPermissionIdentity(tnt::teardown);
-                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
+                // The other callbacks (LP or NC changes) would receive before LOST callback. Use
+                // eventuallyExpect to check callback for avoiding test flake.
+                defaultCallback.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
+                        lost -> tnt.getNetwork().equals(lost.getNetwork()));
                 waitForAvailable(defaultCallback);
             }, /* cleanup */ () -> {
                 setWifiMeteredStatusAndWait(ssid, oldMeteredValue, false /* waitForValidation */);
@@ -2708,6 +2739,7 @@ public class ConnectivityManagerTest {
         // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
         // shims, and @IgnoreUpTo does not check that.
         assumeTrue(TestUtils.shouldTestSApis());
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
         final TestNetworkTracker tnt = callWithShellPermissionIdentity(
                 () -> initTestNetwork(mContext, TEST_LINKADDR, NETWORK_CALLBACK_TIMEOUT_MS));
@@ -2721,7 +2753,8 @@ public class ConnectivityManagerTest {
                     OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY);
             registerTestOemNetworkPreferenceCallbacks(defaultCallback, systemDefaultCallback);
             waitForAvailable(defaultCallback, tnt.getNetwork());
-            waitForAvailable(systemDefaultCallback, wifiNetwork);
+            systemDefaultCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
+                    NETWORK_CALLBACK_TIMEOUT_MS, cb -> wifiNetwork.equals(cb.getNetwork()));
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
                 defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
@@ -2945,13 +2978,13 @@ public class ConnectivityManagerTest {
 
         allowBadWifi();
 
-        final Network cellNetwork = mCtsNetUtils.connectToCell();
-        final Network wifiNetwork = prepareValidatedNetwork();
-
-        registerDefaultNetworkCallback(defaultCb);
-        registerNetworkCallback(makeWifiNetworkRequest(), wifiCb);
-
         try {
+            final Network cellNetwork = mCtsNetUtils.connectToCell();
+            final Network wifiNetwork = prepareValidatedNetwork();
+
+            registerDefaultNetworkCallback(defaultCb);
+            registerNetworkCallback(makeWifiNetworkRequest(), wifiCb);
+
             // Verify wifi is the default network.
             defaultCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
                     entry -> wifiNetwork.equals(entry.getNetwork()));
@@ -3393,19 +3426,22 @@ public class ConnectivityManagerTest {
                     + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
         }
 
+        dstSock.receive(pkt);
+        assertArrayEquals(sendData, pkt.getData());
+
         if (expectBlock) {
             fail("Expect to be blocked by firewall but sending packet was not blocked:"
                     + " chain=" + chain
                     + " chainEnabled=" + mCm.getFirewallChainEnabled(chain)
                     + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
         }
-
-        dstSock.receive(pkt);
-        assertArrayEquals(sendData, pkt.getData());
     }
 
     private static final boolean EXPECT_PASS = false;
     private static final boolean EXPECT_BLOCK = true;
+
+    // ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+    // DENYLIST means the firewall allows all by default, uids must be explicitly denyed
     private static final boolean ALLOWLIST = true;
     private static final boolean DENYLIST = false;
 
@@ -3471,17 +3507,49 @@ public class ConnectivityManagerTest {
 
     @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
     @AppModeFull(reason = "Socket cannot bind in instant app mode")
-    public void testFirewallBlocking() {
-        // ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
+    public void testFirewallBlockingDozable() {
         doTestFirewallBlocking(FIREWALL_CHAIN_DOZABLE, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_POWERSAVE, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_RESTRICTED, ALLOWLIST);
-        doTestFirewallBlocking(FIREWALL_CHAIN_LOW_POWER_STANDBY, ALLOWLIST);
+    }
 
-        // DENYLIST means the firewall allows all by default, uids must be explicitly denyed
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingPowersave() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_POWERSAVE, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingRestricted() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_RESTRICTED, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingLowPowerStandby() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_LOW_POWER_STANDBY, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingStandby() {
         doTestFirewallBlocking(FIREWALL_CHAIN_STANDBY, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny1() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_1, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny2() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_2, DENYLIST);
+    }
+
+    @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingOemDeny3() {
         doTestFirewallBlocking(FIREWALL_CHAIN_OEM_DENY_3, DENYLIST);
     }
 

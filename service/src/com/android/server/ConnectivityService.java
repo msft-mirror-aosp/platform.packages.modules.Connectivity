@@ -91,13 +91,14 @@ import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
-import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
+import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 import static android.system.OsConstants.ETH_P_ALL;
 import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
 import static com.android.net.module.util.NetworkMonitorUtils.isPrivateDnsValidationRequired;
+import static com.android.net.module.util.PermissionUtils.checkAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermission;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermissionOr;
@@ -133,7 +134,6 @@ import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.BlockedReason;
 import android.net.ConnectivityManager.NetworkCallback;
 import android.net.ConnectivityManager.RestrictBackgroundStatus;
-import android.net.ConnectivityResources;
 import android.net.ConnectivitySettingsManager;
 import android.net.DataStallReportParcelable;
 import android.net.DnsResolverServiceManager;
@@ -243,6 +243,7 @@ import android.util.ArraySet;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.Pair;
+import android.util.Range;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
 
@@ -279,11 +280,13 @@ import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker.AutomaticO
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
 import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
+import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
 import com.android.server.connectivity.DscpPolicyTracker;
 import com.android.server.connectivity.FullScore;
 import com.android.server.connectivity.InvalidTagException;
+import com.android.server.connectivity.KeepaliveResourceUtil;
 import com.android.server.connectivity.KeepaliveTracker;
 import com.android.server.connectivity.LingerMonitor;
 import com.android.server.connectivity.MockableSystemProperties;
@@ -309,11 +312,13 @@ import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -463,7 +468,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private String mCurrentTcpBufferSizes;
 
     private static final SparseArray<String> sMagicDecoderRing = MessageUtils.findMessageNames(
-            new Class[] { ConnectivityService.class, NetworkAgent.class, NetworkAgentInfo.class });
+            new Class[] {
+                    ConnectivityService.class,
+                    NetworkAgent.class,
+                    NetworkAgentInfo.class,
+                    AutomaticOnOffKeepaliveTracker.class });
 
     private enum ReapUnvalidatedNetworks {
         // Tear down networks that have no chance (e.g. even if validated) of becoming
@@ -911,7 +920,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     // This is the cache for the packageName -> ApplicationSelfCertifiedNetworkCapabilities. This
     // value can be accessed from both handler thread and any random binder thread. Therefore,
-    // accessing this value requires holding a lock.
+    // accessing this value requires holding a lock. The cache is the same across all the users.
     @GuardedBy("mSelfCertifiedCapabilityCache")
     private final Map<String, ApplicationSelfCertifiedNetworkCapabilities>
             mSelfCertifiedCapabilityCache = new HashMap<>();
@@ -1384,9 +1393,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         /**
          * @see DeviceConfigUtils#isFeatureEnabled
          */
-        public boolean isFeatureEnabled(Context context, String name, boolean defaultEnabled) {
-            return DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_CONNECTIVITY, name,
-                    TETHERING_MODULE_NAME, defaultEnabled);
+        public boolean isFeatureEnabled(Context context, String name) {
+            return DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_TETHERING, name,
+                    TETHERING_MODULE_NAME, false /* defaultValue */);
         }
 
         /**
@@ -1479,6 +1488,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         public boolean isChangeEnabled(long changeId, @NonNull final String packageName,
                 @NonNull final UserHandle user) {
             return CompatChanges.isChangeEnabled(changeId, packageName, user);
+        }
+
+        /**
+         * Call {@link InetDiagMessage#destroyLiveTcpSockets(Set, Set)}
+         *
+         * @param ranges target uid ranges
+         * @param exemptUids uids to skip close socket
+         */
+        public void destroyLiveTcpSockets(@NonNull final Set<Range<Integer>> ranges,
+                @NonNull final Set<Integer> exemptUids)
+                throws SocketException, InterruptedIOException, ErrnoException {
+            InetDiagMessage.destroyLiveTcpSockets(ranges, exemptUids);
         }
     }
 
@@ -2324,11 +2345,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (newNc.getNetworkSpecifier() != null) {
             newNc.setNetworkSpecifier(newNc.getNetworkSpecifier().redact());
         }
-        if (!checkAnyPermissionOf(callerPid, callerUid, android.Manifest.permission.NETWORK_STACK,
+        if (!checkAnyPermissionOf(mContext, callerPid, callerUid,
+                android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)) {
             newNc.setAdministratorUids(new int[0]);
         }
-        if (!checkAnyPermissionOf(
+        if (!checkAnyPermissionOf(mContext,
                 callerPid, callerUid, android.Manifest.permission.NETWORK_FACTORY)) {
             newNc.setAllowedUids(new ArraySet<>());
             newNc.setSubscriptionIds(Collections.emptySet());
@@ -2837,15 +2859,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         setUidBlockedReasons(uid, blockedReasons);
     }
 
-    private boolean checkAnyPermissionOf(int pid, int uid, String... permissions) {
-        for (String permission : permissions) {
-            if (mContext.checkPermission(permission, pid, uid) == PERMISSION_GRANTED) {
-                return true;
-            }
-        }
-        return false;
-    }
-
     private void enforceInternetPermission() {
         mContext.enforceCallingOrSelfPermission(
                 android.Manifest.permission.INTERNET,
@@ -3004,13 +3017,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private boolean checkNetworkStackPermission(int pid, int uid) {
-        return checkAnyPermissionOf(pid, uid,
+        return checkAnyPermissionOf(mContext, pid, uid,
                 android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
     private boolean checkNetworkSignalStrengthWakeupPermission(int pid, int uid) {
-        return checkAnyPermissionOf(pid, uid,
+        return checkAnyPermissionOf(mContext, pid, uid,
                 android.Manifest.permission.NETWORK_SIGNAL_STRENGTH_WAKEUP,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
                 android.Manifest.permission.NETWORK_SETTINGS);
@@ -3133,7 +3146,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             optsShim.setDeliveryGroupPolicy(ConstantsShim.DELIVERY_GROUP_POLICY_MOST_RECENT);
             optsShim.setDeliveryGroupMatchingKey(ConnectivityManager.CONNECTIVITY_ACTION,
                     createDeliveryGroupKeyForConnectivityAction(info));
-            optsShim.setDeferUntilActive(true);
+            optsShim.setDeferralPolicy(ConstantsShim.DEFERRAL_POLICY_UNTIL_ACTIVE);
         } catch (UnsupportedApiLevelException e) {
             Log.wtf(TAG, "Using unsupported API" + e);
         }
@@ -5008,7 +5021,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private RequestInfoPerUidCounter getRequestCounter(NetworkRequestInfo nri) {
-        return checkAnyPermissionOf(
+        return checkAnyPermissionOf(mContext,
                 nri.mPid, nri.mUid, NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
                 ? mSystemNetworkRequestCounter : mNetworkRequestCounter;
     }
@@ -5605,12 +5618,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     handleConfigureAlwaysOnNetworks();
                     break;
                 }
-                // Sent by KeepaliveTracker to process an app request on the state machine thread.
-                case NetworkAgent.CMD_START_SOCKET_KEEPALIVE: {
+                // Sent by AutomaticOnOffKeepaliveTracker to process an app request on the
+                // handler thread.
+                case AutomaticOnOffKeepaliveTracker.CMD_REQUEST_START_KEEPALIVE: {
                     mKeepaliveTracker.handleStartKeepalive(msg);
                     break;
                 }
-                case NetworkAgent.CMD_MONITOR_AUTOMATIC_KEEPALIVE: {
+                case AutomaticOnOffKeepaliveTracker.CMD_MONITOR_AUTOMATIC_KEEPALIVE: {
                     final AutomaticOnOffKeepalive ki =
                             mKeepaliveTracker.getKeepaliveForBinder((IBinder) msg.obj);
                     if (null == ki) return; // The callback was unregistered before the alarm fired
@@ -7001,6 +7015,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return;
         }
         ApplicationSelfCertifiedNetworkCapabilities applicationNetworkCapabilities;
+        final long ident = Binder.clearCallingIdentity();
         try {
             synchronized (mSelfCertifiedCapabilityCache) {
                 applicationNetworkCapabilities = mSelfCertifiedCapabilityCache.get(
@@ -7027,6 +7042,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             + " property");
         } catch (XmlPullParserException | IOException | InvalidTagException e) {
             throw new SecurityException(e.getMessage());
+        } finally {
+            Binder.restoreCallingIdentity(ident);
         }
 
         applicationNetworkCapabilities.enforceSelfCertifiedNetworkCapabilitiesDeclared(
@@ -7903,16 +7920,27 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return captivePortalBuilder.build();
     }
 
-    private String makeNflogPrefix(String iface, long networkHandle) {
+    @VisibleForTesting
+    static String makeNflogPrefix(String iface, long networkHandle) {
         // This needs to be kept in sync and backwards compatible with the decoding logic in
         // NetdEventListenerService, which is non-mainline code.
         return SdkLevel.isAtLeastU() ? (networkHandle + ":" + iface) : ("iface:" + iface);
     }
 
+    private static boolean isWakeupMarkingSupported(NetworkCapabilities capabilities) {
+        if (capabilities.hasTransport(TRANSPORT_WIFI)) {
+            return true;
+        }
+        if (SdkLevel.isAtLeastU() && capabilities.hasTransport(TRANSPORT_CELLULAR)) {
+            return true;
+        }
+        return false;
+    }
+
     private void wakeupModifyInterface(String iface, NetworkAgentInfo nai, boolean add) {
         // Marks are only available on WiFi interfaces. Checking for
         // marks on unsupported interfaces is harmless.
-        if (!nai.networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+        if (!isWakeupMarkingSupported(nai.networkCapabilities)) {
             return;
         }
 
@@ -8447,11 +8475,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return stableRanges;
     }
 
-    private void maybeCloseSockets(NetworkAgentInfo nai, UidRangeParcel[] ranges,
-            int[] exemptUids) {
+    private void maybeCloseSockets(NetworkAgentInfo nai, Set<UidRange> ranges,
+            Set<Integer> exemptUids) {
         if (nai.isVPN() && !nai.networkAgentConfig.allowBypass) {
             try {
-                mNetd.socketDestroy(ranges, exemptUids);
+                mDeps.destroyLiveTcpSockets(UidRange.toIntRanges(ranges), exemptUids);
             } catch (Exception e) {
                 loge("Exception in socket destroy: ", e);
             }
@@ -8459,15 +8487,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void updateVpnUidRanges(boolean add, NetworkAgentInfo nai, Set<UidRange> uidRanges) {
-        int[] exemptUids = new int[2];
+        final Set<Integer> exemptUids = new ArraySet<>();
         // TODO: Excluding VPN_UID is necessary in order to not to kill the TCP connection used
         // by PPTP. Fix this by making Vpn set the owner UID to VPN_UID instead of system when
         // starting a legacy VPN, and remove VPN_UID here. (b/176542831)
-        exemptUids[0] = VPN_UID;
-        exemptUids[1] = nai.networkCapabilities.getOwnerUid();
+        exemptUids.add(VPN_UID);
+        exemptUids.add(nai.networkCapabilities.getOwnerUid());
         UidRangeParcel[] ranges = toUidRangeStableParcels(uidRanges);
 
-        maybeCloseSockets(nai, ranges, exemptUids);
+        // Close sockets before modifying uid ranges so that RST packets can reach to the server.
+        maybeCloseSockets(nai, uidRanges, exemptUids);
         try {
             if (add) {
                 mNetd.networkAddUidRangesParcel(new NativeUidRangeConfig(
@@ -8480,7 +8509,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             loge("Exception while " + (add ? "adding" : "removing") + " uid ranges " + uidRanges +
                     " on netId " + nai.network.netId + ". " + e);
         }
-        maybeCloseSockets(nai, ranges, exemptUids);
+        // Close sockets that established connection while requesting netd.
+        maybeCloseSockets(nai, uidRanges, exemptUids);
     }
 
     private boolean isProxySetOnAnyDefaultNetwork() {
@@ -10018,6 +10048,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     @Override
+    public int[] getSupportedKeepalives() {
+        enforceAnyPermissionOf(mContext, android.Manifest.permission.NETWORK_SETTINGS,
+                // Backwards compatibility with CTS 13
+                android.Manifest.permission.QUERY_ALL_PACKAGES);
+
+        return BinderUtils.withCleanCallingIdentity(() ->
+                KeepaliveResourceUtil.getSupportedKeepalives(mContext));
+    }
+
+    @Override
     public void factoryReset() {
         enforceSettingsPermission();
 
@@ -10729,6 +10769,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         callback));
     }
 
+    private boolean hasUnderlyingTestNetworks(NetworkCapabilities nc) {
+        final List<Network> underlyingNetworks = nc.getUnderlyingNetworks();
+        if (underlyingNetworks == null) return false;
+
+        for (Network network : underlyingNetworks) {
+            if (getNetworkCapabilitiesInternal(network).hasTransport(TRANSPORT_TEST)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public void simulateDataStall(int detectionMethod, long timestampMillis,
             @NonNull Network network, @NonNull PersistableBundle extras) {
@@ -10739,14 +10791,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 android.Manifest.permission.MANAGE_TEST_NETWORKS,
                 android.Manifest.permission.NETWORK_STACK);
         final NetworkCapabilities nc = getNetworkCapabilitiesInternal(network);
-        if (!nc.hasTransport(TRANSPORT_TEST)) {
-            throw new SecurityException("Data Stall simulation is only possible for test networks");
+        if (!nc.hasTransport(TRANSPORT_TEST) && !hasUnderlyingTestNetworks(nc)) {
+            throw new SecurityException(
+                    "Data Stall simulation is only possible for test networks or networks built on"
+                            + " top of test networks");
         }
 
         final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
-        if (nai == null || nai.creatorUid != mDeps.getCallingUid()) {
-            throw new SecurityException("Data Stall simulation is only possible for network "
-                + "creators");
+        if (nai == null
+                || (nai.creatorUid != mDeps.getCallingUid()
+                        && nai.creatorUid != Process.SYSTEM_UID)) {
+            throw new SecurityException(
+                    "Data Stall simulation is only possible for network " + "creators");
         }
 
         // Instead of passing the data stall directly to the ConnectivityDiagnostics handler, treat

@@ -16,8 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
-import static com.android.server.connectivity.mdns.MdnsSocketProvider.ensureRunningOnHandlerThread;
-import static com.android.server.connectivity.mdns.MdnsSocketProvider.isNetworkMatched;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.isNetworkMatched;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -70,7 +70,7 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
         }
 
         @Override
-        public void onSocketCreated(@NonNull Network network,
+        public void onSocketCreated(@Nullable Network network,
                 @NonNull MdnsInterfaceSocket socket, @NonNull List<LinkAddress> addresses) {
             // The socket may be already created by other request before, try to get the stored
             // ReadPacketHandler.
@@ -86,7 +86,7 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
         }
 
         @Override
-        public void onInterfaceDestroyed(@NonNull Network network,
+        public void onInterfaceDestroyed(@Nullable Network network,
                 @NonNull MdnsInterfaceSocket socket) {
             mSocketPacketHandlers.remove(socket);
             mActiveNetworkSockets.remove(socket);

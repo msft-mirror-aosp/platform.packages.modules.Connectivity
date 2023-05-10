@@ -64,11 +64,12 @@ android_library {
         "junit",
         "hamcrest-library",
         "kotlin-test",
+        "mockito-target",
     ],
     libs: [
         "android.test.base",
         "androidx.annotation_annotation",
-        "framework-tethering",
+        "framework-connectivity",
         "org.apache.http.legacy",
     ],
     lint: { test: true }

@@ -46,6 +46,7 @@ import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStatsHistory.FIELD_ALL;
 import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_TEST;
 import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.TrafficStats.KB_IN_BYTES;
 import static android.net.TrafficStats.MB_IN_BYTES;
@@ -83,7 +84,6 @@ import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.net.ConnectivityManager;
-import android.net.ConnectivityResources;
 import android.net.DataUsageRequest;
 import android.net.INetd;
 import android.net.INetworkStatsService;
@@ -106,6 +106,7 @@ import android.net.TelephonyNetworkSpecifier;
 import android.net.TetherStatsParcel;
 import android.net.TetheringManager;
 import android.net.TrafficStats;
+import android.net.TransportInfo;
 import android.net.UnderlyingNetworkInfo;
 import android.net.Uri;
 import android.net.netstats.IUsageCallback;
@@ -113,6 +114,7 @@ import android.net.netstats.NetworkStatsDataMigrationUtils;
 import android.net.netstats.provider.INetworkStatsProvider;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
 import android.net.netstats.provider.NetworkStatsProvider;
+import android.net.wifi.WifiInfo;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
@@ -173,6 +175,7 @@ import com.android.networkstack.apishim.BroadcastOptionsShimImpl;
 import com.android.networkstack.apishim.ConstantsShim;
 import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 import com.android.server.BpfNetMaps;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -537,7 +540,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                                     BroadcastOptions.makeBasic())
                                     .setDeliveryGroupPolicy(
                                             ConstantsShim.DELIVERY_GROUP_POLICY_MOST_RECENT)
-                                    .setDeferUntilActive(true)
+                                    .setDeferralPolicy(
+                                            ConstantsShim.DEFERRAL_POLICY_UNTIL_ACTIVE)
                                     .toBundle();
                         } catch (UnsupportedApiLevelException e) {
                             Log.wtf(TAG, "Using unsupported API" + e);
@@ -943,7 +947,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @GuardedBy("mStatsLock")
     private void shutdownLocked() {
         final TetheringManager tetheringManager = mContext.getSystemService(TetheringManager.class);
-        tetheringManager.unregisterTetheringEventCallback(mTetherListener);
+        try {
+            tetheringManager.unregisterTetheringEventCallback(mTetherListener);
+        } catch (IllegalStateException e) {
+            Log.i(TAG, "shutdownLocked: error when unregister tethering, ignored. e=" + e);
+        }
         mContext.unregisterReceiver(mPollReceiver);
         mContext.unregisterReceiver(mRemovedReceiver);
         mContext.unregisterReceiver(mUserReceiver);
@@ -1575,7 +1583,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         // For a template with wifi network keys, it is possible for a malicious
         // client to track the user locations via querying data usage. Thus, enforce
         // fine location permission check.
-        if (!template.getWifiNetworkKeys().isEmpty()) {
+        // For a template with MATCH_TEST, since the wifi network key is just a placeholder
+        // to identify a specific test network, it is not related to track user location.
+        if (!template.getWifiNetworkKeys().isEmpty() && template.getMatchRule() != MATCH_TEST) {
             final boolean canAccessFineLocation = mLocationPermissionChecker
                     .checkCallersLocationPermission(callingPackage,
                     null /* featureId */,
@@ -1729,11 +1739,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         PermissionUtils.enforceNetworkStackPermission(mContext);
         try {
             final String[] ifaceArray = getAllIfacesSinceBoot(transport);
-            // TODO(b/215633405) : mMobileIfaces and mWifiIfaces already contain the stacked
-            // interfaces, so this is not useful, remove it.
-            final String[] ifacesToQuery =
-                    mStatsFactory.augmentWithStackedInterfaces(ifaceArray);
-            final NetworkStats stats = getNetworkStatsUidDetail(ifacesToQuery);
+            final NetworkStats stats = getNetworkStatsUidDetail(ifaceArray);
             // Clear the interfaces of the stats before returning, so callers won't get this
             // information. This is because no caller needs this information for now, and it
             // makes it easier to change the implementation later by using the histories in the
@@ -2125,6 +2131,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             final NetworkIdentity ident = NetworkIdentity.buildNetworkIdentity(mContext, snapshot,
                     isDefault, ratType);
 
+            // If WifiInfo contains a null network key then this identity should not be added into
+            // the network identity set. See b/266598304.
+            final TransportInfo transportInfo = snapshot.getNetworkCapabilities()
+                    .getTransportInfo();
+            if (transportInfo instanceof WifiInfo) {
+                final WifiInfo info = (WifiInfo) transportInfo;
+                if (info.getNetworkKey() == null) continue;
+            }
             // Traffic occurring on the base interface is always counted for
             // both total usage and UID details.
             final String baseIface = snapshot.getLinkProperties().getInterfaceName();

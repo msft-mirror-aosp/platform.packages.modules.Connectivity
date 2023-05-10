@@ -39,6 +39,7 @@ import static com.android.net.module.util.NetworkStackConstants.IPV4_HEADER_MIN_
 import static com.android.net.module.util.NetworkStackConstants.IPV4_LENGTH_OFFSET;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -62,7 +63,6 @@ import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.EthernetHeader;
 import com.android.net.module.util.structs.Icmpv4Header;
 import com.android.net.module.util.structs.Ipv4Header;
-import com.android.net.module.util.structs.Ipv6Header;
 import com.android.net.module.util.structs.UdpHeader;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
@@ -365,7 +365,7 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
             // Enable Ethernet tethering and check that it starts.
             tetheringEventCallback = enableEthernetTethering(iface, null /* any upstream */);
         } finally {
-            maybeUnregisterTetheringEventCallback(tetheringEventCallback);
+            stopEthernetTethering(tetheringEventCallback);
         }
         // There is nothing more we can do on a physical interface without connecting an actual
         // client, which is not possible in this test.
@@ -520,18 +520,6 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
     @Test
     public void testTetherUdpV4() throws Exception {
         runUdp4Test();
-    }
-
-    @NonNull
-    private Inet6Address getClatIpv6Address(TetheringTester tester, TetheredDevice tethered)
-            throws Exception {
-        // Send an IPv4 UDP packet from client and check that a CLAT translated IPv6 UDP packet can
-        // be found on upstream interface. Get CLAT IPv6 address from the CLAT translated IPv6 UDP
-        // packet.
-        byte[] expectedPacket = probeV4TetheringConnectivity(tester, tethered, true /* is4To6 */);
-
-        // Above has guaranteed that the found packet is an IPv6 packet without ether header.
-        return Struct.parse(Ipv6Header.class, ByteBuffer.wrap(expectedPacket)).srcIp;
     }
 
     // Test network topology:
@@ -851,5 +839,42 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
                 tethered.ipv4Addr /* uploadSrcIp */, REMOTE_IP4_ADDR /* uploadDstIp */,
                 REMOTE_NAT64_ADDR /* downloadSrcIp */, clatIp6 /* downloadDstIp */,
                 tester, true /* isClat */);
+    }
+
+    private static final byte[] ZeroLengthDhcpPacket = new byte[] {
+            // scapy.Ether(
+            //   dst="ff:ff:ff:ff:ff:ff")
+            // scapy.IP(
+            //   dst="255.255.255.255")
+            // scapy.UDP(sport=68, dport=67)
+            /* Ethernet Header */
+            (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff,
+            (byte) 0xe0, (byte) 0x4f, (byte) 0x43, (byte) 0xe6, (byte) 0xfb, (byte) 0xd2,
+            (byte) 0x08, (byte) 0x00,
+            /* Ip header */
+            (byte) 0x45, (byte) 0x00, (byte) 0x00, (byte) 0x1c, (byte) 0x00, (byte) 0x01,
+            (byte) 0x00, (byte) 0x00, (byte) 0x40, (byte) 0x11, (byte) 0xb6, (byte) 0x58,
+            (byte) 0x64, (byte) 0x4f, (byte) 0x60, (byte) 0x29, (byte) 0xff, (byte) 0xff,
+            (byte) 0xff, (byte) 0xff,
+            /* UDP header */
+            (byte) 0x00, (byte) 0x44, (byte) 0x00, (byte) 0x43,
+            (byte) 0x00, (byte) 0x08, (byte) 0x3a, (byte) 0xdf
+    };
+
+    @Test
+    public void testTetherZeroLengthDhcpPacket() throws Exception {
+        final TetheringTester tester = initTetheringTester(toList(TEST_IP4_ADDR),
+                toList(TEST_IP4_DNS));
+        tester.createTetheredDevice(TEST_MAC, false /* hasIpv6 */);
+
+        // Send a zero-length DHCP packet to upstream DHCP server.
+        final ByteBuffer packet = ByteBuffer.wrap(ZeroLengthDhcpPacket);
+        tester.sendUploadPacket(packet);
+
+        // Send DHCPDISCOVER packet from another downstream tethered device to verify that upstream
+        // DHCP server has closed the listening socket and stopped reading, then we will not receive
+        // any DHCPOFFER in this case.
+        final MacAddress macAddress = MacAddress.fromString("11:22:33:44:55:66");
+        assertFalse(tester.testDhcpServerAlive(macAddress));
     }
 }
