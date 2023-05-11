@@ -29,10 +29,13 @@ import android.hardware.location.NanoAppMessage;
 import android.nearby.DataElement;
 import android.nearby.NearbyDevice;
 import android.nearby.NearbyDeviceParcelable;
+import android.nearby.OffloadCapability;
 import android.nearby.PresenceDevice;
 import android.nearby.PresenceScanFilter;
 import android.nearby.PublicCredential;
 import android.nearby.ScanFilter;
+import android.nearby.aidl.IOffloadCallback;
+import android.os.RemoteException;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
@@ -141,8 +144,25 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         return mChreCommunication.available();
     }
 
+    /**
+     * Query offload capability in a device.
+     */
+    public void queryOffloadCapability(IOffloadCallback callback) {
+        OffloadCapability.Builder builder = new OffloadCapability.Builder();
+        mExecutor.execute(() -> {
+            long version = mChreCommunication.queryNanoAppVersion();
+            builder.setVersion(version);
+            builder.setFastPairSupported(version != ChreCommunication.INVALID_NANO_APP_VERSION);
+            try {
+                callback.onQueryComplete(builder.build());
+            } catch (RemoteException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
     @VisibleForTesting
-    List<ScanFilter> getFiltersLocked() {
+    public List<ScanFilter> getFiltersLocked() {
         synchronized (mLock) {
             return mScanFilters == null ? null : List.copyOf(mScanFilters);
         }
@@ -203,9 +223,11 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         NANOAPP_ID, NANOAPP_MESSAGE_TYPE_FILTER, filters.toByteArray());
-        if (!mChreCommunication.sendMessageToNanoApp(message)) {
-            Log.e(TAG, "Failed to send filters to CHRE.");
+        if (mChreCommunication.sendMessageToNanoApp(message)) {
+            Log.v(TAG, "Successfully sent filters to CHRE.");
+            return;
         }
+        Log.e(TAG, "Failed to send filters to CHRE.");
     }
 
     private void sendScreenUpdate(Boolean screenOn) {
@@ -213,9 +235,11 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         NANOAPP_ID, NANOAPP_MESSAGE_TYPE_CONFIG, config.toByteArray());
-        if (!mChreCommunication.sendMessageToNanoApp(message)) {
-            Log.e(TAG, "Failed to send config to CHRE.");
+        if (mChreCommunication.sendMessageToNanoApp(message)) {
+            Log.v(TAG, "Successfully sent config to CHRE.");
+            return;
         }
+        Log.e(TAG, "Failed to send config to CHRE.");
     }
 
     private class ChreCallback implements ChreCommunication.ContextHubCommsCallback {

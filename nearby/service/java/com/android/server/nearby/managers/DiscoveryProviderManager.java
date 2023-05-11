@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Android Open Source Project
+ * Copyright (C) 2023 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.android.server.nearby.provider;
+package com.android.server.nearby.managers;
 
 import static android.nearby.ScanRequest.SCAN_TYPE_NEARBY_PRESENCE;
 
@@ -31,6 +31,7 @@ import android.nearby.PresenceScanFilter;
 import android.nearby.ScanCallback;
 import android.nearby.ScanFilter;
 import android.nearby.ScanRequest;
+import android.nearby.aidl.IOffloadCallback;
 import android.os.IBinder;
 import android.os.RemoteException;
 import android.util.Log;
@@ -40,6 +41,11 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.nearby.injector.Injector;
 import com.android.server.nearby.metrics.NearbyMetrics;
 import com.android.server.nearby.presence.PresenceDiscoveryResult;
+import com.android.server.nearby.provider.AbstractDiscoveryProvider;
+import com.android.server.nearby.provider.BleDiscoveryProvider;
+import com.android.server.nearby.provider.ChreCommunication;
+import com.android.server.nearby.provider.ChreDiscoveryProvider;
+import com.android.server.nearby.provider.PrivacyFilter;
 import com.android.server.nearby.util.identity.CallerIdentity;
 import com.android.server.nearby.util.permissions.DiscoveryPermissions;
 
@@ -208,7 +214,6 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
             }
             ScanListenerRecord scanListenerRecord =
                     new ScanListenerRecord(scanRequest, listener, callerIdentity, deathRecipient);
-            mScanTypeScanListenerRecordMap.put(listenerBinder, scanListenerRecord);
 
             Boolean started = startProviders(scanRequest);
             if (started == null) {
@@ -217,6 +222,7 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
             if (!started) {
                 return NearbyManager.ScanStatus.ERROR;
             }
+            mScanTypeScanListenerRecordMap.put(listenerBinder, scanListenerRecord);
             NearbyMetrics.logScanStarted(scanListenerRecord.hashCode(), scanRequest);
             if (mScanMode < scanRequest.getScanMode()) {
                 mScanMode = scanRequest.getScanMode();
@@ -275,6 +281,13 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
                 }
             }
         }
+    }
+
+    /**
+     * Query offload capability in a device.
+     */
+    public void queryOffloadCapability(IOffloadCallback callback) {
+        mChreDiscoveryProvider.queryOffloadCapability(callback);
     }
 
     /**
@@ -419,7 +432,10 @@ public class DiscoveryProviderManager implements AbstractDiscoveryProvider.Liste
         return false;
     }
 
-    class ScanListenerDeathRecipient implements IBinder.DeathRecipient {
+    /**
+     * Class to make listener unregister after the binder is dead.
+     */
+    public class ScanListenerDeathRecipient implements IBinder.DeathRecipient {
         public IScanListener listener;
 
         ScanListenerDeathRecipient(IScanListener listener) {

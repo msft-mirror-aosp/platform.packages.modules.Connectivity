@@ -30,9 +30,9 @@ public class SocketNetLinkMonitorFactory {
     /**
      * Creates a new netlink monitor.
      */
-    public static ISocketNetLinkMonitor createNetLinkMonitor(@NonNull final Handler handler,
-            @NonNull SharedLog log) {
-        return new SocketNetlinkMonitor(handler, log);
+    public static AbstractSocketNetlink createNetLinkMonitor(@NonNull final Handler handler,
+            @NonNull SharedLog log, @NonNull MdnsSocketProvider.NetLinkMonitorCallBack cb) {
+        return new SocketNetlinkMonitor(handler, log, cb);
     }
 
     private SocketNetLinkMonitorFactory() {

@@ -18,7 +18,7 @@ package com.android.server.nearby.provider;
 
 import static android.Manifest.permission.READ_DEVICE_CONFIG;
 import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
+import static android.provider.DeviceConfig.NAMESPACE_NEARBY;
 
 import static com.android.server.nearby.NearbyConfiguration.NEARBY_SUPPORT_TEST_APP;
 
@@ -26,11 +26,17 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.hardware.location.NanoAppMessage;
 import android.nearby.DataElement;
 import android.nearby.NearbyDeviceParcelable;
+import android.nearby.OffloadCapability;
+import android.nearby.aidl.IOffloadCallback;
+import android.os.Build;
+import android.os.IBinder;
+import android.os.RemoteException;
 import android.provider.DeviceConfig;
 
 import androidx.test.filters.SdkSuppress;
@@ -57,6 +63,7 @@ import service.proto.Blefilter;
 public class ChreDiscoveryProviderTest {
     @Mock AbstractDiscoveryProvider.Listener mListener;
     @Mock ChreCommunication mChreCommunication;
+    @Mock IBinder mIBinder;
 
     @Captor ArgumentCaptor<ChreCommunication.ContextHubCommsCallback> mChreCallbackCaptor;
     @Captor ArgumentCaptor<NearbyDeviceParcelable> mNearbyDevice;
@@ -70,7 +77,9 @@ public class ChreDiscoveryProviderTest {
     private static final int DATA_TYPE_TEST_DE_BEGIN_KEY = 2147483520;
     private static final int DATA_TYPE_TEST_DE_END_KEY = 2147483647;
 
+    private final Object mLock = new Object();
     private ChreDiscoveryProvider mChreDiscoveryProvider;
+    private OffloadCapability mOffloadCapability;
 
     @Before
     public void setUp() {
@@ -89,6 +98,64 @@ public class ChreDiscoveryProviderTest {
         mChreDiscoveryProvider.init();
         verify(mChreCommunication).start(mChreCallbackCaptor.capture(), any());
         mChreCallbackCaptor.getValue().started(true);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public void test_queryInvalidVersion() {
+        when(mChreCommunication.queryNanoAppVersion()).thenReturn(
+                (long) ChreCommunication.INVALID_NANO_APP_VERSION);
+        IOffloadCallback callback = new IOffloadCallback() {
+            @Override
+            public void onQueryComplete(OffloadCapability capability) throws RemoteException {
+                synchronized (mLock) {
+                    mOffloadCapability = capability;
+                    mLock.notify();
+                }
+            }
+
+            @Override
+            public IBinder asBinder() {
+                return mIBinder;
+            }
+        };
+        mChreDiscoveryProvider.queryOffloadCapability(callback);
+        OffloadCapability capability =
+                new OffloadCapability
+                        .Builder()
+                        .setFastPairSupported(false)
+                        .setVersion(ChreCommunication.INVALID_NANO_APP_VERSION)
+                        .build();
+        assertThat(mOffloadCapability).isEqualTo(capability);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public void test_queryVersion() {
+        long version = 500L;
+        when(mChreCommunication.queryNanoAppVersion()).thenReturn(version);
+        IOffloadCallback callback = new IOffloadCallback() {
+            @Override
+            public void onQueryComplete(OffloadCapability capability) throws RemoteException {
+                synchronized (mLock) {
+                    mOffloadCapability = capability;
+                    mLock.notify();
+                }
+            }
+
+            @Override
+            public IBinder asBinder() {
+                return mIBinder;
+            }
+        };
+        mChreDiscoveryProvider.queryOffloadCapability(callback);
+        OffloadCapability capability =
+                new OffloadCapability
+                        .Builder()
+                        .setFastPairSupported(true)
+                        .setVersion(version)
+                        .build();
+        assertThat(mOffloadCapability).isEqualTo(capability);
     }
 
     @Test
@@ -130,7 +197,7 @@ public class ChreDiscoveryProviderTest {
         boolean isSupportedTestApp = getDeviceConfigBoolean(
                 NEARBY_SUPPORT_TEST_APP, false /* defaultValue */);
         if (isSupportedTestApp) {
-            DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_SUPPORT_TEST_APP, "false", false);
+            DeviceConfig.setProperty(NAMESPACE_NEARBY, NEARBY_SUPPORT_TEST_APP, "false", false);
         }
         assertThat(new NearbyConfiguration().isTestAppSupported()).isFalse();
 
@@ -215,7 +282,7 @@ public class ChreDiscoveryProviderTest {
         assertThat(extendedProperties).containsExactlyElementsIn(expectedExtendedProperties);
         // Reverts the setting of test app support
         if (isSupportedTestApp) {
-            DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_SUPPORT_TEST_APP, "true", false);
+            DeviceConfig.setProperty(NAMESPACE_NEARBY, NEARBY_SUPPORT_TEST_APP, "true", false);
             assertThat(new NearbyConfiguration().isTestAppSupported()).isTrue();
         }
     }
@@ -227,7 +294,7 @@ public class ChreDiscoveryProviderTest {
         boolean isSupportedTestApp = getDeviceConfigBoolean(
                 NEARBY_SUPPORT_TEST_APP, false /* defaultValue */);
         if (!isSupportedTestApp) {
-            DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_SUPPORT_TEST_APP, "true", false);
+            DeviceConfig.setProperty(NAMESPACE_NEARBY, NEARBY_SUPPORT_TEST_APP, "true", false);
         }
         assertThat(new NearbyConfiguration().isTestAppSupported()).isTrue();
 
@@ -316,7 +383,7 @@ public class ChreDiscoveryProviderTest {
         assertThat(extendedProperties).containsExactlyElementsIn(expectedExtendedProperties);
         // Reverts the setting of test app support
         if (!isSupportedTestApp) {
-            DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_SUPPORT_TEST_APP, "false", false);
+            DeviceConfig.setProperty(NAMESPACE_NEARBY, NEARBY_SUPPORT_TEST_APP, "false", false);
             assertThat(new NearbyConfiguration().isTestAppSupported()).isFalse();
         }
     }
@@ -327,7 +394,7 @@ public class ChreDiscoveryProviderTest {
     }
 
     private String getDeviceConfigProperty(String name) {
-        return DeviceConfig.getProperty(DeviceConfig.NAMESPACE_TETHERING, name);
+        return DeviceConfig.getProperty(DeviceConfig.NAMESPACE_NEARBY, name);
     }
 
     private static class InLineExecutor implements Executor {
