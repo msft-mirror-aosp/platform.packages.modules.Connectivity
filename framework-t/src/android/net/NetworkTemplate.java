@@ -409,12 +409,20 @@ public final class NetworkTemplate implements Parcelable {
             // subscriber ID.
             case MATCH_CARRIER:
                 if (matchSubscriberIds.length == 0) {
-                    throw new IllegalArgumentException("checkValidMatchSubscriberIds with empty"
-                            + " list of ids for rule" + getMatchRuleName(matchRule));
+                    throw new IllegalArgumentException("matchSubscriberIds may not contain"
+                            + " null for rule " + getMatchRuleName(matchRule));
                 }
-                // fall through
-            case MATCH_MOBILE:
                 if (CollectionUtils.contains(matchSubscriberIds, null)) {
+                    throw new IllegalArgumentException("matchSubscriberIds may not contain"
+                            + " null for rule " + getMatchRuleName(matchRule));
+                }
+                break;
+            case MATCH_MOBILE:
+                // Prevent from crash for b/273963543, where the OEMs still call into unsupported
+                // buildTemplateMobileAll with null subscriberId and get crashed.
+                final int firstSdk = Build.VERSION.DEVICE_INITIAL_SDK_INT;
+                if (firstSdk > Build.VERSION_CODES.TIRAMISU
+                        && CollectionUtils.contains(matchSubscriberIds, null)) {
                     throw new IllegalArgumentException("checkValidMatchSubscriberIds list of ids"
                             + " may not contain null for rule " + getMatchRuleName(matchRule));
                 }
