@@ -34,8 +34,6 @@ import com.android.server.BpfNetMaps;
 
 import java.io.IOException;
 import java.net.ProtocolException;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -86,12 +84,9 @@ public class NetworkStatsFactory {
          * are expected to monotonically increase since device boot.
          */
         @NonNull
-        public NetworkStats getNetworkStatsDetail(int limitUid, @Nullable String[] limitIfaces,
-                int limitTag) throws IOException {
+        public NetworkStats getNetworkStatsDetail() throws IOException {
             final NetworkStats stats = new NetworkStats(SystemClock.elapsedRealtime(), 0);
-            // TODO: remove both path and useBpfStats arguments.
-            // The path is never used if useBpfStats is true.
-            final int ret = nativeReadNetworkStatsDetail(stats, limitUid, limitIfaces, limitTag);
+            final int ret = nativeReadNetworkStatsDetail(stats);
             if (ret != 0) {
                 throw new IOException("Failed to parse network stats");
             }
@@ -147,36 +142,6 @@ public class NetworkStatsFactory {
     }
 
     /**
-     * Get a set of interfaces containing specified ifaces and stacked interfaces.
-     *
-     * <p>The added stacked interfaces are ifaces stacked on top of the specified ones, or ifaces
-     * on which the specified ones are stacked. Stacked interfaces are those noted with
-     * {@link #noteStackedIface(String, String)}, but only interfaces noted before this method
-     * is called are guaranteed to be included.
-     */
-    public String[] augmentWithStackedInterfaces(@Nullable String[] requiredIfaces) {
-        if (requiredIfaces == NetworkStats.INTERFACES_ALL) {
-            return null;
-        }
-
-        HashSet<String> relatedIfaces = new HashSet<>(Arrays.asList(requiredIfaces));
-        // ConcurrentHashMap's EntrySet iterators are "guaranteed to traverse
-        // elements as they existed upon construction exactly once, and may
-        // (but are not guaranteed to) reflect any modifications subsequent to construction".
-        // This is enough here.
-        for (Map.Entry<String, String> entry : mStackedIfaces.entrySet()) {
-            if (relatedIfaces.contains(entry.getKey())) {
-                relatedIfaces.add(entry.getValue());
-            } else if (relatedIfaces.contains(entry.getValue())) {
-                relatedIfaces.add(entry.getKey());
-            }
-        }
-
-        String[] outArray = new String[relatedIfaces.size()];
-        return relatedIfaces.toArray(outArray);
-    }
-
-    /**
      * Applies 464xlat adjustments with ifaces noted with {@link #noteStackedIface(String, String)}.
      * @see NetworkStats#apply464xlatAdjustments(NetworkStats, NetworkStats, Map)
      */
@@ -197,16 +162,6 @@ public class NetworkStatsFactory {
         }
         mContext = ctx;
         mDeps = deps;
-    }
-
-    /**
-     * Parse and return interface-level summary {@link NetworkStats} measured
-     * using {@code /proc/net/dev} style hooks, which may include non IP layer
-     * traffic. Values monotonically increase since device boot, and may include
-     * details about inactive interfaces.
-     */
-    public NetworkStats readNetworkStatsSummaryDev() throws IOException {
-        return mDeps.getNetworkStatsDev();
     }
 
     /**
@@ -255,8 +210,7 @@ public class NetworkStatsFactory {
             requestSwapActiveStatsMapLocked();
             // Stats are always read from the inactive map, so they must be read after the
             // swap
-            final NetworkStats stats = mDeps.getNetworkStatsDetail(
-                    UID_ALL, INTERFACES_ALL, TAG_ALL);
+            final NetworkStats stats = mDeps.getNetworkStatsDetail();
             // BPF stats are incremental; fold into mPersistSnapshot.
             mPersistSnapshot.setElapsedRealtime(stats.getElapsedRealtime());
             mPersistSnapshot.combineAllValues(stats);
@@ -343,8 +297,7 @@ public class NetworkStatsFactory {
      * are expected to monotonically increase since device boot.
      */
     @VisibleForTesting
-    public static native int nativeReadNetworkStatsDetail(NetworkStats stats, int limitUid,
-            String[] limitIfaces, int limitTag);
+    public static native int nativeReadNetworkStatsDetail(NetworkStats stats);
 
     @VisibleForTesting
     public static native int nativeReadNetworkStatsDev(NetworkStats stats);

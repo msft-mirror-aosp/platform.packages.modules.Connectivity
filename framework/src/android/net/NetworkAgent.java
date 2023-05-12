@@ -283,7 +283,6 @@ public abstract class NetworkAgent {
      *   arg2 = interval in seconds
      *   obj = KeepalivePacketData object describing the data to be sent
      *
-     * Also used internally by ConnectivityService / KeepaliveTracker, with different semantics.
      * @hide
      */
     public static final int CMD_START_SOCKET_KEEPALIVE = BASE + 11;
@@ -291,7 +290,9 @@ public abstract class NetworkAgent {
     /**
      * Requests that the specified keepalive packet be stopped.
      *
-     * arg1 = hardware slot number of the keepalive to stop.
+     * arg1 = unused
+     * arg2 = error code (SUCCESS)
+     * obj = callback to identify the keepalive
      *
      * Also used internally by ConnectivityService / KeepaliveTracker, with different semantics.
      * @hide
@@ -434,6 +435,14 @@ public abstract class NetworkAgent {
     public static final int CMD_DSCP_POLICY_STATUS = BASE + 28;
 
     /**
+     * Sent by the NetworkAgent to ConnectivityService to notify that this network is expected to be
+     * replaced within the specified time by a similar network.
+     * arg1 = timeout in milliseconds
+     * @hide
+     */
+    public static final int EVENT_UNREGISTER_AFTER_REPLACEMENT = BASE + 29;
+
+    /**
      * DSCP policy was successfully added.
      */
     public static final int DSCP_POLICY_STATUS_SUCCESS = 0;
@@ -474,14 +483,6 @@ public abstract class NetworkAgent {
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface DscpPolicyStatus {}
-
-    /**
-     * Sent by the NetworkAgent to ConnectivityService to notify that this network is expected to be
-     * replaced within the specified time by a similar network.
-     * arg1 = timeout in milliseconds
-     * @hide
-     */
-    public static final int EVENT_UNREGISTER_AFTER_REPLACEMENT = BASE + 29;
 
     private static NetworkInfo getLegacyNetworkInfo(final NetworkAgentConfig config) {
         final NetworkInfo ni = new NetworkInfo(config.legacyType, config.legacySubType,

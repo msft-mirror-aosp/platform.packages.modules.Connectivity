@@ -82,7 +82,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -395,10 +394,6 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         verify(mNetd).registerUnsolicitedEventListener(alertObserver.capture());
         mAlertObserver = alertObserver.getValue();
 
-        // Make augmentWithStackedInterfaces returns the interfaces that was passed to it.
-        doAnswer(inv -> ((String[]) inv.getArgument(0)).clone())
-                .when(mStatsFactory).augmentWithStackedInterfaces(any());
-
         // Catch TetheringEventCallback during systemReady().
         ArgumentCaptor<TetheringManager.TetheringEventCallback> tetheringEventCbCaptor =
                 ArgumentCaptor.forClass(TetheringManager.TetheringEventCallback.class);
@@ -544,6 +539,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         mService = null;
 
         mHandlerThread.quitSafely();
+        mHandlerThread.join();
     }
 
     private void initWifiStats(NetworkStateSnapshot snapshot) throws Exception {
@@ -2198,7 +2194,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     private NetworkStatsCollection getLegacyCollection(String prefix, boolean includeTags) {
         final NetworkStatsRecorder recorder = makeTestRecorder(mLegacyStatsDir, prefix,
-                mSettings.getDevConfig(), includeTags, false);
+                mSettings.getXtConfig(), includeTags, false);
         return recorder.getOrLoadCompleteLocked();
     }
 
@@ -2255,12 +2251,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     }
 
     private void mockNetworkStatsSummary(NetworkStats summary) throws Exception {
-        mockNetworkStatsSummaryDev(summary.clone());
         mockNetworkStatsSummaryXt(summary.clone());
-    }
-
-    private void mockNetworkStatsSummaryDev(NetworkStats summary) throws Exception {
-        doReturn(summary).when(mStatsFactory).readNetworkStatsSummaryDev();
     }
 
     private void mockNetworkStatsSummaryXt(NetworkStats summary) throws Exception {
@@ -2293,13 +2284,11 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         doReturn(false).when(mSettings).getCombineSubtypeEnabled();
 
         final Config config = new Config(bucketDuration, deleteAge, deleteAge);
-        doReturn(config).when(mSettings).getDevConfig();
         doReturn(config).when(mSettings).getXtConfig();
         doReturn(config).when(mSettings).getUidConfig();
         doReturn(config).when(mSettings).getUidTagConfig();
 
         doReturn(MB_IN_BYTES).when(mSettings).getGlobalAlertBytes(anyLong());
-        doReturn(MB_IN_BYTES).when(mSettings).getDevPersistBytes(anyLong());
         doReturn(MB_IN_BYTES).when(mSettings).getXtPersistBytes(anyLong());
         doReturn(MB_IN_BYTES).when(mSettings).getUidPersistBytes(anyLong());
         doReturn(MB_IN_BYTES).when(mSettings).getUidTagPersistBytes(anyLong());

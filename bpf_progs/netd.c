@@ -31,7 +31,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "bpf_net_helpers.h"
-#include "bpf_shared.h"
+#include "netd.h"
 
 // This is defined for cgroup bpf filter only.
 static const int DROP = 0;
@@ -42,12 +42,9 @@ static const int DROP_UNLESS_DNS = 2;  // internal to our program
 static const int BPF_NOMATCH = 0;
 static const int BPF_MATCH = 1;
 
-// Used for 'bool egress'
-static const bool INGRESS = false;
-static const bool EGRESS = true;
-
-#define IP_PROTO_OFF offsetof(struct iphdr, protocol)
-#define IPV6_PROTO_OFF offsetof(struct ipv6hdr, nexthdr)
+// Used for 'bool enable_tracing'
+static const bool TRACE_ON = true;
+static const bool TRACE_OFF = false;
 
 // offsetof(struct iphdr, ihl) -- but that's a bitfield
 #define IPPROTO_IHL_OFF 0
@@ -60,14 +57,18 @@ static const bool EGRESS = true;
 #define TCP_FLAG32_OFF 12
 
 // For maps netd does not need to access
-#define DEFINE_BPF_MAP_NO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
-    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, \
-                       AID_ROOT, AID_NET_BW_ACCT, 0060, "fs_bpf_net_shared", "", false)
+#define DEFINE_BPF_MAP_NO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries)      \
+    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries,              \
+                       AID_ROOT, AID_NET_BW_ACCT, 0060, "fs_bpf_net_shared", "", false, \
+                       BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, LOAD_ON_ENG,       \
+                       LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 // For maps netd only needs read only access to
-#define DEFINE_BPF_MAP_RO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
-    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries, \
-                       AID_ROOT, AID_NET_BW_ACCT, 0460, "fs_bpf_netd_readonly", "", false)
+#define DEFINE_BPF_MAP_RO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries)         \
+    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries,                 \
+                       AID_ROOT, AID_NET_BW_ACCT, 0460, "fs_bpf_netd_readonly", "", false, \
+                       BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, LOAD_ON_ENG,       \
+                       LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 // For maps netd needs to be able to read and write
 #define DEFINE_BPF_MAP_RW_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
@@ -95,6 +96,19 @@ DEFINE_BPF_MAP_RW_NETD(uid_permission_map, HASH, uint32_t, uint8_t, UID_OWNER_MA
 /* never actually used from ebpf */
 DEFINE_BPF_MAP_NO_NETD(iface_index_name_map, HASH, uint32_t, IfaceValue, IFACE_INDEX_NAME_MAP_SIZE)
 
+// A single-element configuration array, packet tracing is enabled when 'true'.
+DEFINE_BPF_MAP_EXT(packet_trace_enabled_map, ARRAY, uint32_t, bool, 1,
+                   AID_ROOT, AID_SYSTEM, 0060, "fs_bpf_net_shared", "", false,
+                   BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, LOAD_ON_ENG,
+                   IGNORE_ON_USER, LOAD_ON_USERDEBUG)
+
+// A ring buffer on which packet information is pushed. This map will only be loaded
+// on eng and userdebug devices. User devices won't load this to save memory.
+DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
+                       AID_ROOT, AID_SYSTEM, 0060, "fs_bpf_net_shared", "", false,
+                       BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, LOAD_ON_ENG,
+                       IGNORE_ON_USER, LOAD_ON_USERDEBUG);
+
 // iptables xt_bpf programs need to be usable by both netd and netutils_wrappers
 // selinux contexts, because even non-xt_bpf iptables mutations are implemented as
 // a full table dump, followed by an update in userspace, and then a reload into the kernel,
@@ -109,8 +123,9 @@ DEFINE_BPF_MAP_NO_NETD(iface_index_name_map, HASH, uint32_t, IfaceValue, IFACE_I
 // (this is because these are currently attached by the mainline provided libnetd_updatable .so
 // which is loaded into netd and thus runs as netd uid/gid/selinux context)
 #define DEFINE_NETD_BPF_PROG_KVER_RANGE(SECTION_NAME, prog_uid, prog_gid, the_prog, minKV, maxKV) \
-    DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, \
-                        minKV, maxKV, false, "fs_bpf_netd_readonly", "")
+    DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog,                               \
+                        minKV, maxKV, BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, false,                \
+                        "fs_bpf_netd_readonly", "", false, false, false)
 
 #define DEFINE_NETD_BPF_PROG_KVER(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv) \
     DEFINE_NETD_BPF_PROG_KVER_RANGE(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, KVER_INF)
@@ -120,8 +135,9 @@ DEFINE_BPF_MAP_NO_NETD(iface_index_name_map, HASH, uint32_t, IfaceValue, IFACE_I
 
 // programs that only need to be usable by the system server
 #define DEFINE_SYS_BPF_PROG(SECTION_NAME, prog_uid, prog_gid, the_prog) \
-    DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, \
-                        KVER_NONE, KVER_INF, false, "fs_bpf_net_shared", "")
+    DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, KVER_NONE, KVER_INF,  \
+                        BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, false, "fs_bpf_net_shared", \
+                        "", false, false, false)
 
 static __always_inline int is_system_uid(uint32_t uid) {
     // MIN_SYSTEM_UID is AID_ROOT == 0, so uint32_t is *always* >= 0
@@ -156,36 +172,38 @@ static __always_inline int is_system_uid(uint32_t uid) {
  * Especially since the number of packets is important for any future clat offload correction.
  * (which adjusts upward by 20 bytes per packet to account for ipv4 -> ipv6 header conversion)
  */
-#define DEFINE_UPDATE_STATS(the_stats_map, TypeOfKey)                                          \
-    static __always_inline inline void update_##the_stats_map(struct __sk_buff* skb,           \
-                                                              bool egress, TypeOfKey* key) {   \
-        StatsValue* value = bpf_##the_stats_map##_lookup_elem(key);                            \
-        if (!value) {                                                                          \
-            StatsValue newValue = {};                                                          \
-            bpf_##the_stats_map##_update_elem(key, &newValue, BPF_NOEXIST);                    \
-            value = bpf_##the_stats_map##_lookup_elem(key);                                    \
-        }                                                                                      \
-        if (value) {                                                                           \
-            const int mtu = 1500;                                                              \
-            uint64_t packets = 1;                                                              \
-            uint64_t bytes = skb->len;                                                         \
-            if (bytes > mtu) {                                                                 \
-                bool is_ipv6 = (skb->protocol == htons(ETH_P_IPV6));                           \
-                int ip_overhead = (is_ipv6 ? sizeof(struct ipv6hdr) : sizeof(struct iphdr));   \
-                int tcp_overhead = ip_overhead + sizeof(struct tcphdr) + 12;                   \
-                int mss = mtu - tcp_overhead;                                                  \
-                uint64_t payload = bytes - tcp_overhead;                                       \
-                packets = (payload + mss - 1) / mss;                                           \
-                bytes = tcp_overhead * packets + payload;                                      \
-            }                                                                                  \
-            if (egress) {                                                                      \
-                __sync_fetch_and_add(&value->txPackets, packets);                              \
-                __sync_fetch_and_add(&value->txBytes, bytes);                                  \
-            } else {                                                                           \
-                __sync_fetch_and_add(&value->rxPackets, packets);                              \
-                __sync_fetch_and_add(&value->rxBytes, bytes);                                  \
-            }                                                                                  \
-        }                                                                                      \
+#define DEFINE_UPDATE_STATS(the_stats_map, TypeOfKey)                                            \
+    static __always_inline inline void update_##the_stats_map(const struct __sk_buff* const skb, \
+                                                              const TypeOfKey* const key,        \
+                                                              const bool egress,                 \
+                                                              const unsigned kver) {             \
+        StatsValue* value = bpf_##the_stats_map##_lookup_elem(key);                              \
+        if (!value) {                                                                            \
+            StatsValue newValue = {};                                                            \
+            bpf_##the_stats_map##_update_elem(key, &newValue, BPF_NOEXIST);                      \
+            value = bpf_##the_stats_map##_lookup_elem(key);                                      \
+        }                                                                                        \
+        if (value) {                                                                             \
+            const int mtu = 1500;                                                                \
+            uint64_t packets = 1;                                                                \
+            uint64_t bytes = skb->len;                                                           \
+            if (bytes > mtu) {                                                                   \
+                bool is_ipv6 = (skb->protocol == htons(ETH_P_IPV6));                             \
+                int ip_overhead = (is_ipv6 ? sizeof(struct ipv6hdr) : sizeof(struct iphdr));     \
+                int tcp_overhead = ip_overhead + sizeof(struct tcphdr) + 12;                     \
+                int mss = mtu - tcp_overhead;                                                    \
+                uint64_t payload = bytes - tcp_overhead;                                         \
+                packets = (payload + mss - 1) / mss;                                             \
+                bytes = tcp_overhead * packets + payload;                                        \
+            }                                                                                    \
+            if (egress) {                                                                        \
+                __sync_fetch_and_add(&value->txPackets, packets);                                \
+                __sync_fetch_and_add(&value->txBytes, bytes);                                    \
+            } else {                                                                             \
+                __sync_fetch_and_add(&value->rxPackets, packets);                                \
+                __sync_fetch_and_add(&value->rxBytes, bytes);                                    \
+            }                                                                                    \
+        }                                                                                        \
     }
 
 DEFINE_UPDATE_STATS(app_uid_stats_map, uint32_t)
@@ -194,19 +212,99 @@ DEFINE_UPDATE_STATS(stats_map_A, StatsKey)
 DEFINE_UPDATE_STATS(stats_map_B, StatsKey)
 
 // both of these return 0 on success or -EFAULT on failure (and zero out the buffer)
-static __always_inline inline int bpf_skb_load_bytes_net(const struct __sk_buff* skb, int off,
-                                                         void* to, int len, bool is_4_19) {
-    return is_4_19
-        ? bpf_skb_load_bytes_relative(skb, off, to, len, BPF_HDR_START_NET)
-        : bpf_skb_load_bytes(skb, off, to, len);
+static __always_inline inline int bpf_skb_load_bytes_net(const struct __sk_buff* const skb,
+                                                         const int L3_off,
+                                                         void* const to,
+                                                         const int len,
+                                                         const unsigned kver) {
+    // 'kver' (here and throughout) is the compile time guaranteed minimum kernel version,
+    // ie. we're building (a version of) the bpf program for kver (or newer!) kernels.
+    //
+    // 4.19+ kernels support the 'bpf_skb_load_bytes_relative()' bpf helper function,
+    // so we can use it.  On pre-4.19 kernels we cannot use the relative load helper,
+    // and thus will simply get things wrong if there's any L2 (ethernet) header in the skb.
+    //
+    // Luckily, for cellular traffic, there likely isn't any, as cell is usually 'rawip'.
+    //
+    // However, this does mean that wifi (and ethernet) on 4.14 is basically a lost cause:
+    // we'll be making decisions based on the *wrong* bytes (fetched from the wrong offset),
+    // because the 'L3_off' passed to bpf_skb_load_bytes() should be increased by l2_header_size,
+    // which for ethernet is 14 and not 0 like it is for rawip.
+    //
+    // For similar reasons this will fail with non-offloaded VLAN tags on < 4.19 kernels,
+    // since those extend the ethernet header from 14 to 18 bytes.
+    return kver >= KVER(4, 19, 0)
+        ? bpf_skb_load_bytes_relative(skb, L3_off, to, len, BPF_HDR_START_NET)
+        : bpf_skb_load_bytes(skb, L3_off, to, len);
 }
 
-static __always_inline inline bool skip_owner_match(struct __sk_buff* skb, bool is_4_19) {
+static __always_inline inline void do_packet_tracing(
+        const struct __sk_buff* const skb, const bool egress, const uint32_t uid,
+        const uint32_t tag, const bool enable_tracing, const unsigned kver) {
+    if (!enable_tracing) return;
+    if (kver < KVER(5, 8, 0)) return;
+
+    uint32_t mapKey = 0;
+    bool* traceConfig = bpf_packet_trace_enabled_map_lookup_elem(&mapKey);
+    if (traceConfig == NULL) return;
+    if (*traceConfig == false) return;
+
+    PacketTrace* pkt = bpf_packet_trace_ringbuf_reserve();
+    if (pkt == NULL) return;
+
+    // Errors from bpf_skb_load_bytes_net are ignored to favor returning something
+    // over returning nothing. In the event of an error, the kernel will fill in
+    // zero for the destination memory. Do not change the default '= 0' below.
+
+    uint8_t proto = 0;
+    uint8_t L4_off = 0;
+    uint8_t ipVersion = 0;
+    if (skb->protocol == htons(ETH_P_IP)) {
+        (void)bpf_skb_load_bytes_net(skb, IP4_OFFSET(protocol), &proto, sizeof(proto), kver);
+        (void)bpf_skb_load_bytes_net(skb, IPPROTO_IHL_OFF, &L4_off, sizeof(L4_off), kver);
+        L4_off = (L4_off & 0x0F) * 4;  // IHL calculation.
+        ipVersion = 4;
+    } else if (skb->protocol == htons(ETH_P_IPV6)) {
+        (void)bpf_skb_load_bytes_net(skb, IP6_OFFSET(nexthdr), &proto, sizeof(proto), kver);
+        L4_off = sizeof(struct ipv6hdr);
+        ipVersion = 6;
+    }
+
+    uint8_t flags = 0;
+    __be16 sport = 0, dport = 0;
+    if (proto == IPPROTO_TCP && L4_off >= 20) {
+        (void)bpf_skb_load_bytes_net(skb, L4_off + TCP_FLAG32_OFF + 1, &flags, sizeof(flags), kver);
+        (void)bpf_skb_load_bytes_net(skb, L4_off + TCP_OFFSET(source), &sport, sizeof(sport), kver);
+        (void)bpf_skb_load_bytes_net(skb, L4_off + TCP_OFFSET(dest), &dport, sizeof(dport), kver);
+    } else if (proto == IPPROTO_UDP && L4_off >= 20) {
+        (void)bpf_skb_load_bytes_net(skb, L4_off + UDP_OFFSET(source), &sport, sizeof(sport), kver);
+        (void)bpf_skb_load_bytes_net(skb, L4_off + UDP_OFFSET(dest), &dport, sizeof(dport), kver);
+    }
+
+    pkt->timestampNs = bpf_ktime_get_boot_ns();
+    pkt->ifindex = skb->ifindex;
+    pkt->length = skb->len;
+
+    pkt->uid = uid;
+    pkt->tag = tag;
+    pkt->sport = sport;
+    pkt->dport = dport;
+
+    pkt->egress = egress;
+    pkt->ipProto = proto;
+    pkt->tcpFlags = flags;
+    pkt->ipVersion = ipVersion;
+
+    bpf_packet_trace_ringbuf_submit(pkt);
+}
+
+static __always_inline inline bool skip_owner_match(struct __sk_buff* skb, bool egress,
+                                                    const unsigned kver) {
     uint32_t flag = 0;
     if (skb->protocol == htons(ETH_P_IP)) {
         uint8_t proto;
         // no need to check for success, proto will be zeroed if bpf_skb_load_bytes_net() fails
-        (void)bpf_skb_load_bytes_net(skb, IP_PROTO_OFF, &proto, sizeof(proto), is_4_19);
+        (void)bpf_skb_load_bytes_net(skb, IP4_OFFSET(protocol), &proto, sizeof(proto), kver);
         if (proto == IPPROTO_ESP) return true;
         if (proto != IPPROTO_TCP) return false;  // handles read failure above
         uint8_t ihl;
@@ -215,23 +313,24 @@ static __always_inline inline bool skip_owner_match(struct __sk_buff* skb, bool 
         // (a little bit deeper in the packet in spite of ihl being zeroed) of the tcp flags
         // field will also fail, and that failure we already handle correctly
         // (we also don't check that ihl in [0x45,0x4F] nor that ipv4 header checksum is correct)
-        (void)bpf_skb_load_bytes_net(skb, IPPROTO_IHL_OFF, &ihl, sizeof(ihl), is_4_19);
+        (void)bpf_skb_load_bytes_net(skb, IPPROTO_IHL_OFF, &ihl, sizeof(ihl), kver);
         // if the read below fails, we'll just assume no TCP flags are set, which is fine.
         (void)bpf_skb_load_bytes_net(skb, (ihl & 0xF) * 4 + TCP_FLAG32_OFF,
-                                     &flag, sizeof(flag), is_4_19);
+                                     &flag, sizeof(flag), kver);
     } else if (skb->protocol == htons(ETH_P_IPV6)) {
         uint8_t proto;
         // no need to check for success, proto will be zeroed if bpf_skb_load_bytes_net() fails
-        (void)bpf_skb_load_bytes_net(skb, IPV6_PROTO_OFF, &proto, sizeof(proto), is_4_19);
+        (void)bpf_skb_load_bytes_net(skb, IP6_OFFSET(nexthdr), &proto, sizeof(proto), kver);
         if (proto == IPPROTO_ESP) return true;
         if (proto != IPPROTO_TCP) return false;  // handles read failure above
         // if the read below fails, we'll just assume no TCP flags are set, which is fine.
         (void)bpf_skb_load_bytes_net(skb, sizeof(struct ipv6hdr) + TCP_FLAG32_OFF,
-                                     &flag, sizeof(flag), is_4_19);
+                                     &flag, sizeof(flag), kver);
     } else {
         return false;
     }
-    return flag & TCP_FLAG_RST;  // false on read failure
+    // Always allow RST's, and additionally allow ingress FINs
+    return flag & (TCP_FLAG_RST | (egress ? 0 : TCP_FLAG_FIN));  // false on read failure
 }
 
 static __always_inline inline BpfConfig getConfig(uint32_t configKey) {
@@ -250,10 +349,10 @@ static __always_inline inline BpfConfig getConfig(uint32_t configKey) {
 #define DROP_IF_UNSET (DOZABLE_MATCH | POWERSAVE_MATCH | RESTRICTED_MATCH | LOW_POWER_STANDBY_MATCH)
 
 static __always_inline inline int bpf_owner_match(struct __sk_buff* skb, uint32_t uid,
-                                                  bool egress, bool is_4_19) {
-    if (skip_owner_match(skb, is_4_19)) return PASS;
-
+                                                  bool egress, const unsigned kver) {
     if (is_system_uid(uid)) return PASS;
+
+    if (skip_owner_match(skb, egress, kver)) return PASS;
 
     BpfConfig enabledRules = getConfig(UID_RULES_CONFIGURATION_KEY);
 
@@ -284,17 +383,21 @@ static __always_inline inline int bpf_owner_match(struct __sk_buff* skb, uint32_
     return PASS;
 }
 
-static __always_inline inline void update_stats_with_config(struct __sk_buff* skb, bool egress,
-                                                            StatsKey* key, uint32_t selectedMap) {
+static __always_inline inline void update_stats_with_config(const uint32_t selectedMap,
+                                                            const struct __sk_buff* const skb,
+                                                            const StatsKey* const key,
+                                                            const bool egress,
+                                                            const unsigned kver) {
     if (selectedMap == SELECT_MAP_A) {
-        update_stats_map_A(skb, egress, key);
-    } else if (selectedMap == SELECT_MAP_B) {
-        update_stats_map_B(skb, egress, key);
+        update_stats_map_A(skb, key, egress, kver);
+    } else {
+        update_stats_map_B(skb, key, egress, kver);
     }
 }
 
 static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, bool egress,
-                                                      bool is_4_19) {
+                                                      const bool enable_tracing,
+                                                      const unsigned kver) {
     uint32_t sock_uid = bpf_get_socket_uid(skb);
     uint64_t cookie = bpf_get_socket_cookie(skb);
     UidTagValue* utag = bpf_cookie_tag_map_lookup_elem(&cookie);
@@ -314,12 +417,7 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, boo
         return PASS;
     }
 
-    int match = bpf_owner_match(skb, sock_uid, egress, is_4_19);
-    if (egress && (match == DROP)) {
-        // If an outbound packet is going to be dropped, we do not count that
-        // traffic.
-        return match;
-    }
+    int match = bpf_owner_match(skb, sock_uid, egress, kver);
 
 // Workaround for secureVPN with VpnIsolation enabled, refer to b/159994981 for details.
 // Keep TAG_SYSTEM_DNS in sync with DnsResolver/include/netd_resolv/resolv.h
@@ -331,6 +429,9 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, boo
     } else {
         if (match == DROP_UNLESS_DNS) match = DROP;
     }
+
+    // If an outbound packet is going to be dropped, we do not count that traffic.
+    if (egress && (match == DROP)) return DROP;
 
     StatsKey key = {.uid = uid, .tag = tag, .counterSet = 0, .ifaceIndex = skb->ifindex};
 
@@ -348,39 +449,51 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, boo
         return match;
     }
 
-    if (key.tag) {
-        update_stats_with_config(skb, egress, &key, *selectedMap);
-        key.tag = 0;
-    }
-
-    update_stats_with_config(skb, egress, &key, *selectedMap);
-    update_app_uid_stats_map(skb, egress, &uid);
+    do_packet_tracing(skb, egress, uid, tag, enable_tracing, kver);
+    update_stats_with_config(*selectedMap, skb, &key, egress, kver);
+    update_app_uid_stats_map(skb, &uid, egress, kver);
     asm("%0 &= 1" : "+r"(match));
     return match;
+}
+
+DEFINE_BPF_PROG_EXT("cgroupskb/ingress/stats$trace", AID_ROOT, AID_SYSTEM,
+                    bpf_cgroup_ingress_trace, KVER(5, 8, 0), KVER_INF,
+                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, false,
+                    "fs_bpf_netd_readonly", "", false, true, false)
+(struct __sk_buff* skb) {
+    return bpf_traffic_account(skb, INGRESS, TRACE_ON, KVER(5, 8, 0));
 }
 
 DEFINE_NETD_BPF_PROG_KVER_RANGE("cgroupskb/ingress/stats$4_19", AID_ROOT, AID_SYSTEM,
                                 bpf_cgroup_ingress_4_19, KVER(4, 19, 0), KVER_INF)
 (struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, INGRESS, /* is_4_19 */ true);
+    return bpf_traffic_account(skb, INGRESS, TRACE_OFF, KVER(4, 19, 0));
 }
 
 DEFINE_NETD_BPF_PROG_KVER_RANGE("cgroupskb/ingress/stats$4_14", AID_ROOT, AID_SYSTEM,
                                 bpf_cgroup_ingress_4_14, KVER_NONE, KVER(4, 19, 0))
 (struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, INGRESS, /* is_4_19 */ false);
+    return bpf_traffic_account(skb, INGRESS, TRACE_OFF, KVER_NONE);
+}
+
+DEFINE_BPF_PROG_EXT("cgroupskb/egress/stats$trace", AID_ROOT, AID_SYSTEM,
+                    bpf_cgroup_egress_trace, KVER(5, 8, 0), KVER_INF,
+                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, false,
+                    "fs_bpf_netd_readonly", "", false, true, false)
+(struct __sk_buff* skb) {
+    return bpf_traffic_account(skb, EGRESS, TRACE_ON, KVER(5, 8, 0));
 }
 
 DEFINE_NETD_BPF_PROG_KVER_RANGE("cgroupskb/egress/stats$4_19", AID_ROOT, AID_SYSTEM,
                                 bpf_cgroup_egress_4_19, KVER(4, 19, 0), KVER_INF)
 (struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, EGRESS, /* is_4_19 */ true);
+    return bpf_traffic_account(skb, EGRESS, TRACE_OFF, KVER(4, 19, 0));
 }
 
 DEFINE_NETD_BPF_PROG_KVER_RANGE("cgroupskb/egress/stats$4_14", AID_ROOT, AID_SYSTEM,
                                 bpf_cgroup_egress_4_14, KVER_NONE, KVER(4, 19, 0))
 (struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, EGRESS, /* is_4_19 */ false);
+    return bpf_traffic_account(skb, EGRESS, TRACE_OFF, KVER_NONE);
 }
 
 // WARNING: Android T's non-updatable netd depends on the name of this program.
@@ -399,7 +512,7 @@ DEFINE_XTBPF_PROG("skfilter/egress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_egres
     }
 
     uint32_t key = skb->ifindex;
-    update_iface_stats_map(skb, EGRESS, &key);
+    update_iface_stats_map(skb, &key, EGRESS, KVER_NONE);
     return BPF_MATCH;
 }
 
@@ -412,7 +525,7 @@ DEFINE_XTBPF_PROG("skfilter/ingress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_ingr
     // Keep that in mind when moving this out of iptables xt_bpf and into tc ingress (or xdp).
 
     uint32_t key = skb->ifindex;
-    update_iface_stats_map(skb, INGRESS, &key);
+    update_iface_stats_map(skb, &key, INGRESS, KVER_NONE);
     return BPF_MATCH;
 }
 
@@ -422,7 +535,7 @@ DEFINE_SYS_BPF_PROG("schedact/ingress/account", AID_ROOT, AID_NET_ADMIN,
     if (is_received_skb(skb)) {
         // Account for ingress traffic before tc drops it.
         uint32_t key = skb->ifindex;
-        update_iface_stats_map(skb, INGRESS, &key);
+        update_iface_stats_map(skb, &key, INGRESS, KVER_NONE);
     }
     return TC_ACT_UNSPEC;
 }

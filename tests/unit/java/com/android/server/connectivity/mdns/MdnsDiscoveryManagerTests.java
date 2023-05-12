@@ -18,24 +18,33 @@ package com.android.server.connectivity.mdns;
 
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
+import android.net.Network;
 import android.text.TextUtils;
+import android.util.Pair;
 
+import com.android.server.connectivity.mdns.MdnsSocketClientBase.SocketCreationCallback;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 
 /** Tests for {@link MdnsDiscoveryManager}. */
 @RunWith(DevSdkIgnoreRunner.class)
@@ -44,9 +53,13 @@ public class MdnsDiscoveryManagerTests {
 
     private static final String SERVICE_TYPE_1 = "_googlecast._tcp.local";
     private static final String SERVICE_TYPE_2 = "_test._tcp.local";
+    private static final Pair<String, Network> PER_NETWORK_SERVICE_TYPE_1 =
+            Pair.create(SERVICE_TYPE_1, null);
+    private static final Pair<String, Network> PER_NETWORK_SERVICE_TYPE_2 =
+            Pair.create(SERVICE_TYPE_2, null);
 
     @Mock private ExecutorProvider executorProvider;
-    @Mock private MdnsSocketClient socketClient;
+    @Mock private MdnsSocketClientBase socketClient;
     @Mock private MdnsServiceTypeClient mockServiceTypeClientOne;
     @Mock private MdnsServiceTypeClient mockServiceTypeClientTwo;
 
@@ -65,10 +78,13 @@ public class MdnsDiscoveryManagerTests {
 
         discoveryManager = new MdnsDiscoveryManager(executorProvider, socketClient) {
                     @Override
-                    MdnsServiceTypeClient createServiceTypeClient(@NonNull String serviceType) {
-                        if (serviceType.equals(SERVICE_TYPE_1)) {
+                    MdnsServiceTypeClient createServiceTypeClient(@NonNull String serviceType,
+                            @Nullable Network network) {
+                        final Pair<String, Network> perNetworkServiceType =
+                                Pair.create(serviceType, network);
+                        if (perNetworkServiceType.equals(PER_NETWORK_SERVICE_TYPE_1)) {
                             return mockServiceTypeClientOne;
-                        } else if (serviceType.equals(SERVICE_TYPE_2)) {
+                        } else if (perNetworkServiceType.equals(PER_NETWORK_SERVICE_TYPE_2)) {
                             return mockServiceTypeClientTwo;
                         }
                         return null;
@@ -76,13 +92,23 @@ public class MdnsDiscoveryManagerTests {
                 };
     }
 
+    private void verifyListenerRegistration(String serviceType, MdnsServiceBrowserListener listener,
+            MdnsServiceTypeClient client) throws IOException {
+        final ArgumentCaptor<SocketCreationCallback> callbackCaptor =
+                ArgumentCaptor.forClass(SocketCreationCallback.class);
+        discoveryManager.registerListener(serviceType, listener,
+                MdnsSearchOptions.getDefaultOptions());
+        verify(socketClient).startDiscovery();
+        verify(socketClient).notifyNetworkRequested(
+                eq(listener), any(), callbackCaptor.capture());
+        final SocketCreationCallback callback = callbackCaptor.getValue();
+        callback.onSocketCreated(null /* network */);
+        verify(client).startSendAndReceive(listener, MdnsSearchOptions.getDefaultOptions());
+    }
+
     @Test
     public void registerListener_unregisterListener() throws IOException {
-        discoveryManager.registerListener(
-                SERVICE_TYPE_1, mockListenerOne, MdnsSearchOptions.getDefaultOptions());
-        verify(socketClient).startDiscovery();
-        verify(mockServiceTypeClientOne)
-                .startSendAndReceive(mockListenerOne, MdnsSearchOptions.getDefaultOptions());
+        verifyListenerRegistration(SERVICE_TYPE_1, mockListenerOne, mockServiceTypeClientOne);
 
         when(mockServiceTypeClientOne.stopSendAndReceive(mockListenerOne)).thenReturn(true);
         discoveryManager.unregisterListener(SERVICE_TYPE_1, mockListenerOne);
@@ -92,44 +118,47 @@ public class MdnsDiscoveryManagerTests {
 
     @Test
     public void registerMultipleListeners() throws IOException {
-        discoveryManager.registerListener(
-                SERVICE_TYPE_1, mockListenerOne, MdnsSearchOptions.getDefaultOptions());
-        verify(socketClient).startDiscovery();
-        verify(mockServiceTypeClientOne)
-                .startSendAndReceive(mockListenerOne, MdnsSearchOptions.getDefaultOptions());
-
-        discoveryManager.registerListener(
-                SERVICE_TYPE_2, mockListenerTwo, MdnsSearchOptions.getDefaultOptions());
-        verify(mockServiceTypeClientTwo)
-                .startSendAndReceive(mockListenerTwo, MdnsSearchOptions.getDefaultOptions());
+        verifyListenerRegistration(SERVICE_TYPE_1, mockListenerOne, mockServiceTypeClientOne);
+        verifyListenerRegistration(SERVICE_TYPE_2, mockListenerTwo, mockServiceTypeClientTwo);
     }
 
     @Test
-    public void onResponseReceived() {
-        discoveryManager.registerListener(
-                SERVICE_TYPE_1, mockListenerOne, MdnsSearchOptions.getDefaultOptions());
-        discoveryManager.registerListener(
-                SERVICE_TYPE_2, mockListenerTwo, MdnsSearchOptions.getDefaultOptions());
+    public void onResponseReceived() throws IOException {
+        verifyListenerRegistration(SERVICE_TYPE_1, mockListenerOne, mockServiceTypeClientOne);
+        verifyListenerRegistration(SERVICE_TYPE_2, mockListenerTwo, mockServiceTypeClientTwo);
 
-        MdnsResponse responseForServiceTypeOne = createMockResponse(SERVICE_TYPE_1);
-        discoveryManager.onResponseReceived(responseForServiceTypeOne);
-        verify(mockServiceTypeClientOne).processResponse(responseForServiceTypeOne);
+        MdnsPacket responseForServiceTypeOne = createMdnsPacket(SERVICE_TYPE_1);
+        final int ifIndex = 1;
+        discoveryManager.onResponseReceived(responseForServiceTypeOne, ifIndex, null /* network */);
+        verify(mockServiceTypeClientOne).processResponse(responseForServiceTypeOne, ifIndex,
+                null /* network */);
 
-        MdnsResponse responseForServiceTypeTwo = createMockResponse(SERVICE_TYPE_2);
-        discoveryManager.onResponseReceived(responseForServiceTypeTwo);
-        verify(mockServiceTypeClientTwo).processResponse(responseForServiceTypeTwo);
+        MdnsPacket responseForServiceTypeTwo = createMdnsPacket(SERVICE_TYPE_2);
+        discoveryManager.onResponseReceived(responseForServiceTypeTwo, ifIndex, null /* network */);
+        verify(mockServiceTypeClientTwo).processResponse(responseForServiceTypeTwo, ifIndex,
+                null /* network */);
 
-        MdnsResponse responseForSubtype = createMockResponse("subtype._sub._googlecast._tcp.local");
-        discoveryManager.onResponseReceived(responseForSubtype);
-        verify(mockServiceTypeClientOne).processResponse(responseForSubtype);
+        MdnsPacket responseForSubtype = createMdnsPacket("subtype._sub._googlecast._tcp.local");
+        discoveryManager.onResponseReceived(responseForSubtype, ifIndex, null /* network */);
+        verify(mockServiceTypeClientOne).processResponse(responseForSubtype, ifIndex,
+                null /* network */);
     }
 
-    private MdnsResponse createMockResponse(String serviceType) {
-        MdnsPointerRecord mockPointerRecord = mock(MdnsPointerRecord.class);
-        MdnsResponse mockResponse = mock(MdnsResponse.class);
-        when(mockResponse.getPointerRecords())
-                .thenReturn(Collections.singletonList(mockPointerRecord));
-        when(mockPointerRecord.getName()).thenReturn(TextUtils.split(serviceType, "\\."));
-        return mockResponse;
+    private MdnsPacket createMdnsPacket(String serviceType) {
+        final String[] type = TextUtils.split(serviceType, "\\.");
+        final ArrayList<String> name = new ArrayList<>(type.length + 1);
+        name.add("TestName");
+        name.addAll(Arrays.asList(type));
+        return new MdnsPacket(0 /* flags */,
+                Collections.emptyList() /* questions */,
+                List.of(new MdnsPointerRecord(
+                        type,
+                        0L /* receiptTimeMillis */,
+                        false /* cacheFlush */,
+                        120000 /* ttlMillis */,
+                        name.toArray(new String[0])
+                        )) /* answers */,
+                Collections.emptyList() /* authorityRecords */,
+                Collections.emptyList() /* additionalRecords */);
     }
 }

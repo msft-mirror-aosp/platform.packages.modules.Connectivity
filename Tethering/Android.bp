@@ -34,6 +34,7 @@ java_defaults {
     // Libraries not including Tethering's own framework-tethering (different flavors of that one
     // are needed depending on the build rule)
     libs: [
+        "connectivity-internal-api-util",
         "framework-configinfrastructure",
         "framework-connectivity.stubs.module_lib",
         "framework-connectivity-t.stubs.module_lib",
@@ -60,9 +61,13 @@ java_defaults {
         "modules-utils-build",
         "modules-utils-statemachine",
         "networkstack-client",
+        // AIDL tetheroffload implementation
+        "android.hardware.tetheroffload-V1-java",
+        // HIDL tetheroffload implementation
         "android.hardware.tetheroffload.config-V1.0-java",
         "android.hardware.tetheroffload.control-V1.0-java",
         "android.hardware.tetheroffload.control-V1.1-java",
+        "android.hidl.manager-V1.2-java",
         "net-utils-framework-common",
         "net-utils-device-common",
         "net-utils-device-common-bpf",
@@ -244,6 +249,9 @@ sdk {
         // Adds exportable dependencies of the APEX to the sdk,
         // e.g. *classpath_fragments.
         "com.android.tethering",
+    ],
+    native_shared_libs: [
+        "libnetd_updatable",
     ],
 }
 

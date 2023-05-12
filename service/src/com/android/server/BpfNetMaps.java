@@ -139,7 +139,7 @@ public class BpfNetMaps {
     @VisibleForTesting public static final long OEM_DENY_1_MATCH = (1 << 9);
     @VisibleForTesting public static final long OEM_DENY_2_MATCH = (1 << 10);
     @VisibleForTesting public static final long OEM_DENY_3_MATCH = (1 << 11);
-    // LINT.ThenChange(packages/modules/Connectivity/bpf_progs/bpf_shared.h)
+    // LINT.ThenChange(packages/modules/Connectivity/bpf_progs/netd.h)
 
     private static final List<Pair<Integer, String>> PERMISSION_LIST = Arrays.asList(
             Pair.create(PERMISSION_INTERNET, "PERMISSION_INTERNET"),
@@ -279,9 +279,10 @@ public class BpfNetMaps {
     private static synchronized void ensureInitialized(final Context context) {
         if (sInitialized) return;
         if (sEnableJavaBpfMap == null) {
-            sEnableJavaBpfMap = DeviceConfigUtils.isFeatureEnabled(context,
+            sEnableJavaBpfMap = SdkLevel.isAtLeastU() ||
+                    DeviceConfigUtils.isFeatureEnabled(context,
                     DeviceConfig.NAMESPACE_TETHERING, BPF_NET_MAPS_ENABLE_JAVA_BPF_MAP,
-                    false /* defaultValue */) || SdkLevel.isAtLeastU();
+                    false /* defaultValue */);
         }
         Log.d(TAG, "BpfNetMaps is initialized with sEnableJavaBpfMap=" + sEnableJavaBpfMap);
 
@@ -716,6 +717,31 @@ public class BpfNetMaps {
         } else {
             final int err = native_setUidRule(childChain, uid, firewallRule);
             maybeThrow(err, "Unable to set uid rule");
+        }
+    }
+
+    /**
+     * Get firewall rule of specified firewall chain on specified uid.
+     *
+     * @param childChain target chain
+     * @param uid        target uid
+     * @return either FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
+     * @throws UnsupportedOperationException if called on pre-T devices.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public int getUidRule(final int childChain, final int uid) {
+        throwIfPreT("isUidChainEnabled is not available on pre-T devices");
+
+        final long match = getMatchByFirewallChain(childChain);
+        final boolean isAllowList = isFirewallAllowList(childChain);
+        try {
+            final UidOwnerValue uidMatch = sUidOwnerMap.getValue(new S32(uid));
+            final boolean isMatchEnabled = uidMatch != null && (uidMatch.rule & match) != 0;
+            return isMatchEnabled == isAllowList ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DENY;
+        } catch (ErrnoException e) {
+            throw new ServiceSpecificException(e.errno,
+                    "Unable to get uid rule status: " + Os.strerror(e.errno));
         }
     }
 
