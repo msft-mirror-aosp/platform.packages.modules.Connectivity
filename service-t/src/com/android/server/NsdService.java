@@ -19,10 +19,10 @@ package com.android.server;
 import static android.net.ConnectivityManager.NETID_UNSET;
 import static android.net.nsd.NsdManager.MDNS_DISCOVERY_MANAGER_EVENT;
 import static android.net.nsd.NsdManager.MDNS_SERVICE_EVENT;
-import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
 import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 
 import static com.android.modules.utils.build.SdkLevel.isAtLeastU;
+import static com.android.server.connectivity.mdns.MdnsRecord.MAX_LABEL_LENGTH;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -73,6 +73,7 @@ import com.android.server.connectivity.mdns.MdnsServiceBrowserListener;
 import com.android.server.connectivity.mdns.MdnsServiceInfo;
 import com.android.server.connectivity.mdns.MdnsSocketClientBase;
 import com.android.server.connectivity.mdns.MdnsSocketProvider;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -81,11 +82,6 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.UnknownHostException;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.Charset;
-import java.nio.charset.CharsetEncoder;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -108,8 +104,6 @@ public class NsdService extends INsdManager.Stub {
      */
     private static final String MDNS_DISCOVERY_MANAGER_VERSION = "mdns_discovery_manager_version";
     private static final String LOCAL_DOMAIN_NAME = "local";
-    // Max label length as per RFC 1034/1035
-    private static final int MAX_LABEL_LENGTH = 63;
 
     /**
      * Enable advertising using the Java MdnsAdvertiser, instead of the legacy mdnsresponder
@@ -148,6 +142,7 @@ public class NsdService extends INsdManager.Stub {
     public static final boolean DBG = Log.isLoggable(TAG, Log.DEBUG);
     private static final long CLEANUP_DELAY_MS = 10000;
     private static final int IFACE_IDX_ANY = 0;
+    private static final SharedLog LOGGER = new SharedLog("serviceDiscovery");
 
     private final Context mContext;
     private final NsdStateMachine mNsdStateMachine;
@@ -163,7 +158,7 @@ public class NsdService extends INsdManager.Stub {
     private final MdnsSocketProvider mMdnsSocketProvider;
     @NonNull
     private final MdnsAdvertiser mAdvertiser;
-    private final SharedLog mServiceLogs = new SharedLog(TAG);
+    private final SharedLog mServiceLogs = LOGGER.forSubComponent(TAG);
     // WARNING : Accessing these values in any thread is not safe, it must only be changed in the
     // state machine thread. If change this outside state machine, it will need to introduce
     // synchronization.
@@ -570,18 +565,7 @@ public class NsdService extends INsdManager.Stub {
              */
             @NonNull
             private String truncateServiceName(@NonNull String originalName) {
-                // UTF-8 is at most 4 bytes per character; return early in the common case where
-                // the name can't possibly be over the limit given its string length.
-                if (originalName.length() <= MAX_LABEL_LENGTH / 4) return originalName;
-
-                final Charset utf8 = StandardCharsets.UTF_8;
-                final CharsetEncoder encoder = utf8.newEncoder();
-                final ByteBuffer out = ByteBuffer.allocate(MAX_LABEL_LENGTH);
-                // encode will write as many characters as possible to the out buffer, and just
-                // return an overflow code if there were too many characters (no need to check the
-                // return code here, this method truncates the name on purpose).
-                encoder.encode(CharBuffer.wrap(originalName), out, true /* endOfInput */);
-                return new String(out.array(), 0, out.position(), utf8);
+                return MdnsUtils.truncateServiceName(originalName, MAX_LABEL_LENGTH);
             }
 
             private void stopDiscoveryManagerRequest(ClientRequest request, int clientId, int id,
@@ -1343,17 +1327,18 @@ public class NsdService extends INsdManager.Stub {
         mMDnsEventCallback = new MDnsEventCallback(mNsdStateMachine);
         mDeps = deps;
 
-        mMdnsSocketProvider = deps.makeMdnsSocketProvider(ctx, handler.getLooper());
+        mMdnsSocketProvider = deps.makeMdnsSocketProvider(ctx, handler.getLooper(),
+                LOGGER.forSubComponent("MdnsSocketProvider"));
         // Netlink monitor starts on boot, and intentionally never stopped, to ensure that all
         // address events are received.
         handler.post(mMdnsSocketProvider::startNetLinkMonitor);
         mMdnsSocketClient =
                 new MdnsMultinetworkSocketClient(handler.getLooper(), mMdnsSocketProvider);
-        mMdnsDiscoveryManager =
-                deps.makeMdnsDiscoveryManager(new ExecutorProvider(), mMdnsSocketClient);
+        mMdnsDiscoveryManager = deps.makeMdnsDiscoveryManager(new ExecutorProvider(),
+                mMdnsSocketClient, LOGGER.forSubComponent("MdnsDiscoveryManager"));
         handler.post(() -> mMdnsSocketClient.setCallback(mMdnsDiscoveryManager));
         mAdvertiser = deps.makeMdnsAdvertiser(handler.getLooper(), mMdnsSocketProvider,
-                new AdvertiserCallback());
+                new AdvertiserCallback(), LOGGER.forSubComponent("MdnsAdvertiser"));
     }
 
     /**
@@ -1368,8 +1353,8 @@ public class NsdService extends INsdManager.Stub {
          * @return true if the MdnsDiscoveryManager feature is enabled.
          */
         public boolean isMdnsDiscoveryManagerEnabled(Context context) {
-            return isAtLeastU() || DeviceConfigUtils.isFeatureEnabled(context,
-                    NAMESPACE_CONNECTIVITY, MDNS_DISCOVERY_MANAGER_VERSION,
+            return isAtLeastU() || DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_TETHERING,
+                    MDNS_DISCOVERY_MANAGER_VERSION, DeviceConfigUtils.TETHERING_MODULE_NAME,
                     false /* defaultEnabled */);
         }
 
@@ -1380,8 +1365,9 @@ public class NsdService extends INsdManager.Stub {
          * @return true if the MdnsAdvertiser feature is enabled.
          */
         public boolean isMdnsAdvertiserEnabled(Context context) {
-            return isAtLeastU() || DeviceConfigUtils.isFeatureEnabled(context,
-                    NAMESPACE_CONNECTIVITY, MDNS_ADVERTISER_VERSION, false /* defaultEnabled */);
+            return isAtLeastU() || DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_TETHERING,
+                    MDNS_ADVERTISER_VERSION, DeviceConfigUtils.TETHERING_MODULE_NAME,
+                    false /* defaultEnabled */);
         }
 
         /**
@@ -1406,8 +1392,9 @@ public class NsdService extends INsdManager.Stub {
          * @see MdnsDiscoveryManager
          */
         public MdnsDiscoveryManager makeMdnsDiscoveryManager(
-                ExecutorProvider executorProvider, MdnsSocketClientBase socketClient) {
-            return new MdnsDiscoveryManager(executorProvider, socketClient);
+                @NonNull ExecutorProvider executorProvider,
+                @NonNull MdnsSocketClientBase socketClient, @NonNull SharedLog sharedLog) {
+            return new MdnsDiscoveryManager(executorProvider, socketClient, sharedLog);
         }
 
         /**
@@ -1415,15 +1402,16 @@ public class NsdService extends INsdManager.Stub {
          */
         public MdnsAdvertiser makeMdnsAdvertiser(
                 @NonNull Looper looper, @NonNull MdnsSocketProvider socketProvider,
-                @NonNull MdnsAdvertiser.AdvertiserCallback cb) {
-            return new MdnsAdvertiser(looper, socketProvider, cb);
+                @NonNull MdnsAdvertiser.AdvertiserCallback cb, @NonNull SharedLog sharedLog) {
+            return new MdnsAdvertiser(looper, socketProvider, cb, sharedLog);
         }
 
         /**
          * @see MdnsSocketProvider
          */
-        public MdnsSocketProvider makeMdnsSocketProvider(Context context, Looper looper) {
-            return new MdnsSocketProvider(context, looper);
+        public MdnsSocketProvider makeMdnsSocketProvider(@NonNull Context context,
+                @NonNull Looper looper, @NonNull SharedLog sharedLog) {
+            return new MdnsSocketProvider(context, looper, sharedLog);
         }
     }
 
@@ -1785,29 +1773,9 @@ public class NsdService extends INsdManager.Stub {
 
         // Dump service and clients logs
         pw.println();
+        pw.println("Logs:");
         pw.increaseIndent();
         mServiceLogs.reverseDump(pw);
-        pw.decreaseIndent();
-
-        // Dump advertiser related logs
-        pw.println();
-        pw.println("Advertiser:");
-        pw.increaseIndent();
-        mAdvertiser.dump(pw);
-        pw.decreaseIndent();
-
-        // Dump discoverymanager related logs
-        pw.println();
-        pw.println("DiscoveryManager:");
-        pw.increaseIndent();
-        mMdnsDiscoveryManager.dump(pw);
-        pw.decreaseIndent();
-
-        // Dump socketprovider related logs
-        pw.println();
-        pw.println("SocketProvider:");
-        pw.increaseIndent();
-        mMdnsSocketProvider.dump(pw);
         pw.decreaseIndent();
     }
 
