@@ -19,6 +19,7 @@ package com.android.server;
 import static android.net.ConnectivityManager.NETID_UNSET;
 import static android.net.nsd.NsdManager.MDNS_DISCOVERY_MANAGER_EVENT;
 import static android.net.nsd.NsdManager.MDNS_SERVICE_EVENT;
+import static android.net.nsd.NsdManager.RESOLVE_SERVICE_SUCCEEDED;
 import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 
 import static com.android.modules.utils.build.SdkLevel.isAtLeastU;
@@ -54,6 +55,7 @@ import android.os.RemoteException;
 import android.os.UserHandle;
 import android.text.TextUtils;
 import android.util.Log;
+import android.util.Pair;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -83,6 +85,7 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -242,14 +245,14 @@ public class NsdService extends INsdManager.Stub {
         public void onServiceNameDiscovered(@NonNull MdnsServiceInfo serviceInfo) {
             mNsdStateMachine.sendMessage(MDNS_DISCOVERY_MANAGER_EVENT, mTransactionId,
                     NsdManager.SERVICE_FOUND,
-                    new MdnsEvent(mClientId, mReqServiceInfo.getServiceType(), serviceInfo));
+                    new MdnsEvent(mClientId, serviceInfo));
         }
 
         @Override
         public void onServiceNameRemoved(@NonNull MdnsServiceInfo serviceInfo) {
             mNsdStateMachine.sendMessage(MDNS_DISCOVERY_MANAGER_EVENT, mTransactionId,
                     NsdManager.SERVICE_LOST,
-                    new MdnsEvent(mClientId, mReqServiceInfo.getServiceType(), serviceInfo));
+                    new MdnsEvent(mClientId, serviceInfo));
         }
     }
 
@@ -264,7 +267,7 @@ public class NsdService extends INsdManager.Stub {
         public void onServiceFound(MdnsServiceInfo serviceInfo) {
             mNsdStateMachine.sendMessage(MDNS_DISCOVERY_MANAGER_EVENT, mTransactionId,
                     NsdManager.RESOLVE_SERVICE_SUCCEEDED,
-                    new MdnsEvent(mClientId, mReqServiceInfo.getServiceType(), serviceInfo));
+                    new MdnsEvent(mClientId, serviceInfo));
         }
     }
 
@@ -279,21 +282,21 @@ public class NsdService extends INsdManager.Stub {
         public void onServiceFound(@NonNull MdnsServiceInfo serviceInfo) {
             mNsdStateMachine.sendMessage(MDNS_DISCOVERY_MANAGER_EVENT, mTransactionId,
                     NsdManager.SERVICE_UPDATED,
-                    new MdnsEvent(mClientId, mReqServiceInfo.getServiceType(), serviceInfo));
+                    new MdnsEvent(mClientId, serviceInfo));
         }
 
         @Override
         public void onServiceUpdated(@NonNull MdnsServiceInfo serviceInfo) {
             mNsdStateMachine.sendMessage(MDNS_DISCOVERY_MANAGER_EVENT, mTransactionId,
                     NsdManager.SERVICE_UPDATED,
-                    new MdnsEvent(mClientId, mReqServiceInfo.getServiceType(), serviceInfo));
+                    new MdnsEvent(mClientId, serviceInfo));
         }
 
         @Override
         public void onServiceRemoved(@NonNull MdnsServiceInfo serviceInfo) {
             mNsdStateMachine.sendMessage(MDNS_DISCOVERY_MANAGER_EVENT, mTransactionId,
                     NsdManager.SERVICE_UPDATED_LOST,
-                    new MdnsEvent(mClientId, mReqServiceInfo.getServiceType(), serviceInfo));
+                    new MdnsEvent(mClientId, serviceInfo));
         }
     }
 
@@ -303,14 +306,10 @@ public class NsdService extends INsdManager.Stub {
     private static class MdnsEvent {
         final int mClientId;
         @NonNull
-        final String mRequestedServiceType;
-        @NonNull
         final MdnsServiceInfo mMdnsServiceInfo;
 
-        MdnsEvent(int clientId, @NonNull String requestedServiceType,
-                @NonNull MdnsServiceInfo mdnsServiceInfo) {
+        MdnsEvent(int clientId, @NonNull MdnsServiceInfo mdnsServiceInfo) {
             mClientId = clientId;
-            mRequestedServiceType = requestedServiceType;
             mMdnsServiceInfo = mdnsServiceInfo;
         }
     }
@@ -601,7 +600,10 @@ public class NsdService extends INsdManager.Stub {
 
                         final NsdServiceInfo info = args.serviceInfo;
                         id = getUniqueId();
-                        final String serviceType = constructServiceType(info.getServiceType());
+                        final Pair<String, String> typeAndSubtype =
+                                parseTypeAndSubtype(info.getServiceType());
+                        final String serviceType = typeAndSubtype == null
+                                ? null : typeAndSubtype.first;
                         if (clientInfo.mUseJavaBackend
                                 || mDeps.isMdnsDiscoveryManagerEnabled(mContext)
                                 || useDiscoveryManagerForType(serviceType)) {
@@ -615,12 +617,17 @@ public class NsdService extends INsdManager.Stub {
                             maybeStartMonitoringSockets();
                             final MdnsListener listener =
                                     new DiscoveryListener(clientId, id, info, listenServiceType);
-                            final MdnsSearchOptions options = MdnsSearchOptions.newBuilder()
-                                    .setNetwork(info.getNetwork())
-                                    .setIsPassiveMode(true)
-                                    .build();
+                            final MdnsSearchOptions.Builder optionsBuilder =
+                                    MdnsSearchOptions.newBuilder()
+                                            .setNetwork(info.getNetwork())
+                                            .setIsPassiveMode(true);
+                            if (typeAndSubtype.second != null) {
+                                // The parsing ensures subtype starts with an underscore.
+                                // MdnsSearchOptions expects the underscore to not be present.
+                                optionsBuilder.addSubtype(typeAndSubtype.second.substring(1));
+                            }
                             mMdnsDiscoveryManager.registerListener(
-                                    listenServiceType, listener, options);
+                                    listenServiceType, listener, optionsBuilder.build());
                             storeDiscoveryManagerRequestMap(clientId, id, listener, clientInfo);
                             clientInfo.onDiscoverServicesStarted(clientId, info);
                             clientInfo.log("Register a DiscoveryListener " + id
@@ -699,7 +706,9 @@ public class NsdService extends INsdManager.Stub {
                         id = getUniqueId();
                         final NsdServiceInfo serviceInfo = args.serviceInfo;
                         final String serviceType = serviceInfo.getServiceType();
-                        final String registerServiceType = constructServiceType(serviceType);
+                        final Pair<String, String> typeSubtype = parseTypeAndSubtype(serviceType);
+                        final String registerServiceType = typeSubtype == null
+                                ? null : typeSubtype.first;
                         if (clientInfo.mUseJavaBackend
                                 || mDeps.isMdnsAdvertiserEnabled(mContext)
                                 || useAdvertiserForType(registerServiceType)) {
@@ -714,7 +723,11 @@ public class NsdService extends INsdManager.Stub {
                                     serviceInfo.getServiceName()));
 
                             maybeStartMonitoringSockets();
-                            mAdvertiser.addService(id, serviceInfo);
+                            // TODO: pass in the subtype as well. Including the subtype in the
+                            // service type would generate service instance names like
+                            // Name._subtype._sub._type._tcp, which is incorrect
+                            // (it should be Name._type._tcp).
+                            mAdvertiser.addService(id, serviceInfo, typeSubtype.second);
                             storeAdvertiserRequestMap(clientId, id, clientInfo);
                         } else {
                             maybeStartDaemon();
@@ -780,7 +793,10 @@ public class NsdService extends INsdManager.Stub {
 
                         final NsdServiceInfo info = args.serviceInfo;
                         id = getUniqueId();
-                        final String serviceType = constructServiceType(info.getServiceType());
+                        final Pair<String, String> typeSubtype =
+                                parseTypeAndSubtype(info.getServiceType());
+                        final String serviceType = typeSubtype == null
+                                ? null : typeSubtype.first;
                         if (clientInfo.mUseJavaBackend
                                 ||  mDeps.isMdnsDiscoveryManagerEnabled(mContext)
                                 || useDiscoveryManagerForType(serviceType)) {
@@ -873,7 +889,10 @@ public class NsdService extends INsdManager.Stub {
 
                         final NsdServiceInfo info = args.serviceInfo;
                         id = getUniqueId();
-                        final String serviceType = constructServiceType(info.getServiceType());
+                        final Pair<String, String> typeAndSubtype =
+                                parseTypeAndSubtype(info.getServiceType());
+                        final String serviceType = typeAndSubtype == null
+                                ? null : typeAndSubtype.first;
                         if (serviceType == null) {
                             clientInfo.onServiceInfoCallbackRegistrationFailed(clientId,
                                     NsdManager.FAILURE_BAD_PARAMETERS);
@@ -1104,9 +1123,38 @@ public class NsdService extends INsdManager.Stub {
                 return true;
             }
 
-            private NsdServiceInfo buildNsdServiceInfoFromMdnsEvent(final MdnsEvent event) {
+            @Nullable
+            private NsdServiceInfo buildNsdServiceInfoFromMdnsEvent(
+                    final MdnsEvent event, int code) {
                 final MdnsServiceInfo serviceInfo = event.mMdnsServiceInfo;
-                final String serviceType = event.mRequestedServiceType;
+                final String[] typeArray = serviceInfo.getServiceType();
+                final String joinedType;
+                if (typeArray.length == 0
+                        || !typeArray[typeArray.length - 1].equals(LOCAL_DOMAIN_NAME)) {
+                    Log.wtf(TAG, "MdnsServiceInfo type does not end in .local: "
+                            + Arrays.toString(typeArray));
+                    return null;
+                } else {
+                    joinedType = TextUtils.join(".",
+                            Arrays.copyOfRange(typeArray, 0, typeArray.length - 1));
+                }
+                final String serviceType;
+                switch (code) {
+                    case NsdManager.SERVICE_FOUND:
+                    case NsdManager.SERVICE_LOST:
+                        // For consistency with historical behavior, discovered service types have
+                        // a dot at the end.
+                        serviceType = joinedType + ".";
+                        break;
+                    case RESOLVE_SERVICE_SUCCEEDED:
+                        // For consistency with historical behavior, resolved service types have
+                        // a dot at the beginning.
+                        serviceType = "." + joinedType;
+                        break;
+                    default:
+                        serviceType = joinedType;
+                        break;
+                }
                 final String serviceName = serviceInfo.getServiceInstanceName();
                 final NsdServiceInfo servInfo = new NsdServiceInfo(serviceName, serviceType);
                 final Network network = serviceInfo.getNetwork();
@@ -1131,7 +1179,9 @@ public class NsdService extends INsdManager.Stub {
 
                 final MdnsEvent event = (MdnsEvent) obj;
                 final int clientId = event.mClientId;
-                final NsdServiceInfo info = buildNsdServiceInfoFromMdnsEvent(event);
+                final NsdServiceInfo info = buildNsdServiceInfoFromMdnsEvent(event, code);
+                // Errors are already logged if null
+                if (info == null) return false;
                 if (DBG) {
                     Log.d(TAG, String.format("MdnsDiscoveryManager event code=%s transactionId=%d",
                             NsdManager.nameOf(code), transactionId));
@@ -1150,8 +1200,6 @@ public class NsdService extends INsdManager.Stub {
                             break;
                         }
                         final MdnsServiceInfo serviceInfo = event.mMdnsServiceInfo;
-                        // Add '.' in front of the service type that aligns with historical behavior
-                        info.setServiceType("." + event.mRequestedServiceType);
                         info.setPort(serviceInfo.getPort());
 
                         Map<String, String> attrs = serviceInfo.getAttributes();
@@ -1288,28 +1336,39 @@ public class NsdService extends INsdManager.Stub {
      * Check the given service type is valid and construct it to a service type
      * which can use for discovery / resolution service.
      *
-     * <p> The valid service type should be 2 labels, or 3 labels if the query is for a
+     * <p>The valid service type should be 2 labels, or 3 labels if the query is for a
      * subtype (see RFC6763 7.1). Each label is up to 63 characters and must start with an
      * underscore; they are alphanumerical characters or dashes or underscore, except the
      * last one that is just alphanumerical. The last label must be _tcp or _udp.
+     *
+     * <p>The subtype may also be specified with a comma after the service type, for example
+     * _type._tcp,_subtype.
      *
      * @param serviceType the request service type for discovery / resolution service
      * @return constructed service type or null if the given service type is invalid.
      */
     @Nullable
-    public static String constructServiceType(String serviceType) {
+    public static Pair<String, String> parseTypeAndSubtype(String serviceType) {
         if (TextUtils.isEmpty(serviceType)) return null;
 
+        final String typeOrSubtypePattern = "_[a-zA-Z0-9-_]{1,61}[a-zA-Z0-9]";
         final Pattern serviceTypePattern = Pattern.compile(
-                "^(_[a-zA-Z0-9-_]{1,61}[a-zA-Z0-9]\\.)?"
-                        + "(_[a-zA-Z0-9-_]{1,61}[a-zA-Z0-9]\\._(?:tcp|udp))"
+                // Optional leading subtype (_subtype._type._tcp)
+                // (?: xxx) is a non-capturing parenthesis, don't capture the dot
+                "^(?:(" + typeOrSubtypePattern + ")\\.)?"
+                        // Actual type (_type._tcp.local)
+                        + "(" + typeOrSubtypePattern + "\\._(?:tcp|udp))"
                         // Drop '.' at the end of service type that is compatible with old backend.
-                        + "\\.?$");
+                        // e.g. allow "_type._tcp.local."
+                        + "\\.?"
+                        // Optional subtype after comma, for "_type._tcp,_subtype" format
+                        + "(?:,(" + typeOrSubtypePattern + "))?"
+                        + "$");
         final Matcher matcher = serviceTypePattern.matcher(serviceType);
         if (!matcher.matches()) return null;
-        return matcher.group(1) == null
-                ? matcher.group(2)
-                : matcher.group(1) + "_sub." + matcher.group(2);
+        // Use the subtype either at the beginning or after the comma
+        final String subtype = matcher.group(1) != null ? matcher.group(1) : matcher.group(3);
+        return new Pair<>(matcher.group(2), subtype);
     }
 
     @VisibleForTesting
