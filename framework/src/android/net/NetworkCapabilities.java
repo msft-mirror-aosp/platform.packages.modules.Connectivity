@@ -53,18 +53,70 @@ import java.util.Set;
 import java.util.StringJoiner;
 
 /**
- * Representation of the capabilities of an active network. Instances are
- * typically obtained through
- * {@link NetworkCallback#onCapabilitiesChanged(Network, NetworkCapabilities)}
- * or {@link ConnectivityManager#getNetworkCapabilities(Network)}.
- * <p>
- * This replaces the old {@link ConnectivityManager#TYPE_MOBILE} method of
- * network selection. Rather than indicate a need for Wi-Fi because an
- * application needs high bandwidth and risk obsolescence when a new, fast
- * network appears (like LTE), the application should specify it needs high
- * bandwidth. Similarly if an application needs an unmetered network for a bulk
- * transfer it can specify that rather than assuming all cellular based
- * connections are metered and all Wi-Fi based connections are not.
+ * Representation of the capabilities of an active network.
+ *
+ * <p>@see <a href="https://developer.android.com/training/basics/network-ops/reading-network-state>
+ * this general guide</a> on how to use NetworkCapabilities and related classes.
+ *
+ * <p>NetworkCapabilities represent what a network can do and what its
+ * characteristics are like. The principal attribute of NetworkCapabilities
+ * is in the capabilities bits, which are checked with
+ * {@link #hasCapability(int)}. See the list of capabilities and each
+ * capability for a description of what it means.
+ *
+ * <p>Some prime examples include {@code NET_CAPABILITY_MMS}, which means that the
+ * network is capable of sending MMS. A network without this capability
+ * is not capable of sending MMS.
+ * <p>The {@code NET_CAPABILITY_INTERNET} capability means that the network is
+ * configured to reach the general Internet. It may or may not actually
+ * provide connectivity ; the {@code NET_CAPABILITY_VALIDATED} bit indicates that
+ * the system found actual connectivity to the general Internet the last
+ * time it checked. Apps interested in actual connectivity should usually
+ * look at both these capabilities.
+ * <p>The {@code NET_CAPABILITY_NOT_METERED} capability is set for networks that
+ * do not bill the user for consumption of bytes. Applications are
+ * encouraged to consult this to determine appropriate usage, and to
+ * limit usage of metered network where possible, including deferring
+ * big downloads until such a time that an unmetered network is connected.
+ * Also see {@link android.app.job.JobScheduler} to help with scheduling such
+ * downloads, in particular
+ * {@link android.app.job.JobInfo.Builder#setRequiredNetwork(NetworkRequest)}.
+ * <p>NetworkCapabilities contain a number of other capabilities that
+ * represent what modern networks can and can't do. Look up the individual
+ * capabilities in this class to learn about each of them.
+ *
+ * <p>NetworkCapabilities typically represent attributes that can apply to
+ * any network. The attributes that apply only to specific transports like
+ * cellular or Wi-Fi can be found in the specifier (for requestable attributes)
+ * or in the transport info (for non-requestable ones). See
+ * {@link #getNetworkSpecifier} and {@link #getTransportInfo}. An app would
+ * downcast these to the specific class for the transport they need if they
+ * are interested in transport-specific attributes. Also see
+ * {@link android.net.wifi.WifiNetworkSpecifier} or
+ * {@link android.net.wifi.WifiInfo} for some examples of each of these.
+ *
+ * <p>NetworkCapabilities also contains other attributes like the estimated
+ * upstream and downstream bandwidth and the specific transport of that
+ * network (e.g. {@link #TRANSPORT_CELLULAR}). Generally, apps should normally
+ * have little reason to check for the type of transport ; for example, to
+ * query whether a network costs money to the user, do not look at the
+ * transport, but instead look at the absence or presence of
+ * {@link #NET_CAPABILITY_NOT_METERED} which will correctly account for
+ * metered Wi-Fis and free of charge cell connections.
+ *
+ * <p>The system communicates with apps about connected networks and uses
+ * NetworkCapabilities to express these capabilities about these networks.
+ * Apps should register callbacks with the {@link ConnectivityManager#requestNetwork}
+ * or {@link ConnectivityManager#registerNetworkCallback} family of methods
+ * to learn about the capabilities of a network on a continuous basis
+ * and be able to react to changes to capabilities. For quick debugging Android also
+ * provides {@link ConnectivityManager#getNetworkCapabilities(Network)},
+ * but the dynamic nature of networking makes this ill-suited to production
+ * code since capabilities obtained in this way can go stale immediately.
+ *
+ * <p>Also see {@link NetworkRequest} which uses the same capabilities
+ * together with {@link ConnectivityManager#requestNetwork} for how to
+ * request the system brings up the kind of network your application needs.
  */
 public final class NetworkCapabilities implements Parcelable {
     private static final String TAG = "NetworkCapabilities";
@@ -622,11 +674,19 @@ public final class NetworkCapabilities implements Parcelable {
 
     /**
      * Indicates that this network should be able to prioritize latency for the internet.
+     *
+     * Starting with {@link Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, requesting this capability with
+     * {@link ConnectivityManager#requestNetwork} requires declaration in the self-certified
+     * network capabilities. See {@link NetworkRequest} for the self-certification documentation.
      */
     public static final int NET_CAPABILITY_PRIORITIZE_LATENCY = 34;
 
     /**
      * Indicates that this network should be able to prioritize bandwidth for the internet.
+     *
+     * Starting with {@link Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, requesting this capability with
+     * {@link ConnectivityManager#requestNetwork} requires declaration in the self-certified
+     * network capabilities. See {@link NetworkRequest} for the self-certification documentation.
      */
     public static final int NET_CAPABILITY_PRIORITIZE_BANDWIDTH = 35;
 
@@ -697,10 +757,10 @@ public final class NetworkCapabilities implements Parcelable {
                     NET_CAPABILITY_PARTIAL_CONNECTIVITY);
 
     /**
-     * Capabilities that are allowed for test networks. This list must be set so that it is safe
-     * for an unprivileged user to create a network with these capabilities via shell. As such,
-     * it must never contain capabilities that are generally useful to the system, such as
-     * INTERNET, IMS, SUPL, etc.
+     * Capabilities that are allowed for all test networks. This list must be set so that it is safe
+     * for an unprivileged user to create a network with these capabilities via shell. As such, it
+     * must never contain capabilities that are generally useful to the system, such as INTERNET,
+     * IMS, SUPL, etc.
      */
     private static final long TEST_NETWORKS_ALLOWED_CAPABILITIES =
             BitUtils.packBitList(
@@ -712,6 +772,14 @@ public final class NetworkCapabilities implements Parcelable {
             NET_CAPABILITY_NOT_CONGESTED,
             NET_CAPABILITY_NOT_SUSPENDED,
             NET_CAPABILITY_NOT_VCN_MANAGED);
+
+    /**
+     * Extra allowed capabilities for test networks that do not have TRANSPORT_CELLULAR. Test
+     * networks with TRANSPORT_CELLULAR must not have those capabilities in order to mitigate
+     * the risk of being used by running apps.
+     */
+    private static final long TEST_NETWORKS_EXTRA_ALLOWED_CAPABILITIES_ON_NON_CELL =
+            BitUtils.packBitList(NET_CAPABILITY_CBS, NET_CAPABILITY_DUN, NET_CAPABILITY_RCS);
 
     /**
      * Adds the given capability to this {@code NetworkCapability} instance.
@@ -1066,14 +1134,22 @@ public final class NetworkCapabilities implements Parcelable {
             mTransportTypes =
                     (originalTransportTypes & UNRESTRICTED_TEST_NETWORKS_ALLOWED_TRANSPORTS)
                             | (1 << TRANSPORT_TEST);
-
-            // SubIds are only allowed for Test Networks that only declare TRANSPORT_TEST.
-            setSubscriptionIds(originalSubIds);
         } else {
             // If the test network is restricted, then it may declare any transport.
             mTransportTypes = (originalTransportTypes | (1 << TRANSPORT_TEST));
         }
+
+        if (hasSingleTransport(TRANSPORT_TEST)) {
+            // SubIds are only allowed for Test Networks that only declare TRANSPORT_TEST.
+            setSubscriptionIds(originalSubIds);
+        }
+
         mNetworkCapabilities = originalCapabilities & TEST_NETWORKS_ALLOWED_CAPABILITIES;
+        if (!hasTransport(TRANSPORT_CELLULAR)) {
+            mNetworkCapabilities |=
+                    (originalCapabilities & TEST_NETWORKS_EXTRA_ALLOWED_CAPABILITIES_ON_NON_CELL);
+        }
+
         mNetworkSpecifier = originalSpecifier;
         mSignalStrength = originalSignalStrength;
         mTransportInfo = originalTransportInfo;
@@ -1110,6 +1186,7 @@ public final class NetworkCapabilities implements Parcelable {
             TRANSPORT_LOWPAN,
             TRANSPORT_TEST,
             TRANSPORT_USB,
+            TRANSPORT_THREAD,
     })
     public @interface Transport { }
 
@@ -1161,10 +1238,15 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public static final int TRANSPORT_USB = 8;
 
+    /**
+     * Indicates this network uses a Thread transport.
+     */
+    public static final int TRANSPORT_THREAD = 9;
+
     /** @hide */
     public static final int MIN_TRANSPORT = TRANSPORT_CELLULAR;
     /** @hide */
-    public static final int MAX_TRANSPORT = TRANSPORT_USB;
+    public static final int MAX_TRANSPORT = TRANSPORT_THREAD;
 
     private static final int ALL_VALID_TRANSPORTS;
     static {
@@ -1189,7 +1271,8 @@ public final class NetworkCapabilities implements Parcelable {
         "WIFI_AWARE",
         "LOWPAN",
         "TEST",
-        "USB"
+        "USB",
+        "THREAD",
     };
 
     /**

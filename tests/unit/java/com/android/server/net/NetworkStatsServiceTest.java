@@ -82,7 +82,6 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -97,7 +96,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.database.ContentObserver;
-import android.net.ConnectivityResources;
 import android.net.DataUsageRequest;
 import android.net.INetd;
 import android.net.INetworkStatsSession;
@@ -146,6 +144,7 @@ import com.android.net.module.util.Struct.U8;
 import com.android.net.module.util.bpf.CookieTagMapKey;
 import com.android.net.module.util.bpf.CookieTagMapValue;
 import com.android.server.BpfNetMaps;
+import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.net.NetworkStatsService.AlertObserver;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings.Config;
@@ -395,10 +394,6 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         verify(mNetd).registerUnsolicitedEventListener(alertObserver.capture());
         mAlertObserver = alertObserver.getValue();
 
-        // Make augmentWithStackedInterfaces returns the interfaces that was passed to it.
-        doAnswer(inv -> ((String[]) inv.getArgument(0)).clone())
-                .when(mStatsFactory).augmentWithStackedInterfaces(any());
-
         // Catch TetheringEventCallback during systemReady().
         ArgumentCaptor<TetheringManager.TetheringEventCallback> tetheringEventCbCaptor =
                 ArgumentCaptor.forClass(TetheringManager.TetheringEventCallback.class);
@@ -544,6 +539,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         mService = null;
 
         mHandlerThread.quitSafely();
+        mHandlerThread.join();
     }
 
     private void initWifiStats(NetworkStateSnapshot snapshot) throws Exception {

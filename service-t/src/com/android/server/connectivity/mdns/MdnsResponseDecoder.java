@@ -20,18 +20,18 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.Network;
 import android.os.SystemClock;
+import android.util.ArraySet;
 
 import com.android.server.connectivity.mdns.util.MdnsLogger;
 
 import java.io.EOFException;
-import java.net.DatagramPacket;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.List;
 
 /** A class that decodes mDNS responses from UDP packets. */
 public class MdnsResponseDecoder {
-
     public static final int SUCCESS = 0;
     private static final String TAG = "MdnsResponseDecoder";
     private static final MdnsLogger LOGGER = new MdnsLogger(TAG);
@@ -50,14 +50,8 @@ public class MdnsResponseDecoder {
             List<MdnsResponse> responses, String[] pointer) {
         if (responses != null) {
             for (MdnsResponse response : responses) {
-                List<MdnsPointerRecord> pointerRecords = response.getPointerRecords();
-                if (pointerRecords == null) {
-                    continue;
-                }
-                for (MdnsPointerRecord pointerRecord : pointerRecords) {
-                    if (Arrays.equals(pointerRecord.getPointer(), pointer)) {
-                        return response;
-                    }
+                if (Arrays.equals(response.getServiceName(), pointer)) {
+                    return response;
                 }
             }
         }
@@ -82,34 +76,16 @@ public class MdnsResponseDecoder {
 
     /**
      * Decodes all mDNS responses for the desired service type from a packet. The class does not
-     * check
-     * the responses for completeness; the caller should do that.
-     *
-     * @param packet The packet to read from.
-     * @param interfaceIndex the network interface index (or {@link
-     *     MdnsSocket#INTERFACE_INDEX_UNSPECIFIED} if not known) at which the packet was received
-     * @param network the network at which the packet was received, or null if it is unknown.
-     * @return A list of mDNS responses, or null if the packet contained no appropriate responses.
-     */
-    public int decode(@NonNull DatagramPacket packet, @NonNull List<MdnsResponse> responses,
-            int interfaceIndex, @Nullable Network network) {
-        return decode(packet.getData(), packet.getLength(), responses, interfaceIndex, network);
-    }
-
-    /**
-     * Decodes all mDNS responses for the desired service type from a packet. The class does not
-     * check
-     * the responses for completeness; the caller should do that.
+     * check the responses for completeness; the caller should do that.
      *
      * @param recvbuf The received data buffer to read from.
      * @param length The length of received data buffer.
-     * @param interfaceIndex the network interface index (or {@link
-     *     MdnsSocket#INTERFACE_INDEX_UNSPECIFIED} if not known) at which the packet was received
-     * @param network the network at which the packet was received, or null if it is unknown.
-     * @return A list of mDNS responses, or null if the packet contained no appropriate responses.
+     * @return A decoded {@link MdnsPacket}.
+     * @throws MdnsPacket.ParseException if a response packet could not be parsed.
      */
-    public int decode(@NonNull byte[] recvbuf, int length, @NonNull List<MdnsResponse> responses,
-            int interfaceIndex, @Nullable Network network) {
+    @NonNull
+    public static MdnsPacket parseResponse(@NonNull byte[] recvbuf, int length)
+            throws MdnsPacket.ParseException {
         MdnsPacketReader reader = new MdnsPacketReader(recvbuf, length);
 
         final MdnsPacket mdnsPacket;
@@ -117,21 +93,37 @@ public class MdnsResponseDecoder {
             reader.readUInt16(); // transaction ID (not used)
             int flags = reader.readUInt16();
             if ((flags & MdnsConstants.FLAGS_RESPONSE_MASK) != MdnsConstants.FLAGS_RESPONSE) {
-                return MdnsResponseErrorCode.ERROR_NOT_RESPONSE_MESSAGE;
+                throw new MdnsPacket.ParseException(
+                        MdnsResponseErrorCode.ERROR_NOT_RESPONSE_MESSAGE, "Not a response", null);
             }
 
             mdnsPacket = MdnsPacket.parseRecordsSection(reader, flags);
             if (mdnsPacket.answers.size() < 1) {
-                return MdnsResponseErrorCode.ERROR_NO_ANSWERS;
+                throw new MdnsPacket.ParseException(
+                        MdnsResponseErrorCode.ERROR_NO_ANSWERS, "Response has no answers",
+                        null);
             }
+            return mdnsPacket;
         } catch (EOFException e) {
-            LOGGER.e("Reached the end of the mDNS response unexpectedly.", e);
-            return MdnsResponseErrorCode.ERROR_END_OF_FILE;
-        } catch (MdnsPacket.ParseException e) {
-            LOGGER.e(e.getMessage(), e);
-            return e.code;
+            throw new MdnsPacket.ParseException(MdnsResponseErrorCode.ERROR_END_OF_FILE,
+                    "Reached the end of the mDNS response unexpectedly.", e);
         }
+    }
 
+    /**
+     * Augments a list of {@link MdnsResponse} with records from a packet. The class does not check
+     * the resulting responses for completeness; the caller should do that.
+     *
+     * @param mdnsPacket the response packet with the new records
+     * @param existingResponses list of existing responses. Will not be modified.
+     * @param interfaceIndex the network interface index (or
+     * {@link MdnsSocket#INTERFACE_INDEX_UNSPECIFIED} if not known) at which the packet was received
+     * @param network the network at which the packet was received, or null if it is unknown.
+     * @return The set of response instances that were modified or newly added.
+     */
+    public ArraySet<MdnsResponse> augmentResponses(@NonNull MdnsPacket mdnsPacket,
+            @NonNull Collection<MdnsResponse> existingResponses, int interfaceIndex,
+            @Nullable Network network) {
         final ArrayList<MdnsRecord> records = new ArrayList<>(
                 mdnsPacket.questions.size() + mdnsPacket.answers.size()
                         + mdnsPacket.authorityRecords.size() + mdnsPacket.additionalRecords.size());
@@ -139,6 +131,11 @@ public class MdnsResponseDecoder {
         records.addAll(mdnsPacket.authorityRecords);
         records.addAll(mdnsPacket.additionalRecords);
 
+        final ArraySet<MdnsResponse> modified = new ArraySet<>();
+        final ArrayList<MdnsResponse> responses = new ArrayList<>(existingResponses.size());
+        for (MdnsResponse existing : existingResponses) {
+            responses.add(new MdnsResponse(existing));
+        }
         // The response records are structured in a hierarchy, where some records reference
         // others, as follows:
         //
@@ -178,12 +175,14 @@ public class MdnsResponseDecoder {
                     MdnsResponse response = findResponseWithPointer(responses,
                             pointerRecord.getPointer());
                     if (response == null) {
-                        response = new MdnsResponse(now, interfaceIndex, network);
+                        response = new MdnsResponse(now, pointerRecord.getPointer(), interfaceIndex,
+                                network);
                         responses.add(response);
                     }
-                    // Set interface index earlier because some responses have PTR record only.
-                    // Need to know every response is getting from which interface.
-                    response.addPointerRecord((MdnsPointerRecord) record);
+
+                    if (response.addPointerRecord((MdnsPointerRecord) record)) {
+                        modified.add(response);
+                    }
                 }
             }
         }
@@ -193,47 +192,96 @@ public class MdnsResponseDecoder {
             if (record instanceof MdnsServiceRecord) {
                 MdnsServiceRecord serviceRecord = (MdnsServiceRecord) record;
                 MdnsResponse response = findResponseWithPointer(responses, serviceRecord.getName());
-                if (response != null) {
-                    response.setServiceRecord(serviceRecord);
+                if (response != null && response.setServiceRecord(serviceRecord)) {
+                    response.dropUnmatchedAddressRecords();
+                    modified.add(response);
                 }
             } else if (record instanceof MdnsTextRecord) {
                 MdnsTextRecord textRecord = (MdnsTextRecord) record;
                 MdnsResponse response = findResponseWithPointer(responses, textRecord.getName());
-                if (response != null) {
-                    response.setTextRecord(textRecord);
+                if (response != null && response.setTextRecord(textRecord)) {
+                    modified.add(response);
                 }
             }
         }
 
-        // Loop 3: find A and AAAA records, which reference the host name in the SRV record.
+        // Loop 3-1: find A and AAAA records and clear addresses if the cache-flush bit set, which
+        //           reference the host name in the SRV record.
+        final List<MdnsInetAddressRecord> inetRecords = new ArrayList<>();
         for (MdnsRecord record : records) {
             if (record instanceof MdnsInetAddressRecord) {
                 MdnsInetAddressRecord inetRecord = (MdnsInetAddressRecord) record;
+                inetRecords.add(inetRecord);
                 if (allowMultipleSrvRecordsPerHost) {
                     List<MdnsResponse> matchingResponses =
                             findResponsesWithHostName(responses, inetRecord.getName());
                     for (MdnsResponse response : matchingResponses) {
-                        assignInetRecord(response, inetRecord);
+                        // Per RFC6762 10.2, clear all address records if the cache-flush bit set.
+                        // This bit, the cache-flush bit, tells neighboring hosts
+                        // that this is not a shared record type.  Instead of merging this new
+                        // record additively into the cache in addition to any previous records with
+                        // the same name, rrtype, and rrclass.
+                        // TODO: All old records with that name, rrtype, and rrclass that were
+                        //       received more than one second ago are declared invalid, and marked
+                        //       to expire from the cache in one second.
+                        if (inetRecord.getCacheFlush()) {
+                            response.clearInet4AddressRecords();
+                            response.clearInet6AddressRecords();
+                        }
                     }
                 } else {
                     MdnsResponse response =
                             findResponseWithHostName(responses, inetRecord.getName());
                     if (response != null) {
-                        assignInetRecord(response, inetRecord);
+                        // Per RFC6762 10.2, clear all address records if the cache-flush bit set.
+                        // This bit, the cache-flush bit, tells neighboring hosts
+                        // that this is not a shared record type.  Instead of merging this new
+                        // record additively into the cache in addition to any previous records with
+                        // the same name, rrtype, and rrclass.
+                        // TODO: All old records with that name, rrtype, and rrclass that were
+                        //       received more than one second ago are declared invalid, and marked
+                        //       to expire from the cache in one second.
+                        if (inetRecord.getCacheFlush()) {
+                            response.clearInet4AddressRecords();
+                            response.clearInet6AddressRecords();
+                        }
                     }
                 }
             }
         }
 
-        return SUCCESS;
+        // Loop 3-2: Assign addresses, which reference the host name in the SRV record.
+        for (MdnsInetAddressRecord inetRecord : inetRecords) {
+            if (allowMultipleSrvRecordsPerHost) {
+                List<MdnsResponse> matchingResponses =
+                        findResponsesWithHostName(responses, inetRecord.getName());
+                for (MdnsResponse response : matchingResponses) {
+                    if (assignInetRecord(response, inetRecord)) {
+                        modified.add(response);
+                    }
+                }
+            } else {
+                MdnsResponse response =
+                        findResponseWithHostName(responses, inetRecord.getName());
+                if (response != null) {
+                    if (assignInetRecord(response, inetRecord)) {
+                        modified.add(response);
+                    }
+                }
+            }
+        }
+
+        return modified;
     }
 
-    private static void assignInetRecord(MdnsResponse response, MdnsInetAddressRecord inetRecord) {
+    private static boolean assignInetRecord(
+            MdnsResponse response, MdnsInetAddressRecord inetRecord) {
         if (inetRecord.getInet4Address() != null) {
-            response.setInet4AddressRecord(inetRecord);
+            return response.addInet4AddressRecord(inetRecord);
         } else if (inetRecord.getInet6Address() != null) {
-            response.setInet6AddressRecord(inetRecord);
+            return response.addInet6AddressRecord(inetRecord);
         }
+        return false;
     }
 
     private static List<MdnsResponse> findResponsesWithHostName(

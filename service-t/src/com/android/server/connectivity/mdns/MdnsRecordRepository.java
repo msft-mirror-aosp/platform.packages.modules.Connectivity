@@ -47,7 +47,6 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
-import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -70,6 +69,8 @@ public class MdnsRecordRepository {
 
     // Top-level domain for link-local queries, as per RFC6762 3.
     private static final String LOCAL_TLD = "local";
+    // Subtype separator as per RFC6763 7.1 (_printer._sub._http._tcp.local)
+    private static final String SUBTYPE_SEPARATOR = "_sub";
 
     // Service type for service enumeration (RFC6763 9.)
     private static final String[] DNS_SD_SERVICE_TYPE =
@@ -90,15 +91,16 @@ public class MdnsRecordRepository {
     @NonNull
     private final Looper mLooper;
     @NonNull
-    private String[] mDeviceHostname;
+    private final String[] mDeviceHostname;
 
-    public MdnsRecordRepository(@NonNull Looper looper) {
-        this(looper, new Dependencies());
+    public MdnsRecordRepository(@NonNull Looper looper, @NonNull String[] deviceHostname) {
+        this(looper, new Dependencies(), deviceHostname);
     }
 
     @VisibleForTesting
-    public MdnsRecordRepository(@NonNull Looper looper, @NonNull Dependencies deps) {
-        mDeviceHostname = deps.getHostname();
+    public MdnsRecordRepository(@NonNull Looper looper, @NonNull Dependencies deps,
+            @NonNull String[] deviceHostname) {
+        mDeviceHostname = deviceHostname;
         mLooper = looper;
     }
 
@@ -107,25 +109,6 @@ public class MdnsRecordRepository {
      */
     @VisibleForTesting
     public static class Dependencies {
-        /**
-         * Get a unique hostname to be used by the device.
-         */
-        @NonNull
-        public String[] getHostname() {
-            // Generate a very-probably-unique hostname. This allows minimizing possible conflicts
-            // to the point that probing for it is no longer necessary (as per RFC6762 8.1 last
-            // paragraph), and does not leak more information than what could already be obtained by
-            // looking at the mDNS packets source address.
-            // This differs from historical behavior that just used "Android.local" for many
-            // devices, creating a lot of conflicts.
-            // Having a different hostname per interface is an acceptable option as per RFC6762 14.
-            // This hostname will change every time the interface is reconnected, so this does not
-            // allow tracking the device.
-            // TODO: consider deriving a hostname from other sources, such as the IPv6 addresses
-            // (reusing the same privacy-protecting mechanics).
-            return new String[] {
-                    "Android_" + UUID.randomUUID().toString().replace("-", ""), LOCAL_TLD };
-        }
 
         /**
          * @see NetworkInterface#getInetAddresses().
@@ -175,13 +158,15 @@ public class MdnsRecordRepository {
         @NonNull
         public final List<RecordInfo<?>> allRecords;
         @NonNull
-        public final RecordInfo<MdnsPointerRecord> ptrRecord;
+        public final List<RecordInfo<MdnsPointerRecord>> ptrRecords;
         @NonNull
         public final RecordInfo<MdnsServiceRecord> srvRecord;
         @NonNull
         public final RecordInfo<MdnsTextRecord> txtRecord;
         @NonNull
         public final NsdServiceInfo serviceInfo;
+        @Nullable
+        public final String subtype;
 
         /**
          * Whether the service is sending exit announcements and will be destroyed soon.
@@ -194,14 +179,16 @@ public class MdnsRecordRepository {
          * @param deviceHostname Hostname of the device (for the interface used)
          * @param serviceInfo Service to advertise
          */
-        ServiceRegistration(@NonNull String[] deviceHostname, @NonNull NsdServiceInfo serviceInfo) {
+        ServiceRegistration(@NonNull String[] deviceHostname, @NonNull NsdServiceInfo serviceInfo,
+                @Nullable String subtype) {
             this.serviceInfo = serviceInfo;
+            this.subtype = subtype;
 
             final String[] serviceType = splitServiceType(serviceInfo);
             final String[] serviceName = splitFullyQualifiedName(serviceInfo, serviceType);
 
             // Service PTR record
-            ptrRecord = new RecordInfo<>(
+            final RecordInfo<MdnsPointerRecord> ptrRecord = new RecordInfo<>(
                     serviceInfo,
                     new MdnsPointerRecord(
                             serviceType,
@@ -210,6 +197,26 @@ public class MdnsRecordRepository {
                             NON_NAME_RECORDS_TTL_MILLIS,
                             serviceName),
                     true /* sharedName */, true /* probing */);
+
+            if (subtype == null) {
+                this.ptrRecords = Collections.singletonList(ptrRecord);
+            } else {
+                final String[] subtypeName = new String[serviceType.length + 2];
+                System.arraycopy(serviceType, 0, subtypeName, 2, serviceType.length);
+                subtypeName[0] = subtype;
+                subtypeName[1] = SUBTYPE_SEPARATOR;
+                final RecordInfo<MdnsPointerRecord> subtypeRecord = new RecordInfo<>(
+                        serviceInfo,
+                        new MdnsPointerRecord(
+                                subtypeName,
+                                0L /* receiptTimeMillis */,
+                                false /* cacheFlush */,
+                                NON_NAME_RECORDS_TTL_MILLIS,
+                                serviceName),
+                        true /* sharedName */, true /* probing */);
+
+                this.ptrRecords = List.of(ptrRecord, subtypeRecord);
+            }
 
             srvRecord = new RecordInfo<>(
                     serviceInfo,
@@ -230,8 +237,8 @@ public class MdnsRecordRepository {
                             attrsToTextEntries(serviceInfo.getAttributes())),
                     false /* sharedName */, true /* probing */);
 
-            final ArrayList<RecordInfo<?>> allRecords = new ArrayList<>(4);
-            allRecords.add(ptrRecord);
+            final ArrayList<RecordInfo<?>> allRecords = new ArrayList<>(5);
+            allRecords.addAll(ptrRecords);
             allRecords.add(srvRecord);
             allRecords.add(txtRecord);
             // Service type enumeration record (RFC6763 9.)
@@ -294,7 +301,8 @@ public class MdnsRecordRepository {
      *         ID of the replaced service.
      * @throws NameConflictException There is already a (non-exiting) service using the name.
      */
-    public int addService(int serviceId, NsdServiceInfo serviceInfo) throws NameConflictException {
+    public int addService(int serviceId, NsdServiceInfo serviceInfo, @Nullable String subtype)
+            throws NameConflictException {
         if (mServices.contains(serviceId)) {
             throw new IllegalArgumentException(
                     "Service ID must not be reused across registrations: " + serviceId);
@@ -307,7 +315,7 @@ public class MdnsRecordRepository {
         }
 
         final ServiceRegistration registration = new ServiceRegistration(
-                mDeviceHostname, serviceInfo);
+                mDeviceHostname, serviceInfo, subtype);
         mServices.put(serviceId, registration);
 
         // Remove existing exiting service
@@ -363,24 +371,25 @@ public class MdnsRecordRepository {
         if (registration == null) return null;
         if (registration.exiting) return null;
 
-        // Send exit (TTL 0) for the PTR record, if the record was sent (in particular don't send
+        // Send exit (TTL 0) for the PTR records, if at least one was sent (in particular don't send
         // if still probing)
-        if (registration.ptrRecord.lastSentTimeMs == 0L) {
+        if (CollectionUtils.all(registration.ptrRecords, r -> r.lastSentTimeMs == 0L)) {
             return null;
         }
 
         registration.exiting = true;
-        final MdnsPointerRecord expiredRecord = new MdnsPointerRecord(
-                registration.ptrRecord.record.getName(),
-                0L /* receiptTimeMillis */,
-                true /* cacheFlush */,
-                0L /* ttlMillis */,
-                registration.ptrRecord.record.getPointer());
+        final List<MdnsRecord> expiredRecords = CollectionUtils.map(registration.ptrRecords,
+                r -> new MdnsPointerRecord(
+                        r.record.getName(),
+                        0L /* receiptTimeMillis */,
+                        true /* cacheFlush */,
+                        0L /* ttlMillis */,
+                        r.record.getPointer()));
 
         // Exit should be skipped if the record is still advertised by another service, but that
         // would be a conflict (2 service registrations with the same service name), so it would
         // not have been allowed by the repository.
-        return new MdnsAnnouncer.ExitAnnouncementInfo(id, Collections.singletonList(expiredRecord));
+        return new MdnsAnnouncer.ExitAnnouncementInfo(id, expiredRecords);
     }
 
     public void removeService(int id) {
@@ -461,7 +470,7 @@ public class MdnsRecordRepository {
             for (int i = 0; i < mServices.size(); i++) {
                 final ServiceRegistration registration = mServices.valueAt(i);
                 if (registration.exiting) continue;
-                addReplyFromService(question, registration.allRecords, registration.ptrRecord,
+                addReplyFromService(question, registration.allRecords, registration.ptrRecords,
                         registration.srvRecord, registration.txtRecord, replyUnicast, now,
                         answerInfo, additionalAnswerRecords);
             }
@@ -518,7 +527,7 @@ public class MdnsRecordRepository {
      */
     private void addReplyFromService(@NonNull MdnsRecord question,
             @NonNull List<RecordInfo<?>> serviceRecords,
-            @Nullable RecordInfo<MdnsPointerRecord> servicePtrRecord,
+            @Nullable List<RecordInfo<MdnsPointerRecord>> servicePtrRecords,
             @Nullable RecordInfo<MdnsServiceRecord> serviceSrvRecord,
             @Nullable RecordInfo<MdnsTextRecord> serviceTxtRecord,
             boolean replyUnicast, long now, @NonNull List<RecordInfo<?>> answerInfo,
@@ -550,7 +559,8 @@ public class MdnsRecordRepository {
             }
 
             hasKnownAnswer = true;
-            hasDnsSdPtrRecordAnswer |= (info == servicePtrRecord);
+            hasDnsSdPtrRecordAnswer |= (servicePtrRecords != null
+                    && CollectionUtils.any(servicePtrRecords, r -> info == r));
             hasDnsSdSrvRecordAnswer |= (info == serviceSrvRecord);
 
             // TODO: responses to probe queries should bypass this check and only ensure the
@@ -810,10 +820,11 @@ public class MdnsRecordRepository {
      */
     @Nullable
     public MdnsProber.ProbingInfo renameServiceForConflict(int serviceId, NsdServiceInfo newInfo) {
-        if (!mServices.contains(serviceId)) return null;
+        final ServiceRegistration existing = mServices.get(serviceId);
+        if (existing == null) return null;
 
         final ServiceRegistration newService = new ServiceRegistration(
-                mDeviceHostname, newInfo);
+                mDeviceHostname, newInfo, existing.subtype);
         mServices.put(serviceId, newService);
         return makeProbingInfo(serviceId, newService.srvRecord.record);
     }

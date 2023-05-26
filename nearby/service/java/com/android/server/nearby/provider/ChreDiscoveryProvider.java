@@ -29,10 +29,13 @@ import android.hardware.location.NanoAppMessage;
 import android.nearby.DataElement;
 import android.nearby.NearbyDevice;
 import android.nearby.NearbyDeviceParcelable;
+import android.nearby.OffloadCapability;
 import android.nearby.PresenceDevice;
 import android.nearby.PresenceScanFilter;
 import android.nearby.PublicCredential;
 import android.nearby.ScanFilter;
+import android.nearby.aidl.IOffloadCallback;
+import android.os.RemoteException;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
@@ -64,18 +67,16 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     @VisibleForTesting
     public static final int NANOAPP_MESSAGE_TYPE_CONFIG = 5;
 
-    private static final int FP_ACCOUNT_KEY_LENGTH = 16;
-
     private final ChreCommunication mChreCommunication;
     private final ChreCallback mChreCallback;
     private final Object mLock = new Object();
 
     private boolean mChreStarted = false;
-    private Blefilter.BleFilters mFilters = null;
     private Context mContext;
     private NearbyConfiguration mNearbyConfiguration;
     private final IntentFilter mIntentFilter;
-    // Null when the filters are never set
+    // Null when CHRE not started and the filters are never set. Empty the list every time the scan
+    // stops.
     @GuardedBy("mLock")
     @Nullable
     private List<ScanFilter> mScanFilters;
@@ -120,7 +121,8 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         Log.d(TAG, "Stop CHRE scan");
         synchronized (mLock) {
             if (mScanFilters != null) {
-                mScanFilters = null;
+                // Cleaning the filters by assigning an empty list
+                mScanFilters = List.of();
             }
             updateFiltersLocked();
         }
@@ -143,8 +145,25 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         return mChreCommunication.available();
     }
 
+    /**
+     * Query offload capability in a device.
+     */
+    public void queryOffloadCapability(IOffloadCallback callback) {
+        OffloadCapability.Builder builder = new OffloadCapability.Builder();
+        mExecutor.execute(() -> {
+            long version = mChreCommunication.queryNanoAppVersion();
+            builder.setVersion(version);
+            builder.setFastPairSupported(version != ChreCommunication.INVALID_NANO_APP_VERSION);
+            try {
+                callback.onQueryComplete(builder.build());
+            } catch (RemoteException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
     @VisibleForTesting
-    List<ScanFilter> getFiltersLocked() {
+    public List<ScanFilter> getFiltersLocked() {
         synchronized (mLock) {
             return mScanFilters == null ? null : List.copyOf(mScanFilters);
         }
@@ -178,7 +197,6 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         }
         if (mChreStarted) {
             sendFilters(filtersBuilder.build());
-            mFilters = null;
         }
     }
 
@@ -196,10 +214,7 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
 
     private Blefilter.DataElement toProtoDataElement(DataElement dataElement) {
         return Blefilter.DataElement.newBuilder()
-                .setKey(Arrays.stream(Blefilter.DataElement.ElementType.values())
-                        .filter(p -> p.getNumber() == dataElement.getKey())
-                        .findFirst()
-                        .get())
+                .setKey(dataElement.getKey())
                 .setValue(ByteString.copyFrom(dataElement.getValue()))
                 .setValueLength(dataElement.getValue().length)
                 .build();
@@ -209,9 +224,11 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         NANOAPP_ID, NANOAPP_MESSAGE_TYPE_FILTER, filters.toByteArray());
-        if (!mChreCommunication.sendMessageToNanoApp(message)) {
-            Log.e(TAG, "Failed to send filters to CHRE.");
+        if (mChreCommunication.sendMessageToNanoApp(message)) {
+            Log.v(TAG, "Successfully sent filters to CHRE.");
+            return;
         }
+        Log.e(TAG, "Failed to send filters to CHRE.");
     }
 
     private void sendScreenUpdate(Boolean screenOn) {
@@ -219,9 +236,11 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         NANOAPP_ID, NANOAPP_MESSAGE_TYPE_CONFIG, config.toByteArray());
-        if (!mChreCommunication.sendMessageToNanoApp(message)) {
-            Log.e(TAG, "Failed to send config to CHRE.");
+        if (mChreCommunication.sendMessageToNanoApp(message)) {
+            Log.v(TAG, "Successfully sent config to CHRE.");
+            return;
         }
+        Log.e(TAG, "Failed to send config to CHRE.");
     }
 
     private class ChreCallback implements ChreCommunication.ContextHubCommsCallback {
@@ -236,10 +255,6 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                     mIntentFilter.addAction(Intent.ACTION_SCREEN_OFF);
                     mContext.registerReceiver(mScreenBroadcastReceiver, mIntentFilter);
                     mChreStarted = true;
-                    if (mFilters != null) {
-                        sendFilters(mFilters);
-                        mFilters = null;
-                    }
                 }
             }
         }
@@ -348,6 +363,7 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
 
                         NearbyDeviceParcelable device =
                                 new NearbyDeviceParcelable.Builder()
+                                        .setDeviceId(Arrays.hashCode(secretId))
                                         .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                                         .setMedium(NearbyDevice.Medium.BLE)
                                         .setTxPower(filterResult.getTxPower())
@@ -369,31 +385,20 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
                 PresenceDevice.Builder presenceDeviceBuilder) {
             int endIndex = element.hasValueLength() ? element.getValueLength() :
                     element.getValue().size();
-            switch (element.getKey()) {
-                case DE_FAST_PAIR_ACCOUNT_KEY:
+            int key = element.getKey();
+            switch (key) {
+                case DataElement.DataType.ACCOUNT_KEY_DATA:
+                case DataElement.DataType.CONNECTION_STATUS:
+                case DataElement.DataType.BATTERY:
                     presenceDeviceBuilder.addExtendedProperty(
-                            new DataElement(DataElement.DataType.ACCOUNT_KEY_DATA,
-                                    element.getValue().substring(0, endIndex).toByteArray()));
-                    break;
-                case DE_CONNECTION_STATUS:
-                    presenceDeviceBuilder.addExtendedProperty(
-                            new DataElement(DataElement.DataType.CONNECTION_STATUS,
-                                    element.getValue().substring(0, endIndex).toByteArray()));
-                    break;
-                case DE_BATTERY_STATUS:
-                    presenceDeviceBuilder.addExtendedProperty(
-                            new DataElement(DataElement.DataType.BATTERY,
+                            new DataElement(key,
                                     element.getValue().substring(0, endIndex).toByteArray()));
                     break;
                 default:
                     if (mNearbyConfiguration.isTestAppSupported()
-                            && DataElement.isTestDeType(element.getKey().getNumber())) {
+                            && DataElement.isTestDeType(key)) {
                         presenceDeviceBuilder.addExtendedProperty(
-                                new DataElement(Arrays.stream(
-                                                Blefilter.DataElement.ElementType.values())
-                                        .filter(p -> p.getNumber() == element.getKey().getNumber())
-                                        .findFirst()
-                                        .get().getNumber(),
+                                new DataElement(key,
                                         element.getValue().substring(0, endIndex).toByteArray()));
                     }
                     break;

@@ -16,6 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
+import static com.android.server.connectivity.mdns.MdnsRecord.MAX_LABEL_LENGTH;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.LinkAddress;
@@ -28,9 +30,12 @@ import android.util.Log;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.SharedLog;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.BiPredicate;
 import java.util.function.Consumer;
 
@@ -42,6 +47,10 @@ import java.util.function.Consumer;
 public class MdnsAdvertiser {
     private static final String TAG = MdnsAdvertiser.class.getSimpleName();
     static final boolean DBG = Log.isLoggable(TAG, Log.DEBUG);
+
+    // Top-level domain for link-local queries, as per RFC6762 3.
+    private static final String LOCAL_TLD = "local";
+
 
     private final Looper mLooper;
     private final AdvertiserCallback mCb;
@@ -60,6 +69,9 @@ public class MdnsAdvertiser {
     private final SparseArray<Registration> mRegistrations = new SparseArray<>();
     private final Dependencies mDeps;
 
+    private String[] mDeviceHostName;
+    @NonNull private final SharedLog mSharedLog;
+
     /**
      * Dependencies for {@link MdnsAdvertiser}, useful for testing.
      */
@@ -71,11 +83,32 @@ public class MdnsAdvertiser {
         public MdnsInterfaceAdvertiser makeAdvertiser(@NonNull MdnsInterfaceSocket socket,
                 @NonNull List<LinkAddress> initialAddresses,
                 @NonNull Looper looper, @NonNull byte[] packetCreationBuffer,
-                @NonNull MdnsInterfaceAdvertiser.Callback cb) {
+                @NonNull MdnsInterfaceAdvertiser.Callback cb,
+                @NonNull String[] deviceHostName,
+                @NonNull SharedLog sharedLog) {
             // Note NetworkInterface is final and not mockable
-            final String logTag = socket.getInterface().getName();
-            return new MdnsInterfaceAdvertiser(logTag, socket, initialAddresses, looper,
-                    packetCreationBuffer, cb);
+            return new MdnsInterfaceAdvertiser(socket, initialAddresses, looper,
+                    packetCreationBuffer, cb, deviceHostName, sharedLog);
+        }
+
+        /**
+         * Generates a unique hostname to be used by the device.
+         */
+        @NonNull
+        public String[] generateHostname() {
+            // Generate a very-probably-unique hostname. This allows minimizing possible conflicts
+            // to the point that probing for it is no longer necessary (as per RFC6762 8.1 last
+            // paragraph), and does not leak more information than what could already be obtained by
+            // looking at the mDNS packets source address.
+            // This differs from historical behavior that just used "Android.local" for many
+            // devices, creating a lot of conflicts.
+            // Having a different hostname per interface is an acceptable option as per RFC6762 14.
+            // This hostname will change every time the interface is reconnected, so this does not
+            // allow tracking the device.
+            // TODO: consider deriving a hostname from other sources, such as the IPv6 addresses
+            // (reusing the same privacy-protecting mechanics).
+            return new String[] {
+                    "Android_" + UUID.randomUUID().toString().replace("-", ""), LOCAL_TLD };
         }
     }
 
@@ -102,9 +135,7 @@ public class MdnsAdvertiser {
 
         @Override
         public void onServiceConflict(@NonNull MdnsInterfaceAdvertiser advertiser, int serviceId) {
-            if (DBG) {
-                Log.v(TAG, "Found conflict, restarted probing for service " + serviceId);
-            }
+            mSharedLog.i("Found conflict, restarted probing for service " + serviceId);
 
             final Registration registration = mRegistrations.get(serviceId);
             if (registration == null) return;
@@ -239,7 +270,8 @@ public class MdnsAdvertiser {
             mPendingRegistrations.put(id, registration);
             for (int i = 0; i < mAdvertisers.size(); i++) {
                 try {
-                    mAdvertisers.valueAt(i).addService(id, registration.getServiceInfo());
+                    mAdvertisers.valueAt(i).addService(
+                            id, registration.getServiceInfo(), registration.getSubtype());
                 } catch (NameConflictException e) {
                     Log.wtf(TAG, "Name conflict adding services that should have unique names", e);
                 }
@@ -260,15 +292,17 @@ public class MdnsAdvertiser {
             MdnsInterfaceAdvertiser advertiser = mAllAdvertisers.get(socket);
             if (advertiser == null) {
                 advertiser = mDeps.makeAdvertiser(socket, addresses, mLooper, mPacketCreationBuffer,
-                        mInterfaceAdvertiserCb);
+                        mInterfaceAdvertiserCb, mDeviceHostName,
+                        mSharedLog.forSubComponent(socket.getInterface().getName()));
                 mAllAdvertisers.put(socket, advertiser);
                 advertiser.start();
             }
             mAdvertisers.put(socket, advertiser);
             for (int i = 0; i < mPendingRegistrations.size(); i++) {
+                final Registration registration = mPendingRegistrations.valueAt(i);
                 try {
                     advertiser.addService(mPendingRegistrations.keyAt(i),
-                            mPendingRegistrations.valueAt(i).getServiceInfo());
+                            registration.getServiceInfo(), registration.getSubtype());
                 } catch (NameConflictException e) {
                     Log.wtf(TAG, "Name conflict adding services that should have unique names", e);
                 }
@@ -297,10 +331,13 @@ public class MdnsAdvertiser {
         private int mConflictCount;
         @NonNull
         private NsdServiceInfo mServiceInfo;
+        @Nullable
+        private final String mSubtype;
 
-        private Registration(@NonNull NsdServiceInfo serviceInfo) {
+        private Registration(@NonNull NsdServiceInfo serviceInfo, @Nullable String subtype) {
             this.mOriginalName = serviceInfo.getServiceName();
             this.mServiceInfo = serviceInfo;
+            this.mSubtype = subtype;
         }
 
         /**
@@ -331,7 +368,7 @@ public class MdnsAdvertiser {
             // "Name (2)", then "Name (3)" etc.
             // TODO: use a hidden method in NsdServiceInfo once MdnsAdvertiser is moved to service-t
             final NsdServiceInfo newInfo = new NsdServiceInfo();
-            newInfo.setServiceName(mOriginalName + " (" + (mConflictCount + renameCount + 1) + ")");
+            newInfo.setServiceName(getUpdatedServiceName(renameCount));
             newInfo.setServiceType(mServiceInfo.getServiceType());
             for (Map.Entry<String, byte[]> attr : mServiceInfo.getAttributes().entrySet()) {
                 newInfo.setAttribute(attr.getKey(),
@@ -344,9 +381,21 @@ public class MdnsAdvertiser {
             return newInfo;
         }
 
+        private String getUpdatedServiceName(int renameCount) {
+            final String suffix = " (" + (mConflictCount + renameCount + 1) + ")";
+            final String truncatedServiceName = MdnsUtils.truncateServiceName(mOriginalName,
+                    MAX_LABEL_LENGTH - suffix.length());
+            return truncatedServiceName + suffix;
+        }
+
         @NonNull
         public NsdServiceInfo getServiceInfo() {
             return mServiceInfo;
+        }
+
+        @Nullable
+        public String getSubtype() {
+            return mSubtype;
         }
     }
 
@@ -378,17 +427,20 @@ public class MdnsAdvertiser {
     }
 
     public MdnsAdvertiser(@NonNull Looper looper, @NonNull MdnsSocketProvider socketProvider,
-            @NonNull AdvertiserCallback cb) {
-        this(looper, socketProvider, cb, new Dependencies());
+            @NonNull AdvertiserCallback cb, @NonNull SharedLog sharedLog) {
+        this(looper, socketProvider, cb, new Dependencies(), sharedLog);
     }
 
     @VisibleForTesting
     MdnsAdvertiser(@NonNull Looper looper, @NonNull MdnsSocketProvider socketProvider,
-            @NonNull AdvertiserCallback cb, @NonNull Dependencies deps) {
+            @NonNull AdvertiserCallback cb, @NonNull Dependencies deps,
+            @NonNull SharedLog sharedLog) {
         mLooper = looper;
         mCb = cb;
         mSocketProvider = socketProvider;
         mDeps = deps;
+        mDeviceHostName = deps.generateHostname();
+        mSharedLog = sharedLog;
     }
 
     private void checkThread() {
@@ -401,8 +453,9 @@ public class MdnsAdvertiser {
      * Add a service to advertise.
      * @param id A unique ID for the service.
      * @param service The service info to advertise.
+     * @param subtype An optional subtype to advertise the service with.
      */
-    public void addService(int id, NsdServiceInfo service) {
+    public void addService(int id, NsdServiceInfo service, @Nullable String subtype) {
         checkThread();
         if (mRegistrations.get(id) != null) {
             Log.e(TAG, "Adding duplicate registration for " + service);
@@ -411,12 +464,10 @@ public class MdnsAdvertiser {
             return;
         }
 
-        if (DBG) {
-            Log.i(TAG, "Adding service " + service + " with ID " + id);
-        }
+        mSharedLog.i("Adding service " + service + " with ID " + id + " and subtype " + subtype);
 
         final Network network = service.getNetwork();
-        final Registration registration = new Registration(service);
+        final Registration registration = new Registration(service, subtype);
         final BiPredicate<Network, InterfaceAdvertiserRequest> checkConflictFilter;
         if (network == null) {
             // If registering on all networks, no advertiser must have conflicts
@@ -445,14 +496,16 @@ public class MdnsAdvertiser {
     public void removeService(int id) {
         checkThread();
         if (!mRegistrations.contains(id)) return;
-        if (DBG) {
-            Log.i(TAG, "Removing service with ID " + id);
-        }
+        mSharedLog.i("Removing service with ID " + id);
         for (int i = mAdvertiserRequests.size() - 1; i >= 0; i--) {
             final InterfaceAdvertiserRequest advertiser = mAdvertiserRequests.valueAt(i);
             advertiser.removeService(id);
         }
         mRegistrations.remove(id);
+        // Regenerates host name when registrations removed.
+        if (mRegistrations.size() == 0) {
+            mDeviceHostName = mDeps.generateHostname();
+        }
     }
 
     private static <K, V> boolean any(@NonNull ArrayMap<K, V> map,

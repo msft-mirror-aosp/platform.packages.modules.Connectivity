@@ -28,8 +28,8 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.longThat;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -38,7 +38,6 @@ import static org.mockito.Mockito.verify;
 import android.app.AlarmManager;
 import android.content.Context;
 import android.content.res.Resources;
-import android.net.ConnectivityResources;
 import android.net.INetd;
 import android.net.ISocketKeepaliveCallback;
 import android.net.KeepalivePacketData;
@@ -47,7 +46,6 @@ import android.net.LinkProperties;
 import android.net.MarkMaskParcel;
 import android.net.NattKeepalivePacketData;
 import android.net.Network;
-import android.net.NetworkAgent;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.os.Binder;
@@ -57,12 +55,14 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.SystemClock;
 import android.test.suitebuilder.annotation.SmallTest;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.android.connectivity.resources.R;
 import com.android.server.connectivity.KeepaliveTracker.KeepaliveInfo;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
@@ -94,6 +94,7 @@ public class AutomaticOnOffKeepaliveTrackerTest {
     private static final int NETID_MASK = 0xffff;
     private static final int TIMEOUT_MS = 30_000;
     private static final int MOCK_RESOURCE_ID = 5;
+    private static final int TEST_KEEPALIVE_INTERVAL_SEC = 10;
     private AutomaticOnOffKeepaliveTracker mAOOKeepaliveTracker;
     private HandlerThread mHandlerThread;
 
@@ -234,10 +235,8 @@ public class AutomaticOnOffKeepaliveTrackerTest {
                 anyInt() /* pid */, anyInt() /* uid */);
         ConnectivityResources.setResourcesContextForTest(mCtx);
         final Resources mockResources = mock(Resources.class);
-        doReturn(MOCK_RESOURCE_ID).when(mockResources).getIdentifier(any() /* name */,
-                any() /* defType */, any() /* defPackage */);
         doReturn(new String[] { "0,3", "3,3" }).when(mockResources)
-                .getStringArray(MOCK_RESOURCE_ID);
+                .getStringArray(R.array.config_networkSupportedKeepaliveCount);
         doReturn(mockResources).when(mCtx).getResources();
         doReturn(mNetd).when(mDependencies).getNetd();
         doReturn(mAlarmManager).when(mDependencies).getAlarmManager(any());
@@ -266,11 +265,11 @@ public class AutomaticOnOffKeepaliveTrackerTest {
         @Override
         public void handleMessage(@NonNull final Message msg) {
             switch (msg.what) {
-                case NetworkAgent.CMD_START_SOCKET_KEEPALIVE:
-                    Log.d(TAG, "Test handler received CMD_START_SOCKET_KEEPALIVE : " + msg);
+                case AutomaticOnOffKeepaliveTracker.CMD_REQUEST_START_KEEPALIVE:
+                    Log.d(TAG, "Test handler received CMD_REQUEST_START_KEEPALIVE : " + msg);
                     mAOOKeepaliveTracker.handleStartKeepalive(msg);
                     break;
-                case NetworkAgent.CMD_MONITOR_AUTOMATIC_KEEPALIVE:
+                case AutomaticOnOffKeepaliveTracker.CMD_MONITOR_AUTOMATIC_KEEPALIVE:
                     Log.d(TAG, "Test handler received CMD_MONITOR_AUTOMATIC_KEEPALIVE : " + msg);
                     mLastAutoKi = mAOOKeepaliveTracker.getKeepaliveForBinder((IBinder) msg.obj);
                     break;
@@ -334,8 +333,12 @@ public class AutomaticOnOffKeepaliveTrackerTest {
         final KeepalivePacketData kpd = new NattKeepalivePacketData(srcAddress, srcPort,
                 dstAddress, dstPort, new byte[] {1});
         final KeepaliveInfo ki = mKeepaliveTracker.new KeepaliveInfo(cb, nai, kpd,
-                10 /* interval */, KeepaliveInfo.TYPE_NATT, fd);
+                TEST_KEEPALIVE_INTERVAL_SEC, KeepaliveInfo.TYPE_NATT, fd);
         mKeepaliveTracker.setReturnedKeepaliveInfo(ki);
+
+        // Mock elapsed real time to verify the alarm timer.
+        final long time = SystemClock.elapsedRealtime();
+        doReturn(time).when(mDependencies).getElapsedRealtime();
 
         mAOOKeepaliveTracker.startNattKeepalive(nai, fd, 10 /* intervalSeconds */, cb,
                 srcAddress.toString(), srcPort, dstAddress.toString(), dstPort,
@@ -344,8 +347,11 @@ public class AutomaticOnOffKeepaliveTrackerTest {
 
         final ArgumentCaptor<AlarmManager.OnAlarmListener> listenerCaptor =
                 ArgumentCaptor.forClass(AlarmManager.OnAlarmListener.class);
-        verify(mAlarmManager).setExact(eq(AlarmManager.ELAPSED_REALTIME), anyLong(),
-                any(), listenerCaptor.capture(), eq(mTestHandler));
+        // The alarm timer should be smaller than the keepalive delay. Verify the alarm trigger time
+        // is higher than base time but smaller than the keepalive delay.
+        verify(mAlarmManager).setExact(eq(AlarmManager.ELAPSED_REALTIME),
+                longThat(t -> t > time + 1000L && t < time + TEST_KEEPALIVE_INTERVAL_SEC * 1000L),
+                any() /* tag */, listenerCaptor.capture(), eq(mTestHandler));
         final AlarmManager.OnAlarmListener listener = listenerCaptor.getValue();
 
         // For realism, the listener should be posted on the handler

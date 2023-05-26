@@ -16,8 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
-import static com.android.server.connectivity.mdns.MdnsSocketProvider.ensureRunningOnHandlerThread;
-import static com.android.server.connectivity.mdns.MdnsSocketProvider.isNetworkMatched;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.isNetworkMatched;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -33,9 +33,7 @@ import java.net.DatagramPacket;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetSocketAddress;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * The {@link MdnsMultinetworkSocketClient} manages the multinetwork socket for mDns
@@ -48,11 +46,9 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
 
     @NonNull private final Handler mHandler;
     @NonNull private final MdnsSocketProvider mSocketProvider;
-    @NonNull private final MdnsResponseDecoder mResponseDecoder;
 
-    private final Map<MdnsServiceBrowserListener, InterfaceSocketCallback> mRequestedNetworks =
+    private final ArrayMap<MdnsServiceBrowserListener, InterfaceSocketCallback> mRequestedNetworks =
             new ArrayMap<>();
-    private final ArrayMap<MdnsInterfaceSocket, Network> mActiveNetworkSockets = new ArrayMap<>();
     private final ArrayMap<MdnsInterfaceSocket, ReadPacketHandler> mSocketPacketHandlers =
             new ArrayMap<>();
     private MdnsSocketClientBase.Callback mCallback = null;
@@ -62,13 +58,21 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
             @NonNull MdnsSocketProvider provider) {
         mHandler = new Handler(looper);
         mSocketProvider = provider;
-        mResponseDecoder = new MdnsResponseDecoder(
-                new MdnsResponseDecoder.Clock(), null /* serviceType */);
     }
 
     private class InterfaceSocketCallback implements MdnsSocketProvider.SocketCallback {
+        @NonNull
+        private final SocketCreationCallback mSocketCreationCallback;
+        @NonNull
+        private final ArrayMap<MdnsInterfaceSocket, Network> mActiveNetworkSockets =
+                new ArrayMap<>();
+
+        InterfaceSocketCallback(SocketCreationCallback socketCreationCallback) {
+            mSocketCreationCallback = socketCreationCallback;
+        }
+
         @Override
-        public void onSocketCreated(@NonNull Network network,
+        public void onSocketCreated(@Nullable Network network,
                 @NonNull MdnsInterfaceSocket socket, @NonNull List<LinkAddress> addresses) {
             // The socket may be already created by other request before, try to get the stored
             // ReadPacketHandler.
@@ -80,14 +84,65 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
             }
             socket.addPacketHandler(handler);
             mActiveNetworkSockets.put(socket, network);
+            mSocketCreationCallback.onSocketCreated(network);
         }
 
         @Override
-        public void onInterfaceDestroyed(@NonNull Network network,
+        public void onInterfaceDestroyed(@Nullable Network network,
                 @NonNull MdnsInterfaceSocket socket) {
-            mSocketPacketHandlers.remove(socket);
-            mActiveNetworkSockets.remove(socket);
+            notifySocketDestroyed(socket);
+            maybeCleanupPacketHandler(socket);
         }
+
+        private void notifySocketDestroyed(@NonNull MdnsInterfaceSocket socket) {
+            final Network network = mActiveNetworkSockets.remove(socket);
+            if (!isAnySocketActive(network)) {
+                mSocketCreationCallback.onAllSocketsDestroyed(network);
+            }
+        }
+
+        void onNetworkUnrequested() {
+            for (int i = mActiveNetworkSockets.size() - 1; i >= 0; i--) {
+                // Iterate from the end so the socket can be removed
+                final MdnsInterfaceSocket socket = mActiveNetworkSockets.keyAt(i);
+                notifySocketDestroyed(socket);
+                maybeCleanupPacketHandler(socket);
+            }
+        }
+    }
+
+    private boolean isSocketActive(@NonNull MdnsInterfaceSocket socket) {
+        for (int i = 0; i < mRequestedNetworks.size(); i++) {
+            final InterfaceSocketCallback isc = mRequestedNetworks.valueAt(i);
+            if (isc.mActiveNetworkSockets.containsKey(socket)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isAnySocketActive(@Nullable Network network) {
+        for (int i = 0; i < mRequestedNetworks.size(); i++) {
+            final InterfaceSocketCallback isc = mRequestedNetworks.valueAt(i);
+            if (isc.mActiveNetworkSockets.containsValue(network)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private ArrayMap<MdnsInterfaceSocket, Network> getActiveSockets() {
+        final ArrayMap<MdnsInterfaceSocket, Network> sockets = new ArrayMap<>();
+        for (int i = 0; i < mRequestedNetworks.size(); i++) {
+            final InterfaceSocketCallback isc = mRequestedNetworks.valueAt(i);
+            sockets.putAll(isc.mActiveNetworkSockets);
+        }
+        return sockets;
+    }
+
+    private void maybeCleanupPacketHandler(@NonNull MdnsInterfaceSocket socket) {
+        if (isSocketActive(socket)) return;
+        mSocketPacketHandlers.remove(socket);
     }
 
     private class ReadPacketHandler implements MulticastPacketReader.PacketHandler {
@@ -118,10 +173,11 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
      * @param listener the listener for discovery.
      * @param network the target network for discovery. Null means discovery on all possible
      *                interfaces.
+     * @param socketCreationCallback the callback to notify socket creation.
      */
     @Override
     public void notifyNetworkRequested(@NonNull MdnsServiceBrowserListener listener,
-            @Nullable Network network) {
+            @Nullable Network network, @NonNull SocketCreationCallback socketCreationCallback) {
         ensureRunningOnHandlerThread(mHandler);
         InterfaceSocketCallback callback = mRequestedNetworks.get(listener);
         if (callback != null) {
@@ -129,7 +185,7 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
         }
 
         if (DBG) Log.d(TAG, "notifyNetworkRequested: network=" + network);
-        callback = new InterfaceSocketCallback();
+        callback = new InterfaceSocketCallback(socketCreationCallback);
         mRequestedNetworks.put(listener, callback);
         mSocketProvider.requestSocket(network, callback);
     }
@@ -138,11 +194,14 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
     @Override
     public void notifyNetworkUnrequested(@NonNull MdnsServiceBrowserListener listener) {
         ensureRunningOnHandlerThread(mHandler);
-        final InterfaceSocketCallback callback = mRequestedNetworks.remove(listener);
+        final InterfaceSocketCallback callback = mRequestedNetworks.get(listener);
         if (callback == null) {
             Log.e(TAG, "Can not be unrequested with unknown listener=" + listener);
             return;
         }
+        callback.onNetworkUnrequested();
+        // onNetworkUnrequested does cleanups based on mRequestedNetworks, only remove afterwards
+        mRequestedNetworks.remove(listener);
         mSocketProvider.unrequestSocket(callback);
     }
 
@@ -151,9 +210,10 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
                 instanceof Inet6Address;
         final boolean isIpv4 = ((InetSocketAddress) packet.getSocketAddress()).getAddress()
                 instanceof Inet4Address;
-        for (int i = 0; i < mActiveNetworkSockets.size(); i++) {
-            final MdnsInterfaceSocket socket = mActiveNetworkSockets.keyAt(i);
-            final Network network = mActiveNetworkSockets.valueAt(i);
+        final ArrayMap<MdnsInterfaceSocket, Network> activeSockets = getActiveSockets();
+        for (int i = 0; i < activeSockets.size(); i++) {
+            final MdnsInterfaceSocket socket = activeSockets.keyAt(i);
+            final Network network = activeSockets.valueAt(i);
             // Check ip capability and network before sending packet
             if (((isIpv6 && socket.hasJoinedIpv6()) || (isIpv4 && socket.hasJoinedIpv4()))
                     && isNetworkMatched(targetNetwork, network)) {
@@ -170,19 +230,21 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
             @NonNull Network network) {
         int packetNumber = ++mReceivedPacketNumber;
 
-        final List<MdnsResponse> responses = new ArrayList<>();
-        final int errorCode = mResponseDecoder.decode(
-                recvbuf, length, responses, interfaceIndex, network);
-        if (errorCode == MdnsResponseDecoder.SUCCESS) {
-            for (MdnsResponse response : responses) {
+        final MdnsPacket response;
+        try {
+            response = MdnsResponseDecoder.parseResponse(recvbuf, length);
+        } catch (MdnsPacket.ParseException e) {
+            if (e.code != MdnsResponseErrorCode.ERROR_NOT_RESPONSE_MESSAGE) {
+                Log.e(TAG, e.getMessage(), e);
                 if (mCallback != null) {
-                    mCallback.onResponseReceived(response);
+                    mCallback.onFailedToParseMdnsResponse(packetNumber, e.code, network);
                 }
             }
-        } else if (errorCode != MdnsResponseErrorCode.ERROR_NOT_RESPONSE_MESSAGE) {
-            if (mCallback != null) {
-                mCallback.onFailedToParseMdnsResponse(packetNumber, errorCode);
-            }
+            return;
+        }
+
+        if (mCallback != null) {
+            mCallback.onResponseReceived(response, interfaceIndex, network);
         }
     }
 

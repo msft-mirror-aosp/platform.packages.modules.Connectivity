@@ -2521,7 +2521,7 @@ public class ConnectivityManager {
     @RequiresPermission(android.Manifest.permission.PACKET_KEEPALIVE_OFFLOAD)
     public @NonNull SocketKeepalive createSocketKeepalive(@NonNull Network network,
             @NonNull Socket socket,
-            @NonNull Executor executor,
+            @NonNull @CallbackExecutor Executor executor,
             @NonNull Callback callback) {
         ParcelFileDescriptor dup;
         try {
@@ -2532,6 +2532,26 @@ public class ConnectivityManager {
             dup = createInvalidFd();
         }
         return new TcpSocketKeepalive(mService, network, dup, executor, callback);
+    }
+
+    /**
+     * Get the supported keepalive count for each transport configured in resource overlays.
+     *
+     * @return An array of supported keepalive count for each transport type.
+     * @hide
+     */
+    @RequiresPermission(anyOf = { android.Manifest.permission.NETWORK_SETTINGS,
+            // CTS 13 used QUERY_ALL_PACKAGES to get the resource value, which was implemented
+            // as below in KeepaliveUtils. Also allow that permission so that KeepaliveUtils can
+            // use this method and avoid breaking released CTS. Apps that have this permission
+            // can query the resource themselves anyway.
+            android.Manifest.permission.QUERY_ALL_PACKAGES })
+    public int[] getSupportedKeepalives() {
+        try {
+            return mService.getSupportedKeepalives();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
     }
 
     /**
@@ -5494,9 +5514,9 @@ public class ConnectivityManager {
      * @return {@code uid} if the connection is found and the app has permission to observe it
      *     (e.g., if it is associated with the calling VPN app's VpnService tunnel) or {@link
      *     android.os.Process#INVALID_UID} if the connection is not found.
-     * @throws {@link SecurityException} if the caller is not the active VpnService for the current
+     * @throws SecurityException if the caller is not the active VpnService for the current
      *     user.
-     * @throws {@link IllegalArgumentException} if an unsupported protocol is requested.
+     * @throws IllegalArgumentException if an unsupported protocol is requested.
      */
     public int getConnectionOwnerUid(
             int protocol, @NonNull InetSocketAddress local, @NonNull InetSocketAddress remote) {

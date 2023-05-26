@@ -75,6 +75,13 @@ import java.util.concurrent.TimeoutException;
 
 public final class CtsNetUtils {
     private static final String TAG = CtsNetUtils.class.getSimpleName();
+
+    // Redefine this flag here so that IPsec code shipped in a mainline module can build on old
+    // platforms before FEATURE_IPSEC_TUNNEL_MIGRATION API is released.
+    // TODO: b/275378783 Remove this flag and use the platform API when it is available.
+    private static final String FEATURE_IPSEC_TUNNEL_MIGRATION =
+            "android.software.ipsec_tunnel_migration";
+
     private static final int SOCKET_TIMEOUT_MS = 2000;
     private static final int PRIVATE_DNS_PROBE_MS = 1_000;
 
@@ -113,6 +120,11 @@ public final class CtsNetUtils {
     public boolean hasIpsecTunnelsFeature() {
         return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_IPSEC_TUNNELS)
                 || getFirstApiLevel() >= Build.VERSION_CODES.Q;
+    }
+
+    /** Checks if FEATURE_IPSEC_TUNNEL_MIGRATION is enabled on the device */
+    public boolean hasIpsecTunnelMigrateFeature() {
+        return mContext.getPackageManager().hasSystemFeature(FEATURE_IPSEC_TUNNEL_MIGRATION);
     }
 
     /**
@@ -410,7 +422,7 @@ public final class CtsNetUtils {
                 .build();
     }
 
-    private void testHttpRequest(Socket s) throws IOException {
+    public void testHttpRequest(Socket s) throws IOException {
         OutputStream out = s.getOutputStream();
         InputStream in = s.getInputStream();
 
@@ -418,7 +430,9 @@ public final class CtsNetUtils {
         byte[] responseBytes = new byte[4096];
         out.write(requestBytes);
         in.read(responseBytes);
-        assertTrue(new String(responseBytes, "UTF-8").startsWith("HTTP/1.0 204 No Content\r\n"));
+        final String response = new String(responseBytes, "UTF-8");
+        assertTrue("Received unexpected response: " + response,
+                response.startsWith("HTTP/1.0 204 No Content\r\n"));
     }
 
     private Socket getBoundSocket(Network network, String host, int port) throws IOException {
