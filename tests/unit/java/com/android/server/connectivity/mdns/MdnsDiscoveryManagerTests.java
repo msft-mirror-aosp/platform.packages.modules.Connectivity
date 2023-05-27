@@ -18,26 +18,33 @@ package com.android.server.connectivity.mdns;
 
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
-import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.Network;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.text.TextUtils;
 import android.util.Pair;
 
+import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.MdnsSocketClientBase.SocketCreationCallback;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
+import com.android.testutils.HandlerUtils;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 import java.io.IOException;
@@ -50,33 +57,43 @@ import java.util.List;
 @RunWith(DevSdkIgnoreRunner.class)
 @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
 public class MdnsDiscoveryManagerTests {
-
+    private static final long DEFAULT_TIMEOUT = 2000L;
     private static final String SERVICE_TYPE_1 = "_googlecast._tcp.local";
     private static final String SERVICE_TYPE_2 = "_test._tcp.local";
+    private static final Network NETWORK_1 = Mockito.mock(Network.class);
+    private static final Network NETWORK_2 = Mockito.mock(Network.class);
     private static final Pair<String, Network> PER_NETWORK_SERVICE_TYPE_1 =
             Pair.create(SERVICE_TYPE_1, null);
+    private static final Pair<String, Network> PER_NETWORK_SERVICE_TYPE_1_1 =
+            Pair.create(SERVICE_TYPE_1, NETWORK_1);
     private static final Pair<String, Network> PER_NETWORK_SERVICE_TYPE_2 =
             Pair.create(SERVICE_TYPE_2, null);
+    private static final Pair<String, Network> PER_NETWORK_SERVICE_TYPE_2_2 =
+            Pair.create(SERVICE_TYPE_2, NETWORK_2);
 
     @Mock private ExecutorProvider executorProvider;
     @Mock private MdnsSocketClientBase socketClient;
     @Mock private MdnsServiceTypeClient mockServiceTypeClientOne;
+    @Mock private MdnsServiceTypeClient mockServiceTypeClientOne1;
     @Mock private MdnsServiceTypeClient mockServiceTypeClientTwo;
+    @Mock private MdnsServiceTypeClient mockServiceTypeClientTwo2;
 
     @Mock MdnsServiceBrowserListener mockListenerOne;
     @Mock MdnsServiceBrowserListener mockListenerTwo;
+    @Mock SharedLog sharedLog;
     private MdnsDiscoveryManager discoveryManager;
+    private HandlerThread thread;
+    private Handler handler;
 
     @Before
     public void setUp() {
         MockitoAnnotations.initMocks(this);
 
-        when(mockServiceTypeClientOne.getServiceTypeLabels())
-                .thenReturn(TextUtils.split(SERVICE_TYPE_1, "\\."));
-        when(mockServiceTypeClientTwo.getServiceTypeLabels())
-                .thenReturn(TextUtils.split(SERVICE_TYPE_2, "\\."));
-
-        discoveryManager = new MdnsDiscoveryManager(executorProvider, socketClient) {
+        thread = new HandlerThread("MdnsDiscoveryManagerTests");
+        thread.start();
+        handler = new Handler(thread.getLooper());
+        discoveryManager = new MdnsDiscoveryManager(executorProvider, socketClient, sharedLog,
+                    thread.getLooper()) {
                     @Override
                     MdnsServiceTypeClient createServiceTypeClient(@NonNull String serviceType,
                             @Nullable Network network) {
@@ -84,64 +101,179 @@ public class MdnsDiscoveryManagerTests {
                                 Pair.create(serviceType, network);
                         if (perNetworkServiceType.equals(PER_NETWORK_SERVICE_TYPE_1)) {
                             return mockServiceTypeClientOne;
+                        } else if (perNetworkServiceType.equals(PER_NETWORK_SERVICE_TYPE_1_1)) {
+                            return mockServiceTypeClientOne1;
                         } else if (perNetworkServiceType.equals(PER_NETWORK_SERVICE_TYPE_2)) {
                             return mockServiceTypeClientTwo;
+                        } else if (perNetworkServiceType.equals(PER_NETWORK_SERVICE_TYPE_2_2)) {
+                            return mockServiceTypeClientTwo2;
                         }
                         return null;
                     }
                 };
     }
 
-    private void verifyListenerRegistration(String serviceType, MdnsServiceBrowserListener listener,
-            MdnsServiceTypeClient client) throws IOException {
+    @After
+    public void tearDown() {
+        if (thread != null) {
+            thread.quitSafely();
+        }
+    }
+
+    private void runOnHandler(Runnable r) {
+        handler.post(r);
+        HandlerUtils.waitForIdle(handler, DEFAULT_TIMEOUT);
+    }
+
+    private SocketCreationCallback expectSocketCreationCallback(String serviceType,
+            MdnsServiceBrowserListener listener, MdnsSearchOptions options) throws IOException {
         final ArgumentCaptor<SocketCreationCallback> callbackCaptor =
                 ArgumentCaptor.forClass(SocketCreationCallback.class);
-        discoveryManager.registerListener(serviceType, listener,
-                MdnsSearchOptions.getDefaultOptions());
+        runOnHandler(() -> discoveryManager.registerListener(serviceType, listener, options));
         verify(socketClient).startDiscovery();
         verify(socketClient).notifyNetworkRequested(
-                eq(listener), any(), callbackCaptor.capture());
-        final SocketCreationCallback callback = callbackCaptor.getValue();
-        callback.onSocketCreated(null /* network */);
-        verify(client).startSendAndReceive(listener, MdnsSearchOptions.getDefaultOptions());
+                eq(listener), eq(options.getNetwork()), callbackCaptor.capture());
+        return callbackCaptor.getValue();
     }
 
     @Test
     public void registerListener_unregisterListener() throws IOException {
-        verifyListenerRegistration(SERVICE_TYPE_1, mockListenerOne, mockServiceTypeClientOne);
+        final MdnsSearchOptions options =
+                MdnsSearchOptions.newBuilder().setNetwork(null /* network */).build();
+        final SocketCreationCallback callback = expectSocketCreationCallback(
+                SERVICE_TYPE_1, mockListenerOne, options);
+        runOnHandler(() -> callback.onSocketCreated(null /* network */));
+        verify(mockServiceTypeClientOne).startSendAndReceive(mockListenerOne, options);
 
         when(mockServiceTypeClientOne.stopSendAndReceive(mockListenerOne)).thenReturn(true);
-        discoveryManager.unregisterListener(SERVICE_TYPE_1, mockListenerOne);
+        runOnHandler(() -> discoveryManager.unregisterListener(SERVICE_TYPE_1, mockListenerOne));
         verify(mockServiceTypeClientOne).stopSendAndReceive(mockListenerOne);
         verify(socketClient).stopDiscovery();
     }
 
     @Test
     public void registerMultipleListeners() throws IOException {
-        verifyListenerRegistration(SERVICE_TYPE_1, mockListenerOne, mockServiceTypeClientOne);
-        verifyListenerRegistration(SERVICE_TYPE_2, mockListenerTwo, mockServiceTypeClientTwo);
+        final MdnsSearchOptions options =
+                MdnsSearchOptions.newBuilder().setNetwork(null /* network */).build();
+        final SocketCreationCallback callback = expectSocketCreationCallback(
+                SERVICE_TYPE_1, mockListenerOne, options);
+        runOnHandler(() -> callback.onSocketCreated(null /* network */));
+        verify(mockServiceTypeClientOne).startSendAndReceive(mockListenerOne, options);
+        runOnHandler(() -> callback.onSocketCreated(NETWORK_1));
+        verify(mockServiceTypeClientOne1).startSendAndReceive(mockListenerOne, options);
+
+        final SocketCreationCallback callback2 = expectSocketCreationCallback(
+                SERVICE_TYPE_2, mockListenerTwo, options);
+        runOnHandler(() -> callback2.onSocketCreated(null /* network */));
+        verify(mockServiceTypeClientTwo).startSendAndReceive(mockListenerTwo, options);
+        runOnHandler(() -> callback2.onSocketCreated(NETWORK_2));
+        verify(mockServiceTypeClientTwo2).startSendAndReceive(mockListenerTwo, options);
     }
 
     @Test
     public void onResponseReceived() throws IOException {
-        verifyListenerRegistration(SERVICE_TYPE_1, mockListenerOne, mockServiceTypeClientOne);
-        verifyListenerRegistration(SERVICE_TYPE_2, mockListenerTwo, mockServiceTypeClientTwo);
+        final MdnsSearchOptions options1 =
+                MdnsSearchOptions.newBuilder().setNetwork(null /* network */).build();
+        final SocketCreationCallback callback = expectSocketCreationCallback(
+                SERVICE_TYPE_1, mockListenerOne, options1);
+        runOnHandler(() -> callback.onSocketCreated(null /* network */));
+        verify(mockServiceTypeClientOne).startSendAndReceive(mockListenerOne, options1);
+        runOnHandler(() -> callback.onSocketCreated(NETWORK_1));
+        verify(mockServiceTypeClientOne1).startSendAndReceive(mockListenerOne, options1);
 
-        MdnsPacket responseForServiceTypeOne = createMdnsPacket(SERVICE_TYPE_1);
+        final MdnsSearchOptions options2 =
+                MdnsSearchOptions.newBuilder().setNetwork(NETWORK_2).build();
+        final SocketCreationCallback callback2 = expectSocketCreationCallback(
+                SERVICE_TYPE_2, mockListenerTwo, options2);
+        runOnHandler(() -> callback2.onSocketCreated(NETWORK_2));
+        verify(mockServiceTypeClientTwo2).startSendAndReceive(mockListenerTwo, options2);
+
+        final MdnsPacket responseForServiceTypeOne = createMdnsPacket(SERVICE_TYPE_1);
         final int ifIndex = 1;
-        discoveryManager.onResponseReceived(responseForServiceTypeOne, ifIndex, null /* network */);
+        runOnHandler(() -> discoveryManager.onResponseReceived(
+                responseForServiceTypeOne, ifIndex, null /* network */));
         verify(mockServiceTypeClientOne).processResponse(responseForServiceTypeOne, ifIndex,
                 null /* network */);
-
-        MdnsPacket responseForServiceTypeTwo = createMdnsPacket(SERVICE_TYPE_2);
-        discoveryManager.onResponseReceived(responseForServiceTypeTwo, ifIndex, null /* network */);
-        verify(mockServiceTypeClientTwo).processResponse(responseForServiceTypeTwo, ifIndex,
+        verify(mockServiceTypeClientOne1).processResponse(responseForServiceTypeOne, ifIndex,
+                null /* network */);
+        verify(mockServiceTypeClientTwo2).processResponse(responseForServiceTypeOne, ifIndex,
                 null /* network */);
 
-        MdnsPacket responseForSubtype = createMdnsPacket("subtype._sub._googlecast._tcp.local");
-        discoveryManager.onResponseReceived(responseForSubtype, ifIndex, null /* network */);
-        verify(mockServiceTypeClientOne).processResponse(responseForSubtype, ifIndex,
-                null /* network */);
+        final MdnsPacket responseForServiceTypeTwo = createMdnsPacket(SERVICE_TYPE_2);
+        runOnHandler(() -> discoveryManager.onResponseReceived(
+                responseForServiceTypeTwo, ifIndex, NETWORK_1));
+        verify(mockServiceTypeClientOne).processResponse(responseForServiceTypeTwo, ifIndex,
+                NETWORK_1);
+        verify(mockServiceTypeClientOne1).processResponse(responseForServiceTypeTwo, ifIndex,
+                NETWORK_1);
+        verify(mockServiceTypeClientTwo2, never()).processResponse(responseForServiceTypeTwo,
+                ifIndex, NETWORK_1);
+
+        final MdnsPacket responseForSubtype =
+                createMdnsPacket("subtype._sub._googlecast._tcp.local");
+        runOnHandler(() -> discoveryManager.onResponseReceived(
+                responseForSubtype, ifIndex, NETWORK_2));
+        verify(mockServiceTypeClientOne).processResponse(responseForSubtype, ifIndex, NETWORK_2);
+        verify(mockServiceTypeClientOne1, never()).processResponse(
+                responseForSubtype, ifIndex, NETWORK_2);
+        verify(mockServiceTypeClientTwo2).processResponse(responseForSubtype, ifIndex, NETWORK_2);
+    }
+
+    @Test
+    public void testSocketCreatedAndDestroyed() throws IOException {
+        // Create a ServiceTypeClient for SERVICE_TYPE_1 and NETWORK_1
+        final MdnsSearchOptions options1 =
+                MdnsSearchOptions.newBuilder().setNetwork(NETWORK_1).build();
+        final SocketCreationCallback callback = expectSocketCreationCallback(
+                SERVICE_TYPE_1, mockListenerOne, options1);
+        runOnHandler(() -> callback.onSocketCreated(NETWORK_1));
+        verify(mockServiceTypeClientOne1).startSendAndReceive(mockListenerOne, options1);
+
+        // Create a ServiceTypeClient for SERVICE_TYPE_2 and NETWORK_2
+        final MdnsSearchOptions options2 =
+                MdnsSearchOptions.newBuilder().setNetwork(NETWORK_2).build();
+        final SocketCreationCallback callback2 = expectSocketCreationCallback(
+                SERVICE_TYPE_2, mockListenerTwo, options2);
+        runOnHandler(() -> callback2.onSocketCreated(NETWORK_2));
+        verify(mockServiceTypeClientTwo2).startSendAndReceive(mockListenerTwo, options2);
+
+        // Receive a response, it should be processed on both clients.
+        final MdnsPacket response = createMdnsPacket(SERVICE_TYPE_1);
+        final int ifIndex = 1;
+        runOnHandler(() -> discoveryManager.onResponseReceived(
+                response, ifIndex, null /* network */));
+        verify(mockServiceTypeClientOne1).processResponse(response, ifIndex, null /* network */);
+        verify(mockServiceTypeClientTwo2).processResponse(response, ifIndex, null /* network */);
+
+        // The client for NETWORK_1 receives the callback that the NETWORK_1 has been destroyed,
+        // mockServiceTypeClientOne1 should send service removed notifications and remove from the
+        // list of clients.
+        runOnHandler(() -> callback.onAllSocketsDestroyed(NETWORK_1));
+        verify(mockServiceTypeClientOne1).notifySocketDestroyed();
+
+        // Receive a response again, it should be processed only on mockServiceTypeClientTwo2.
+        // Because the mockServiceTypeClientOne1 is removed from the list of clients, it is no
+        // longer able to process responses.
+        runOnHandler(() -> discoveryManager.onResponseReceived(
+                response, ifIndex, null /* network */));
+        verify(mockServiceTypeClientOne1, times(1))
+                .processResponse(response, ifIndex, null /* network */);
+        verify(mockServiceTypeClientTwo2, times(2))
+                .processResponse(response, ifIndex, null /* network */);
+
+        // The client for NETWORK_2 receives the callback that the NETWORK_1 has been destroyed,
+        // mockServiceTypeClientTwo2 shouldn't send any notifications.
+        runOnHandler(() -> callback2.onAllSocketsDestroyed(NETWORK_1));
+        verify(mockServiceTypeClientTwo2, never()).notifySocketDestroyed();
+
+        // Receive a response again, mockServiceTypeClientTwo2 is still in the list of clients, it's
+        // still able to process responses.
+        runOnHandler(() -> discoveryManager.onResponseReceived(
+                response, ifIndex, null /* network */));
+        verify(mockServiceTypeClientOne1, times(1))
+                .processResponse(response, ifIndex, null /* network */);
+        verify(mockServiceTypeClientTwo2, times(3))
+                .processResponse(response, ifIndex, null /* network */);
     }
 
     private MdnsPacket createMdnsPacket(String serviceType) {

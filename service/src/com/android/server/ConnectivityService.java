@@ -17,6 +17,7 @@
 package com.android.server;
 
 import static android.Manifest.permission.RECEIVE_DATA_ACTIVITY_CHANGE;
+import static android.app.ActivityManager.UidFrozenStateChangedCallback.UID_FROZEN_STATE_FROZEN;
 import static android.content.pm.PackageManager.FEATURE_BLUETOOTH;
 import static android.content.pm.PackageManager.FEATURE_WATCH;
 import static android.content.pm.PackageManager.FEATURE_WIFI;
@@ -91,7 +92,7 @@ import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
-import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
+import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 import static android.system.OsConstants.ETH_P_ALL;
 import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
@@ -108,8 +109,9 @@ import static java.util.Map.Entry;
 import android.Manifest;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
+import android.app.ActivityManager;
+import android.app.ActivityManager.UidFrozenStateChangedCallback;
 import android.app.AppOpsManager;
 import android.app.BroadcastOptions;
 import android.app.PendingIntent;
@@ -134,7 +136,6 @@ import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.BlockedReason;
 import android.net.ConnectivityManager.NetworkCallback;
 import android.net.ConnectivityManager.RestrictBackgroundStatus;
-import android.net.ConnectivityResources;
 import android.net.ConnectivitySettingsManager;
 import android.net.DataStallReportParcelable;
 import android.net.DnsResolverServiceManager;
@@ -244,6 +245,7 @@ import android.util.ArraySet;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.Pair;
+import android.util.Range;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
 
@@ -280,11 +282,13 @@ import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker.AutomaticO
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
 import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
+import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
 import com.android.server.connectivity.DscpPolicyTracker;
 import com.android.server.connectivity.FullScore;
 import com.android.server.connectivity.InvalidTagException;
+import com.android.server.connectivity.KeepaliveResourceUtil;
 import com.android.server.connectivity.KeepaliveTracker;
 import com.android.server.connectivity.LingerMonitor;
 import com.android.server.connectivity.MockableSystemProperties;
@@ -310,11 +314,13 @@ import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -781,6 +787,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * Event to use low TCP polling timer used in automatic on/off keepalive temporarily.
      */
     private static final int EVENT_SET_LOW_TCP_POLLING_UNTIL = 60;
+
+    /**
+     * Event to inform the ConnectivityService handler when a uid has been frozen or unfrozen.
+     */
+    private static final int EVENT_UID_FROZEN_STATE_CHANGED = 61;
 
     /**
      * Argument for {@link #EVENT_PROVISIONING_NOTIFICATION} to indicate that the notification
@@ -1389,9 +1400,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         /**
          * @see DeviceConfigUtils#isFeatureEnabled
          */
-        public boolean isFeatureEnabled(Context context, String name, boolean defaultEnabled) {
-            return DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_CONNECTIVITY, name,
-                    TETHERING_MODULE_NAME, defaultEnabled);
+        public boolean isFeatureEnabled(Context context, String name) {
+            return DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_TETHERING, name,
+                    TETHERING_MODULE_NAME, false /* defaultValue */);
         }
 
         /**
@@ -1484,6 +1495,45 @@ public class ConnectivityService extends IConnectivityManager.Stub
         public boolean isChangeEnabled(long changeId, @NonNull final String packageName,
                 @NonNull final UserHandle user) {
             return CompatChanges.isChangeEnabled(changeId, packageName, user);
+        }
+
+        /**
+         * Call {@link InetDiagMessage#destroyLiveTcpSockets(Set, Set)}
+         *
+         * @param ranges target uid ranges
+         * @param exemptUids uids to skip close socket
+         */
+        public void destroyLiveTcpSockets(@NonNull final Set<Range<Integer>> ranges,
+                @NonNull final Set<Integer> exemptUids)
+                throws SocketException, InterruptedIOException, ErrnoException {
+            InetDiagMessage.destroyLiveTcpSockets(ranges, exemptUids);
+        }
+
+        /**
+         * Call {@link InetDiagMessage#destroyLiveTcpSocketsByOwnerUids(Set)}
+         *
+         * @param ownerUids target uids to close sockets
+         */
+        public void destroyLiveTcpSocketsByOwnerUids(final Set<Integer> ownerUids)
+                throws SocketException, InterruptedIOException, ErrnoException {
+            InetDiagMessage.destroyLiveTcpSocketsByOwnerUids(ownerUids);
+        }
+
+        /**
+         * Schedule the evaluation timeout.
+         *
+         * When a network connects, it's "not evaluated" yet. Detection events cause the network
+         * to be "evaluated" (typically, validation or detection of a captive portal). If none
+         * of these events happen, this time will run out, after which the network is considered
+         * "evaluated" even if nothing happened to it. Notionally that means the system gave up
+         * on this network and considers it won't provide connectivity. In particular, that means
+         * it's when the system prefers it to cell if it's wifi and configuration says it should
+         * prefer bad wifi to cell.
+         */
+        public void scheduleEvaluationTimeout(@NonNull Handler handler,
+                @NonNull final Network network, final long delayMs) {
+            handler.sendMessageDelayed(
+                    handler.obtainMessage(EVENT_INITIAL_EVALUATION_TIMEOUT, network), delayMs);
         }
     }
 
@@ -1674,6 +1724,32 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mCdmps = new CompanionDeviceManagerProxyService(context);
         } else {
             mCdmps = null;
+        }
+
+        if (SdkLevel.isAtLeastU()
+                && mDeps.isFeatureEnabled(context, KEY_DESTROY_FROZEN_SOCKETS_VERSION)) {
+            final UidFrozenStateChangedCallback frozenStateChangedCallback =
+                    new UidFrozenStateChangedCallback() {
+                @Override
+                public void onUidFrozenStateChanged(int[] uids, int[] frozenStates) {
+                    if (uids.length != frozenStates.length) {
+                        Log.wtf(TAG, "uids has length " + uids.length
+                                + " but frozenStates has length " + frozenStates.length);
+                        return;
+                    }
+
+                    final UidFrozenStateChangedArgs args =
+                            new UidFrozenStateChangedArgs(uids, frozenStates);
+
+                    mHandler.sendMessage(
+                            mHandler.obtainMessage(EVENT_UID_FROZEN_STATE_CHANGED, args));
+                }
+            };
+
+            final ActivityManager activityManager =
+                    mContext.getSystemService(ActivityManager.class);
+            activityManager.registerUidFrozenStateChangedCallback(
+                    (Runnable r) -> r.run(), frozenStateChangedCallback);
         }
     }
 
@@ -2603,7 +2679,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final ArrayList<NetworkStateSnapshot> result = new ArrayList<>();
         for (Network network : getAllNetworks()) {
             final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(network);
-            if (nai != null && nai.everConnected()) {
+            final boolean includeNetwork = (nai != null) && nai.isCreated();
+            if (includeNetwork) {
                 // TODO (b/73321673) : NetworkStateSnapshot contains a copy of the
                 // NetworkCapabilities, which may contain UIDs of apps to which the
                 // network applies. Should the UIDs be cleared so as not to leak or
@@ -2842,6 +2919,39 @@ public class ConnectivityService extends IConnectivityManager.Stub
         maybeNotifyNetworkBlockedForNewState(uid, blockedReasons);
         setUidBlockedReasons(uid, blockedReasons);
     }
+
+    static final class UidFrozenStateChangedArgs {
+        final int[] mUids;
+        final int[] mFrozenStates;
+
+        UidFrozenStateChangedArgs(int[] uids, int[] frozenStates) {
+            mUids = uids;
+            mFrozenStates = frozenStates;
+        }
+    }
+
+    private void handleFrozenUids(int[] uids, int[] frozenStates) {
+        final ArraySet<Range<Integer>> ranges = new ArraySet<>();
+
+        for (int i = 0; i < uids.length; i++) {
+            if (frozenStates[i] == UID_FROZEN_STATE_FROZEN) {
+                Integer uidAsInteger = Integer.valueOf(uids[i]);
+                ranges.add(new Range(uidAsInteger, uidAsInteger));
+            }
+        }
+
+        if (!ranges.isEmpty()) {
+            final Set<Integer> exemptUids = new ArraySet<>();
+            try {
+                mDeps.destroyLiveTcpSockets(ranges, exemptUids);
+            } catch (Exception e) {
+                loge("Exception in socket destroy: " + e);
+            }
+        }
+    }
+
+    @VisibleForTesting
+    static final String KEY_DESTROY_FROZEN_SOCKETS_VERSION = "destroy_frozen_sockets_version";
 
     private void enforceInternetPermission() {
         mContext.enforceCallingOrSelfPermission(
@@ -3084,8 +3194,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         sendStickyBroadcast(makeGeneralIntent(info, bcastType));
     }
 
-    // TODO(b/193460475): Remove when tooling supports SystemApi to public API.
-    @SuppressLint("NewApi")
     // TODO: Set the mini sdk to 31 and remove @TargetApi annotation when b/205923322 is addressed.
     @TargetApi(Build.VERSION_CODES.S)
     private void sendStickyBroadcast(Intent intent) {
@@ -3796,9 +3904,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     break;
                 }
                 case NetworkAgent.EVENT_UNREGISTER_AFTER_REPLACEMENT: {
-                    if (!nai.isCreated()) {
-                        Log.d(TAG, "unregisterAfterReplacement on uncreated " + nai.toShortString()
-                                + ", tearing down instead");
+                    if (!nai.everConnected()) {
+                        Log.d(TAG, "unregisterAfterReplacement on never-connected "
+                                + nai.toShortString() + ", tearing down instead");
                         teardownUnneededNetwork(nai);
                         break;
                     }
@@ -4383,6 +4491,25 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    @VisibleForTesting
+    protected static boolean shouldCreateNetworksImmediately() {
+        // Before U, physical networks are only created when the agent advances to CONNECTED.
+        // In U and above, all networks are immediately created when the agent is registered.
+        return SdkLevel.isAtLeastU();
+    }
+
+    private static boolean shouldCreateNativeNetwork(@NonNull NetworkAgentInfo nai,
+            @NonNull NetworkInfo.State state) {
+        if (nai.isCreated()) return false;
+        if (state == NetworkInfo.State.CONNECTED) return true;
+        if (state != NetworkInfo.State.CONNECTING) {
+            // TODO: throw if no WTFs are observed in the field.
+            Log.wtf(TAG, "Uncreated network in invalid state: " + state);
+            return false;
+        }
+        return nai.isVPN() || shouldCreateNetworksImmediately();
+    }
+
     private static boolean shouldDestroyNativeNetwork(@NonNull NetworkAgentInfo nai) {
         return nai.isCreated() && !nai.isDestroyed();
     }
@@ -4433,7 +4560,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // because they lost all their requests or because their score isn't good)
         // then they would disconnect organically, report their new state and then
         // disconnect the channel.
-        if (nai.networkInfo.isConnected()) {
+        if (nai.networkInfo.isConnected() || nai.networkInfo.isSuspended()) {
             nai.networkInfo.setDetailedState(NetworkInfo.DetailedState.DISCONNECTED,
                     null, null);
         }
@@ -5160,8 +5287,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     /** Schedule evaluation timeout */
     @VisibleForTesting
     public void scheduleEvaluationTimeout(@NonNull final Network network, final long delayMs) {
-        mHandler.sendMessageDelayed(
-                mHandler.obtainMessage(EVENT_INITIAL_EVALUATION_TIMEOUT, network), delayMs);
+        mDeps.scheduleEvaluationTimeout(mHandler, network, delayMs);
     }
 
     @Override
@@ -5706,6 +5832,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     mKeepaliveTracker.handleSetTestLowTcpPollingTimer(time);
                     break;
                 }
+                case EVENT_UID_FROZEN_STATE_CHANGED:
+                    UidFrozenStateChangedArgs args = (UidFrozenStateChangedArgs) msg.obj;
+                    handleFrozenUids(args.mUids, args.mFrozenStates);
+                    break;
             }
         }
     }
@@ -7821,7 +7951,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         if (isDefaultNetwork(networkAgent)) {
             handleApplyDefaultProxy(newLp.getHttpProxy());
-        } else {
+        } else if (networkAgent.everConnected()) {
             updateProxy(newLp, oldLp);
         }
 
@@ -7853,6 +7983,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         mKeepaliveTracker.handleCheckKeepalivesStillValid(networkAgent);
+    }
+
+    private void applyInitialLinkProperties(@NonNull NetworkAgentInfo nai) {
+        updateLinkProperties(nai, new LinkProperties(nai.linkProperties), null);
     }
 
     /**
@@ -7904,16 +8038,27 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return captivePortalBuilder.build();
     }
 
-    private String makeNflogPrefix(String iface, long networkHandle) {
+    @VisibleForTesting
+    static String makeNflogPrefix(String iface, long networkHandle) {
         // This needs to be kept in sync and backwards compatible with the decoding logic in
         // NetdEventListenerService, which is non-mainline code.
         return SdkLevel.isAtLeastU() ? (networkHandle + ":" + iface) : ("iface:" + iface);
     }
 
+    private static boolean isWakeupMarkingSupported(NetworkCapabilities capabilities) {
+        if (capabilities.hasTransport(TRANSPORT_WIFI)) {
+            return true;
+        }
+        if (SdkLevel.isAtLeastU() && capabilities.hasTransport(TRANSPORT_CELLULAR)) {
+            return true;
+        }
+        return false;
+    }
+
     private void wakeupModifyInterface(String iface, NetworkAgentInfo nai, boolean add) {
         // Marks are only available on WiFi interfaces. Checking for
         // marks on unsupported interfaces is harmless.
-        if (!nai.networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+        if (!isWakeupMarkingSupported(nai.networkCapabilities)) {
             return;
         }
 
@@ -8448,11 +8593,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return stableRanges;
     }
 
-    private void maybeCloseSockets(NetworkAgentInfo nai, UidRangeParcel[] ranges,
-            int[] exemptUids) {
+    private void maybeCloseSockets(NetworkAgentInfo nai, Set<UidRange> ranges,
+            Set<Integer> exemptUids) {
         if (nai.isVPN() && !nai.networkAgentConfig.allowBypass) {
             try {
-                mNetd.socketDestroy(ranges, exemptUids);
+                mDeps.destroyLiveTcpSockets(UidRange.toIntRanges(ranges), exemptUids);
             } catch (Exception e) {
                 loge("Exception in socket destroy: ", e);
             }
@@ -8460,16 +8605,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void updateVpnUidRanges(boolean add, NetworkAgentInfo nai, Set<UidRange> uidRanges) {
-        int[] exemptUids = new int[2];
+        final Set<Integer> exemptUids = new ArraySet<>();
         // TODO: Excluding VPN_UID is necessary in order to not to kill the TCP connection used
         // by PPTP. Fix this by making Vpn set the owner UID to VPN_UID instead of system when
         // starting a legacy VPN, and remove VPN_UID here. (b/176542831)
-        exemptUids[0] = VPN_UID;
-        exemptUids[1] = nai.networkCapabilities.getOwnerUid();
+        exemptUids.add(VPN_UID);
+        exemptUids.add(nai.networkCapabilities.getOwnerUid());
         UidRangeParcel[] ranges = toUidRangeStableParcels(uidRanges);
 
         // Close sockets before modifying uid ranges so that RST packets can reach to the server.
-        maybeCloseSockets(nai, ranges, exemptUids);
+        maybeCloseSockets(nai, uidRanges, exemptUids);
         try {
             if (add) {
                 mNetd.networkAddUidRangesParcel(new NativeUidRangeConfig(
@@ -8483,7 +8628,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     " on netId " + nai.network.netId + ". " + e);
         }
         // Close sockets that established connection while requesting netd.
-        maybeCloseSockets(nai, ranges, exemptUids);
+        maybeCloseSockets(nai, uidRanges, exemptUids);
     }
 
     private boolean isProxySetOnAnyDefaultNetwork() {
@@ -8659,8 +8804,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // else not handled
     }
 
-    // TODO(b/193460475): Remove when tooling supports SystemApi to public API.
-    @SuppressLint("NewApi")
     private void sendIntent(PendingIntent pendingIntent, Intent intent) {
         mPendingIntentWakeLock.acquire();
         try {
@@ -9606,21 +9749,32 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     + oldInfo.getState() + " to " + state);
         }
 
-        if (!networkAgent.isCreated()
-                && (state == NetworkInfo.State.CONNECTED
-                || (state == NetworkInfo.State.CONNECTING && networkAgent.isVPN()))) {
-
+        if (shouldCreateNativeNetwork(networkAgent, state)) {
             // A network that has just connected has zero requests and is thus a foreground network.
             networkAgent.networkCapabilities.addCapability(NET_CAPABILITY_FOREGROUND);
 
             if (!createNativeNetwork(networkAgent)) return;
+
+            networkAgent.setCreated();
+
+            // If the network is created immediately on register, then apply the LinkProperties now.
+            // Otherwise, this is done further down when the network goes into connected state.
+            // Applying the LinkProperties means that the network is ready to carry traffic -
+            // interfaces and routing rules have been added, DNS servers programmed, etc.
+            // For VPNs, this must be done before the capabilities are updated, because as soon as
+            // that happens, UIDs are routed to the network.
+            if (shouldCreateNetworksImmediately()) {
+                applyInitialLinkProperties(networkAgent);
+            }
+
+            // TODO: should this move earlier? It doesn't seem to have anything to do with whether
+            // a network is created or not.
             if (networkAgent.propagateUnderlyingCapabilities()) {
                 // Initialize the network's capabilities to their starting values according to the
                 // underlying networks. This ensures that the capabilities are correct before
                 // anything happens to the network.
                 updateCapabilitiesForNetwork(networkAgent);
             }
-            networkAgent.setCreated();
             networkAgent.onNetworkCreated();
             updateAllowedUids(networkAgent, null, networkAgent.networkCapabilities);
             updateProfileAllowedNetworks();
@@ -9634,8 +9788,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
             networkAgent.getAndSetNetworkCapabilities(networkAgent.networkCapabilities);
 
             handlePerNetworkPrivateDnsConfig(networkAgent, mDnsManager.getPrivateDnsConfig());
-            updateLinkProperties(networkAgent, new LinkProperties(networkAgent.linkProperties),
-                    null);
+            if (!shouldCreateNetworksImmediately()) {
+                applyInitialLinkProperties(networkAgent);
+            } else {
+                // The network was created when the agent registered, and the LinkProperties are
+                // already up-to-date. However, updateLinkProperties also makes some changes only
+                // when the network connects. Apply those changes here. On T and below these are
+                // handled by the applyInitialLinkProperties call just above.
+                // TODO: stop relying on updateLinkProperties(..., null) to do this.
+                // If something depends on both LinkProperties and connected state, it should be in
+                // this method as well.
+                networkAgent.clatd.update();
+                updateProxy(networkAgent.linkProperties, null);
+            }
 
             // If a rate limit has been configured and is applicable to this network (network
             // provides internet connectivity), apply it. The tc police filter cannot be attached
@@ -9672,7 +9837,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 networkAgent.networkMonitor().notifyNetworkConnected(params.linkProperties,
                         params.networkCapabilities);
             }
-            final long delay = activelyPreferBadWifi()
+            final long delay = !avoidBadWifi() && activelyPreferBadWifi()
                     ? ACTIVELY_PREFER_BAD_WIFI_INITIAL_TIMEOUT_MS
                     : DONT_ACTIVELY_PREFER_BAD_WIFI_INITIAL_TIMEOUT_MS;
             scheduleEvaluationTimeout(networkAgent.network, delay);
@@ -10018,6 +10183,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mHandler.sendMessage(mHandler.obtainMessage(
                 NetworkAgent.CMD_STOP_SOCKET_KEEPALIVE, 0, SocketKeepalive.SUCCESS,
                 Objects.requireNonNull(cb).asBinder()));
+    }
+
+    @Override
+    public int[] getSupportedKeepalives() {
+        enforceAnyPermissionOf(mContext, android.Manifest.permission.NETWORK_SETTINGS,
+                // Backwards compatibility with CTS 13
+                android.Manifest.permission.QUERY_ALL_PACKAGES);
+
+        return BinderUtils.withCleanCallingIdentity(() ->
+                KeepaliveResourceUtil.getSupportedKeepalives(mContext));
     }
 
     @Override
@@ -11894,6 +12069,23 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return rule;
     }
 
+    private void closeSocketsForFirewallChainLocked(final int chain)
+            throws ErrnoException, SocketException, InterruptedIOException {
+        if (mBpfNetMaps.isFirewallAllowList(chain)) {
+            // Allowlist means the firewall denies all by default, uids must be explicitly allowed
+            // So, close all non-system socket owned by uids that are not explicitly allowed
+            Set<Range<Integer>> ranges = new ArraySet<>();
+            ranges.add(new Range<>(Process.FIRST_APPLICATION_UID, Integer.MAX_VALUE));
+            final Set<Integer> exemptUids = mBpfNetMaps.getUidsWithAllowRuleOnAllowListChain(chain);
+            mDeps.destroyLiveTcpSockets(ranges, exemptUids);
+        } else {
+            // Denylist means the firewall allows all by default, uids must be explicitly denied
+            // So, close socket owned by uids that are explicitly denied
+            final Set<Integer> ownerUids = mBpfNetMaps.getUidsWithDenyRuleOnDenyListChain(chain);
+            mDeps.destroyLiveTcpSocketsByOwnerUids(ownerUids);
+        }
+    }
+
     @Override
     public void setFirewallChainEnabled(final int chain, final boolean enable) {
         enforceNetworkStackOrSettingsPermission();
@@ -11902,6 +12094,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mBpfNetMaps.setChildChain(chain, enable);
         } catch (ServiceSpecificException e) {
             throw new IllegalStateException(e);
+        }
+
+        if (SdkLevel.isAtLeastU() && enable) {
+            try {
+                closeSocketsForFirewallChainLocked(chain);
+            } catch (ErrnoException | SocketException | InterruptedIOException e) {
+                Log.e(TAG, "Failed to close sockets after enabling chain (" + chain + "): " + e);
+            }
         }
     }
 

@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-// The resulting .o needs to load on the Android T Beta 3 bpfloader
-#define BPFLOADER_MIN_VER BPFLOADER_T_BETA3_VERSION
+// The resulting .o needs to load on the Android T bpfloader
+#define BPFLOADER_MIN_VER BPFLOADER_T_VERSION
 
 #include <bpf_helpers.h>
 #include <linux/bpf.h>
@@ -412,10 +412,8 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, boo
 
     // Always allow and never count clat traffic. Only the IPv4 traffic on the stacked
     // interface is accounted for and subject to usage restrictions.
-    // TODO: remove sock_uid check once Nat464Xlat javaland adds the socket tag AID_CLAT for clat.
-    if (sock_uid == AID_CLAT || uid == AID_CLAT) {
-        return PASS;
-    }
+    // CLAT IPv6 TX sockets are *always* tagged with CLAT uid, see tagSocketAsClat()
+    if (uid == AID_CLAT) return PASS;
 
     int match = bpf_owner_match(skb, sock_uid, egress, kver);
 
@@ -441,17 +439,17 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, boo
     uint32_t mapSettingKey = CURRENT_STATS_MAP_CONFIGURATION_KEY;
     uint32_t* selectedMap = bpf_configuration_map_lookup_elem(&mapSettingKey);
 
-    // Use asm("%0 &= 1" : "+r"(match)) before return match,
-    // to help kernel's bpf verifier, so that it can be 100% certain
-    // that the returned value is always BPF_NOMATCH(0) or BPF_MATCH(1).
-    if (!selectedMap) {
-        asm("%0 &= 1" : "+r"(match));
-        return match;
-    }
+    if (!selectedMap) return PASS;  // cannot happen, needed to keep bpf verifier happy
 
     do_packet_tracing(skb, egress, uid, tag, enable_tracing, kver);
     update_stats_with_config(*selectedMap, skb, &key, egress, kver);
     update_app_uid_stats_map(skb, &uid, egress, kver);
+
+    // We've already handled DROP_UNLESS_DNS up above, thus when we reach here the only
+    // possible values of match are DROP(0) or PASS(1), however we need to use
+    // "match &= 1" before 'return match' to help the kernel's bpf verifier,
+    // so that it can be 100% certain that the returned value is always 0 or 1.
+    // We use assembly so that it cannot be optimized out by a too smart compiler.
     asm("%0 &= 1" : "+r"(match));
     return match;
 }
@@ -502,9 +500,8 @@ DEFINE_XTBPF_PROG("skfilter/egress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_egres
     // Clat daemon does not generate new traffic, all its traffic is accounted for already
     // on the v4-* interfaces (except for the 20 (or 28) extra bytes of IPv6 vs IPv4 overhead,
     // but that can be corrected for later when merging v4-foo stats into interface foo's).
-    // TODO: remove sock_uid check once Nat464Xlat javaland adds the socket tag AID_CLAT for clat.
+    // CLAT sockets are created by system server and tagged as uid CLAT, see tagSocketAsClat()
     uint32_t sock_uid = bpf_get_socket_uid(skb);
-    if (sock_uid == AID_CLAT) return BPF_NOMATCH;
     if (sock_uid == AID_SYSTEM) {
         uint64_t cookie = bpf_get_socket_cookie(skb);
         UidTagValue* utag = bpf_cookie_tag_map_lookup_elem(&cookie);
