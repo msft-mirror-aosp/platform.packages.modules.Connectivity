@@ -43,7 +43,9 @@ import org.junit.runner.RunWith
 
 private const val TEST_SERVICE_ID_1 = 42
 private const val TEST_SERVICE_ID_2 = 43
+private const val TEST_SERVICE_ID_3 = 44
 private const val TEST_PORT = 12345
+private const val TEST_SUBTYPE = "_subtype"
 private val TEST_HOSTNAME = arrayOf("Android_000102030405060708090A0B0C0D0E0F", "local")
 private val TEST_ADDRESSES = listOf(
         LinkAddress(parseNumericAddress("192.0.2.111"), 24),
@@ -59,6 +61,12 @@ private val TEST_SERVICE_1 = NsdServiceInfo().apply {
 private val TEST_SERVICE_2 = NsdServiceInfo().apply {
     serviceType = "_testservice._tcp"
     serviceName = "MyOtherTestService"
+    port = TEST_PORT
+}
+
+private val TEST_SERVICE_3 = NsdServiceInfo().apply {
+    serviceType = "_TESTSERVICE._tcp"
+    serviceName = "MyTESTSERVICE"
     port = TEST_PORT
 }
 
@@ -86,7 +94,8 @@ class MdnsRecordRepositoryTest {
     fun testAddServiceAndProbe() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
         assertEquals(0, repository.servicesCount)
-        assertEquals(-1, repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1))
+        assertEquals(-1, repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1,
+                null /* subtype */))
         assertEquals(1, repository.servicesCount)
 
         val probingInfo = repository.setServiceProbing(TEST_SERVICE_ID_1)
@@ -118,18 +127,21 @@ class MdnsRecordRepositoryTest {
     @Test
     fun testAddAndConflicts() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
-        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
+        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1, null /* subtype */)
         assertFailsWith(NameConflictException::class) {
-            repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_1)
+            repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_1, null /* subtype */)
+        }
+        assertFailsWith(NameConflictException::class) {
+            repository.addService(TEST_SERVICE_ID_3, TEST_SERVICE_3, null /* subtype */)
         }
     }
 
     @Test
     fun testInvalidReuseOfServiceId() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
-        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
+        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1, null /* subtype */)
         assertFailsWith(IllegalArgumentException::class) {
-            repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_2)
+            repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_2, null /* subtype */)
         }
     }
 
@@ -138,7 +150,7 @@ class MdnsRecordRepositoryTest {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
         assertFalse(repository.hasActiveService(TEST_SERVICE_ID_1))
 
-        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
+        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1, null /* subtype */)
         assertTrue(repository.hasActiveService(TEST_SERVICE_ID_1))
 
         val probingInfo = repository.setServiceProbing(TEST_SERVICE_ID_1)
@@ -180,13 +192,49 @@ class MdnsRecordRepositoryTest {
     }
 
     @Test
+    fun testExitAnnouncements_WithSubtype() {
+        val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
+        repository.initWithService(TEST_SERVICE_ID_1, TEST_SERVICE_1, TEST_SUBTYPE)
+        repository.onAdvertisementSent(TEST_SERVICE_ID_1)
+
+        val exitAnnouncement = repository.exitService(TEST_SERVICE_ID_1)
+        assertNotNull(exitAnnouncement)
+        assertEquals(1, repository.servicesCount)
+        val packet = exitAnnouncement.getPacket(0)
+
+        assertEquals(0x8400 /* response, authoritative */, packet.flags)
+        assertEquals(0, packet.questions.size)
+        assertEquals(0, packet.authorityRecords.size)
+        assertEquals(0, packet.additionalRecords.size)
+
+        assertContentEquals(listOf(
+                MdnsPointerRecord(
+                        arrayOf("_testservice", "_tcp", "local"),
+                        0L /* receiptTimeMillis */,
+                        true /* cacheFlush */,
+                        0L /* ttlMillis */,
+                        arrayOf("MyTestService", "_testservice", "_tcp", "local")),
+                MdnsPointerRecord(
+                        arrayOf("_subtype", "_sub", "_testservice", "_tcp", "local"),
+                        0L /* receiptTimeMillis */,
+                        true /* cacheFlush */,
+                        0L /* ttlMillis */,
+                        arrayOf("MyTestService", "_testservice", "_tcp", "local")),
+        ), packet.answers)
+
+        repository.removeService(TEST_SERVICE_ID_1)
+        assertEquals(0, repository.servicesCount)
+    }
+
+    @Test
     fun testExitingServiceReAdded() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
         repository.initWithService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
         repository.onAdvertisementSent(TEST_SERVICE_ID_1)
         repository.exitService(TEST_SERVICE_ID_1)
 
-        assertEquals(TEST_SERVICE_ID_1, repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_1))
+        assertEquals(TEST_SERVICE_ID_1,
+                repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_1, null /* subtype */))
         assertEquals(1, repository.servicesCount)
 
         repository.removeService(TEST_SERVICE_ID_2)
@@ -196,7 +244,8 @@ class MdnsRecordRepositoryTest {
     @Test
     fun testOnProbingSucceeded() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
-        val announcementInfo = repository.initWithService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
+        val announcementInfo = repository.initWithService(TEST_SERVICE_ID_1, TEST_SERVICE_1,
+                TEST_SUBTYPE)
         repository.onAdvertisementSent(TEST_SERVICE_ID_1)
         val packet = announcementInfo.getPacket(0)
 
@@ -205,6 +254,7 @@ class MdnsRecordRepositoryTest {
         assertEquals(0, packet.authorityRecords.size)
 
         val serviceType = arrayOf("_testservice", "_tcp", "local")
+        val serviceSubtype = arrayOf(TEST_SUBTYPE, "_sub", "_testservice", "_tcp", "local")
         val serviceName = arrayOf("MyTestService", "_testservice", "_tcp", "local")
         val v4AddrRev = getReverseDnsAddress(TEST_ADDRESSES[0].address)
         val v6Addr1Rev = getReverseDnsAddress(TEST_ADDRESSES[1].address)
@@ -245,6 +295,13 @@ class MdnsRecordRepositoryTest {
                 // Service registration records (RFC6763)
                 MdnsPointerRecord(
                         serviceType,
+                        0L /* receiptTimeMillis */,
+                        // Not a unique name owned by the announcer, so cacheFlush=false
+                        false /* cacheFlush */,
+                        4500000L /* ttlMillis */,
+                        serviceName),
+                MdnsPointerRecord(
+                        serviceSubtype,
                         0L /* receiptTimeMillis */,
                         // Not a unique name owned by the announcer, so cacheFlush=false
                         false /* cacheFlush */,
@@ -318,10 +375,43 @@ class MdnsRecordRepositoryTest {
     }
 
     @Test
-    fun testGetReply() {
+    fun testGetReplyCaseInsensitive() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
         repository.initWithService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
-        val questions = listOf(MdnsPointerRecord(arrayOf("_testservice", "_tcp", "local"),
+        val questionsCaseInSensitive =
+            listOf(MdnsPointerRecord(arrayOf("_TESTSERVICE", "_TCP", "local"),
+                0L /* receiptTimeMillis */,
+                false /* cacheFlush */,
+                // TTL and data is empty for a question
+                0L /* ttlMillis */,
+                null /* pointer */))
+        val queryCaseInsensitive = MdnsPacket(0 /* flags */, questionsCaseInSensitive,
+            listOf() /* answers */, listOf() /* authorityRecords */,
+            listOf() /* additionalRecords */)
+        val src = InetSocketAddress(parseNumericAddress("192.0.2.123"), 5353)
+        val replyCaseInsensitive = repository.getReply(queryCaseInsensitive, src)
+        assertNotNull(replyCaseInsensitive)
+        assertEquals(1, replyCaseInsensitive.answers.size)
+        assertEquals(7, replyCaseInsensitive.additionalAnswers.size)
+    }
+
+    @Test
+    fun testGetReply() {
+        doGetReplyTest(subtype = null)
+    }
+
+    @Test
+    fun testGetReply_WithSubtype() {
+        doGetReplyTest(TEST_SUBTYPE)
+    }
+
+    private fun doGetReplyTest(subtype: String?) {
+        val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
+        repository.initWithService(TEST_SERVICE_ID_1, TEST_SERVICE_1, subtype)
+        val queriedName = if (subtype == null) arrayOf("_testservice", "_tcp", "local")
+        else arrayOf(subtype, "_sub", "_testservice", "_tcp", "local")
+
+        val questions = listOf(MdnsPointerRecord(queriedName,
                 0L /* receiptTimeMillis */,
                 false /* cacheFlush */,
                 // TTL and data is empty for a question
@@ -344,7 +434,7 @@ class MdnsRecordRepositoryTest {
 
         assertEquals(listOf(
                 MdnsPointerRecord(
-                        arrayOf("_testservice", "_tcp", "local"),
+                        queriedName,
                         0L /* receiptTimeMillis */,
                         false /* cacheFlush */,
                         longTtl,
@@ -405,8 +495,8 @@ class MdnsRecordRepositoryTest {
     @Test
     fun testGetConflictingServices() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
-        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
-        repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_2)
+        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1, null /* subtype */)
+        repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_2, null /* subtype */)
 
         val packet = MdnsPacket(
                 0 /* flags */,
@@ -431,10 +521,38 @@ class MdnsRecordRepositoryTest {
     }
 
     @Test
+    fun testGetConflictingServicesCaseInsensitive() {
+        val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
+        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1, null /* subtype */)
+        repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_2, null /* subtype */)
+
+        val packet = MdnsPacket(
+            0 /* flags */,
+            emptyList() /* questions */,
+            listOf(
+                MdnsServiceRecord(
+                    arrayOf("MYTESTSERVICE", "_TESTSERVICE", "_tcp", "local"),
+                    0L /* receiptTimeMillis */, true /* cacheFlush */, 0L /* ttlMillis */,
+                    0 /* servicePriority */, 0 /* serviceWeight */,
+                    TEST_SERVICE_1.port + 1,
+                    TEST_HOSTNAME),
+                MdnsTextRecord(
+                    arrayOf("MYOTHERTESTSERVICE", "_TESTSERVICE", "_tcp", "local"),
+                    0L /* receiptTimeMillis */, true /* cacheFlush */, 0L /* ttlMillis */,
+                    listOf(TextEntry.fromString("somedifferent=entry"))),
+            ) /* answers */,
+            emptyList() /* authorityRecords */,
+            emptyList() /* additionalRecords */)
+
+        assertEquals(setOf(TEST_SERVICE_ID_1, TEST_SERVICE_ID_2),
+            repository.getConflictingServices(packet))
+    }
+
+    @Test
     fun testGetConflictingServices_IdenticalService() {
         val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
-        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1)
-        repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_2)
+        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1, null /* subtype */)
+        repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_2, null /* subtype */)
 
         val otherTtlMillis = 1234L
         val packet = MdnsPacket(
@@ -446,7 +564,7 @@ class MdnsRecordRepositoryTest {
                                 0L /* receiptTimeMillis */, true /* cacheFlush */,
                                 otherTtlMillis, 0 /* servicePriority */, 0 /* serviceWeight */,
                                 TEST_SERVICE_1.port,
-                                TEST_HOSTNAME),
+                                arrayOf("ANDROID_000102030405060708090A0B0C0D0E0F", "local")),
                         MdnsTextRecord(
                                 arrayOf("MyOtherTestService", "_testservice", "_tcp", "local"),
                                 0L /* receiptTimeMillis */, true /* cacheFlush */,
@@ -458,12 +576,44 @@ class MdnsRecordRepositoryTest {
         // Above records are identical to the actual registrations: no conflict
         assertEquals(emptySet(), repository.getConflictingServices(packet))
     }
+
+    @Test
+    fun testGetConflictingServicesCaseInsensitive_IdenticalService() {
+        val repository = MdnsRecordRepository(thread.looper, deps, TEST_HOSTNAME)
+        repository.addService(TEST_SERVICE_ID_1, TEST_SERVICE_1, null /* subtype */)
+        repository.addService(TEST_SERVICE_ID_2, TEST_SERVICE_2, null /* subtype */)
+
+        val otherTtlMillis = 1234L
+        val packet = MdnsPacket(
+                0 /* flags */,
+                emptyList() /* questions */,
+                listOf(
+                        MdnsServiceRecord(
+                                arrayOf("MYTESTSERVICE", "_TESTSERVICE", "_tcp", "local"),
+                                0L /* receiptTimeMillis */, true /* cacheFlush */,
+                                otherTtlMillis, 0 /* servicePriority */, 0 /* serviceWeight */,
+                                TEST_SERVICE_1.port,
+                                TEST_HOSTNAME),
+                        MdnsTextRecord(
+                                arrayOf("MyOtherTestService", "_TESTSERVICE", "_tcp", "local"),
+                                0L /* receiptTimeMillis */, true /* cacheFlush */,
+                                otherTtlMillis, emptyList()),
+                ) /* answers */,
+                emptyList() /* authorityRecords */,
+                emptyList() /* additionalRecords */)
+
+        // Above records are identical to the actual registrations: no conflict
+        assertEquals(emptySet(), repository.getConflictingServices(packet))
+    }
 }
 
-private fun MdnsRecordRepository.initWithService(serviceId: Int, serviceInfo: NsdServiceInfo):
-        AnnouncementInfo {
+private fun MdnsRecordRepository.initWithService(
+    serviceId: Int,
+    serviceInfo: NsdServiceInfo,
+    subtype: String? = null
+): AnnouncementInfo {
     updateAddresses(TEST_ADDRESSES)
-    addService(serviceId, serviceInfo)
+    addService(serviceId, serviceInfo, subtype)
     val probingInfo = setServiceProbing(serviceId)
     assertNotNull(probingInfo)
     return onProbingSucceeded(probingInfo)

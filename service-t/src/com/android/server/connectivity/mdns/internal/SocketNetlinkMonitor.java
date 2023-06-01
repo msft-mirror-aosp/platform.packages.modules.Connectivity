@@ -28,13 +28,13 @@ import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkMessage;
 import com.android.net.module.util.netlink.RtNetlinkAddressMessage;
 import com.android.net.module.util.netlink.StructIfaddrMsg;
-import com.android.server.connectivity.mdns.ISocketNetLinkMonitor;
+import com.android.server.connectivity.mdns.AbstractSocketNetlink;
 import com.android.server.connectivity.mdns.MdnsSocketProvider;
 
 /**
  * The netlink monitor for MdnsSocketProvider.
  */
-public class SocketNetlinkMonitor extends NetlinkMonitor implements ISocketNetLinkMonitor {
+public class SocketNetlinkMonitor extends NetlinkMonitor implements AbstractSocketNetlink {
 
     public static final String TAG = SocketNetlinkMonitor.class.getSimpleName();
 
@@ -61,13 +61,11 @@ public class SocketNetlinkMonitor extends NetlinkMonitor implements ISocketNetLi
         final StructIfaddrMsg ifaddrMsg = msg.getIfaddrHeader();
         final LinkAddress la = new LinkAddress(msg.getIpAddress(), ifaddrMsg.prefixLen,
                 msg.getFlags(), ifaddrMsg.scope);
-        if (!la.isPreferred()) {
-            // Skip the unusable ip address.
-            return;
-        }
         switch (msg.getHeader().nlmsg_type) {
             case NetlinkConstants.RTM_NEWADDR:
-                mCb.addOrUpdateInterfaceAddress(ifaddrMsg.index, la);
+                if (la.isPreferred()) {
+                    mCb.addOrUpdateInterfaceAddress(ifaddrMsg.index, la);
+                }
                 break;
             case NetlinkConstants.RTM_DELADDR:
                 mCb.deleteInterfaceAddress(ifaddrMsg.index, la);

@@ -16,25 +16,27 @@
 
 package com.android.server.connectivity.mdns;
 
-import static com.android.server.connectivity.mdns.MdnsSocketProvider.isNetworkMatched;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
 
 import android.Manifest.permission;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.net.Network;
-import android.text.TextUtils;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.ArrayMap;
 import android.util.Log;
 import android.util.Pair;
 
-import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.connectivity.mdns.util.MdnsLogger;
+import com.android.net.module.util.SharedLog;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * This class keeps tracking the set of registered {@link MdnsServiceBrowserListener} instances, and
@@ -43,13 +45,14 @@ import java.util.List;
 public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     private static final String TAG = MdnsDiscoveryManager.class.getSimpleName();
     public static final boolean DBG = Log.isLoggable(TAG, Log.DEBUG);
-    private static final MdnsLogger LOGGER = new MdnsLogger("MdnsDiscoveryManager");
 
     private final ExecutorProvider executorProvider;
     private final MdnsSocketClientBase socketClient;
+    @NonNull private final SharedLog sharedLog;
 
-    @GuardedBy("this")
     @NonNull private final PerNetworkServiceTypeClients perNetworkServiceTypeClients;
+    @NonNull private final Handler handler;
+    @Nullable private final HandlerThread handlerThread;
 
     private static class PerNetworkServiceTypeClients {
         private final ArrayMap<Pair<String, Network>, MdnsServiceTypeClient> clients =
@@ -57,32 +60,38 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
 
         public void put(@NonNull String serviceType, @Nullable Network network,
                 @NonNull MdnsServiceTypeClient client) {
-            final Pair<String, Network> perNetworkServiceType = new Pair<>(serviceType, network);
+            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
+            final Pair<String, Network> perNetworkServiceType = new Pair<>(dnsLowerServiceType,
+                    network);
             clients.put(perNetworkServiceType, client);
         }
 
         @Nullable
         public MdnsServiceTypeClient get(@NonNull String serviceType, @Nullable Network network) {
-            final Pair<String, Network> perNetworkServiceType = new Pair<>(serviceType, network);
+            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
+            final Pair<String, Network> perNetworkServiceType = new Pair<>(dnsLowerServiceType,
+                    network);
             return clients.getOrDefault(perNetworkServiceType, null);
         }
 
         public List<MdnsServiceTypeClient> getByServiceType(@NonNull String serviceType) {
+            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
             final List<MdnsServiceTypeClient> list = new ArrayList<>();
             for (int i = 0; i < clients.size(); i++) {
                 final Pair<String, Network> perNetworkServiceType = clients.keyAt(i);
-                if (serviceType.equals(perNetworkServiceType.first)) {
+                if (dnsLowerServiceType.equals(perNetworkServiceType.first)) {
                     list.add(clients.valueAt(i));
                 }
             }
             return list;
         }
 
-        public List<MdnsServiceTypeClient> getByMatchingNetwork(@Nullable Network network) {
+        public List<MdnsServiceTypeClient> getByNetwork(@Nullable Network network) {
             final List<MdnsServiceTypeClient> list = new ArrayList<>();
             for (int i = 0; i < clients.size(); i++) {
                 final Pair<String, Network> perNetworkServiceType = clients.keyAt(i);
-                if (isNetworkMatched(network, perNetworkServiceType.second)) {
+                final Network serviceTypeNetwork = perNetworkServiceType.second;
+                if (Objects.equals(network, serviceTypeNetwork)) {
                     list.add(clients.valueAt(i));
                 }
             }
@@ -100,10 +109,36 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     }
 
     public MdnsDiscoveryManager(@NonNull ExecutorProvider executorProvider,
-            @NonNull MdnsSocketClientBase socketClient) {
+            @NonNull MdnsSocketClientBase socketClient, @NonNull SharedLog sharedLog) {
         this.executorProvider = executorProvider;
         this.socketClient = socketClient;
-        perNetworkServiceTypeClients = new PerNetworkServiceTypeClients();
+        this.sharedLog = sharedLog;
+        this.perNetworkServiceTypeClients = new PerNetworkServiceTypeClients();
+        if (socketClient.getLooper() != null) {
+            this.handlerThread = null;
+            this.handler = new Handler(socketClient.getLooper());
+        } else {
+            this.handlerThread = new HandlerThread(MdnsDiscoveryManager.class.getSimpleName());
+            this.handlerThread.start();
+            this.handler = new Handler(handlerThread.getLooper());
+        }
+    }
+
+    private void checkAndRunOnHandlerThread(@NonNull Runnable function) {
+        if (this.handlerThread == null) {
+            function.run();
+        } else {
+            handler.post(function);
+        }
+    }
+
+    /**
+     * Do the cleanup of the MdnsDiscoveryManager
+     */
+    public void shutDown() {
+        if (this.handlerThread != null) {
+            this.handlerThread.quitSafely();
+        }
     }
 
     /**
@@ -116,35 +151,57 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
      *                      serviceType}.
      */
     @RequiresPermission(permission.CHANGE_WIFI_MULTICAST_STATE)
-    public synchronized void registerListener(
+    public void registerListener(
             @NonNull String serviceType,
             @NonNull MdnsServiceBrowserListener listener,
             @NonNull MdnsSearchOptions searchOptions) {
-        LOGGER.log(
-                "Registering listener for subtypes: %s",
-                TextUtils.join(",", searchOptions.getSubtypes()));
+        sharedLog.i("Registering listener for serviceType: " + serviceType);
+        checkAndRunOnHandlerThread(() ->
+                handleRegisterListener(serviceType, listener, searchOptions));
+    }
+
+    private void handleRegisterListener(
+            @NonNull String serviceType,
+            @NonNull MdnsServiceBrowserListener listener,
+            @NonNull MdnsSearchOptions searchOptions) {
         if (perNetworkServiceTypeClients.isEmpty()) {
             // First listener. Starts the socket client.
             try {
                 socketClient.startDiscovery();
             } catch (IOException e) {
-                LOGGER.e("Failed to start discover.", e);
+                sharedLog.e("Failed to start discover.", e);
                 return;
             }
         }
         // Request the network for discovery.
-        socketClient.notifyNetworkRequested(listener, searchOptions.getNetwork(), network -> {
-            synchronized (this) {
-                // All listeners of the same service types shares the same MdnsServiceTypeClient.
-                MdnsServiceTypeClient serviceTypeClient =
-                        perNetworkServiceTypeClients.get(serviceType, network);
-                if (serviceTypeClient == null) {
-                    serviceTypeClient = createServiceTypeClient(serviceType, network);
-                    perNetworkServiceTypeClients.put(serviceType, network, serviceTypeClient);
-                }
-                serviceTypeClient.startSendAndReceive(listener, searchOptions);
-            }
-        });
+        socketClient.notifyNetworkRequested(listener, searchOptions.getNetwork(),
+                new MdnsSocketClientBase.SocketCreationCallback() {
+                    @Override
+                    public void onSocketCreated(@Nullable Network network) {
+                        ensureRunningOnHandlerThread(handler);
+                        // All listeners of the same service types shares the same
+                        // MdnsServiceTypeClient.
+                        MdnsServiceTypeClient serviceTypeClient =
+                                perNetworkServiceTypeClients.get(serviceType, network);
+                        if (serviceTypeClient == null) {
+                            serviceTypeClient = createServiceTypeClient(serviceType, network);
+                            perNetworkServiceTypeClients.put(serviceType, network,
+                                    serviceTypeClient);
+                        }
+                        serviceTypeClient.startSendAndReceive(listener, searchOptions);
+                    }
+
+                    @Override
+                    public void onAllSocketsDestroyed(@Nullable Network network) {
+                        ensureRunningOnHandlerThread(handler);
+                        final MdnsServiceTypeClient serviceTypeClient =
+                                perNetworkServiceTypeClients.get(serviceType, network);
+                        if (serviceTypeClient == null) return;
+                        // Notify all listeners that all services are removed from this socket.
+                        serviceTypeClient.notifySocketDestroyed();
+                        perNetworkServiceTypeClients.remove(serviceTypeClient);
+                    }
+                });
     }
 
     /**
@@ -155,10 +212,14 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
      * @param listener    The {@link MdnsServiceBrowserListener} listener.
      */
     @RequiresPermission(permission.CHANGE_WIFI_MULTICAST_STATE)
-    public synchronized void unregisterListener(
+    public void unregisterListener(
             @NonNull String serviceType, @NonNull MdnsServiceBrowserListener listener) {
-        LOGGER.log("Unregistering listener for service type: %s", serviceType);
-        if (DBG) Log.d(TAG, "Unregistering listener for serviceType:" + serviceType);
+        sharedLog.i("Unregistering listener for serviceType:" + serviceType);
+        checkAndRunOnHandlerThread(() -> handleUnregisterListener(serviceType, listener));
+    }
+
+    private void handleUnregisterListener(
+            @NonNull String serviceType, @NonNull MdnsServiceBrowserListener listener) {
         final List<MdnsServiceTypeClient> serviceTypeClients =
                 perNetworkServiceTypeClients.getByServiceType(serviceType);
         if (serviceTypeClients.isEmpty()) {
@@ -170,30 +231,50 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
                 // No listener is registered for the service type anymore, remove it from the list
                 // of the service type clients.
                 perNetworkServiceTypeClients.remove(serviceTypeClient);
-                if (perNetworkServiceTypeClients.isEmpty()) {
-                    // No discovery request. Stops the socket client.
-                    socketClient.stopDiscovery();
-                }
             }
+        }
+        if (perNetworkServiceTypeClients.isEmpty()) {
+            // No discovery request. Stops the socket client.
+            socketClient.stopDiscovery();
         }
         // Unrequested the network.
         socketClient.notifyNetworkUnrequested(listener);
     }
 
     @Override
-    public synchronized void onResponseReceived(@NonNull MdnsPacket packet,
-            int interfaceIndex, Network network) {
+    public void onResponseReceived(@NonNull MdnsPacket packet,
+            int interfaceIndex, @Nullable Network network) {
+        checkAndRunOnHandlerThread(() ->
+                handleOnResponseReceived(packet, interfaceIndex, network));
+    }
+
+    private void handleOnResponseReceived(@NonNull MdnsPacket packet, int interfaceIndex,
+            @Nullable Network network) {
         for (MdnsServiceTypeClient serviceTypeClient
-                : perNetworkServiceTypeClients.getByMatchingNetwork(network)) {
+                : getMdnsServiceTypeClient(network)) {
             serviceTypeClient.processResponse(packet, interfaceIndex, network);
         }
     }
 
+    private List<MdnsServiceTypeClient> getMdnsServiceTypeClient(@Nullable Network network) {
+        if (socketClient.supportsRequestingSpecificNetworks()) {
+            return perNetworkServiceTypeClients.getByNetwork(network);
+        } else {
+            return perNetworkServiceTypeClients.getByNetwork(null);
+        }
+    }
+
     @Override
-    public synchronized void onFailedToParseMdnsResponse(int receivedPacketNumber, int errorCode,
-            Network network) {
+    public void onFailedToParseMdnsResponse(int receivedPacketNumber, int errorCode,
+            @Nullable Network network) {
+        checkAndRunOnHandlerThread(() ->
+                handleOnFailedToParseMdnsResponse(receivedPacketNumber, errorCode, network));
+    }
+
+    private void handleOnFailedToParseMdnsResponse(int receivedPacketNumber, int errorCode,
+            @Nullable Network network) {
         for (MdnsServiceTypeClient serviceTypeClient
-                : perNetworkServiceTypeClients.getByMatchingNetwork(network)) {
+                : getMdnsServiceTypeClient(network)) {
             serviceTypeClient.onFailedToParseMdnsResponse(receivedPacketNumber, errorCode);
         }
     }
@@ -201,8 +282,10 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     @VisibleForTesting
     MdnsServiceTypeClient createServiceTypeClient(@NonNull String serviceType,
             @Nullable Network network) {
+        sharedLog.log("createServiceTypeClient for type:" + serviceType + ", net:" + network);
         return new MdnsServiceTypeClient(
                 serviceType, socketClient,
-                executorProvider.newServiceTypeClientSchedulerExecutor(), network);
+                executorProvider.newServiceTypeClientSchedulerExecutor(), network,
+                sharedLog.forSubComponent(serviceType + "-" + network));
     }
 }

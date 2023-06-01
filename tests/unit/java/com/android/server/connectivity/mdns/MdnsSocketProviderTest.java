@@ -111,8 +111,9 @@ public class MdnsSocketProviderTest {
     private MdnsSocketProvider mSocketProvider;
     private NetworkCallback mNetworkCallback;
     private TetheringEventCallback mTetheringEventCallback;
+    private SharedLog mLog = new SharedLog("MdnsSocketProviderTest");
 
-    private TestNetLinkMonitor mTestSocketNetLinkMonitor;
+    private TestNetlinkMonitor mTestSocketNetLinkMonitor;
     @Before
     public void setUp() throws IOException {
         MockitoAnnotations.initMocks(this);
@@ -147,13 +148,13 @@ public class MdnsSocketProviderTest {
         doReturn(mTestSocketNetLinkMonitor).when(mDeps).createSocketNetlinkMonitor(any(), any(),
                 any());
         doAnswer(inv -> {
-            mTestSocketNetLinkMonitor = new TestNetLinkMonitor(inv.getArgument(0),
+            mTestSocketNetLinkMonitor = new TestNetlinkMonitor(inv.getArgument(0),
                     inv.getArgument(1),
                     inv.getArgument(2));
             return mTestSocketNetLinkMonitor;
         }).when(mDeps).createSocketNetlinkMonitor(any(), any(),
                 any());
-        mSocketProvider = new MdnsSocketProvider(mContext, thread.getLooper(), mDeps);
+        mSocketProvider = new MdnsSocketProvider(mContext, thread.getLooper(), mDeps, mLog);
     }
 
     private void startMonitoringSockets() {
@@ -174,8 +175,8 @@ public class MdnsSocketProviderTest {
         HandlerUtils.waitForIdle(mHandler, DEFAULT_TIMEOUT);
     }
 
-    private static class TestNetLinkMonitor extends SocketNetlinkMonitor {
-        TestNetLinkMonitor(@NonNull Handler handler,
+    private static class TestNetlinkMonitor extends SocketNetlinkMonitor {
+        TestNetlinkMonitor(@NonNull Handler handler,
                 @NonNull SharedLog log,
                 @Nullable MdnsSocketProvider.NetLinkMonitorCallBack cb) {
             super(handler, log, cb);
@@ -348,8 +349,8 @@ public class MdnsSocketProviderTest {
         HandlerUtils.waitForIdle(mHandler, DEFAULT_TIMEOUT);
         testCallback1.expectedNoCallback();
         testCallback2.expectedNoCallback();
-        // Expect the socket destroy for tethered interface.
-        testCallback3.expectedInterfaceDestroyedForNetwork(null /* network */);
+        // There was still a tethered interface, but no callback should be sent once unregistered
+        testCallback3.expectedNoCallback();
     }
 
     private RtNetlinkAddressMessage createNetworkAddressUpdateNetLink(
@@ -527,7 +528,8 @@ public class MdnsSocketProviderTest {
         HandlerUtils.waitForIdle(mHandler, DEFAULT_TIMEOUT);
         mHandler.post(()-> mSocketProvider.unrequestSocket(testCallback));
         HandlerUtils.waitForIdle(mHandler, DEFAULT_TIMEOUT);
-        testCallback.expectedInterfaceDestroyedForNetwork(TEST_NETWORK);
+        // No callback sent when unregistered
+        testCallback.expectedNoCallback();
         verify(mCm, times(1)).unregisterNetworkCallback(any(NetworkCallback.class));
         verify(mTm, times(1)).unregisterTetheringEventCallback(any());
 

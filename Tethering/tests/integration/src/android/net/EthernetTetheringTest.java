@@ -839,4 +839,41 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
                 REMOTE_NAT64_ADDR /* downloadSrcIp */, clatIp6 /* downloadDstIp */,
                 tester, true /* isClat */);
     }
+
+    private static final byte[] ZeroLengthDhcpPacket = new byte[] {
+            // scapy.Ether(
+            //   dst="ff:ff:ff:ff:ff:ff")
+            // scapy.IP(
+            //   dst="255.255.255.255")
+            // scapy.UDP(sport=68, dport=67)
+            /* Ethernet Header */
+            (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff, (byte) 0xff,
+            (byte) 0xe0, (byte) 0x4f, (byte) 0x43, (byte) 0xe6, (byte) 0xfb, (byte) 0xd2,
+            (byte) 0x08, (byte) 0x00,
+            /* Ip header */
+            (byte) 0x45, (byte) 0x00, (byte) 0x00, (byte) 0x1c, (byte) 0x00, (byte) 0x01,
+            (byte) 0x00, (byte) 0x00, (byte) 0x40, (byte) 0x11, (byte) 0xb6, (byte) 0x58,
+            (byte) 0x64, (byte) 0x4f, (byte) 0x60, (byte) 0x29, (byte) 0xff, (byte) 0xff,
+            (byte) 0xff, (byte) 0xff,
+            /* UDP header */
+            (byte) 0x00, (byte) 0x44, (byte) 0x00, (byte) 0x43,
+            (byte) 0x00, (byte) 0x08, (byte) 0x3a, (byte) 0xdf
+    };
+
+    @Test
+    public void testTetherZeroLengthDhcpPacket() throws Exception {
+        final TetheringTester tester = initTetheringTester(toList(TEST_IP4_ADDR),
+                toList(TEST_IP4_DNS));
+        tester.createTetheredDevice(TEST_MAC, false /* hasIpv6 */);
+
+        // Send a zero-length DHCP packet to upstream DHCP server.
+        final ByteBuffer packet = ByteBuffer.wrap(ZeroLengthDhcpPacket);
+        tester.sendUploadPacket(packet);
+
+        // Send DHCPDISCOVER packet from another downstream tethered device to verify that
+        // upstream DHCP server doesn't close the listening socket and stop reading, then we
+        // can still receive the next DHCP packet from server.
+        final MacAddress macAddress = MacAddress.fromString("11:22:33:44:55:66");
+        assertTrue(tester.testDhcpServerAlive(macAddress));
+    }
 }
