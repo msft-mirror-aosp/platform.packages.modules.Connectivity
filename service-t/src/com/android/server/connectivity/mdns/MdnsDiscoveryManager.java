@@ -17,8 +17,6 @@
 package com.android.server.connectivity.mdns;
 
 import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
-import static com.android.server.connectivity.mdns.util.MdnsUtils.isNetworkMatched;
-import static com.android.server.connectivity.mdns.util.MdnsUtils.isRunningOnHandlerThread;
 
 import android.Manifest.permission;
 import android.annotation.NonNull;
@@ -26,7 +24,7 @@ import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.net.Network;
 import android.os.Handler;
-import android.os.Looper;
+import android.os.HandlerThread;
 import android.util.ArrayMap;
 import android.util.Log;
 import android.util.Pair;
@@ -38,6 +36,7 @@ import com.android.server.connectivity.mdns.util.MdnsUtils;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * This class keeps tracking the set of registered {@link MdnsServiceBrowserListener} instances, and
@@ -53,6 +52,7 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
 
     @NonNull private final PerNetworkServiceTypeClients perNetworkServiceTypeClients;
     @NonNull private final Handler handler;
+    @Nullable private final HandlerThread handlerThread;
 
     private static class PerNetworkServiceTypeClients {
         private final ArrayMap<Pair<String, Network>, MdnsServiceTypeClient> clients =
@@ -86,15 +86,12 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
             return list;
         }
 
-        public List<MdnsServiceTypeClient> getByMatchingNetwork(@Nullable Network network) {
+        public List<MdnsServiceTypeClient> getByNetwork(@Nullable Network network) {
             final List<MdnsServiceTypeClient> list = new ArrayList<>();
             for (int i = 0; i < clients.size(); i++) {
                 final Pair<String, Network> perNetworkServiceType = clients.keyAt(i);
                 final Network serviceTypeNetwork = perNetworkServiceType.second;
-                // The serviceTypeNetwork would be null if the MdnsSocketClient is being used. This
-                // is also the case if the socket is for a tethering interface. In either of these
-                // cases, the client is expected to process any responses.
-                if (serviceTypeNetwork == null || isNetworkMatched(network, serviceTypeNetwork)) {
+                if (Objects.equals(network, serviceTypeNetwork)) {
                     list.add(clients.valueAt(i));
                 }
             }
@@ -112,20 +109,35 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     }
 
     public MdnsDiscoveryManager(@NonNull ExecutorProvider executorProvider,
-            @NonNull MdnsSocketClientBase socketClient, @NonNull SharedLog sharedLog,
-            @NonNull Looper looper) {
+            @NonNull MdnsSocketClientBase socketClient, @NonNull SharedLog sharedLog) {
         this.executorProvider = executorProvider;
         this.socketClient = socketClient;
         this.sharedLog = sharedLog;
-        perNetworkServiceTypeClients = new PerNetworkServiceTypeClients();
-        handler = new Handler(looper);
+        this.perNetworkServiceTypeClients = new PerNetworkServiceTypeClients();
+        if (socketClient.getLooper() != null) {
+            this.handlerThread = null;
+            this.handler = new Handler(socketClient.getLooper());
+        } else {
+            this.handlerThread = new HandlerThread(MdnsDiscoveryManager.class.getSimpleName());
+            this.handlerThread.start();
+            this.handler = new Handler(handlerThread.getLooper());
+        }
     }
 
     private void checkAndRunOnHandlerThread(@NonNull Runnable function) {
-        if (isRunningOnHandlerThread(handler)) {
+        if (this.handlerThread == null) {
             function.run();
         } else {
             handler.post(function);
+        }
+    }
+
+    /**
+     * Do the cleanup of the MdnsDiscoveryManager
+     */
+    public void shutDown() {
+        if (this.handlerThread != null) {
+            this.handlerThread.quitSafely();
         }
     }
 
@@ -239,8 +251,16 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     private void handleOnResponseReceived(@NonNull MdnsPacket packet, int interfaceIndex,
             @Nullable Network network) {
         for (MdnsServiceTypeClient serviceTypeClient
-                : perNetworkServiceTypeClients.getByMatchingNetwork(network)) {
+                : getMdnsServiceTypeClient(network)) {
             serviceTypeClient.processResponse(packet, interfaceIndex, network);
+        }
+    }
+
+    private List<MdnsServiceTypeClient> getMdnsServiceTypeClient(@Nullable Network network) {
+        if (socketClient.supportsRequestingSpecificNetworks()) {
+            return perNetworkServiceTypeClients.getByNetwork(network);
+        } else {
+            return perNetworkServiceTypeClients.getByNetwork(null);
         }
     }
 
@@ -254,7 +274,7 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     private void handleOnFailedToParseMdnsResponse(int receivedPacketNumber, int errorCode,
             @Nullable Network network) {
         for (MdnsServiceTypeClient serviceTypeClient
-                : perNetworkServiceTypeClients.getByMatchingNetwork(network)) {
+                : getMdnsServiceTypeClient(network)) {
             serviceTypeClient.onFailedToParseMdnsResponse(receivedPacketNumber, errorCode);
         }
     }

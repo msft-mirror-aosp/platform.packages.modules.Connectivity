@@ -167,6 +167,7 @@ import static com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
 import static com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 import static com.android.testutils.FunctionalUtils.ignoreExceptions;
+import static com.android.testutils.HandlerUtils.visibleOnHandlerThread;
 import static com.android.testutils.HandlerUtils.waitForIdleSerialExecutor;
 import static com.android.testutils.MiscAsserts.assertContainsAll;
 import static com.android.testutils.MiscAsserts.assertContainsExactly;
@@ -376,7 +377,6 @@ import com.android.internal.net.VpnProfile;
 import com.android.internal.util.WakeupMessage;
 import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.internal.util.test.FakeSettingsProvider;
-import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.LocationPermissionChecker;
@@ -541,8 +541,7 @@ public class ConnectivityServiceTest {
     private static final int TEST_PACKAGE_UID2 = 321;
     private static final int TEST_PACKAGE_UID3 = 456;
 
-    private static final int PACKET_WAKEUP_MASK = 0xffff0000;
-    private static final int PACKET_WAKEUP_MARK = 0x88880000;
+    private static final int PACKET_WAKEUP_MARK_MASK = 0x80000000;
 
     private static final String ALWAYS_ON_PACKAGE = "com.android.test.alwaysonvpn";
 
@@ -869,7 +868,7 @@ public class ConnectivityServiceTest {
         @Override
         public void sendStickyBroadcast(Intent intent, Bundle options) {
             // Verify that delivery group policy APIs were used on U.
-            if (SdkLevel.isAtLeastU() && CONNECTIVITY_ACTION.equals(intent.getAction())) {
+            if (mDeps.isAtLeastU() && CONNECTIVITY_ACTION.equals(intent.getAction())) {
                 final NetworkInfo ni = intent.getParcelableExtra(EXTRA_NETWORK_INFO,
                         NetworkInfo.class);
                 try {
@@ -1085,7 +1084,7 @@ public class ConnectivityServiceTest {
         }
 
         private void onValidationRequested() throws Exception {
-            if (SdkLevel.isAtLeastT()) {
+            if (mDeps.isAtLeastT()) {
                 verify(mNetworkMonitor).notifyNetworkConnectedParcel(any());
             } else {
                 verify(mNetworkMonitor).notifyNetworkConnected(any(), any());
@@ -1924,14 +1923,15 @@ public class ConnectivityServiceTest {
         doReturn(0).when(mResources).getInteger(R.integer.config_activelyPreferBadWifi);
         doReturn(true).when(mResources)
                 .getBoolean(R.bool.config_cellular_radio_timesharing_capable);
-        doReturn(PACKET_WAKEUP_MASK).when(mResources).getInteger(
+        doReturn(PACKET_WAKEUP_MARK_MASK).when(mResources).getInteger(
                 R.integer.config_networkWakeupPacketMask);
-        doReturn(PACKET_WAKEUP_MARK).when(mResources).getInteger(
+        doReturn(PACKET_WAKEUP_MARK_MASK).when(mResources).getInteger(
                 R.integer.config_networkWakeupPacketMark);
     }
 
     class ConnectivityServiceDependencies extends ConnectivityService.Dependencies {
         final ConnectivityResources mConnRes;
+        final ArraySet<Pair<Long, Integer>> mEnabledChangeIds = new ArraySet<>();
 
         ConnectivityServiceDependencies(final Context mockResContext) {
             mConnRes = new ConnectivityResources(mockResContext);
@@ -1997,7 +1997,7 @@ public class ConnectivityServiceTest {
         @Override
         public CarrierPrivilegeAuthenticator makeCarrierPrivilegeAuthenticator(
                 @NonNull final Context context, @NonNull final TelephonyManager tm) {
-            return SdkLevel.isAtLeastT() ? mCarrierPrivilegeAuthenticator : null;
+            return mDeps.isAtLeastT() ? mCarrierPrivilegeAuthenticator : null;
         }
 
         @Override
@@ -2094,6 +2094,61 @@ public class ConnectivityServiceTest {
                 default:
                     return super.isFeatureEnabled(context, name);
             }
+        }
+
+        public void setChangeIdEnabled(final boolean enabled, final long changeId, final int uid) {
+            final Pair<Long, Integer> data = new Pair<>(changeId, uid);
+            // mEnabledChangeIds is read on the handler thread and maybe the test thread, so
+            // make sure both threads see it before continuing.
+            visibleOnHandlerThread(mCsHandlerThread.getThreadHandler(), () -> {
+                if (enabled) {
+                    mEnabledChangeIds.add(data);
+                } else {
+                    mEnabledChangeIds.remove(data);
+                }
+            });
+        }
+
+        @Override
+        public boolean isChangeEnabled(final long changeId, final int uid) {
+            return mEnabledChangeIds.contains(new Pair<>(changeId, uid));
+        }
+
+        // In AOSP, build version codes are all over the place (e.g. at the time of this writing
+        // U == V). Define custom ones.
+        private static final int VERSION_UNMOCKED = -1;
+        private static final int VERSION_R = 1;
+        private static final int VERSION_S = 2;
+        private static final int VERSION_T = 3;
+        private static final int VERSION_U = 4;
+        private static final int VERSION_V = 5;
+        private static final int VERSION_MAX = VERSION_V;
+        private int mSdkLevel = VERSION_UNMOCKED;
+
+        private void setBuildSdk(final int sdkLevel) {
+            if (sdkLevel > VERSION_MAX) {
+                throw new IllegalArgumentException("setBuildSdk must not be called with"
+                        + " Build.VERSION constants but Dependencies.VERSION_* constants");
+            }
+            visibleOnHandlerThread(mCsHandlerThread.getThreadHandler(), () -> mSdkLevel = sdkLevel);
+        }
+
+        @Override
+        public boolean isAtLeastS() {
+            return mSdkLevel == VERSION_UNMOCKED ? super.isAtLeastS()
+                    : mSdkLevel >= VERSION_S;
+        }
+
+        @Override
+        public boolean isAtLeastT() {
+            return mSdkLevel == VERSION_UNMOCKED ? super.isAtLeastT()
+                    : mSdkLevel >= VERSION_T;
+        }
+
+        @Override
+        public boolean isAtLeastU() {
+            return mSdkLevel == VERSION_UNMOCKED ? super.isAtLeastU()
+                    : mSdkLevel >= VERSION_U;
         }
 
         @Override
@@ -2450,10 +2505,14 @@ public class ConnectivityServiceTest {
     }
 
     private ExpectedBroadcast expectProxyChangeAction(ProxyInfo proxy) {
+        return expectProxyChangeAction(actualProxy -> proxy.equals(actualProxy));
+    }
+
+    private ExpectedBroadcast expectProxyChangeAction(Predicate<ProxyInfo> tester) {
         return registerBroadcastReceiverThat(PROXY_CHANGE_ACTION, 1, intent -> {
             final ProxyInfo actualProxy = (ProxyInfo) intent.getExtra(Proxy.EXTRA_PROXY_INFO,
                     ProxyInfo.buildPacProxy(Uri.EMPTY));
-            return proxy.equals(actualProxy);
+            return tester.test(actualProxy);
         });
     }
 
@@ -5933,7 +5992,7 @@ public class ConnectivityServiceTest {
         doReturn(0).when(mResources).getInteger(R.integer.config_activelyPreferBadWifi);
         mPolicyTracker.reevaluate();
         waitForIdle();
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             // U+ ignore the setting and always actively prefers bad wifi
             assertTrue(mService.mNetworkRanker.getConfiguration().activelyPreferBadWifi());
         } else {
@@ -6103,7 +6162,7 @@ public class ConnectivityServiceTest {
     @Test
     public void testPreferBadWifi_doNotAvoid_doNotPrefer() throws Exception {
         // Starting with U this mode is no longer supported and can't actually be tested
-        assumeFalse(SdkLevel.isAtLeastU());
+        assumeFalse(mDeps.isAtLeastU());
         doTestPreferBadWifi(false /* avoidBadWifi */, false /* preferBadWifi */,
                 timeout -> timeout < 14_000);
     }
@@ -9772,7 +9831,7 @@ public class ConnectivityServiceTest {
 
         final Set<Integer> excludedUids = new ArraySet<Integer>();
         excludedUids.add(VPN_UID);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             // On T onwards, the corresponding SDK sandbox UID should also be excluded
             excludedUids.add(toSdkSandboxUid(VPN_UID));
         }
@@ -9820,7 +9879,7 @@ public class ConnectivityServiceTest {
         vpnDefaultCallbackAsUid.assertNoCallback();
 
         excludedUids.add(uid);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             // On T onwards, the corresponding SDK sandbox UID should also be excluded
             excludedUids.add(toSdkSandboxUid(uid));
         }
@@ -10554,7 +10613,7 @@ public class ConnectivityServiceTest {
 
     private void verifyClatdStart(@Nullable InOrder inOrder, @NonNull String iface, int netId,
             @NonNull String nat64Prefix) throws Exception {
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             verifyWithOrder(inOrder, mClatCoordinator)
                 .clatStart(eq(iface), eq(netId), eq(new IpPrefix(nat64Prefix)));
         } else {
@@ -10564,7 +10623,7 @@ public class ConnectivityServiceTest {
 
     private void verifyNeverClatdStart(@Nullable InOrder inOrder, @NonNull String iface)
             throws Exception {
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             verifyNeverWithOrder(inOrder, mClatCoordinator).clatStart(eq(iface), anyInt(), any());
         } else {
             verifyNeverWithOrder(inOrder, mMockNetd).clatdStart(eq(iface), anyString());
@@ -10573,7 +10632,7 @@ public class ConnectivityServiceTest {
 
     private void verifyClatdStop(@Nullable InOrder inOrder, @NonNull String iface)
             throws Exception {
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             verifyWithOrder(inOrder, mClatCoordinator).clatStop();
         } else {
             verifyWithOrder(inOrder, mMockNetd).clatdStop(eq(iface));
@@ -10582,7 +10641,7 @@ public class ConnectivityServiceTest {
 
     private void verifyNeverClatdStop(@Nullable InOrder inOrder, @NonNull String iface)
             throws Exception {
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             verifyNeverWithOrder(inOrder, mClatCoordinator).clatStop();
         } else {
             verifyNeverWithOrder(inOrder, mMockNetd).clatdStop(eq(iface));
@@ -10775,7 +10834,7 @@ public class ConnectivityServiceTest {
         networkCallback.assertNoCallback();
         verify(mMockNetd, times(1)).networkRemoveInterface(cellNetId, CLAT_MOBILE_IFNAME);
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verifyWakeupModifyInterface(CLAT_MOBILE_IFNAME, false);
         }
 
@@ -10815,7 +10874,7 @@ public class ConnectivityServiceTest {
         assertRoutesAdded(cellNetId, stackedDefault);
         verify(mMockNetd, times(1)).networkAddInterface(cellNetId, CLAT_MOBILE_IFNAME);
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verifyWakeupModifyInterface(CLAT_MOBILE_IFNAME, true);
         }
 
@@ -10834,7 +10893,7 @@ public class ConnectivityServiceTest {
         verify(mMockNetd, times(1)).networkRemoveInterface(cellNetId, CLAT_MOBILE_IFNAME);
         verify(mMockNetd, times(1)).interfaceGetCfg(CLAT_MOBILE_IFNAME);
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verifyWakeupModifyInterface(CLAT_MOBILE_IFNAME, false);
         }
 
@@ -10845,13 +10904,13 @@ public class ConnectivityServiceTest {
         verify(mMockNetd, times(1)).idletimerRemoveInterface(eq(MOBILE_IFNAME), anyInt(),
                 eq(Integer.toString(TRANSPORT_CELLULAR)));
         verify(mMockNetd).networkDestroy(cellNetId);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verify(mMockNetd).setNetworkAllowlist(any());
         } else {
             verify(mMockNetd, never()).setNetworkAllowlist(any());
         }
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verifyWakeupModifyInterface(MOBILE_IFNAME, false);
         }
 
@@ -10885,7 +10944,7 @@ public class ConnectivityServiceTest {
         // assertRoutesAdded sees all calls since last mMockNetd reset, so expect IPv6 routes again.
         assertRoutesAdded(cellNetId, ipv6Subnet, ipv6Default, stackedDefault);
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verifyWakeupModifyInterface(MOBILE_IFNAME, true);
         }
 
@@ -10898,20 +10957,20 @@ public class ConnectivityServiceTest {
         networkCallback.assertNoCallback();
         verifyClatdStop(null /* inOrder */, MOBILE_IFNAME);
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verifyWakeupModifyInterface(CLAT_MOBILE_IFNAME, false);
         }
 
         verify(mMockNetd).idletimerRemoveInterface(eq(MOBILE_IFNAME), anyInt(),
                 eq(Integer.toString(TRANSPORT_CELLULAR)));
         verify(mMockNetd).networkDestroy(cellNetId);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verify(mMockNetd).setNetworkAllowlist(any());
         } else {
             verify(mMockNetd, never()).setNetworkAllowlist(any());
         }
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             verifyWakeupModifyInterface(MOBILE_IFNAME, false);
         }
 
@@ -11276,6 +11335,278 @@ public class ConnectivityServiceTest {
         assertEquals(testProxyInfo, mService.getProxyForNetwork(null));
     }
 
+    /*
+     * Note for maintainers about how PAC proxies are implemented in Android.
+     *
+     * Generally, a proxy is just a hostname and a port to which requests are sent, instead of
+     * sending them directly. Most HTTP libraries know to use this protocol, and the Java
+     * language has properties to help handling these :
+     *   https://docs.oracle.com/javase/8/docs/technotes/guides/net/proxies.html
+     * Unfortunately these properties are very old and do not take multi-networking into account.
+     *
+     * A PAC proxy consists of a javascript file stored on a server, and the client is expected to
+     * download the file and interpret the javascript for each HTTP request to know where to direct
+     * it. The device must therefore run code (namely, a javascript interpreter) to interpret the
+     * PAC file correctly. Most HTTP libraries do not know how to do this, since they do not
+     * embark a javascript interpreter (and it would be generally unreasonable for them to do
+     * so). Some apps, notably browsers, do know how to do this, but they are the exception rather
+     * than the rule.
+     * So to support most apps, Android embarks the javascript interpreter. When a network is
+     * configured to have a PAC proxy, Android will first set the ProxyInfo object to an object
+     * that contains the PAC URL (to communicate that to apps that know how to use it), then
+     * download the PAC file and start a native process which will open a server on localhost,
+     * and uses the interpreter inside WebView to interpret the PAC file. This server takes
+     * a little bit of time to start and will listen on a random port. When the port is known,
+     * the framework receives a notification and it updates the ProxyInfo in LinkProperties
+     * as well as send a broadcast to inform apps. This new ProxyInfo still contains the PAC URL,
+     * but it also contains "localhost" as the host and the port that the server listens to as
+     * the port. This will let HTTP libraries that don't have a javascript interpreter work,
+     * because they'll send the requests to this server running on localhost on the correct port,
+     * and this server will do what is appropriate with each request according to the PAC file.
+     *
+     * Note that at the time of this writing, Android does not support starting multiple local
+     * PAC servers, though this would be possible in theory by just starting multiple instances
+     * of this process running their server on different ports. As a stopgap measure, Android
+     * keeps one local server which is always the one for the default network. If a non-default
+     * network has a PAC proxy, it will have a LinkProperties with a port of -1, which means it
+     * could still be used by apps that know how to use the PAC URL directly, but not by HTTP
+     * libs that don't know how to do that. When a network with a PAC proxy becomes the default,
+     * the local server is started. When a network without a PAC proxy becomes the default, the
+     * local server is stopped if it is running (and the LP for the old default network should
+     * be reset to have a port of -1).
+     *
+     * In principle, each network can be configured with a different proxy (typically in the
+     * network settings for a Wi-Fi network). These end up exposed in the LinkProperties of the
+     * relevant network.
+     * Android also exposes ConnectivityManager#getDefaultProxy, which is simply the proxy for
+     * the default network. This was retrofitted from a time where Android did not support multiple
+     * concurrent networks, hence the difficult architecture.
+     * Note that there is also a "global" proxy that can be set by the DPM. When this is set,
+     * it overrides the proxy settings for every single network at the same time – that is, the
+     * system behaves as if the global proxy is the configured proxy for each network.
+     *
+     * Generally there are four ways for apps to look up the proxy.
+     * - Looking up the ProxyInfo in the LinkProperties for a network.
+     * - Listening to the PROXY_CHANGED_ACTION broadcast
+     * - Calling ConnectivityManager#getDefaultProxy, or ConnectivityManager#getProxyForNetwork
+     *   which can be used to retrieve the proxy for any given network or the default network by
+     *   passing null.
+     * - Reading the standard JVM properties (http{s,}.proxy{Host,Port}). See the Java
+     *   distribution documentation for details on how these are supposed to work :
+     *    https://docs.oracle.com/javase/8/docs/technotes/guides/net/proxies.html
+     *   In Android, these are set by ActivityThread in each process in response to the broadcast.
+     *   Many apps actually use these, and it's important they work because it's part of the
+     *   Java standard, meaning they need to be set for existing Java libs to work on Android.
+     */
+    @Test
+    public void testPacProxy() throws Exception {
+        final Uri pacUrl = Uri.parse("https://pac-url");
+
+        final TestNetworkCallback cellCallback = new TestNetworkCallback();
+        final NetworkRequest cellRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_CELLULAR).build();
+        // Request cell to make sure it doesn't disconnect at an arbitrary point in the test,
+        // which would make testing the callbacks on it difficult.
+        mCm.requestNetwork(cellRequest, cellCallback);
+        mCellAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR);
+        mCellAgent.connect(true);
+        cellCallback.expectAvailableThenValidatedCallbacks(mCellAgent);
+
+        final TestNetworkCallback wifiCallback = new TestNetworkCallback();
+        final NetworkRequest wifiRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_WIFI).build();
+        mCm.registerNetworkCallback(wifiRequest, wifiCallback);
+
+        mWiFiAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+        mWiFiAgent.connect(true);
+        wifiCallback.expectAvailableThenValidatedCallbacks(mWiFiAgent);
+        cellCallback.assertNoCallback();
+
+        final ProxyInfo initialProxyInfo = ProxyInfo.buildPacProxy(pacUrl);
+        final LinkProperties testLinkProperties = new LinkProperties();
+        testLinkProperties.setHttpProxy(initialProxyInfo);
+        mWiFiAgent.sendLinkProperties(testLinkProperties);
+        wifiCallback.expect(CallbackEntry.LINK_PROPERTIES_CHANGED, mWiFiAgent);
+        cellCallback.assertNoCallback();
+
+        // At first the local PAC proxy server is unstarted (see the description of what the local
+        // server is in the comment at the top of this method). It will contain the PAC URL and a
+        // port of -1 because it is unstarted. Check that all ways of getting that proxy info
+        // returns the same object that was initially created.
+        final ProxyInfo unstartedDefaultProxyInfo = mService.getProxyForNetwork(null);
+        final ProxyInfo unstartedWifiProxyInfo = mService.getProxyForNetwork(
+                mWiFiAgent.getNetwork());
+        final LinkProperties unstartedLp =
+                mService.getLinkProperties(mWiFiAgent.getNetwork());
+
+        assertEquals(initialProxyInfo, unstartedDefaultProxyInfo);
+        assertEquals(initialProxyInfo, unstartedWifiProxyInfo);
+        assertEquals(initialProxyInfo, unstartedLp.getHttpProxy());
+
+        // Make sure the cell network is unaffected. The LP are per-network and each network has
+        // its own configuration. The default proxy and broadcast are system-wide, and the JVM
+        // properties are per-process, and therefore can have only one value at any given time,
+        // so the code sets them to the proxy of the default network (TODO : really, since the
+        // default process is per-network, the JVM properties (http.proxyHost family – see
+        // the comment at the top of the method for details about these) also should be per-network
+        // and even the broadcast contents should be but none of this is implemented). The LP are
+        // still per-network, and a process that wants to use a non-default network is supposed to
+        // look up the proxy in its LP and it has to be correct.
+        assertNull(mService.getLinkProperties(mCellAgent.getNetwork()).getHttpProxy());
+        assertNull(mService.getProxyForNetwork(mCellAgent.getNetwork()));
+
+        // Simulate PacManager sending the notification that the local server has started
+        final ProxyInfo servingProxyInfo = new ProxyInfo(pacUrl, 2097);
+        final ExpectedBroadcast servingProxyBroadcast = expectProxyChangeAction(servingProxyInfo);
+        mService.simulateUpdateProxyInfo(mWiFiAgent.getNetwork(), servingProxyInfo);
+        wifiCallback.expect(CallbackEntry.LINK_PROPERTIES_CHANGED, mWiFiAgent);
+        cellCallback.assertNoCallback();
+        servingProxyBroadcast.expectBroadcast();
+
+        final ProxyInfo startedDefaultProxyInfo = mService.getProxyForNetwork(null);
+        final ProxyInfo startedWifiProxyInfo = mService.getProxyForNetwork(
+                mWiFiAgent.getNetwork());
+        final LinkProperties startedLp = mService.getLinkProperties(mWiFiAgent.getNetwork());
+        assertEquals(servingProxyInfo, startedDefaultProxyInfo);
+        assertEquals(servingProxyInfo, startedWifiProxyInfo);
+        assertEquals(servingProxyInfo, startedLp.getHttpProxy());
+        // Make sure the cell network is still unaffected
+        assertNull(mService.getLinkProperties(mCellAgent.getNetwork()).getHttpProxy());
+        assertNull(mService.getProxyForNetwork(mCellAgent.getNetwork()));
+
+        // Start an ethernet network which will become the default, in order to test what happens
+        // to the proxy of wifi while manipulating the proxy of ethernet.
+        final Uri ethPacUrl = Uri.parse("https://ethernet-pac-url");
+        final TestableNetworkCallback ethernetCallback = new TestableNetworkCallback();
+        final NetworkRequest ethernetRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_ETHERNET).build();
+        mEthernetAgent = new TestNetworkAgentWrapper(TRANSPORT_ETHERNET);
+        mCm.registerNetworkCallback(ethernetRequest, ethernetCallback);
+        mEthernetAgent.connect(true);
+        ethernetCallback.expectAvailableThenValidatedCallbacks(mEthernetAgent);
+
+        // Wifi is no longer the default, so it should get a callback to LP changed with a PAC
+        // proxy but a port of -1 (since the local proxy doesn't serve wifi now)
+        wifiCallback.expect(LINK_PROPERTIES_CHANGED, mWiFiAgent,
+                lp -> lp.getLp().getHttpProxy().getPort() == -1
+                        && lp.getLp().getHttpProxy().isPacProxy());
+        // Wifi is lingered as it was the default but is no longer serving any request.
+        wifiCallback.expect(CallbackEntry.LOSING, mWiFiAgent);
+
+        // Now arrange for Ethernet to have a PAC proxy.
+        final ProxyInfo ethProxy = ProxyInfo.buildPacProxy(ethPacUrl);
+        final LinkProperties ethLinkProperties = new LinkProperties();
+        ethLinkProperties.setHttpProxy(ethProxy);
+        mEthernetAgent.sendLinkProperties(ethLinkProperties);
+        ethernetCallback.expect(CallbackEntry.LINK_PROPERTIES_CHANGED, mEthernetAgent);
+        // Default network is Ethernet
+        assertEquals(ethProxy, mService.getProxyForNetwork(null));
+        assertEquals(ethProxy, mService.getProxyForNetwork(mEthernetAgent.getNetwork()));
+        // Proxy info for WiFi ideally should be the old one with the old server still running,
+        // but as the PAC code only handles one server at any given time, this can't work. Wifi
+        // having null as a proxy also won't work (apps using WiFi will try to access the network
+        // without proxy) but is not as bad as having the new proxy (that would send requests
+        // over the default network).
+        assertEquals(initialProxyInfo, mService.getProxyForNetwork(mWiFiAgent.getNetwork()));
+        assertNull(mService.getProxyForNetwork(mCellAgent.getNetwork()));
+
+        // Expect the local PAC proxy server starts to serve the proxy on Ethernet. Use
+        // simulateUpdateProxyInfo to simulate this, and check that the callback is called to
+        // inform apps of the port and that the various networks have the expected proxies in
+        // their link properties.
+        final ProxyInfo servingEthProxy = new ProxyInfo(ethPacUrl, 2099);
+        final ExpectedBroadcast servingEthProxyBroadcast = expectProxyChangeAction(servingEthProxy);
+        final ExpectedBroadcast servingProxyBroadcast2 = expectProxyChangeAction(servingProxyInfo);
+        mService.simulateUpdateProxyInfo(mEthernetAgent.getNetwork(), servingEthProxy);
+        ethernetCallback.expect(CallbackEntry.LINK_PROPERTIES_CHANGED, mEthernetAgent);
+        assertEquals(servingEthProxy, mService.getProxyForNetwork(null));
+        assertEquals(servingEthProxy, mService.getProxyForNetwork(mEthernetAgent.getNetwork()));
+        assertEquals(initialProxyInfo, mService.getProxyForNetwork(mWiFiAgent.getNetwork()));
+        assertNull(mService.getProxyForNetwork(mCellAgent.getNetwork()));
+        servingEthProxyBroadcast.expectBroadcast();
+
+        // Ethernet disconnects, back to WiFi
+        mEthernetAgent.disconnect();
+        ethernetCallback.expect(CallbackEntry.LOST, mEthernetAgent);
+
+        // WiFi is now the default network again. However, the local proxy server does not serve
+        // WiFi at this time, so at this time a proxy with port -1 is still the correct value.
+        // In time, the local proxy server for ethernet will be downed and the local proxy server
+        // for WiFi will be restarted, and WiFi will see an update to its LP with the new port,
+        // but in this test this won't happen until the test simulates the local proxy starting
+        // up for WiFi (which is done just a few lines below). This is therefore the perfect place
+        // to check that WiFi is unaffected until the new local proxy starts up.
+        wifiCallback.assertNoCallback();
+        assertEquals(initialProxyInfo, mService.getProxyForNetwork(null));
+        assertEquals(initialProxyInfo, mService.getProxyForNetwork(mWiFiAgent.getNetwork()));
+        assertNull(mService.getProxyForNetwork(mCellAgent.getNetwork()));
+        // Note : strictly speaking, for correctness here apps should expect a broadcast with a
+        // port of -1, since that's the current default proxy. The code does not send this
+        // broadcast. In practice though, not sending it is more useful since the new proxy will
+        // start momentarily, so broadcasting and getting all apps to update and retry once now
+        // and again in 250ms is kind of counter-productive, so don't fix this bug.
+
+        // After a while the PAC file for wifi is resolved again and the local proxy server
+        // starts up. This should cause a LP event to inform clients of the port to access the
+        // proxy server for wifi.
+        mService.simulateUpdateProxyInfo(mWiFiAgent.getNetwork(), servingProxyInfo);
+        wifiCallback.expect(CallbackEntry.LINK_PROPERTIES_CHANGED, mWiFiAgent);
+        assertEquals(servingProxyInfo, mService.getProxyForNetwork(null));
+        assertEquals(servingProxyInfo, mService.getProxyForNetwork(mWiFiAgent.getNetwork()));
+        assertNull(mService.getProxyForNetwork(mCellAgent.getNetwork()));
+        servingProxyBroadcast2.expectBroadcast();
+
+        // Expect a broadcast for an empty proxy after wifi disconnected, because cell is now
+        // the default network and it doesn't have a proxy. Whether "no proxy" is a null pointer
+        // or a ProxyInfo with an empty host doesn't matter because both are correct, so this test
+        // accepts both.
+        final ExpectedBroadcast emptyProxyBroadcast = expectProxyChangeAction(
+                proxy -> proxy == null || TextUtils.isEmpty(proxy.getHost()));
+        mWiFiAgent.disconnect();
+        emptyProxyBroadcast.expectBroadcast();
+        wifiCallback.expect(CallbackEntry.LOST, mWiFiAgent);
+        assertNull(mService.getProxyForNetwork(null));
+        assertNull(mService.getLinkProperties(mCellAgent.getNetwork()).getHttpProxy());
+        assertNull(mService.getGlobalProxy());
+
+        mCm.unregisterNetworkCallback(cellCallback);
+    }
+
+    @Test
+    public void testPacProxy_NetworkDisconnects_BroadcastSent() throws Exception {
+        // Make a WiFi network with a PAC URI.
+        final Uri pacUrl = Uri.parse("https://pac-url");
+        final ProxyInfo initialProxyInfo = ProxyInfo.buildPacProxy(pacUrl);
+        final LinkProperties testLinkProperties = new LinkProperties();
+        testLinkProperties.setHttpProxy(initialProxyInfo);
+
+        final TestNetworkCallback wifiCallback = new TestNetworkCallback();
+        final NetworkRequest wifiRequest = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_WIFI).build();
+        mCm.registerNetworkCallback(wifiRequest, wifiCallback);
+
+        mWiFiAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI, testLinkProperties);
+        mWiFiAgent.connect(true);
+        // Wifi is up, but the local proxy server hasn't started yet.
+        wifiCallback.expectAvailableThenValidatedCallbacks(mWiFiAgent);
+
+        // Simulate PacManager sending the notification that the local server has started
+        final ProxyInfo servingProxyInfo = new ProxyInfo(pacUrl, 2097);
+        final ExpectedBroadcast servingProxyBroadcast = expectProxyChangeAction(servingProxyInfo);
+        mService.simulateUpdateProxyInfo(mWiFiAgent.getNetwork(), servingProxyInfo);
+        wifiCallback.expect(CallbackEntry.LINK_PROPERTIES_CHANGED, mWiFiAgent);
+        servingProxyBroadcast.expectBroadcast();
+
+        // Now disconnect Wi-Fi and make sure there is a broadcast for some empty proxy. Whether
+        // the "empty" proxy is a null pointer or a ProxyInfo with an empty host doesn't matter
+        // because both are correct, so this test accepts both.
+        final ExpectedBroadcast emptyProxyBroadcast = expectProxyChangeAction(
+                proxy -> proxy == null || TextUtils.isEmpty(proxy.getHost()));
+        mWiFiAgent.disconnect();
+        wifiCallback.expect(CallbackEntry.LOST, mWiFiAgent);
+        emptyProxyBroadcast.expectBroadcast();
+    }
+
     @Test
     public void testGetProxyForVPN() throws Exception {
         final ProxyInfo testProxyInfo = ProxyInfo.buildDirectProxy("test", 8888);
@@ -11352,7 +11683,7 @@ public class ConnectivityServiceTest {
         mMockVpn.establish(lp, uid, vpnRange);
         assertVpnUidRangesUpdated(true, vpnRange, uid);
 
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             // On T and above, VPN should have rules for null interface. Null Interface is a
             // wildcard and this accepts traffic from all the interfaces.
             // There are two expected invocations, one during the VPN initial
@@ -12341,7 +12672,7 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testUnderlyingNetworksWillBeSetInNetworkAgentInfoConstructor() throws Exception {
-        assumeTrue(SdkLevel.isAtLeastT());
+        assumeTrue(mDeps.isAtLeastT());
         final Network network1 = new Network(100);
         final Network network2 = new Network(101);
         final List<Network> underlyingNetworks = new ArrayList<>();
@@ -12669,9 +13000,16 @@ public class ConnectivityServiceTest {
             throws Exception {
         InOrder inOrder = inOrder(mMockNetd, mDestroySocketsWrapper);
         final Set<Integer> exemptUidSet = new ArraySet<>(List.of(exemptUid, Process.VPN_UID));
+        ArgumentCaptor<int[]> exemptUidCaptor = ArgumentCaptor.forClass(int[].class);
 
-        inOrder.verify(mDestroySocketsWrapper).destroyLiveTcpSockets(
-                UidRange.toIntRanges(vpnRanges), exemptUidSet);
+        if (mDeps.isAtLeastU()) {
+            inOrder.verify(mDestroySocketsWrapper).destroyLiveTcpSockets(
+                    UidRange.toIntRanges(vpnRanges), exemptUidSet);
+        } else {
+            inOrder.verify(mMockNetd).socketDestroy(eq(toUidRangeStableParcels(vpnRanges)),
+                    exemptUidCaptor.capture());
+            assertContainsExactly(exemptUidCaptor.getValue(), Process.VPN_UID, exemptUid);
+        }
 
         if (add) {
             inOrder.verify(mMockNetd, times(1)).networkAddUidRangesParcel(
@@ -12683,8 +13021,14 @@ public class ConnectivityServiceTest {
                             toUidRangeStableParcels(vpnRanges), PREFERENCE_ORDER_VPN));
         }
 
-        inOrder.verify(mDestroySocketsWrapper).destroyLiveTcpSockets(
-                UidRange.toIntRanges(vpnRanges), exemptUidSet);
+        if (mDeps.isAtLeastU()) {
+            inOrder.verify(mDestroySocketsWrapper).destroyLiveTcpSockets(
+                    UidRange.toIntRanges(vpnRanges), exemptUidSet);
+        } else {
+            inOrder.verify(mMockNetd).socketDestroy(eq(toUidRangeStableParcels(vpnRanges)),
+                    exemptUidCaptor.capture());
+            assertContainsExactly(exemptUidCaptor.getValue(), Process.VPN_UID, exemptUid);
+        }
     }
 
     @Test
@@ -16234,7 +16578,7 @@ public class ConnectivityServiceTest {
                 mCellAgent.getNetwork().netId,
                 toUidRangeStableParcels(allowedRanges),
                 0 /* subPriority */);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(new NativeUidRangeConfig[]{config1User});
         } else {
             inOrder.verify(mMockNetd, never()).setNetworkAllowlist(any());
@@ -16252,7 +16596,7 @@ public class ConnectivityServiceTest {
                 mCellAgent.getNetwork().netId,
                 toUidRangeStableParcels(allowedRanges),
                 0 /* subPriority */);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(new NativeUidRangeConfig[]{config2Users});
         } else {
             inOrder.verify(mMockNetd, never()).setNetworkAllowlist(any());
@@ -16283,7 +16627,7 @@ public class ConnectivityServiceTest {
                 mCellAgent.getNetwork().netId,
                 allowAllUidRangesParcel,
                 0 /* subPriority */);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(
                     new NativeUidRangeConfig[]{cellAllAllowedConfig});
         } else {
@@ -16302,7 +16646,7 @@ public class ConnectivityServiceTest {
         // making the order of the list undeterministic. Thus, verify this in order insensitive way.
         final ArgumentCaptor<NativeUidRangeConfig[]> configsCaptor = ArgumentCaptor.forClass(
                 NativeUidRangeConfig[].class);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(configsCaptor.capture());
             assertContainsAll(List.of(configsCaptor.getValue()),
                     List.of(cellAllAllowedConfig, enterpriseAllAllowedConfig));
@@ -16336,7 +16680,7 @@ public class ConnectivityServiceTest {
                 mCellAgent.getNetwork().netId,
                 excludeAppRangesParcel,
                 0 /* subPriority */);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(configsCaptor.capture());
             assertContainsAll(List.of(configsCaptor.getValue()),
                     List.of(cellExcludeAppConfig, enterpriseAllAllowedConfig));
@@ -16348,7 +16692,7 @@ public class ConnectivityServiceTest {
         mCm.setProfileNetworkPreference(testHandle, PROFILE_NETWORK_PREFERENCE_ENTERPRISE,
                 r -> r.run(), listener);
         listener.expectOnComplete();
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(configsCaptor.capture());
             assertContainsAll(List.of(configsCaptor.getValue()),
                     List.of(cellAllAllowedConfig, enterpriseAllAllowedConfig));
@@ -16360,7 +16704,7 @@ public class ConnectivityServiceTest {
         // disconnects.
         enterpriseAgent.disconnect();
         waitForIdle();
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(
                     new NativeUidRangeConfig[]{cellAllAllowedConfig});
         } else {
@@ -16385,7 +16729,7 @@ public class ConnectivityServiceTest {
                 List.of(prefBuilder.build()),
                 r -> r.run(), listener);
         listener.expectOnComplete();
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(new NativeUidRangeConfig[]{});
         } else {
             inOrder.verify(mMockNetd, never()).setNetworkAllowlist(any());
@@ -16413,7 +16757,7 @@ public class ConnectivityServiceTest {
                 mCellAgent.getNetwork().netId,
                 excludeAppRangesParcel,
                 0 /* subPriority */);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(
                     new NativeUidRangeConfig[]{cellExcludeAppConfig});
         } else {
@@ -16437,7 +16781,7 @@ public class ConnectivityServiceTest {
         // making the order of the list undeterministic. Thus, verify this in order insensitive way.
         final ArgumentCaptor<NativeUidRangeConfig[]> configsCaptor = ArgumentCaptor.forClass(
                 NativeUidRangeConfig[].class);
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(configsCaptor.capture());
             assertContainsAll(List.of(configsCaptor.getValue()),
                     List.of(enterpriseAllAllowedConfig, cellExcludeAppConfig));
@@ -16448,7 +16792,7 @@ public class ConnectivityServiceTest {
         // Verify issuing with cellular set only when enterprise network disconnects.
         enterpriseAgent.disconnect();
         waitForIdle();
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(
                     new NativeUidRangeConfig[]{cellExcludeAppConfig});
         } else {
@@ -16457,7 +16801,7 @@ public class ConnectivityServiceTest {
 
         mCellAgent.disconnect();
         waitForIdle();
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             inOrder.verify(mMockNetd).setNetworkAllowlist(new NativeUidRangeConfig[]{});
         } else {
             inOrder.verify(mMockNetd, never()).setNetworkAllowlist(any());
@@ -16513,7 +16857,7 @@ public class ConnectivityServiceTest {
         profileNetworkPreferenceBuilder.setPreference(PROFILE_NETWORK_PREFERENCE_ENTERPRISE);
         profileNetworkPreferenceBuilder.setPreferenceEnterpriseId(NET_ENTERPRISE_ID_1);
         final TestOnCompleteListener listener = new TestOnCompleteListener();
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             mCm.setProfileNetworkPreferences(testHandle,
                     List.of(profileNetworkPreferenceBuilder.build()),
                     r -> r.run(), listener);
@@ -16621,7 +16965,7 @@ public class ConnectivityServiceTest {
                 agent.getNetwork().getNetId(),
                 intToUidRangeStableParcels(uids),
                 preferenceOrder);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             inOrder.verify(mMockNetd, times(1)).networkAddUidRangesParcel(uids200Parcel);
         }
 
@@ -16629,7 +16973,7 @@ public class ConnectivityServiceTest {
         uids.add(400);
         nc.setAllowedUids(uids);
         agent.setNetworkCapabilities(nc, true /* sendToConnectivityService */);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             cb.expectCaps(agent, c -> c.getAllowedUids().equals(uids));
         } else {
             cb.assertNoCallback();
@@ -16640,13 +16984,13 @@ public class ConnectivityServiceTest {
                 agent.getNetwork().getNetId(),
                 intToUidRangeStableParcels(uids),
                 preferenceOrder);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             inOrder.verify(mMockNetd, times(1)).networkAddUidRangesParcel(uids300400Parcel);
         }
 
         nc.setAllowedUids(uids);
         agent.setNetworkCapabilities(nc, true /* sendToConnectivityService */);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             cb.expectCaps(agent, c -> c.getAllowedUids().equals(uids));
             inOrder.verify(mMockNetd, times(1)).networkRemoveUidRangesParcel(uids200Parcel);
         } else {
@@ -16657,7 +17001,7 @@ public class ConnectivityServiceTest {
         uids.add(600);
         nc.setAllowedUids(uids);
         agent.setNetworkCapabilities(nc, true /* sendToConnectivityService */);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             cb.expectCaps(agent, c -> c.getAllowedUids().equals(uids));
         } else {
             cb.assertNoCallback();
@@ -16666,7 +17010,7 @@ public class ConnectivityServiceTest {
                 agent.getNetwork().getNetId(),
                 intToUidRangeStableParcels(uids),
                 preferenceOrder);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             inOrder.verify(mMockNetd, times(1)).networkAddUidRangesParcel(uids600Parcel);
             inOrder.verify(mMockNetd, times(1)).networkRemoveUidRangesParcel(uids300400Parcel);
         }
@@ -16674,7 +17018,7 @@ public class ConnectivityServiceTest {
         uids.clear();
         nc.setAllowedUids(uids);
         agent.setNetworkCapabilities(nc, true /* sendToConnectivityService */);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             cb.expectCaps(agent, c -> c.getAllowedUids().isEmpty());
             inOrder.verify(mMockNetd, times(1)).networkRemoveUidRangesParcel(uids600Parcel);
         } else {
@@ -16727,7 +17071,7 @@ public class ConnectivityServiceTest {
         // Cell gets to set the service UID as access UID
         ncb.setAllowedUids(serviceUidSet);
         mEthernetAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
-        if (SdkLevel.isAtLeastT() && hasAutomotiveFeature) {
+        if (mDeps.isAtLeastT() && hasAutomotiveFeature) {
             cb.expectCaps(mEthernetAgent, c -> c.getAllowedUids().equals(serviceUidSet));
         } else {
             // S and no automotive feature must ignore access UIDs.
@@ -16780,7 +17124,7 @@ public class ConnectivityServiceTest {
         cb.expectAvailableThenValidatedCallbacks(mCellAgent);
         ncb.setAllowedUids(serviceUidSet);
         mCellAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             cb.expectCaps(mCellAgent, c -> c.getAllowedUids().equals(serviceUidSet));
         } else {
             // S must ignore access UIDs.
@@ -16790,7 +17134,7 @@ public class ConnectivityServiceTest {
         // ...but not to some other UID. Rejection sets UIDs to the empty set
         ncb.setAllowedUids(nonServiceUidSet);
         mCellAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
-        if (SdkLevel.isAtLeastT()) {
+        if (mDeps.isAtLeastT()) {
             cb.expectCaps(mCellAgent, c -> c.getAllowedUids().isEmpty());
         } else {
             // S must ignore access UIDs.
@@ -17712,14 +18056,14 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testIgnoreValidationAfterRoamEnabled() throws Exception {
-        final boolean enabled = !SdkLevel.isAtLeastT();
+        final boolean enabled = !mDeps.isAtLeastT();
         doTestIgnoreValidationAfterRoam(5_000, enabled);
     }
 
     @Test
     public void testShouldIgnoreValidationFailureAfterRoam() {
         // Always disabled on T+.
-        assumeFalse(SdkLevel.isAtLeastT());
+        assumeFalse(mDeps.isAtLeastT());
 
         NetworkAgentInfo nai = fakeWifiNai(new NetworkCapabilities());
 
@@ -17962,8 +18306,8 @@ public class ConnectivityServiceTest {
 
         final String expectedPrefix = makeNflogPrefix(WIFI_IFNAME,
                 mWiFiAgent.getNetwork().getNetworkHandle());
-        verify(mMockNetd).wakeupAddInterface(WIFI_IFNAME, expectedPrefix, PACKET_WAKEUP_MARK,
-                PACKET_WAKEUP_MASK);
+        verify(mMockNetd).wakeupAddInterface(WIFI_IFNAME, expectedPrefix, PACKET_WAKEUP_MARK_MASK,
+                PACKET_WAKEUP_MARK_MASK);
     }
 
     @Test
@@ -17973,11 +18317,11 @@ public class ConnectivityServiceTest {
         mCellAgent = new TestNetworkAgentWrapper(TRANSPORT_CELLULAR, cellLp);
         mCellAgent.connect(false /* validated */);
 
-        if (SdkLevel.isAtLeastU()) {
+        if (mDeps.isAtLeastU()) {
             final String expectedPrefix = makeNflogPrefix(MOBILE_IFNAME,
                     mCellAgent.getNetwork().getNetworkHandle());
-            verify(mMockNetd).wakeupAddInterface(MOBILE_IFNAME, expectedPrefix, PACKET_WAKEUP_MARK,
-                    PACKET_WAKEUP_MASK);
+            verify(mMockNetd).wakeupAddInterface(MOBILE_IFNAME, expectedPrefix,
+                    PACKET_WAKEUP_MARK_MASK, PACKET_WAKEUP_MARK_MASK);
         } else {
             verify(mMockNetd, never()).wakeupAddInterface(eq(MOBILE_IFNAME), anyString(), anyInt(),
                     anyInt());
