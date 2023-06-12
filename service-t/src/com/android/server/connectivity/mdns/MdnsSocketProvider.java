@@ -25,7 +25,10 @@ import static com.android.server.connectivity.mdns.util.MdnsUtils.isNetworkMatch
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.NetworkCallback;
 import android.net.LinkAddress;
@@ -35,6 +38,9 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.TetheringManager;
 import android.net.TetheringManager.TetheringEventCallback;
+import android.net.wifi.p2p.WifiP2pGroup;
+import android.net.wifi.p2p.WifiP2pInfo;
+import android.net.wifi.p2p.WifiP2pManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.ArrayMap;
@@ -51,6 +57,7 @@ import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * The {@link MdnsSocketProvider} manages the multiple sockets for mDns.
@@ -90,21 +97,80 @@ public class MdnsSocketProvider {
     // the netlink monitor is never stop and the old states must be kept.
     private final SparseArray<LinkProperties> mIfaceIdxToLinkProperties = new SparseArray<>();
     private final byte[] mPacketReadBuffer = new byte[READ_BUFFER_SIZE];
+    @NonNull
+    private final SocketRequestMonitor mSocketRequestMonitor;
     private boolean mMonitoringSockets = false;
     private boolean mRequestStop = false;
+    private String mWifiP2pTetherInterface = null;
+
+    private final BroadcastReceiver mIntentReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            final String newP2pIface = getWifiP2pInterface(intent);
+
+            if (!mMonitoringSockets || !hasAllNetworksRequest()) {
+                mWifiP2pTetherInterface = newP2pIface;
+                return;
+            }
+
+            // If already serving from the correct interface, nothing to do.
+            if (Objects.equals(mWifiP2pTetherInterface, newP2pIface)) return;
+
+            if (mWifiP2pTetherInterface != null) {
+                if (newP2pIface != null) {
+                    Log.wtf(TAG, "Wifi p2p interface is changed from " + mWifiP2pTetherInterface
+                            + " to " + newP2pIface + " without null broadcast");
+                }
+                // Remove the socket.
+                removeTetherInterfaceSocket(mWifiP2pTetherInterface);
+            }
+
+            // Update mWifiP2pTetherInterface
+            mWifiP2pTetherInterface = newP2pIface;
+
+            // Check whether the socket for wifi p2p interface is created or not.
+            final boolean socketAlreadyExists = mTetherInterfaceSockets.get(newP2pIface) != null;
+            if (newP2pIface != null && !socketAlreadyExists) {
+                // Create a socket for wifi p2p interface.
+                final int ifaceIndex =
+                        mDependencies.getNetworkInterfaceIndexByName(newP2pIface);
+                createSocket(LOCAL_NET, createLPForTetheredInterface(newP2pIface, ifaceIndex));
+            }
+        }
+    };
+
+    @Nullable
+    private static String getWifiP2pInterface(final Intent intent) {
+        final WifiP2pGroup group =
+                intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_GROUP);
+        final WifiP2pInfo p2pInfo =
+                intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO);
+        if (group == null || p2pInfo == null) {
+            return null;
+        }
+
+        if (!p2pInfo.groupFormed) {
+            return null;
+        } else {
+            return group.getInterface();
+        }
+    }
 
     public MdnsSocketProvider(@NonNull Context context, @NonNull Looper looper,
-            @NonNull SharedLog sharedLog) {
-        this(context, looper, new Dependencies(), sharedLog);
+            @NonNull SharedLog sharedLog,
+            @NonNull SocketRequestMonitor socketRequestMonitor) {
+        this(context, looper, new Dependencies(), sharedLog, socketRequestMonitor);
     }
 
     MdnsSocketProvider(@NonNull Context context, @NonNull Looper looper,
-            @NonNull Dependencies deps, @NonNull SharedLog sharedLog) {
+            @NonNull Dependencies deps, @NonNull SharedLog sharedLog,
+            @NonNull SocketRequestMonitor socketRequestMonitor) {
         mContext = context;
         mLooper = looper;
         mHandler = new Handler(looper);
         mDependencies = deps;
         mSharedLog = sharedLog;
+        mSocketRequestMonitor = socketRequestMonitor;
         mNetworkCallback = new NetworkCallback() {
             @Override
             public void onLost(Network network) {
@@ -138,6 +204,18 @@ public class MdnsSocketProvider {
 
         mSocketNetlinkMonitor = mDependencies.createSocketNetlinkMonitor(mHandler,
                 mSharedLog.forSubComponent("NetlinkMonitor"), new NetLinkMessageProcessor());
+
+        // Register a intent receiver to listen wifi p2p interface changes.
+        // Note: The wifi p2p interface change is only notified via
+        // TetheringEventCallback#onLocalOnlyInterfacesChanged if the device is the wifi p2p group
+        // owner. In this case, MdnsSocketProvider will receive duplicate interface changes and must
+        // ignore the later notification because the socket has already been created. There is only
+        // one notification from the wifi p2p connection change intent if the device is not the wifi
+        // p2p group owner.
+        final IntentFilter intentFilter =
+                new IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION);
+        mContext.registerReceiver(
+                mIntentReceiver, intentFilter, null /* broadcastPermission */, mHandler);
     }
 
     /**
@@ -239,10 +317,12 @@ public class MdnsSocketProvider {
     private static class SocketInfo {
         final MdnsInterfaceSocket mSocket;
         final List<LinkAddress> mAddresses;
+        final int[] mTransports;
 
-        SocketInfo(MdnsInterfaceSocket socket, List<LinkAddress> addresses) {
+        SocketInfo(MdnsInterfaceSocket socket, List<LinkAddress> addresses, int[] transports) {
             mSocket = socket;
             mAddresses = new ArrayList<>(addresses);
+            mTransports = transports;
         }
     }
 
@@ -376,17 +456,28 @@ public class MdnsSocketProvider {
         if (!hasAllNetworksRequest()) {
             // Currently, the network for tethering can not be requested, so the sockets for
             // tethering are only created if there is a request for all networks (interfaces).
-            // Therefore, this change can skip if there is no such request.
+            // Therefore, only update the interface list and skip this change if no such request.
             if (DBG) {
                 Log.d(TAG, "Ignore tether interfaces change. There is no request for all"
                         + " networks.");
             }
+            current.clear();
+            current.addAll(updated);
             return;
         }
 
         final CompareResult<String> interfaceDiff = new CompareResult<>(
                 current, updated);
         for (String name : interfaceDiff.added) {
+            // Check if a socket has been created for the interface
+            final SocketInfo socketInfo = mTetherInterfaceSockets.get(name);
+            if (socketInfo != null) {
+                if (DBG) {
+                    mSharedLog.i("Socket is existed for interface:" + name);
+                }
+                continue;
+            }
+
             int ifaceIndex = mDependencies.getNetworkInterfaceIndexByName(name);
             createSocket(LOCAL_NET, createLPForTetheredInterface(name, ifaceIndex));
         }
@@ -414,9 +505,13 @@ public class MdnsSocketProvider {
             if (networkKey == LOCAL_NET) {
                 transports = new int[0];
             } else {
-                transports = mActiveNetworksTransports.get(((NetworkAsKey) networkKey).mNetwork);
-                if (transports == null) {
+                final int[] knownTransports =
+                        mActiveNetworksTransports.get(((NetworkAsKey) networkKey).mNetwork);
+                if (knownTransports != null) {
+                    transports = knownTransports;
+                } else {
                     Log.wtf(TAG, "transports is missing for key: " + networkKey);
+                    transports = new int[0];
                 }
             }
             if (networkInterface == null || !isMdnsCapableInterface(networkInterface, transports)) {
@@ -428,21 +523,22 @@ public class MdnsSocketProvider {
                     networkInterface.getNetworkInterface(), MdnsConstants.MDNS_PORT, mLooper,
                     mPacketReadBuffer);
             final List<LinkAddress> addresses = lp.getLinkAddresses();
+            // TODO: technically transport types are mutable, although generally not in ways that
+            // would meaningfully impact the logic using it here. Consider updating logic to
+            // support transports being added/removed.
+            final SocketInfo socketInfo = new SocketInfo(socket, addresses, transports);
             if (networkKey == LOCAL_NET) {
-                mTetherInterfaceSockets.put(interfaceName, new SocketInfo(socket, addresses));
+                mTetherInterfaceSockets.put(interfaceName, socketInfo);
             } else {
-                mNetworkSockets.put(((NetworkAsKey) networkKey).mNetwork,
-                        new SocketInfo(socket, addresses));
+                mNetworkSockets.put(((NetworkAsKey) networkKey).mNetwork, socketInfo);
             }
             // Try to join IPv4/IPv6 group.
             socket.joinGroup(addresses);
 
             // Notify the listeners which need this socket.
-            if (networkKey == LOCAL_NET) {
-                notifySocketCreated(null /* network */, socket, addresses);
-            } else {
-                notifySocketCreated(((NetworkAsKey) networkKey).mNetwork, socket, addresses);
-            }
+            final Network network =
+                    networkKey == LOCAL_NET ? null : ((NetworkAsKey) networkKey).mNetwork;
+            notifySocketCreated(network, socketInfo);
         } catch (IOException e) {
             mSharedLog.e("Create socket failed ifName:" + interfaceName, e);
         }
@@ -484,6 +580,7 @@ public class MdnsSocketProvider {
 
         socketInfo.mSocket.destroy();
         notifyInterfaceDestroyed(network, socketInfo.mSocket);
+        mSocketRequestMonitor.onSocketDestroyed(network, socketInfo.mSocket);
         mSharedLog.log("Remove socket on net:" + network);
     }
 
@@ -492,15 +589,18 @@ public class MdnsSocketProvider {
         if (socketInfo == null) return;
         socketInfo.mSocket.destroy();
         notifyInterfaceDestroyed(null /* network */, socketInfo.mSocket);
+        mSocketRequestMonitor.onSocketDestroyed(null /* network */, socketInfo.mSocket);
         mSharedLog.log("Remove socket on ifName:" + interfaceName);
     }
 
-    private void notifySocketCreated(Network network, MdnsInterfaceSocket socket,
-            List<LinkAddress> addresses) {
+    private void notifySocketCreated(Network network, SocketInfo socketInfo) {
         for (int i = 0; i < mCallbacksToRequestedNetworks.size(); i++) {
             final Network requestedNetwork = mCallbacksToRequestedNetworks.valueAt(i);
             if (isNetworkMatched(requestedNetwork, network)) {
-                mCallbacksToRequestedNetworks.keyAt(i).onSocketCreated(network, socket, addresses);
+                mCallbacksToRequestedNetworks.keyAt(i).onSocketCreated(network, socketInfo.mSocket,
+                        socketInfo.mAddresses);
+                mSocketRequestMonitor.onSocketRequestFulfilled(network, socketInfo.mSocket,
+                        socketInfo.mTransports);
             }
         }
     }
@@ -538,6 +638,8 @@ public class MdnsSocketProvider {
         } else {
             // Notify the socket for requested network.
             cb.onSocketCreated(network, socketInfo.mSocket, socketInfo.mAddresses);
+            mSocketRequestMonitor.onSocketRequestFulfilled(network, socketInfo.mSocket,
+                    socketInfo.mTransports);
         }
     }
 
@@ -552,6 +654,8 @@ public class MdnsSocketProvider {
             // Notify the socket for requested network.
             cb.onSocketCreated(
                     null /* network */, socketInfo.mSocket, socketInfo.mAddresses);
+            mSocketRequestMonitor.onSocketRequestFulfilled(null /* socketNetwork */,
+                    socketInfo.mSocket, socketInfo.mTransports);
         }
     }
 
@@ -580,6 +684,11 @@ public class MdnsSocketProvider {
             for (String tetheredInterface : mTetheredInterfaces) {
                 retrieveAndNotifySocketFromInterface(tetheredInterface, cb);
             }
+
+            if (mWifiP2pTetherInterface != null
+                    && !mLocalOnlyInterfaces.contains(mWifiP2pTetherInterface)) {
+                retrieveAndNotifySocketFromInterface(mWifiP2pTetherInterface, cb);
+            }
         } else {
             retrieveAndNotifySocketFromNetwork(network, cb);
         }
@@ -601,6 +710,7 @@ public class MdnsSocketProvider {
             if (matchRequestedNetwork(network)) continue;
             final SocketInfo info = mNetworkSockets.removeAt(i);
             info.mSocket.destroy();
+            mSocketRequestMonitor.onSocketDestroyed(network, info.mSocket);
             mSharedLog.log("Remove socket on net:" + network + " after unrequestSocket");
         }
 
@@ -610,6 +720,7 @@ public class MdnsSocketProvider {
         for (int i = mTetherInterfaceSockets.size() - 1; i >= 0; i--) {
             final SocketInfo info = mTetherInterfaceSockets.valueAt(i);
             info.mSocket.destroy();
+            mSocketRequestMonitor.onSocketDestroyed(null /* network */, info.mSocket);
             mSharedLog.log("Remove socket on ifName:" + mTetherInterfaceSockets.keyAt(i)
                     + " after unrequestSocket");
         }
@@ -620,17 +731,59 @@ public class MdnsSocketProvider {
     }
 
 
-    /*** Callbacks for listening socket changes */
+    /**
+     * Callback used to register socket requests.
+     */
     public interface SocketCallback {
-        /*** Notify the socket is created */
+        /**
+         * Notify the socket was created for the registered request.
+         *
+         * This may be called immediately when the request is registered with an existing socket,
+         * if it had been created previously for other requests.
+         */
         default void onSocketCreated(@Nullable Network network, @NonNull MdnsInterfaceSocket socket,
                 @NonNull List<LinkAddress> addresses) {}
-        /*** Notify the interface is destroyed */
+
+        /**
+         * Notify that the interface was destroyed, so the provided socket cannot be used anymore.
+         *
+         * This indicates that although the socket was still requested, it had to be destroyed.
+         */
         default void onInterfaceDestroyed(@Nullable Network network,
                 @NonNull MdnsInterfaceSocket socket) {}
-        /*** Notify the addresses is changed on the network */
+
+        /**
+         * Notify the interface addresses have changed for the network.
+         */
         default void onAddressesChanged(@Nullable Network network,
                 @NonNull MdnsInterfaceSocket socket, @NonNull List<LinkAddress> addresses) {}
+    }
+
+    /**
+     * Global callback indicating when sockets are created or destroyed for requests.
+     */
+    public interface SocketRequestMonitor {
+        /**
+         * Indicates that the socket was used to fulfill the request of one requester.
+         *
+         * There is always at most one socket created for each interface. The interface is available
+         * in {@link MdnsInterfaceSocket#getInterface()}.
+         * @param socketNetwork The network of the socket interface, if any.
+         * @param socket The socket that was provided to a requester.
+         * @param transports Array of TRANSPORT_* from {@link NetworkCapabilities}. Empty if the
+         *                   interface is not part of a network with known transports.
+         */
+        default void onSocketRequestFulfilled(@Nullable Network socketNetwork,
+                @NonNull MdnsInterfaceSocket socket, @NonNull int[] transports) {}
+
+        /**
+         * Indicates that a previously created socket was destroyed.
+         *
+         * @param socketNetwork The network of the socket interface, if any.
+         * @param socket The destroyed socket.
+         */
+        default void onSocketDestroyed(@Nullable Network socketNetwork,
+                @NonNull MdnsInterfaceSocket socket) {}
     }
 
     private interface NetworkKey {

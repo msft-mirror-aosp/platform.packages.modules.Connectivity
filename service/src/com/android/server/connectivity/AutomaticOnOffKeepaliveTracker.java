@@ -18,6 +18,7 @@ package com.android.server.connectivity;
 
 import static android.net.SocketKeepalive.ERROR_INVALID_SOCKET;
 import static android.net.SocketKeepalive.MIN_INTERVAL_SEC;
+import static android.net.SocketKeepalive.SUCCESS;
 import static android.net.SocketKeepalive.SUCCESS_PAUSED;
 import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 import static android.system.OsConstants.AF_INET;
@@ -52,6 +53,7 @@ import android.system.OsConstants;
 import android.system.StructTimeval;
 import android.util.LocalLog;
 import android.util.Log;
+import android.util.Pair;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -177,7 +179,7 @@ public class AutomaticOnOffKeepaliveTracker {
     private static final int MAX_EVENTS_LOGS = 40;
     private final LocalLog mEventLog = new LocalLog(MAX_EVENTS_LOGS);
 
-    private final KeepaliveStatsTracker mKeepaliveStatsTracker = new KeepaliveStatsTracker();
+    private final KeepaliveStatsTracker mKeepaliveStatsTracker;
     /**
      * Information about a managed keepalive.
      *
@@ -246,7 +248,7 @@ public class AutomaticOnOffKeepaliveTracker {
         }
 
         public Network getNetwork() {
-            return mKi.getNai().network;
+            return mKi.getNai().network();
         }
 
         @Nullable
@@ -309,6 +311,7 @@ public class AutomaticOnOffKeepaliveTracker {
                 mContext, mConnectivityServiceHandler);
 
         mAlarmManager = mDependencies.getAlarmManager(context);
+        mKeepaliveStatsTracker = new KeepaliveStatsTracker(context, handler);
     }
 
     private void startTcpPollingAlarm(@NonNull AutomaticOnOffKeepalive ki) {
@@ -381,7 +384,11 @@ public class AutomaticOnOffKeepaliveTracker {
             return;
         }
         autoKi.mAutomaticOnOffState = STATE_ENABLED;
-        handleResumeKeepalive(newKi);
+        final int error = handleResumeKeepalive(newKi);
+        if (error != SUCCESS) {
+            // Failed to start the keepalive
+            cleanupAutoOnOffKeepalive(autoKi);
+        }
     }
 
     /**
@@ -402,7 +409,20 @@ public class AutomaticOnOffKeepaliveTracker {
      * Forward to KeepaliveTracker.
      */
     public void handleEventSocketKeepalive(@NonNull NetworkAgentInfo nai, int slot, int reason) {
-        mKeepaliveTracker.handleEventSocketKeepalive(nai, slot, reason);
+        if (mKeepaliveTracker.handleEventSocketKeepalive(nai, slot, reason)) return;
+
+        // The keepalive was stopped and so the autoKi should be cleaned up.
+        final AutomaticOnOffKeepalive autoKi =
+                CollectionUtils.findFirst(
+                        mAutomaticOnOffKeepalives, it -> it.match(nai.network(), slot));
+        if (autoKi == null) {
+            // This may occur when the autoKi gets cleaned up elsewhere (i.e
+            // handleCheckKeepalivesStillValid) while waiting for the network agent to
+            // start the keepalive and the network agent returns an error event.
+            Log.e(TAG, "Attempt cleanup on unknown network, slot");
+            return;
+        }
+        cleanupAutoOnOffKeepalive(autoKi);
     }
 
     /**
@@ -414,6 +434,9 @@ public class AutomaticOnOffKeepaliveTracker {
         final List<AutomaticOnOffKeepalive> matches =
                 CollectionUtils.filter(mAutomaticOnOffKeepalives, it -> it.mKi.getNai() == nai);
         for (final AutomaticOnOffKeepalive ki : matches) {
+            if (ki.mAutomaticOnOffState == STATE_SUSPENDED) {
+                mKeepaliveTracker.finalizePausedKeepalive(ki.mKi, reason);
+            }
             cleanupAutoOnOffKeepalive(ki);
         }
     }
@@ -425,9 +448,20 @@ public class AutomaticOnOffKeepaliveTracker {
      */
     public void handleStartKeepalive(Message message) {
         final AutomaticOnOffKeepalive autoKi = (AutomaticOnOffKeepalive) message.obj;
+        final int error = mKeepaliveTracker.handleStartKeepalive(autoKi.mKi);
+        if (error != SUCCESS) {
+            mEventLog.log("Failed to start keepalive " + autoKi.mCallback + " on "
+                    + autoKi.getNetwork() + " with error " + error);
+            return;
+        }
         mEventLog.log("Start keepalive " + autoKi.mCallback + " on " + autoKi.getNetwork());
-        mKeepaliveStatsTracker.onStartKeepalive();
-        mKeepaliveTracker.handleStartKeepalive(autoKi.mKi);
+        mKeepaliveStatsTracker.onStartKeepalive(
+                autoKi.getNetwork(),
+                autoKi.mKi.getSlot(),
+                autoKi.mKi.getNai().networkCapabilities,
+                autoKi.mKi.getKeepaliveIntervalSec(),
+                autoKi.mKi.getUid(),
+                STATE_ALWAYS_ON != autoKi.mAutomaticOnOffState);
 
         // Add automatic on/off request into list to track its life cycle.
         try {
@@ -443,15 +477,27 @@ public class AutomaticOnOffKeepaliveTracker {
         }
     }
 
-    private void handleResumeKeepalive(@NonNull final KeepaliveTracker.KeepaliveInfo ki) {
-        mKeepaliveStatsTracker.onResumeKeepalive();
-        mKeepaliveTracker.handleStartKeepalive(ki);
+    /**
+     * Handle resume keepalive with the given KeepaliveInfo
+     *
+     * @return SUCCESS if the keepalive is successfully starting and the error reason otherwise.
+     */
+    private int handleResumeKeepalive(@NonNull final KeepaliveTracker.KeepaliveInfo ki) {
+        final int error = mKeepaliveTracker.handleStartKeepalive(ki);
+        if (error != SUCCESS) {
+            mEventLog.log("Failed to resume keepalive " + ki.mCallback + " on " + ki.mNai
+                    + " with error " + error);
+            return error;
+        }
+        mKeepaliveStatsTracker.onResumeKeepalive(ki.getNai().network(), ki.getSlot());
         mEventLog.log("Resumed successfully keepalive " + ki.mCallback + " on " + ki.mNai);
+
+        return SUCCESS;
     }
 
     private void handlePauseKeepalive(@NonNull final KeepaliveTracker.KeepaliveInfo ki) {
         mEventLog.log("Suspend keepalive " + ki.mCallback + " on " + ki.mNai);
-        mKeepaliveStatsTracker.onPauseKeepalive();
+        mKeepaliveStatsTracker.onPauseKeepalive(ki.getNai().network(), ki.getSlot());
         // TODO : mKT.handleStopKeepalive should take a KeepaliveInfo instead
         mKeepaliveTracker.handleStopKeepalive(ki.getNai(), ki.getSlot(), SUCCESS_PAUSED);
     }
@@ -467,7 +513,7 @@ public class AutomaticOnOffKeepaliveTracker {
             final KeepaliveTracker.KeepaliveInfo ki = autoKi.mKi;
             mKeepaliveTracker.handleStopKeepalive(ki.getNai(), ki.getSlot(), reason);
         } else {
-            mKeepaliveTracker.finalizePausedKeepalive(autoKi.mKi);
+            mKeepaliveTracker.finalizePausedKeepalive(autoKi.mKi, reason);
         }
 
         cleanupAutoOnOffKeepalive(autoKi);
@@ -475,7 +521,7 @@ public class AutomaticOnOffKeepaliveTracker {
 
     private void cleanupAutoOnOffKeepalive(@NonNull final AutomaticOnOffKeepalive autoKi) {
         ensureRunningOnHandlerThread();
-        mKeepaliveStatsTracker.onStopKeepalive(autoKi.mAutomaticOnOffState != STATE_SUSPENDED);
+        mKeepaliveStatsTracker.onStopKeepalive(autoKi.getNetwork(), autoKi.mKi.getSlot());
         autoKi.close();
         if (null != autoKi.mAlarmListener) mAlarmManager.cancel(autoKi.mAlarmListener);
 
@@ -612,7 +658,22 @@ public class AutomaticOnOffKeepaliveTracker {
      * Forward to KeepaliveTracker.
      */
     public void handleCheckKeepalivesStillValid(NetworkAgentInfo nai) {
-        mKeepaliveTracker.handleCheckKeepalivesStillValid(nai);
+        ArrayList<Pair<AutomaticOnOffKeepalive, Integer>> invalidKeepalives = null;
+
+        for (final AutomaticOnOffKeepalive autoKi : mAutomaticOnOffKeepalives) {
+            if (!nai.equals(autoKi.mKi.mNai)) continue;
+            final int error = autoKi.mKi.isValid();
+            if (error != SUCCESS) {
+                if (invalidKeepalives == null) {
+                    invalidKeepalives = new ArrayList<>();
+                }
+                invalidKeepalives.add(Pair.create(autoKi, error));
+            }
+        }
+        if (invalidKeepalives == null) return;
+        for (final Pair<AutomaticOnOffKeepalive, Integer> keepaliveAndError : invalidKeepalives) {
+            handleStopKeepalive(keepaliveAndError.first, keepaliveAndError.second);
+        }
     }
 
     @VisibleForTesting

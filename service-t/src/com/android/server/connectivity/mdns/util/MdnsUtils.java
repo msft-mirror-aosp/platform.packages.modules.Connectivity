@@ -20,6 +20,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.Network;
 import android.os.Handler;
+import android.util.ArraySet;
 
 import com.android.server.connectivity.mdns.MdnsConstants;
 import com.android.server.connectivity.mdns.MdnsRecord;
@@ -129,10 +130,19 @@ public class MdnsUtils {
         return false;
     }
 
-    /*** Check whether the target network is matched current network */
+    /*** Check whether the target network matches the current network */
     public static boolean isNetworkMatched(@Nullable Network targetNetwork,
             @Nullable Network currentNetwork) {
         return targetNetwork == null || targetNetwork.equals(currentNetwork);
+    }
+
+    /*** Check whether the target network matches any of the current networks */
+    public static boolean isAnyNetworkMatched(@Nullable Network targetNetwork,
+            ArraySet<Network> currentNetworks) {
+        if (targetNetwork == null) {
+            return !currentNetworks.isEmpty();
+        }
+        return currentNetworks.contains(targetNetwork);
     }
 
     /**
@@ -151,5 +161,16 @@ public class MdnsUtils {
         // return code here, this method truncates the name on purpose).
         encoder.encode(CharBuffer.wrap(originalName), out, true /* endOfInput */);
         return new String(out.array(), 0, out.position(), utf8);
+    }
+
+    /**
+     * Checks if the MdnsRecord needs to be renewed or not.
+     *
+     * <p>As per RFC6762 7.1 no need to query if remaining TTL is more than half the original one,
+     * so send the queries if half the TTL has passed.
+     */
+    public static boolean isRecordRenewalNeeded(@NonNull MdnsRecord mdnsRecord, final long now) {
+        return mdnsRecord.getTtl() > 0
+                && mdnsRecord.getRemainingTTL(now) <= mdnsRecord.getTtl() / 2;
     }
 }

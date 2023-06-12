@@ -22,15 +22,15 @@ import android.net.NattSocketKeepalive.NATT_PORT
 import android.os.Build
 import androidx.test.filters.SmallTest
 import androidx.test.runner.AndroidJUnit4
-import com.android.testutils.assertEqualBothWays
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
+import com.android.testutils.assertEqualBothWays
 import com.android.testutils.assertParcelingIsLossless
 import com.android.testutils.parcelingRoundTrip
 import java.net.InetAddress
+import kotlin.test.assertFailsWith
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
-import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,10 +40,6 @@ import org.junit.runner.RunWith
 class NattKeepalivePacketDataTest {
     @Rule @JvmField
     val ignoreRule: DevSdkIgnoreRule = DevSdkIgnoreRule()
-
-    /* Refer to the definition in {@code NattKeepalivePacketData} */
-    private val IPV4_HEADER_LENGTH = 20
-    private val UDP_HEADER_LENGTH = 8
 
     private val TEST_PORT = 4243
     private val TEST_PORT2 = 4244
@@ -61,33 +57,30 @@ class NattKeepalivePacketDataTest {
 
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
     fun testConstructor() {
-        try {
+        assertFailsWith<InvalidPacketException>(
+            "Dst port is not NATT port should cause exception") {
             nattKeepalivePacket(dstPort = TEST_PORT)
-            fail("Dst port is not NATT port should cause exception")
-        } catch (e: InvalidPacketException) {
-            assertEquals(e.error, ERROR_INVALID_PORT)
+        }.let {
+            assertEquals(it.error, ERROR_INVALID_PORT)
         }
 
-        try {
+        assertFailsWith<InvalidPacketException>("A v6 srcAddress should cause exception") {
             nattKeepalivePacket(srcAddress = TEST_ADDRV6)
-            fail("A v6 srcAddress should cause exception")
-        } catch (e: InvalidPacketException) {
-            assertEquals(e.error, ERROR_INVALID_IP_ADDRESS)
+        }.let {
+            assertEquals(it.error, ERROR_INVALID_IP_ADDRESS)
         }
 
-        try {
+        assertFailsWith<InvalidPacketException>("A v6 dstAddress should cause exception") {
             nattKeepalivePacket(dstAddress = TEST_ADDRV6)
-            fail("A v6 dstAddress should cause exception")
-        } catch (e: InvalidPacketException) {
-            assertEquals(e.error, ERROR_INVALID_IP_ADDRESS)
+        }.let {
+            assertEquals(it.error, ERROR_INVALID_IP_ADDRESS)
         }
 
-        try {
+        assertFailsWith<IllegalArgumentException>("Invalid data should cause exception") {
             parcelingRoundTrip(
-                    NattKeepalivePacketData(TEST_SRC_ADDRV4, TEST_PORT, TEST_DST_ADDRV4, TEST_PORT,
+                NattKeepalivePacketData(TEST_SRC_ADDRV4, TEST_PORT, TEST_DST_ADDRV4, TEST_PORT,
                     byteArrayOf(12, 31, 22, 44)))
-            fail("Invalid data should cause exception")
-        } catch (e: IllegalArgumentException) { }
+        }
     }
 
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)

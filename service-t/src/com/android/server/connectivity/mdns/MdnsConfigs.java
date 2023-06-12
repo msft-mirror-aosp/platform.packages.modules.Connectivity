@@ -51,7 +51,7 @@ public class MdnsConfigs {
     }
 
     public static boolean useSessionIdToScheduleMdnsTask() {
-        return false;
+        return true;
     }
 
     public static boolean shouldCancelScanTaskWhenFutureIsNull() {
@@ -91,10 +91,6 @@ public class MdnsConfigs {
     }
 
     public static boolean removeServiceAfterTtlExpires() {
-        return false;
-    }
-
-    public static boolean allowSearchOptionsToRemoveExpiredService() {
         return false;
     }
 
