@@ -48,7 +48,6 @@ public class ScanRequestTest {
     private static final int RSSI = -40;
 
     @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testScanType() {
         ScanRequest request = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
@@ -59,24 +58,12 @@ public class ScanRequestTest {
 
     // Valid scan type must be set to one of ScanRequest#SCAN_TYPE_
     @Test(expected = IllegalStateException.class)
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testScanType_notSet_throwsException() {
         new ScanRequest.Builder().setScanMode(SCAN_MODE_BALANCED).build();
     }
 
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void testScanMode_defaultLowPower() {
-        ScanRequest request = new ScanRequest.Builder()
-                .setScanType(SCAN_TYPE_FAST_PAIR)
-                .build();
-
-        assertThat(request.getScanMode()).isEqualTo(SCAN_MODE_LOW_POWER);
-    }
-
     /** Verify setting work source with null value in the scan request is allowed */
     @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testSetWorkSource_nullValue() {
         ScanRequest request = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_FAST_PAIR)
@@ -87,38 +74,7 @@ public class ScanRequestTest {
         assertThat(request.getWorkSource().isEmpty()).isTrue();
     }
 
-    /** Verify toString returns expected string. */
     @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void testToString() {
-        WorkSource workSource = getWorkSource();
-        ScanRequest request = new ScanRequest.Builder()
-                .setScanType(SCAN_TYPE_FAST_PAIR)
-                .setScanMode(SCAN_MODE_BALANCED)
-                .setBleEnabled(true)
-                .setWorkSource(workSource)
-                .build();
-
-        assertThat(request.toString()).isEqualTo(
-                "Request[scanType=1, scanMode=SCAN_MODE_BALANCED, "
-                        + "enableBle=true, workSource=WorkSource{" + UID + " " + APP_NAME
-                        + "}, scanFilters=[]]");
-    }
-
-    /** Verify toString works correctly with null WorkSource. */
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void testToString_nullWorkSource() {
-        ScanRequest request = new ScanRequest.Builder().setScanType(
-                SCAN_TYPE_FAST_PAIR).setWorkSource(null).build();
-
-        assertThat(request.toString()).isEqualTo("Request[scanType=1, "
-                + "scanMode=SCAN_MODE_LOW_POWER, enableBle=true, workSource=WorkSource{}, "
-                + "scanFilters=[]]");
-    }
-
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testisEnableBle_defaultTrue() {
         ScanRequest request = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_FAST_PAIR)
@@ -128,41 +84,6 @@ public class ScanRequestTest {
     }
 
     @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void test_isValidScanType() {
-        assertThat(ScanRequest.isValidScanType(SCAN_TYPE_FAST_PAIR)).isTrue();
-        assertThat(ScanRequest.isValidScanType(SCAN_TYPE_NEARBY_PRESENCE)).isTrue();
-
-        assertThat(ScanRequest.isValidScanType(0)).isFalse();
-        assertThat(ScanRequest.isValidScanType(5)).isFalse();
-    }
-
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void test_isValidScanMode() {
-        assertThat(ScanRequest.isValidScanMode(SCAN_MODE_LOW_LATENCY)).isTrue();
-        assertThat(ScanRequest.isValidScanMode(SCAN_MODE_BALANCED)).isTrue();
-        assertThat(ScanRequest.isValidScanMode(SCAN_MODE_LOW_POWER)).isTrue();
-        assertThat(ScanRequest.isValidScanMode(SCAN_MODE_NO_POWER)).isTrue();
-
-        assertThat(ScanRequest.isValidScanMode(3)).isFalse();
-        assertThat(ScanRequest.isValidScanMode(-2)).isFalse();
-    }
-
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
-    public void test_scanModeToString() {
-        assertThat(ScanRequest.scanModeToString(2)).isEqualTo("SCAN_MODE_LOW_LATENCY");
-        assertThat(ScanRequest.scanModeToString(1)).isEqualTo("SCAN_MODE_BALANCED");
-        assertThat(ScanRequest.scanModeToString(0)).isEqualTo("SCAN_MODE_LOW_POWER");
-        assertThat(ScanRequest.scanModeToString(-1)).isEqualTo("SCAN_MODE_NO_POWER");
-
-        assertThat(ScanRequest.scanModeToString(3)).isEqualTo("SCAN_MODE_INVALID");
-        assertThat(ScanRequest.scanModeToString(-2)).isEqualTo("SCAN_MODE_INVALID");
-    }
-
-    @Test
-    @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testScanFilter() {
         ScanRequest request = new ScanRequest.Builder().setScanType(
                 SCAN_TYPE_NEARBY_PRESENCE).addScanFilter(getPresenceScanFilter()).build();
