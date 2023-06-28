@@ -44,7 +44,9 @@ import com.android.net.module.util.NetworkStackConstants;
 import com.android.server.ConnectivityService;
 
 import java.io.IOException;
+import java.net.Inet4Address;
 import java.net.Inet6Address;
+import java.net.UnknownHostException;
 import java.util.Objects;
 
 /**
@@ -99,11 +101,12 @@ public class Nat464Xlat {
     private IpPrefix mNat64PrefixFromRa;
     private String mBaseIface;
     private String mIface;
-    private Inet6Address mIPv6Address;
+    @VisibleForTesting
+    Inet6Address mIPv6Address;
     private State mState = State.IDLE;
-    private ClatCoordinator mClatCoordinator;
+    private final ClatCoordinator mClatCoordinator;  // non-null iff T+
 
-    private boolean mEnableClatOnCellular;
+    private final boolean mEnableClatOnCellular;
     private boolean mPrefixDiscoveryRunning;
 
     public Nat464Xlat(NetworkAgentInfo nai, INetd netd, IDnsResolver dnsResolver,
@@ -112,7 +115,11 @@ public class Nat464Xlat {
         mNetd = netd;
         mNetwork = nai;
         mEnableClatOnCellular = deps.getCellular464XlatEnabled();
-        mClatCoordinator = deps.getClatCoordinator(mNetd);
+        if (SdkLevel.isAtLeastT()) {
+            mClatCoordinator = deps.getClatCoordinator(mNetd);
+        } else {
+            mClatCoordinator = null;
+        }
     }
 
     /**
@@ -235,6 +242,7 @@ public class Nat464Xlat {
         mNat64PrefixInUse = null;
         mIface = null;
         mBaseIface = null;
+        mIPv6Address = null;
 
         if (!mPrefixDiscoveryRunning) {
             setPrefix64(null);
@@ -534,6 +542,52 @@ public class Nat464Xlat {
 
     public void interfaceRemoved(String iface) {
         mNetwork.handler().post(() -> handleInterfaceRemoved(iface));
+    }
+
+    /**
+     * Translate the input v4 address to v6 clat address.
+     */
+    @Nullable
+    public Inet6Address translateV4toV6(@NonNull Inet4Address addr) {
+        // Variables in Nat464Xlat should only be accessed from handler thread.
+        ensureRunningOnHandlerThread();
+        if (!isStarted()) return null;
+
+        return convertv4ToClatv6(mNat64PrefixInUse, addr);
+    }
+
+    @Nullable
+    private static Inet6Address convertv4ToClatv6(
+            @NonNull IpPrefix prefix, @NonNull Inet4Address addr) {
+        final byte[] v6Addr = new byte[16];
+        // Generate a v6 address from Nat64 prefix. Prefix should be 12 bytes long.
+        System.arraycopy(prefix.getAddress().getAddress(), 0, v6Addr, 0, 12);
+        System.arraycopy(addr.getAddress(), 0, v6Addr, 12, 4);
+
+        try {
+            return (Inet6Address) Inet6Address.getByAddress(v6Addr);
+        } catch (UnknownHostException e) {
+            Log.wtf(TAG, "getByAddress should never throw for a numeric address", e);
+            return null;
+        }
+    }
+
+    /**
+     * Get the generated v6 address of clat.
+     */
+    @Nullable
+    public Inet6Address getClatv6SrcAddress() {
+        // Variables in Nat464Xlat should only be accessed from handler thread.
+        ensureRunningOnHandlerThread();
+
+        return mIPv6Address;
+    }
+
+    private void ensureRunningOnHandlerThread() {
+        if (mNetwork.handler().getLooper().getThread() != Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "Not running on handler thread: " + Thread.currentThread().getName());
+        }
     }
 
     /**
