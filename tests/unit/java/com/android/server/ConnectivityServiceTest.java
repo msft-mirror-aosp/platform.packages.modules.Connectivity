@@ -2247,12 +2247,12 @@ public class ConnectivityServiceTest {
             mDestroySocketsWrapper.destroyLiveTcpSocketsByOwnerUids(ownerUids);
         }
 
-        final ArrayTrackRecord<Long>.ReadHead mScheduledEvaluationTimeouts =
-                new ArrayTrackRecord<Long>().newReadHead();
+        final ArrayTrackRecord<Pair<Integer, Long>>.ReadHead mScheduledEvaluationTimeouts =
+                new ArrayTrackRecord<Pair<Integer, Long>>().newReadHead();
         @Override
         public void scheduleEvaluationTimeout(@NonNull Handler handler,
                 @NonNull final Network network, final long delayMs) {
-            mScheduledEvaluationTimeouts.add(delayMs);
+            mScheduledEvaluationTimeouts.add(new Pair<>(network.netId, delayMs));
             super.scheduleEvaluationTimeout(handler, network, delayMs);
         }
     }
@@ -2946,24 +2946,22 @@ public class ConnectivityServiceTest {
         if (expectLingering) {
             generalCb.expectLosing(net1);
         }
+        generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
+        defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
 
         // Make sure cell 1 is unwanted immediately if the radio can't time share, but only
         // after some delay if it can.
         if (expectLingering) {
-            generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
-            defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
             net1.assertNotDisconnected(TEST_CALLBACK_TIMEOUT_MS); // always incurs the timeout
             generalCb.assertNoCallback();
             // assertNotDisconnected waited for TEST_CALLBACK_TIMEOUT_MS, so waiting for the
             // linger period gives TEST_CALLBACK_TIMEOUT_MS time for the event to process.
             net1.expectDisconnected(UNREASONABLY_LONG_ALARM_WAIT_MS);
-            generalCb.expect(LOST, net1);
         } else {
             net1.expectDisconnected(TEST_CALLBACK_TIMEOUT_MS);
-            generalCb.expect(LOST, net1);
-            generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
-            defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
         }
+        net1.disconnect();
+        generalCb.expect(LOST, net1);
 
         // Remove primary from net 2
         net2.setScore(new NetworkScore.Builder().build());
@@ -6126,7 +6124,7 @@ public class ConnectivityServiceTest {
     }
 
     public void doTestPreferBadWifi(final boolean avoidBadWifi,
-            final boolean preferBadWifi,
+            final boolean preferBadWifi, final boolean explicitlySelected,
             @NonNull Predicate<Long> checkUnvalidationTimeout) throws Exception {
         // Pretend we're on a carrier that restricts switching away from bad wifi, and
         // depending on the parameter one that may indeed prefer bad wifi.
@@ -6150,10 +6148,13 @@ public class ConnectivityServiceTest {
         mDefaultNetworkCallback.expectAvailableThenValidatedCallbacks(mCellAgent);
 
         mWiFiAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI);
+        mWiFiAgent.explicitlySelected(explicitlySelected, false /* acceptUnvalidated */);
         mWiFiAgent.connect(false);
         wifiCallback.expectAvailableCallbacksUnvalidated(mWiFiAgent);
 
-        mDeps.mScheduledEvaluationTimeouts.poll(TIMEOUT_MS, t -> checkUnvalidationTimeout.test(t));
+        assertNotNull(mDeps.mScheduledEvaluationTimeouts.poll(TIMEOUT_MS,
+                t -> t.first == mWiFiAgent.getNetwork().netId
+                        && checkUnvalidationTimeout.test(t.second)));
 
         if (!avoidBadWifi && preferBadWifi) {
             expectUnvalidationCheckWillNotify(mWiFiAgent, NotificationType.LOST_INTERNET);
@@ -6169,27 +6170,33 @@ public class ConnectivityServiceTest {
         // Starting with U this mode is no longer supported and can't actually be tested
         assumeFalse(mDeps.isAtLeastU());
         doTestPreferBadWifi(false /* avoidBadWifi */, false /* preferBadWifi */,
-                timeout -> timeout < 14_000);
+                false /* explicitlySelected */, timeout -> timeout < 14_000);
     }
 
     @Test
-    public void testPreferBadWifi_doNotAvoid_doPrefer() throws Exception {
+    public void testPreferBadWifi_doNotAvoid_doPrefer_notExplicit() throws Exception {
         doTestPreferBadWifi(false /* avoidBadWifi */, true /* preferBadWifi */,
-                timeout -> timeout > 14_000);
+                false /* explicitlySelected */, timeout -> timeout > 14_000);
+    }
+
+    @Test
+    public void testPreferBadWifi_doNotAvoid_doPrefer_explicitlySelected() throws Exception {
+        doTestPreferBadWifi(false /* avoidBadWifi */, true /* preferBadWifi */,
+                true /* explicitlySelected */, timeout -> timeout < 14_000);
     }
 
     @Test
     public void testPreferBadWifi_doAvoid_doNotPrefer() throws Exception {
         // If avoidBadWifi=true, then preferBadWifi should be irrelevant. Test anyway.
         doTestPreferBadWifi(true /* avoidBadWifi */, false /* preferBadWifi */,
-                timeout -> timeout < 14_000);
+                false /* explicitlySelected */, timeout -> timeout < 14_000);
     }
 
     @Test
     public void testPreferBadWifi_doAvoid_doPrefer() throws Exception {
         // If avoidBadWifi=true, then preferBadWifi should be irrelevant. Test anyway.
         doTestPreferBadWifi(true /* avoidBadWifi */, true /* preferBadWifi */,
-                timeout -> timeout < 14_000);
+                false /* explicitlySelected */, timeout -> timeout < 14_000);
     }
 
     @Test
