@@ -31,6 +31,9 @@ import com.android.server.connectivity.mdns.util.MdnsLogger;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
+import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -194,27 +197,58 @@ public class MdnsSocketClient implements MdnsSocketClientBase {
         }
     }
 
-    /** Sends a mDNS request packet that asks for multicast response. */
     @Override
-    public void sendMulticastPacket(@NonNull DatagramPacket packet) {
-        sendMdnsPacket(packet, multicastPacketQueue);
+    public void sendPacketRequestingMulticastResponse(@NonNull DatagramPacket packet,
+            boolean onlyUseIpv6OnIpv6OnlyNetworks) {
+        sendMdnsPacket(packet, multicastPacketQueue, onlyUseIpv6OnIpv6OnlyNetworks);
     }
 
-    /** Sends a mDNS request packet that asks for unicast response. */
     @Override
-    public void sendUnicastPacket(DatagramPacket packet) {
+    public void sendPacketRequestingUnicastResponse(@NonNull DatagramPacket packet,
+            boolean onlyUseIpv6OnIpv6OnlyNetworks) {
         if (useSeparateSocketForUnicast) {
-            sendMdnsPacket(packet, unicastPacketQueue);
+            sendMdnsPacket(packet, unicastPacketQueue, onlyUseIpv6OnIpv6OnlyNetworks);
         } else {
-            sendMdnsPacket(packet, multicastPacketQueue);
+            sendMdnsPacket(packet, multicastPacketQueue, onlyUseIpv6OnIpv6OnlyNetworks);
         }
     }
 
-    private void sendMdnsPacket(DatagramPacket packet, Queue<DatagramPacket> packetQueueToUse) {
+    @Override
+    public void notifyNetworkRequested(
+            @NonNull MdnsServiceBrowserListener listener,
+            @Nullable Network network,
+            @NonNull SocketCreationCallback socketCreationCallback) {
+        if (network != null) {
+            throw new IllegalArgumentException("This socket client does not support requesting "
+                    + "specific networks");
+        }
+        socketCreationCallback.onSocketCreated(new SocketKey(multicastSocket.getInterfaceIndex()));
+    }
+
+    @Override
+    public boolean supportsRequestingSpecificNetworks() {
+        return false;
+    }
+
+    private void sendMdnsPacket(DatagramPacket packet, Queue<DatagramPacket> packetQueueToUse,
+            boolean onlyUseIpv6OnIpv6OnlyNetworks) {
         if (shouldStopSocketLoop && !MdnsConfigs.allowAddMdnsPacketAfterDiscoveryStops()) {
             LOGGER.w("sendMdnsPacket() is called after discovery already stopped");
             return;
         }
+
+        final boolean isIpv4 = ((InetSocketAddress) packet.getSocketAddress()).getAddress()
+                instanceof Inet4Address;
+        final boolean isIpv6 = ((InetSocketAddress) packet.getSocketAddress()).getAddress()
+                instanceof Inet6Address;
+        final boolean ipv6Only = multicastSocket != null && multicastSocket.isOnIPv6OnlyNetwork();
+        if (isIpv4 && ipv6Only) {
+            return;
+        }
+        if (isIpv6 && !ipv6Only && onlyUseIpv6OnIpv6OnlyNetworks) {
+            return;
+        }
+
         synchronized (packetQueueToUse) {
             while (packetQueueToUse.size() >= MdnsConfigs.mdnsPacketQueueMaxSize()) {
                 packetQueueToUse.remove();
@@ -423,7 +457,8 @@ public class MdnsSocketClient implements MdnsSocketClientBase {
             LOGGER.w(String.format("Error while decoding %s packet (%d): %d",
                     responseType, packetNumber, e.code));
             if (callback != null) {
-                callback.onFailedToParseMdnsResponse(packetNumber, e.code, network);
+                callback.onFailedToParseMdnsResponse(packetNumber, e.code,
+                        new SocketKey(network, interfaceIndex));
             }
             return e.code;
         }
@@ -433,7 +468,8 @@ public class MdnsSocketClient implements MdnsSocketClientBase {
         }
 
         if (callback != null) {
-            callback.onResponseReceived(response, interfaceIndex, network);
+            callback.onResponseReceived(
+                    response, new SocketKey(network, interfaceIndex));
         }
 
         return MdnsResponseErrorCode.SUCCESS;
@@ -499,9 +535,5 @@ public class MdnsSocketClient implements MdnsSocketClientBase {
             }
         }
         packets.clear();
-    }
-
-    public boolean isOnIPv6OnlyNetwork() {
-        return multicastSocket != null && multicastSocket.isOnIPv6OnlyNetwork();
     }
 }

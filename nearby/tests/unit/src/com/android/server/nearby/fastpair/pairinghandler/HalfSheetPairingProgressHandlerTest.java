@@ -24,6 +24,7 @@ import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 
 import com.android.server.nearby.common.bluetooth.fastpair.FastPairConnection;
+import com.android.server.nearby.common.eventloop.EventLoop;
 import com.android.server.nearby.common.locator.Locator;
 import com.android.server.nearby.common.locator.LocatorContextWrapper;
 import com.android.server.nearby.fastpair.cache.DiscoveryItem;
@@ -57,6 +58,8 @@ public class HalfSheetPairingProgressHandlerTest {
     FastPairConnection mFastPairConnection;
     @Mock
     FootprintsDeviceManager mFootprintsDeviceManager;
+    @Mock
+    EventLoop mEventLoop;
 
     private static final String MAC_ADDRESS = "00:11:22:33:44:55";
     private static final byte[] ACCOUNT_KEY = new byte[]{0x01, 0x02};
@@ -66,6 +69,7 @@ public class HalfSheetPairingProgressHandlerTest {
     private static HalfSheetPairingProgressHandler sHalfSheetPairingProgressHandler;
     private static DiscoveryItem sDiscoveryItem;
     private static BluetoothDevice sBluetoothDevice;
+    private static FastPairHalfSheetManager sFastPairHalfSheetManager;
 
     @Before
     public void setup() {
@@ -73,10 +77,10 @@ public class HalfSheetPairingProgressHandlerTest {
         when(mContextWrapper.getLocator()).thenReturn(mLocator);
         mLocator.overrideBindingForTest(FastPairCacheManager.class, mFastPairCacheManager);
         mLocator.overrideBindingForTest(Clock.class, mClock);
-        FastPairHalfSheetManager mfastPairHalfSheetManager =
-                new FastPairHalfSheetManager(mContextWrapper);
-        mLocator.bind(FastPairHalfSheetManager.class, mfastPairHalfSheetManager);
-        when(mLocator.get(FastPairHalfSheetManager.class)).thenReturn(mfastPairHalfSheetManager);
+        sFastPairHalfSheetManager = new FastPairHalfSheetManager(mContextWrapper);
+        mLocator.bind(FastPairHalfSheetManager.class, sFastPairHalfSheetManager);
+        when(mLocator.get(FastPairHalfSheetManager.class)).thenReturn(sFastPairHalfSheetManager);
+        when(mLocator.get(EventLoop.class)).thenReturn(mEventLoop);
         sDiscoveryItem = FakeDiscoveryItems.newFastPairDiscoveryItem(mContextWrapper);
         sDiscoveryItem.setStoredItemForTest(
                 sDiscoveryItem.getStoredItemForTest().toBuilder()
@@ -126,6 +130,7 @@ public class HalfSheetPairingProgressHandlerTest {
     @Test
     public void testonPairingStarted() {
         sHalfSheetPairingProgressHandler.onPairingStarted();
+        assertThat(sFastPairHalfSheetManager.isActivePairing()).isTrue();
     }
 
     @Test
