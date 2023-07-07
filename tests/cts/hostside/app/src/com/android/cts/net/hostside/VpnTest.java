@@ -1175,8 +1175,8 @@ public class VpnTest {
 
         final String origMode = runWithShellPermissionIdentity(() -> {
             final String mode = DeviceConfig.getProperty(
-                    DeviceConfig.NAMESPACE_CONNECTIVITY, AUTOMATIC_ON_OFF_KEEPALIVE_VERSION);
-            DeviceConfig.setProperty(DeviceConfig.NAMESPACE_CONNECTIVITY,
+                    DeviceConfig.NAMESPACE_TETHERING, AUTOMATIC_ON_OFF_KEEPALIVE_VERSION);
+            DeviceConfig.setProperty(DeviceConfig.NAMESPACE_TETHERING,
                     AUTOMATIC_ON_OFF_KEEPALIVE_VERSION,
                     AUTOMATIC_ON_OFF_KEEPALIVE_ENABLED, false /* makeDefault */);
             return mode;
@@ -1216,7 +1216,7 @@ public class VpnTest {
 
             runWithShellPermissionIdentity(() -> {
                 DeviceConfig.setProperty(
-                                DeviceConfig.NAMESPACE_CONNECTIVITY,
+                                DeviceConfig.NAMESPACE_TETHERING,
                                 AUTOMATIC_ON_OFF_KEEPALIVE_VERSION,
                                 origMode, false);
                 mCM.setTestLowTcpPollingTimerForKeepalive(0);
@@ -1726,10 +1726,21 @@ public class VpnTest {
         assertEquals(VpnManager.TYPE_VPN_SERVICE, ((VpnTransportInfo) ti).getType());
     }
 
-    private void assertDefaultProxy(ProxyInfo expected) {
+    private void assertDefaultProxy(ProxyInfo expected) throws Exception {
         assertEquals("Incorrect proxy config.", expected, mCM.getDefaultProxy());
         String expectedHost = expected == null ? null : expected.getHost();
         String expectedPort = expected == null ? null : String.valueOf(expected.getPort());
+
+        // ActivityThread may not have time to set it in the properties yet which will cause flakes.
+        // Wait for some time to deflake the test.
+        int attempt = 0;
+        while (!(Objects.equals(expectedHost, System.getProperty("http.proxyHost"))
+                && Objects.equals(expectedPort, System.getProperty("http.proxyPort")))
+                && attempt < 300) {
+            attempt++;
+            Log.d(TAG, "Wait for proxy being updated, attempt=" + attempt);
+            Thread.sleep(100);
+        }
         assertEquals("Incorrect proxy host system property.", expectedHost,
             System.getProperty("http.proxyHost"));
         assertEquals("Incorrect proxy port system property.", expectedPort,

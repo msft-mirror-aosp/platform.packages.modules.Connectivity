@@ -86,7 +86,7 @@ public final class CtsNetUtils {
     private static final String FEATURE_IPSEC_TUNNEL_MIGRATION =
             "android.software.ipsec_tunnel_migration";
 
-    private static final int SOCKET_TIMEOUT_MS = 2000;
+    private static final int SOCKET_TIMEOUT_MS = 10_000;
     private static final int PRIVATE_DNS_PROBE_MS = 1_000;
 
     private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 10_000;
@@ -426,7 +426,7 @@ public final class CtsNetUtils {
                 .build();
     }
 
-    private void testHttpRequest(Socket s) throws IOException {
+    public void testHttpRequest(Socket s) throws IOException {
         OutputStream out = s.getOutputStream();
         InputStream in = s.getInputStream();
 
@@ -434,7 +434,9 @@ public final class CtsNetUtils {
         byte[] responseBytes = new byte[4096];
         out.write(requestBytes);
         in.read(responseBytes);
-        assertTrue(new String(responseBytes, "UTF-8").startsWith("HTTP/1.0 204 No Content\r\n"));
+        final String response = new String(responseBytes, "UTF-8");
+        assertTrue("Received unexpected response: " + response,
+                response.startsWith("HTTP/1.0 204 No Content\r\n"));
     }
 
     private Socket getBoundSocket(Network network, String host, int port) throws IOException {

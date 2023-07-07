@@ -30,15 +30,17 @@ import android.net.INetd;
 import android.net.InetAddresses;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpPrefix;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.system.ErrnoException;
 import android.util.Log;
 
+import androidx.annotation.RequiresApi;
+
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.InterfaceParams;
@@ -63,6 +65,7 @@ import java.util.Objects;
  *
  * {@hide}
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class ClatCoordinator {
     private static final String TAG = ClatCoordinator.class.getSimpleName();
 
@@ -251,11 +254,6 @@ public class ClatCoordinator {
         /** Get ingress6 BPF map. */
         @Nullable
         public IBpfMap<ClatIngress6Key, ClatIngress6Value> getBpfIngress6Map() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(CLAT_INGRESS6_MAP_PATH,
                     BpfMap.BPF_F_RDWR, ClatIngress6Key.class, ClatIngress6Value.class);
@@ -268,11 +266,6 @@ public class ClatCoordinator {
         /** Get egress4 BPF map. */
         @Nullable
         public IBpfMap<ClatEgress4Key, ClatEgress4Value> getBpfEgress4Map() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(CLAT_EGRESS4_MAP_PATH,
                     BpfMap.BPF_F_RDWR, ClatEgress4Key.class, ClatEgress4Value.class);
@@ -285,11 +278,6 @@ public class ClatCoordinator {
         /** Get cookie tag map */
         @Nullable
         public IBpfMap<CookieTagMapKey, CookieTagMapValue> getBpfCookieTagMap() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(COOKIE_TAG_MAP_PATH,
                         BpfMap.BPF_F_RDWR, CookieTagMapKey.class, CookieTagMapValue.class);

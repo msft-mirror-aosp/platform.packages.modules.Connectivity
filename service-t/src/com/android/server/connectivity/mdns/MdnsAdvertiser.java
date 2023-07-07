@@ -253,8 +253,9 @@ public class MdnsAdvertiser {
         int getConflictingService(@NonNull NsdServiceInfo info) {
             for (int i = 0; i < mPendingRegistrations.size(); i++) {
                 final NsdServiceInfo other = mPendingRegistrations.valueAt(i).getServiceInfo();
-                if (info.getServiceName().equals(other.getServiceName())
-                        && info.getServiceType().equals(other.getServiceType())) {
+                if (MdnsUtils.equalsIgnoreDnsCase(info.getServiceName(), other.getServiceName())
+                        && MdnsUtils.equalsIgnoreDnsCase(info.getServiceType(),
+                        other.getServiceType())) {
                     return mPendingRegistrations.keyAt(i);
                 }
             }
@@ -270,7 +271,8 @@ public class MdnsAdvertiser {
             mPendingRegistrations.put(id, registration);
             for (int i = 0; i < mAdvertisers.size(); i++) {
                 try {
-                    mAdvertisers.valueAt(i).addService(id, registration.getServiceInfo());
+                    mAdvertisers.valueAt(i).addService(
+                            id, registration.getServiceInfo(), registration.getSubtype());
                 } catch (NameConflictException e) {
                     Log.wtf(TAG, "Name conflict adding services that should have unique names", e);
                 }
@@ -285,7 +287,7 @@ public class MdnsAdvertiser {
         }
 
         @Override
-        public void onSocketCreated(@NonNull Network network,
+        public void onSocketCreated(@NonNull SocketKey socketKey,
                 @NonNull MdnsInterfaceSocket socket,
                 @NonNull List<LinkAddress> addresses) {
             MdnsInterfaceAdvertiser advertiser = mAllAdvertisers.get(socket);
@@ -298,9 +300,10 @@ public class MdnsAdvertiser {
             }
             mAdvertisers.put(socket, advertiser);
             for (int i = 0; i < mPendingRegistrations.size(); i++) {
+                final Registration registration = mPendingRegistrations.valueAt(i);
                 try {
                     advertiser.addService(mPendingRegistrations.keyAt(i),
-                            mPendingRegistrations.valueAt(i).getServiceInfo());
+                            registration.getServiceInfo(), registration.getSubtype());
                 } catch (NameConflictException e) {
                     Log.wtf(TAG, "Name conflict adding services that should have unique names", e);
                 }
@@ -308,14 +311,14 @@ public class MdnsAdvertiser {
         }
 
         @Override
-        public void onInterfaceDestroyed(@NonNull Network network,
+        public void onInterfaceDestroyed(@NonNull SocketKey socketKey,
                 @NonNull MdnsInterfaceSocket socket) {
             final MdnsInterfaceAdvertiser advertiser = mAdvertisers.get(socket);
             if (advertiser != null) advertiser.destroyNow();
         }
 
         @Override
-        public void onAddressesChanged(@NonNull Network network,
+        public void onAddressesChanged(@NonNull SocketKey socketKey,
                 @NonNull MdnsInterfaceSocket socket, @NonNull List<LinkAddress> addresses) {
             final MdnsInterfaceAdvertiser advertiser = mAdvertisers.get(socket);
             if (advertiser != null) advertiser.updateAddresses(addresses);
@@ -329,10 +332,13 @@ public class MdnsAdvertiser {
         private int mConflictCount;
         @NonNull
         private NsdServiceInfo mServiceInfo;
+        @Nullable
+        private final String mSubtype;
 
-        private Registration(@NonNull NsdServiceInfo serviceInfo) {
+        private Registration(@NonNull NsdServiceInfo serviceInfo, @Nullable String subtype) {
             this.mOriginalName = serviceInfo.getServiceName();
             this.mServiceInfo = serviceInfo;
+            this.mSubtype = subtype;
         }
 
         /**
@@ -386,6 +392,11 @@ public class MdnsAdvertiser {
         @NonNull
         public NsdServiceInfo getServiceInfo() {
             return mServiceInfo;
+        }
+
+        @Nullable
+        public String getSubtype() {
+            return mSubtype;
         }
     }
 
@@ -443,8 +454,9 @@ public class MdnsAdvertiser {
      * Add a service to advertise.
      * @param id A unique ID for the service.
      * @param service The service info to advertise.
+     * @param subtype An optional subtype to advertise the service with.
      */
-    public void addService(int id, NsdServiceInfo service) {
+    public void addService(int id, NsdServiceInfo service, @Nullable String subtype) {
         checkThread();
         if (mRegistrations.get(id) != null) {
             Log.e(TAG, "Adding duplicate registration for " + service);
@@ -453,10 +465,10 @@ public class MdnsAdvertiser {
             return;
         }
 
-        mSharedLog.i("Adding service " + service + " with ID " + id);
+        mSharedLog.i("Adding service " + service + " with ID " + id + " and subtype " + subtype);
 
         final Network network = service.getNetwork();
-        final Registration registration = new Registration(service);
+        final Registration registration = new Registration(service, subtype);
         final BiPredicate<Network, InterfaceAdvertiserRequest> checkConflictFilter;
         if (network == null) {
             // If registering on all networks, no advertiser must have conflicts
