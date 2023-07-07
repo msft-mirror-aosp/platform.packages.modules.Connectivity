@@ -18,20 +18,6 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-prebuilt_etc {
-    name: "TetheringInProcessFlag",
-    src: "in-process",
-    filename_from_src: true,
-    sub_dir: "flag",
-}
-
-prebuilt_etc {
-    name: "TetheringOutOfProcessFlag",
-    src: "out-of-process",
-    filename_from_src: true,
-    sub_dir: "flag",
-}
-
 // Defaults to enable/disable java targets which uses development APIs. "enabled" may have a
 // different value depending on the branch.
 java_defaults {
@@ -57,22 +43,8 @@ enable_tethering_next_apex = true
 // as the above target may have different "enabled" values
 // depending on the branch
 
-// cronet_in_tethering_apex_defaults can be used to specify an apex_defaults target that either
-// enables or disables inclusion of Cronet in the Tethering apex. This is used to disable Cronet
-// on tm-mainline-prod. Note: in order for Cronet APIs to work Cronet must also be enabled
-// by the cronet_java_*_defaults in common/TetheringLib/Android.bp.
-cronet_in_tethering_apex_defaults = "CronetInTetheringApexDefaultsEnabled"
-// This is a placeholder comment to avoid merge conflicts
-// as cronet_apex_defaults may have different values
-// depending on the branch
-
 apex_defaults {
     name: "CronetInTetheringApexDefaults",
-    defaults: [cronet_in_tethering_apex_defaults],
-}
-
-apex_defaults {
-    name: "CronetInTetheringApexDefaultsEnabled",
     jni_libs: [
         "cronet_aml_components_cronet_android_cronet",
         "//external/cronet/third_party/boringssl:libcrypto",
@@ -88,10 +60,6 @@ apex_defaults {
             ],
         },
     },
-}
-
-apex_defaults {
-    name: "CronetInTetheringApexDefaultsDisabled",
 }
 
 apex {
@@ -144,11 +112,7 @@ apex {
         "ServiceConnectivityResources",
         "HalfSheetUX",
     ],
-    prebuilts: [
-        "current_sdkinfo",
-        "privapp_allowlist_com.android.tethering",
-        "TetheringOutOfProcessFlag",
-    ],
+    prebuilts: ["current_sdkinfo"],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
     // Indicates that pre-installed version of this apex can be compressed.
@@ -253,28 +217,4 @@ systemserverclasspath_fragment {
     name: "com.android.tethering-systemserverclasspath-fragment",
     standalone_contents: ["service-connectivity"],
     apex_available: ["com.android.tethering"],
-}
-
-override_apex {
-    name: "com.android.tethering.inprocess",
-    base: "com.android.tethering",
-    package_name: "com.android.tethering.inprocess",
-    enabled: enable_tethering_next_apex,
-    bpfs: [
-        "block.o",
-        "clatd.o",
-        "dscpPolicy.o",
-        "netd.o",
-        "offload@inprocess.o",
-        "test@inprocess.o",
-    ],
-    apps: [
-        "ServiceConnectivityResources",
-        "InProcessTethering",
-    ],
-    prebuilts: [
-        "current_sdkinfo",
-        "privapp_allowlist_com.android.tethering",
-        "TetheringInProcessFlag",
-    ],
 }

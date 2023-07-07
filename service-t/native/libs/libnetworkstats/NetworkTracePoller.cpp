@@ -15,10 +15,12 @@
  */
 
 #define LOG_TAG "NetworkTrace"
+#define ATRACE_TAG ATRACE_TAG_NETWORK
 
 #include "netdbpf/NetworkTracePoller.h"
 
 #include <bpf/BpfUtils.h>
+#include <cutils/trace.h>
 #include <log/log.h>
 #include <perfetto/tracing/platform.h>
 #include <perfetto/tracing/tracing.h>
@@ -27,16 +29,16 @@ namespace android {
 namespace bpf {
 namespace internal {
 
-void NetworkTracePoller::SchedulePolling() {
-  // Schedules another run of ourselves to recursively poll periodically.
-  mTaskRunner->PostDelayedTask(
-      [this]() {
-        mMutex.lock();
-        SchedulePolling();
-        ConsumeAllLocked();
-        mMutex.unlock();
-      },
-      mPollMs);
+void NetworkTracePoller::PollAndSchedule(perfetto::base::TaskRunner* runner,
+                                         uint32_t poll_ms) {
+  // Always schedule another run of ourselves to recursively poll periodically.
+  // The task runner is sequential so these can't run on top of each other.
+  runner->PostDelayedTask([=]() { PollAndSchedule(runner, poll_ms); }, poll_ms);
+
+  if (mMutex.try_lock()) {
+    ConsumeAllLocked();
+    mMutex.unlock();
+  }
 }
 
 bool NetworkTracePoller::Start(uint32_t pollMs) {
@@ -79,7 +81,7 @@ bool NetworkTracePoller::Start(uint32_t pollMs) {
   // Start a task runner to run ConsumeAll every mPollMs milliseconds.
   mTaskRunner = perfetto::Platform::GetDefaultPlatform()->CreateTaskRunner({});
   mPollMs = pollMs;
-  SchedulePolling();
+  PollAndSchedule(mTaskRunner.get(), mPollMs);
 
   mSessionCount++;
   return true;
@@ -132,6 +134,8 @@ bool NetworkTracePoller::ConsumeAllLocked() {
     ALOGW("Failed to poll ringbuf: %s", ret.error().message().c_str());
     return false;
   }
+
+  ATRACE_INT("NetworkTracePackets", packets.size());
 
   mCallback(packets);
 
