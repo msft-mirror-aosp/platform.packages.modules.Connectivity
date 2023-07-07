@@ -21,10 +21,10 @@ import android.annotation.Nullable;
 import android.net.Network;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -84,16 +84,23 @@ public class MdnsResponse {
     private <T extends MdnsRecord> boolean addOrReplaceRecord(@NonNull T record,
             @NonNull List<T> recordsList) {
         final int existing = recordsList.indexOf(record);
+        boolean isSame = false;
         if (existing >= 0) {
-            if (recordsAreSame(record, recordsList.get(existing))) {
-                return false;
-            }
+            isSame = recordsAreSame(record, recordsList.get(existing));
             final MdnsRecord existedRecord = recordsList.remove(existing);
             records.remove(existedRecord);
         }
         recordsList.add(record);
         records.add(record);
-        return true;
+        return !isSame;
+    }
+
+    /**
+     * @return True if this response contains an identical (original TTL included) record.
+     */
+    public boolean hasIdenticalRecord(@NonNull MdnsRecord record) {
+        final int existing = records.indexOf(record);
+        return existing >= 0 && recordsAreSame(record, records.get(existing));
     }
 
     /**
@@ -103,7 +110,7 @@ public class MdnsResponse {
      * pointer record is already present in the response with the same TTL.
      */
     public synchronized boolean addPointerRecord(MdnsPointerRecord pointerRecord) {
-        if (!Arrays.equals(serviceName, pointerRecord.getPointer())) {
+        if (!MdnsUtils.equalsDnsLabelIgnoreDnsCase(serviceName, pointerRecord.getPointer())) {
             throw new IllegalArgumentException(
                     "Pointer records for different service names cannot be added");
         }
@@ -163,9 +170,7 @@ public class MdnsResponse {
 
     /** Sets the service record. */
     public synchronized boolean setServiceRecord(MdnsServiceRecord serviceRecord) {
-        if (recordsAreSame(this.serviceRecord, serviceRecord)) {
-            return false;
-        }
+        boolean isSame = recordsAreSame(this.serviceRecord, serviceRecord);
         if (this.serviceRecord != null) {
             records.remove(this.serviceRecord);
         }
@@ -173,7 +178,7 @@ public class MdnsResponse {
         if (this.serviceRecord != null) {
             records.add(this.serviceRecord);
         }
-        return true;
+        return !isSame;
     }
 
     /** Gets the service record. */
@@ -187,9 +192,7 @@ public class MdnsResponse {
 
     /** Sets the text record. */
     public synchronized boolean setTextRecord(MdnsTextRecord textRecord) {
-        if (recordsAreSame(this.textRecord, textRecord)) {
-            return false;
-        }
+        boolean isSame = recordsAreSame(this.textRecord, textRecord);
         if (this.textRecord != null) {
             records.remove(this.textRecord);
         }
@@ -197,7 +200,7 @@ public class MdnsResponse {
         if (this.textRecord != null) {
             records.add(this.textRecord);
         }
-        return true;
+        return !isSame;
     }
 
     /** Gets the text record. */
@@ -301,13 +304,13 @@ public class MdnsResponse {
         boolean dropAddressRecords = false;
 
         for (MdnsInetAddressRecord inetAddressRecord : getInet4AddressRecords()) {
-            if (!Arrays.equals(
+            if (!MdnsUtils.equalsDnsLabelIgnoreDnsCase(
                     this.serviceRecord.getServiceHost(), inetAddressRecord.getName())) {
                 dropAddressRecords = true;
             }
         }
         for (MdnsInetAddressRecord inetAddressRecord : getInet6AddressRecords()) {
-            if (!Arrays.equals(
+            if (!MdnsUtils.equalsDnsLabelIgnoreDnsCase(
                     this.serviceRecord.getServiceHost(), inetAddressRecord.getName())) {
                 dropAddressRecords = true;
             }

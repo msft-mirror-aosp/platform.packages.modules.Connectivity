@@ -38,13 +38,7 @@
 // Warning: values other than AID_ROOT don't work for map uid on BpfLoader < v0.21
 #define TETHERING_UID AID_ROOT
 
-#ifdef INPROCESS
-#define DEFAULT_BPF_MAP_SELINUX_CONTEXT "fs_bpf_net_shared"
-#define DEFAULT_BPF_PROG_SELINUX_CONTEXT "fs_bpf_net_shared"
-#define TETHERING_GID AID_SYSTEM
-#else
 #define TETHERING_GID AID_NETWORK_STACK
-#endif
 
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
@@ -869,3 +863,4 @@ DEFINE_XDP_PROG("xdp/tether_upstream_rawip",
 
 LICENSE("Apache 2.0");
 CRITICAL("Connectivity (Tethering)");
+DISABLE_BTF_ON_USER_BUILDS();
