@@ -170,29 +170,29 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         }
     }
 
-    public MdnsInterfaceAdvertiser(@NonNull String logTag,
-            @NonNull MdnsInterfaceSocket socket, @NonNull List<LinkAddress> initialAddresses,
-            @NonNull Looper looper, @NonNull byte[] packetCreationBuffer, @NonNull Callback cb,
+    public MdnsInterfaceAdvertiser(@NonNull MdnsInterfaceSocket socket,
+            @NonNull List<LinkAddress> initialAddresses, @NonNull Looper looper,
+            @NonNull byte[] packetCreationBuffer, @NonNull Callback cb,
             @NonNull String[] deviceHostName, @NonNull SharedLog sharedLog) {
-        this(logTag, socket, initialAddresses, looper, packetCreationBuffer, cb,
+        this(socket, initialAddresses, looper, packetCreationBuffer, cb,
                 new Dependencies(), deviceHostName, sharedLog);
     }
 
-    public MdnsInterfaceAdvertiser(@NonNull String logTag,
-            @NonNull MdnsInterfaceSocket socket, @NonNull List<LinkAddress> initialAddresses,
-            @NonNull Looper looper, @NonNull byte[] packetCreationBuffer, @NonNull Callback cb,
-            @NonNull Dependencies deps, @NonNull String[] deviceHostName,
-            @NonNull SharedLog sharedLog) {
-        mTag = MdnsInterfaceAdvertiser.class.getSimpleName() + "/" + logTag;
+    public MdnsInterfaceAdvertiser(@NonNull MdnsInterfaceSocket socket,
+            @NonNull List<LinkAddress> initialAddresses, @NonNull Looper looper,
+            @NonNull byte[] packetCreationBuffer, @NonNull Callback cb, @NonNull Dependencies deps,
+            @NonNull String[] deviceHostName, @NonNull SharedLog sharedLog) {
+        mTag = MdnsInterfaceAdvertiser.class.getSimpleName() + "/" + sharedLog.getTag();
         mRecordRepository = deps.makeRecordRepository(looper, deviceHostName);
         mRecordRepository.updateAddresses(initialAddresses);
         mSocket = socket;
         mCb = cb;
         mCbHandler = new Handler(looper);
-        mReplySender = deps.makeReplySender(logTag, looper, socket, packetCreationBuffer);
-        mAnnouncer = deps.makeMdnsAnnouncer(logTag, looper, mReplySender,
+        mReplySender = deps.makeReplySender(sharedLog.getTag(), looper, socket,
+                packetCreationBuffer);
+        mAnnouncer = deps.makeMdnsAnnouncer(sharedLog.getTag(), looper, mReplySender,
                 mAnnouncingCallback);
-        mProber = deps.makeMdnsProber(logTag, looper, mReplySender, mProbingCallback);
+        mProber = deps.makeMdnsProber(sharedLog.getTag(), looper, mReplySender, mProbingCallback);
         mSharedLog = sharedLog;
     }
 
@@ -212,8 +212,9 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
      *
      * @throws NameConflictException There is already a service being advertised with that name.
      */
-    public void addService(int id, NsdServiceInfo service) throws NameConflictException {
-        final int replacedExitingService = mRecordRepository.addService(id, service);
+    public void addService(int id, NsdServiceInfo service, @Nullable String subtype)
+            throws NameConflictException {
+        final int replacedExitingService = mRecordRepository.addService(id, service, subtype);
         // Cancel announcements for the existing service. This only happens for exiting services
         // (so cancelling exiting announcements), as per RecordRepository.addService.
         if (replacedExitingService >= 0) {

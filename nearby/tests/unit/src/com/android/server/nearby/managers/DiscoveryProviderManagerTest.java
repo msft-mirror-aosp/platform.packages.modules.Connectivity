@@ -23,6 +23,7 @@ import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -48,10 +49,8 @@ import org.junit.Test;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 public class DiscoveryProviderManagerTest {
@@ -80,12 +79,9 @@ public class DiscoveryProviderManagerTest {
     @Mock
     CallerIdentity mCallerIdentity;
     @Mock
-    DiscoveryProviderManager.ScanListenerDeathRecipient mScanListenerDeathRecipient;
-    @Mock
     IBinder mIBinder;
+    private Executor mExecutor;
     private DiscoveryProviderManager mDiscoveryProviderManager;
-    private Map<IBinder, DiscoveryProviderManager.ScanListenerRecord>
-            mScanTypeScanListenerRecordMap;
 
     private static PresenceScanFilter getPresenceScanFilter() {
         final byte[] secretId = new byte[]{1, 2, 3, 4};
@@ -133,16 +129,16 @@ public class DiscoveryProviderManagerTest {
     @Before
     public void setup() {
         MockitoAnnotations.initMocks(this);
+        mExecutor = Executors.newSingleThreadExecutor();
         when(mInjector.getAppOpsManager()).thenReturn(mAppOpsManager);
         when(mBleDiscoveryProvider.getController()).thenReturn(mBluetoothController);
         when(mChreDiscoveryProvider.getController()).thenReturn(mChreController);
+        when(mScanListener.asBinder()).thenReturn(mIBinder);
 
-        mScanTypeScanListenerRecordMap = new HashMap<>();
         mDiscoveryProviderManager =
-                new DiscoveryProviderManager(mContext, mInjector,
+                new DiscoveryProviderManager(mContext, mExecutor, mInjector,
                         mBleDiscoveryProvider,
-                        mChreDiscoveryProvider,
-                        mScanTypeScanListenerRecordMap);
+                        mChreDiscoveryProvider);
         mCallerIdentity = CallerIdentity
                 .forTest(UID, PID, PACKAGE_NAME, /* attributionTag= */ null);
     }
@@ -162,55 +158,45 @@ public class DiscoveryProviderManagerTest {
 
     @Test
     public void testStartProviders_chreOnlyChreAvailable_bleProviderNotStarted() {
+        reset(mBluetoothController);
         when(mChreDiscoveryProvider.available()).thenReturn(true);
 
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getChreOnlyPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        mDiscoveryProviderManager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
 
-        Boolean start = mDiscoveryProviderManager.startProviders(scanRequest);
+        Boolean start = mDiscoveryProviderManager.startProviders();
         verify(mBluetoothController, never()).start();
         assertThat(start).isTrue();
     }
 
     @Test
     public void testStartProviders_chreOnlyChreAvailable_multipleFilters_bleProviderNotStarted() {
+        reset(mBluetoothController);
         when(mChreDiscoveryProvider.available()).thenReturn(true);
 
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
-                .addScanFilter(getChreOnlyPresenceScanFilter())
-                .addScanFilter(getPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+                .addScanFilter(getChreOnlyPresenceScanFilter()).build();
+        mDiscoveryProviderManager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
 
-        Boolean start = mDiscoveryProviderManager.startProviders(scanRequest);
+        Boolean start = mDiscoveryProviderManager.startProviders();
         verify(mBluetoothController, never()).start();
         assertThat(start).isTrue();
     }
 
     @Test
     public void testStartProviders_chreOnlyChreUnavailable_bleProviderNotStarted() {
+        reset(mBluetoothController);
         when(mChreDiscoveryProvider.available()).thenReturn(false);
 
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getChreOnlyPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        mDiscoveryProviderManager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
 
-        Boolean start = mDiscoveryProviderManager.startProviders(scanRequest);
+        Boolean start = mDiscoveryProviderManager.startProviders();
         verify(mBluetoothController, never()).start();
         assertThat(start).isFalse();
     }
@@ -218,17 +204,14 @@ public class DiscoveryProviderManagerTest {
     @Test
     public void testStartProviders_notChreOnlyChreAvailable_bleProviderNotStarted() {
         when(mChreDiscoveryProvider.available()).thenReturn(true);
+        reset(mBluetoothController);
 
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        mDiscoveryProviderManager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
 
-        Boolean start = mDiscoveryProviderManager.startProviders(scanRequest);
+        Boolean start = mDiscoveryProviderManager.startProviders();
         verify(mBluetoothController, never()).start();
         assertThat(start).isTrue();
     }
@@ -236,17 +219,14 @@ public class DiscoveryProviderManagerTest {
     @Test
     public void testStartProviders_notChreOnlyChreUnavailable_bleProviderStarted() {
         when(mChreDiscoveryProvider.available()).thenReturn(false);
+        reset(mBluetoothController);
 
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        mDiscoveryProviderManager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
 
-        Boolean start = mDiscoveryProviderManager.startProviders(scanRequest);
+        Boolean start = mDiscoveryProviderManager.startProviders();
         verify(mBluetoothController, atLeastOnce()).start();
         assertThat(start).isTrue();
     }
@@ -254,17 +234,14 @@ public class DiscoveryProviderManagerTest {
     @Test
     public void testStartProviders_chreOnlyChreUndetermined_bleProviderNotStarted() {
         when(mChreDiscoveryProvider.available()).thenReturn(null);
+        reset(mBluetoothController);
 
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getChreOnlyPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        mDiscoveryProviderManager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
 
-        Boolean start = mDiscoveryProviderManager.startProviders(scanRequest);
+        Boolean start = mDiscoveryProviderManager.startProviders();
         verify(mBluetoothController, never()).start();
         assertThat(start).isNull();
     }
@@ -272,17 +249,14 @@ public class DiscoveryProviderManagerTest {
     @Test
     public void testStartProviders_notChreOnlyChreUndetermined_bleProviderStarted() {
         when(mChreDiscoveryProvider.available()).thenReturn(null);
+        reset(mBluetoothController);
 
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        mDiscoveryProviderManager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
 
-        Boolean start = mDiscoveryProviderManager.startProviders(scanRequest);
+        Boolean start = mDiscoveryProviderManager.startProviders();
         verify(mBluetoothController, atLeastOnce()).start();
         assertThat(start).isTrue();
     }
@@ -291,22 +265,16 @@ public class DiscoveryProviderManagerTest {
     public void test_stopChreProvider_clearFilters() throws Exception {
         // Cannot use mocked ChreDiscoveryProvider,
         // so we cannot use class variable mDiscoveryProviderManager
-        ExecutorService executor = Executors.newSingleThreadExecutor();
         DiscoveryProviderManager manager =
-                new DiscoveryProviderManager(mContext, mInjector,
+                new DiscoveryProviderManager(mContext, mExecutor, mInjector,
                         mBleDiscoveryProvider,
                         new ChreDiscoveryProvider(
                                 mContext,
-                                new ChreCommunication(mInjector, mContext, executor), executor),
-                        mScanTypeScanListenerRecordMap);
+                                new ChreCommunication(mInjector, mContext, mExecutor), mExecutor));
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(
-                        scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        manager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
         manager.startChreProvider(List.of(getPresenceScanFilter()));
         // This is an asynchronized process. The filters will be set in executor thread. So we need
         // to wait for some time to get the correct result.
@@ -328,21 +296,17 @@ public class DiscoveryProviderManagerTest {
     public void test_restartChreProvider() throws Exception {
         // Cannot use mocked ChreDiscoveryProvider,
         // so we cannot use class variable mDiscoveryProviderManager
-        ExecutorService executor = Executors.newSingleThreadExecutor();
         DiscoveryProviderManager manager =
-                new DiscoveryProviderManager(mContext, mInjector,
+                new DiscoveryProviderManager(mContext, mExecutor, mInjector,
                         mBleDiscoveryProvider,
                         new ChreDiscoveryProvider(
                                 mContext,
-                                new ChreCommunication(mInjector, mContext, executor), executor),
-                        mScanTypeScanListenerRecordMap);
+                                new ChreCommunication(mInjector, mContext, mExecutor), mExecutor));
         ScanRequest scanRequest = new ScanRequest.Builder()
                 .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                 .addScanFilter(getPresenceScanFilter()).build();
-        DiscoveryProviderManager.ScanListenerRecord record =
-                new DiscoveryProviderManager.ScanListenerRecord(scanRequest, mScanListener,
-                        mCallerIdentity, mScanListenerDeathRecipient);
-        mScanTypeScanListenerRecordMap.put(mIBinder, record);
+        manager.registerScanListener(scanRequest, mScanListener, mCallerIdentity);
+
         manager.startChreProvider(List.of(getPresenceScanFilter()));
         // This is an asynchronized process. The filters will be set in executor thread. So we need
         // to wait for some time to get the correct result.
