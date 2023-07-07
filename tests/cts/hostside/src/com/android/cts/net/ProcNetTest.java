@@ -157,13 +157,24 @@ public class ProcNetTest extends DeviceTestCase implements IBuildReceiver, IDevi
         for (String interfaceDir : mSysctlDirs) {
             String path = IPV6_SYSCTL_DIR + "/" + interfaceDir + "/" + "router_solicitations";
             int value = readIntFromPath(path);
-            assertEquals(IPV6_WIFI_ROUTER_SOLICITATIONS, value);
+            assertEquals(path, IPV6_WIFI_ROUTER_SOLICITATIONS, value);
             path = IPV6_SYSCTL_DIR + "/" + interfaceDir + "/" + "router_solicitation_max_interval";
             int interval = readIntFromPath(path);
             final int lowerBoundSec = 15 * 60;
             final int upperBoundSec = 60 * 60;
-            assertTrue(lowerBoundSec <= interval);
-            assertTrue(interval <= upperBoundSec);
+            assertTrue(path, lowerBoundSec <= interval);
+            assertTrue(path, interval <= upperBoundSec);
         }
+    }
+
+    /**
+     * Verify that cubic is used as the congestion control algorithm.
+     * (This repeats the VTS test, and is here for good performance of the internet as a whole.)
+     * TODO: revisit this once a better CC algorithm like BBR2 is available.
+     */
+    public void testCongestionControl() throws Exception {
+        String path = "/proc/sys/net/ipv4/tcp_congestion_control";
+        String value = mDevice.executeAdbCommand("shell", "cat", path).trim();
+        assertEquals(value, "cubic");
     }
 }
