@@ -30,15 +30,17 @@ import android.net.INetd;
 import android.net.InetAddresses;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpPrefix;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.system.ErrnoException;
 import android.util.Log;
 
+import androidx.annotation.RequiresApi;
+
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.InterfaceParams;
@@ -63,6 +65,7 @@ import java.util.Objects;
  *
  * {@hide}
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class ClatCoordinator {
     private static final String TAG = ClatCoordinator.class.getSimpleName();
 
@@ -237,9 +240,8 @@ public class ClatCoordinator {
         /**
          * Stop clatd.
          */
-        public void stopClatd(String iface, String pfx96, String v4, String v6, int pid)
-                throws IOException {
-            native_stopClatd(iface, pfx96, v4, v6, pid);
+        public void stopClatd(int pid) throws IOException {
+            native_stopClatd(pid);
         }
 
         /**
@@ -252,11 +254,6 @@ public class ClatCoordinator {
         /** Get ingress6 BPF map. */
         @Nullable
         public IBpfMap<ClatIngress6Key, ClatIngress6Value> getBpfIngress6Map() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(CLAT_INGRESS6_MAP_PATH,
                     BpfMap.BPF_F_RDWR, ClatIngress6Key.class, ClatIngress6Value.class);
@@ -269,11 +266,6 @@ public class ClatCoordinator {
         /** Get egress4 BPF map. */
         @Nullable
         public IBpfMap<ClatEgress4Key, ClatEgress4Value> getBpfEgress4Map() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(CLAT_EGRESS4_MAP_PATH,
                     BpfMap.BPF_F_RDWR, ClatEgress4Key.class, ClatEgress4Value.class);
@@ -286,11 +278,6 @@ public class ClatCoordinator {
         /** Get cookie tag map */
         @Nullable
         public IBpfMap<CookieTagMapKey, CookieTagMapValue> getBpfCookieTagMap() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(COOKIE_TAG_MAP_PATH,
                         BpfMap.BPF_F_RDWR, CookieTagMapKey.class, CookieTagMapValue.class);
@@ -843,9 +830,7 @@ public class ClatCoordinator {
         Log.i(TAG, "Stopping clatd pid=" + mClatdTracker.pid + " on " + mClatdTracker.iface);
 
         maybeStopBpf(mClatdTracker);
-        mDeps.stopClatd(mClatdTracker.iface, mClatdTracker.pfx96.getHostAddress(),
-                mClatdTracker.v4.getHostAddress(), mClatdTracker.v6.getHostAddress(),
-                mClatdTracker.pid);
+        mDeps.stopClatd(mClatdTracker.pid);
         untagSocket(mClatdTracker.cookie);
 
         Log.i(TAG, "clatd on " + mClatdTracker.iface + " stopped");
@@ -899,7 +884,7 @@ public class ClatCoordinator {
     }
 
     /**
-     * Dump the cordinator information.
+     * Dump the coordinator information.
      *
      * @param pw print writer.
      */
@@ -907,7 +892,7 @@ public class ClatCoordinator {
         // TODO: move map dump to a global place to avoid duplicate dump while there are two or
         // more IPv6 only networks.
         if (isStarted()) {
-            pw.println("CLAT tracker: " + mClatdTracker.toString());
+            pw.println("CLAT tracker: " + mClatdTracker);
             pw.println("Forwarding rules:");
             pw.increaseIndent();
             dumpBpfIngress(pw);
@@ -944,7 +929,6 @@ public class ClatCoordinator {
     private static native int native_startClatd(FileDescriptor tunfd, FileDescriptor readsock6,
             FileDescriptor writesock6, String iface, String pfx96, String v4, String v6)
             throws IOException;
-    private static native void native_stopClatd(String iface, String pfx96, String v4, String v6,
-            int pid) throws IOException;
+    private static native void native_stopClatd(int pid) throws IOException;
     private static native long native_getSocketCookie(FileDescriptor sock) throws IOException;
 }

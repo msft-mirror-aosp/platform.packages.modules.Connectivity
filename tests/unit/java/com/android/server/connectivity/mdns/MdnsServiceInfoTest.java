@@ -16,13 +16,16 @@
 
 package com.android.server.connectivity.mdns;
 
+import static com.android.server.connectivity.mdns.MdnsSocket.INTERFACE_INDEX_UNSPECIFIED;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
 
+import android.net.Network;
 import android.os.Parcel;
 
 import com.android.server.connectivity.mdns.MdnsServiceInfo.TextEntry;
@@ -116,6 +119,26 @@ public class MdnsServiceInfoTest {
     }
 
     @Test
+    public void constructor_createWithUppercaseKeys_correctAttributes() {
+        MdnsServiceInfo info =
+                new MdnsServiceInfo(
+                        "my-mdns-service",
+                        new String[] {"_testtype", "_tcp"},
+                        List.of(),
+                        new String[] {"my-host", "local"},
+                        12345,
+                        "192.168.1.1",
+                        "2001::1",
+                        List.of("KEY=Value"),
+                        /* textEntries= */ null);
+
+        assertEquals("Value", info.getAttributeByKey("key"));
+        assertEquals("Value", info.getAttributeByKey("KEY"));
+        assertEquals(1, info.getAttributes().size());
+        assertEquals("KEY", info.getAttributes().keySet().iterator().next());
+    }
+
+    @Test
     public void getInterfaceIndex_constructorWithDefaultValues_returnsMinusOne() {
         MdnsServiceInfo info =
                 new MdnsServiceInfo(
@@ -128,7 +151,7 @@ public class MdnsServiceInfoTest {
                         "2001::1",
                         List.of());
 
-        assertEquals(info.getInterfaceIndex(), -1);
+        assertEquals(info.getInterfaceIndex(), INTERFACE_INDEX_UNSPECIFIED);
     }
 
     @Test
@@ -150,6 +173,41 @@ public class MdnsServiceInfoTest {
     }
 
     @Test
+    public void testGetNetwork() {
+        final MdnsServiceInfo info1 =
+                new MdnsServiceInfo(
+                        "my-mdns-service",
+                        new String[] {"_googlecast", "_tcp"},
+                        List.of(),
+                        new String[] {"my-host", "local"},
+                        12345,
+                        "192.168.1.1",
+                        "2001::1",
+                        List.of(),
+                        /* textEntries= */ null,
+                        /* interfaceIndex= */ 20);
+
+        assertNull(info1.getNetwork());
+
+        final Network network = mock(Network.class);
+        final MdnsServiceInfo info2 =
+                new MdnsServiceInfo(
+                        "my-mdns-service",
+                        new String[] {"_googlecast", "_tcp"},
+                        List.of(),
+                        new String[] {"my-host", "local"},
+                        12345,
+                        List.of("192.168.1.1"),
+                        List.of("2001::1"),
+                        List.of(),
+                        /* textEntries= */ null,
+                        /* interfaceIndex= */ 20,
+                        network);
+
+        assertEquals(network, info2.getNetwork());
+    }
+
+    @Test
     public void parcelable_canBeParceledAndUnparceled() {
         Parcel parcel = Parcel.obtain();
         MdnsServiceInfo beforeParcel =
@@ -159,12 +217,15 @@ public class MdnsServiceInfoTest {
                         List.of(),
                         new String[] {"my-host", "local"},
                         12345,
-                        "192.168.1.1",
-                        "2001::1",
+                        List.of("192.168.1.1", "192.168.1.2"),
+                        List.of("2001::1", "2001::2"),
                         List.of("vn=Alphabet Inc.", "mn=Google Nest Hub Max", "id=12345"),
                         List.of(
                                 MdnsServiceInfo.TextEntry.fromString("vn=Google Inc."),
-                                MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max")));
+                                MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max"),
+                                MdnsServiceInfo.TextEntry.fromString("test=")),
+                        20 /* interfaceIndex */,
+                        new Network(123));
 
         beforeParcel.writeToParcel(parcel, 0);
         parcel.setDataPosition(0);
@@ -176,8 +237,12 @@ public class MdnsServiceInfoTest {
         assertArrayEquals(beforeParcel.getHostName(), afterParcel.getHostName());
         assertEquals(beforeParcel.getPort(), afterParcel.getPort());
         assertEquals(beforeParcel.getIpv4Address(), afterParcel.getIpv4Address());
+        assertEquals(beforeParcel.getIpv4Addresses(), afterParcel.getIpv4Addresses());
         assertEquals(beforeParcel.getIpv6Address(), afterParcel.getIpv6Address());
+        assertEquals(beforeParcel.getIpv6Addresses(), afterParcel.getIpv6Addresses());
         assertEquals(beforeParcel.getAttributes(), afterParcel.getAttributes());
+        assertEquals(beforeParcel.getInterfaceIndex(), afterParcel.getInterfaceIndex());
+        assertEquals(beforeParcel.getNetwork(), afterParcel.getNetwork());
     }
 
     @Test
@@ -208,11 +273,11 @@ public class MdnsServiceInfoTest {
     }
 
     @Test
-    public void textEntry_fromStringWithoutAssignPunc_valueisEmpty() {
+    public void textEntry_fromStringWithoutAssignPunc_noValue() {
         TextEntry entry = TextEntry.fromString("AA");
 
         assertEquals("AA", entry.getKey());
-        assertArrayEquals(new byte[] {}, entry.getValue());
+        assertNull(entry.getValue());
     }
 
     @Test
@@ -241,11 +306,11 @@ public class MdnsServiceInfoTest {
     }
 
     @Test
-    public void textEntry_fromBytesWithoutAssignPunc_valueisEmpty() {
+    public void textEntry_fromBytesWithoutAssignPunc_noValue() {
         TextEntry entry = TextEntry.fromBytes(new byte[] {'A', 'A'});
 
         assertEquals("AA", entry.getKey());
-        assertArrayEquals(new byte[] {}, entry.getValue());
+        assertNull(entry.getValue());
     }
 
     @Test
@@ -269,5 +334,13 @@ public class MdnsServiceInfoTest {
         assertEquals(new TextEntry("AA", "xxyyzz"), new TextEntry("AA", "xxyyzz"));
         assertEquals(new TextEntry("BB", "xxyyzz"), new TextEntry("BB", "xxyyzz"));
         assertEquals(new TextEntry("AA", "XXYYZZ"), new TextEntry("AA", "XXYYZZ"));
+    }
+
+    @Test
+    public void textEntry_fromString_valueIsEmpty() {
+        TextEntry entry = TextEntry.fromString("AA=");
+
+        assertEquals("AA", entry.getKey());
+        assertArrayEquals(new byte[] {}, entry.getValue());
     }
 }

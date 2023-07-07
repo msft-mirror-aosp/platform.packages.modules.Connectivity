@@ -57,8 +57,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.OutcomeReceiver
-import android.os.SystemProperties
 import android.os.Process
+import android.os.SystemProperties
 import android.platform.test.annotations.AppModeFull
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.net.module.util.ArrayTrackRecord
@@ -77,16 +77,10 @@ import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.assertThrows
 import com.android.testutils.runAsShell
 import com.android.testutils.waitForIdle
-import org.junit.After
-import org.junit.Assume.assumeFalse
-import org.junit.Assume.assumeTrue
-import org.junit.Before
-import org.junit.Test
-import org.junit.runner.RunWith
 import java.io.IOException
 import java.net.Inet6Address
-import java.util.Random
 import java.net.Socket
+import java.util.Random
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
@@ -99,6 +93,12 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlin.test.fail
+import org.junit.After
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
 
 private const val TAG = "EthernetManagerTest"
 // This timeout does not affect the test duration for passing tests. It needs to be long enough to
@@ -392,7 +392,15 @@ class EthernetManagerTest {
     }
 
     // Setting the carrier up / down relies on TUNSETCARRIER which was added in kernel version 5.0.
-    private fun assumeChangingCarrierSupported() = assumeTrue(isKernelVersionAtLeast("5.0.0"))
+    private fun assumeChangingCarrierSupported() {
+        assumeTrue(isKernelVersionAtLeast("5.0.0"))
+    }
+
+    // Configuring a tap interface without carrier relies on IFF_NO_CARRIER
+    // which was added in kernel version 6.0.
+    private fun assumeCreateInterfaceWithoutCarrierSupported() {
+        assumeTrue(isKernelVersionAtLeast("6.0.0"))
+    }
 
     private fun isAdbOverEthernet(): Boolean {
         // If no ethernet interface is available, adb is not connected over ethernet.
@@ -417,7 +425,7 @@ class EthernetManagerTest {
     }
 
     // WARNING: setting hasCarrier to false requires kernel support. Call
-    // assumeChangingCarrierSupported() at the top of your test.
+    // assumeCreateInterfaceWithoutCarrierSupported() at the top of your test.
     private fun createInterface(hasCarrier: Boolean = true): EthernetTestInterface {
         val iface = EthernetTestInterface(
             context,
@@ -530,12 +538,10 @@ class EthernetManagerTest {
         eventuallyExpect(Lost::class) { n?.equals(it.network) ?: true }
 
     private fun TestableNetworkCallback.assertNeverLost(n: Network? = null) =
-        assertNoCallbackThat() {
-            it is Lost && (n?.equals(it.network) ?: true)
-        }
+        assertNoCallback { it is Lost && (n?.equals(it.network) ?: true) }
 
     private fun TestableNetworkCallback.assertNeverAvailable(n: Network? = null) =
-        assertNoCallbackThat { it is Available && (n?.equals(it.network) ?: true) }
+        assertNoCallback { it is Available && (n?.equals(it.network) ?: true) }
 
     private fun TestableNetworkCallback.expectCapabilitiesWithInterfaceName(name: String) =
         expect<CapabilitiesChanged> { it.caps.networkSpecifier == EthernetNetworkSpecifier(name) }
@@ -646,10 +652,9 @@ class EthernetManagerTest {
 
         val listener = EthernetStateListener()
         addInterfaceStateListener(listener)
-        // TODO(b/236895792): THIS IS A BUG! Existing server mode interfaces are not reported when
-        // an InterfaceStateListener is registered.
         // Note: using eventuallyExpect as there may be other interfaces present.
-        // listener.eventuallyExpect(iface, STATE_LINK_UP, ROLE_SERVER)
+        listener.eventuallyExpect(InterfaceStateChanged(iface.name,
+                STATE_LINK_UP, ROLE_SERVER, /* IpConfiguration */ null))
 
         releaseTetheredInterface()
         listener.eventuallyExpect(iface, STATE_LINK_UP, ROLE_CLIENT)
@@ -794,15 +799,13 @@ class EthernetManagerTest {
 
     @Test
     fun testNetworkRequest_forInterfaceWhileTogglingCarrier() {
+        assumeCreateInterfaceWithoutCarrierSupported()
         assumeChangingCarrierSupported()
 
         val iface = createInterface(false /* hasCarrier */)
 
         val cb = requestNetwork(ETH_REQUEST)
-        // TUNSETCARRIER races with the bring up code, so the network *can* become available despite
-        // it being "created with no carrier".
-        // TODO(b/249611919): re-enable assertion once kernel supports IFF_NO_CARRIER.
-        // cb.assertNeverAvailable()
+        cb.assertNeverAvailable()
 
         iface.setCarrierEnabled(true)
         cb.expect<Available>()

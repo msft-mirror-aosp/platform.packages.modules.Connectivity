@@ -20,7 +20,6 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.net.ConnectivityManager;
-import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.EthernetNetworkSpecifier;
 import android.net.IpConfiguration;
@@ -50,6 +49,7 @@ import com.android.connectivity.resources.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.net.module.util.InterfaceParams;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.FileDescriptor;
 import java.util.Objects;
@@ -269,10 +269,10 @@ public class EthernetNetworkFactory {
         private final Set<Integer> mRequestIds = new ArraySet<>();
 
         private volatile @Nullable IpClientManager mIpClient;
-        private @NonNull NetworkCapabilities mCapabilities;
+        private NetworkCapabilities mCapabilities;
         private @Nullable EthernetIpClientCallback mIpClientCallback;
         private @Nullable EthernetNetworkAgent mNetworkAgent;
-        private @Nullable IpConfiguration mIpConfig;
+        private IpConfiguration mIpConfig;
 
         /**
          * A map of TRANSPORT_* types to legacy transport types available for each type an ethernet
@@ -313,17 +313,12 @@ public class EthernetNetworkFactory {
                 mIpClientShutdownCv.block();
             }
 
-            // At the time IpClient is stopped, an IpClient event may have already been posted on
-            // the back of the handler and is awaiting execution. Once that event is executed, the
-            // associated callback object may not be valid anymore
-            // (NetworkInterfaceState#mIpClientCallback points to a different object / null).
-            private boolean isCurrentCallback() {
-                return this == mIpClientCallback;
-            }
-
-            private void handleIpEvent(final @NonNull Runnable r) {
+            private void safelyPostOnHandler(Runnable r) {
                 mHandler.post(() -> {
-                    if (!isCurrentCallback()) {
+                    if (this != mIpClientCallback) {
+                        // At the time IpClient is stopped, an IpClient event may have already been
+                        // posted on the handler and is awaiting execution. Once that event is
+                        // executed, the associated callback object may not be valid anymore.
                         Log.i(TAG, "Ignoring stale IpClientCallbacks " + this);
                         return;
                     }
@@ -333,24 +328,24 @@ public class EthernetNetworkFactory {
 
             @Override
             public void onProvisioningSuccess(LinkProperties newLp) {
-                handleIpEvent(() -> onIpLayerStarted(newLp));
+                safelyPostOnHandler(() -> onIpLayerStarted(newLp));
             }
 
             @Override
             public void onProvisioningFailure(LinkProperties newLp) {
                 // This cannot happen due to provisioning timeout, because our timeout is 0. It can
                 // happen due to errors while provisioning or on provisioning loss.
-                handleIpEvent(() -> onIpLayerStopped());
+                safelyPostOnHandler(() -> onIpLayerStopped());
             }
 
             @Override
             public void onLinkPropertiesChange(LinkProperties newLp) {
-                handleIpEvent(() -> updateLinkProperties(newLp));
+                safelyPostOnHandler(() -> updateLinkProperties(newLp));
             }
 
             @Override
             public void onReachabilityLost(String logMsg) {
-                handleIpEvent(() -> updateNeighborLostEvent(logMsg));
+                safelyPostOnHandler(() -> updateNeighborLostEvent(logMsg));
             }
 
             @Override
@@ -469,9 +464,7 @@ public class EthernetNetworkFactory {
             // TODO: Update this logic to only do a restart if required. Although a restart may
             //  be required due to the capabilities or ipConfiguration values, not all
             //  capabilities changes require a restart.
-            if (mIpClient != null) {
-                restart();
-            }
+            maybeRestart();
         }
 
         boolean isRestricted() {
@@ -491,10 +484,19 @@ public class EthernetNetworkFactory {
             mDeps.makeIpClient(mContext, name, mIpClientCallback);
             mIpClientCallback.awaitIpClientStart();
 
+            if (mIpConfig.getProxySettings() == ProxySettings.STATIC
+                    || mIpConfig.getProxySettings() == ProxySettings.PAC) {
+                mIpClient.setHttpProxy(mIpConfig.getHttpProxy());
+            }
+
             if (sTcpBufferSizes == null) {
                 sTcpBufferSizes = mDeps.getTcpBufferSizesFromResource(mContext);
             }
-            provisionIpClient(mIpClient, mIpConfig, sTcpBufferSizes);
+            if (!TextUtils.isEmpty(sTcpBufferSizes)) {
+                mIpClient.setTcpBufferSizes(sTcpBufferSizes);
+            }
+
+            mIpClient.startProvisioning(createProvisioningConfiguration(mIpConfig));
         }
 
         void onIpLayerStarted(@NonNull final LinkProperties linkProperties) {
@@ -540,7 +542,7 @@ public class EthernetNetworkFactory {
                 // Send a callback in case a provisioning request was in progress.
                 return;
             }
-            restart();
+            maybeRestart();
         }
 
         private void ensureRunningOnEthernetHandlerThread() {
@@ -573,7 +575,7 @@ public class EthernetNetworkFactory {
             // If there is a better network, that will become default and apps
             // will be able to use internet. If ethernet gets connected again,
             // and has backhaul connectivity, it will become default.
-            restart();
+            maybeRestart();
         }
 
         /** Returns true if state has been modified */
@@ -635,20 +637,6 @@ public class EthernetNetworkFactory {
             mRequestIds.clear();
         }
 
-        private static void provisionIpClient(@NonNull final IpClientManager ipClient,
-                @NonNull final IpConfiguration config, @NonNull final String tcpBufferSizes) {
-            if (config.getProxySettings() == ProxySettings.STATIC ||
-                    config.getProxySettings() == ProxySettings.PAC) {
-                ipClient.setHttpProxy(config.getHttpProxy());
-            }
-
-            if (!TextUtils.isEmpty(tcpBufferSizes)) {
-                ipClient.setTcpBufferSizes(tcpBufferSizes);
-            }
-
-            ipClient.startProvisioning(createProvisioningConfiguration(config));
-        }
-
         private static ProvisioningConfiguration createProvisioningConfiguration(
                 @NonNull final IpConfiguration config) {
             if (config.getIpAssignment() == IpAssignment.STATIC) {
@@ -661,8 +649,16 @@ public class EthernetNetworkFactory {
                         .build();
         }
 
-        void restart() {
-            if (DBG) Log.d(TAG, "reconnecting Ethernet");
+        void maybeRestart() {
+            if (mIpClient == null) {
+                // If maybeRestart() is called from a provisioning failure, it is
+                // possible that link disappeared in the meantime. In that
+                // case, stop() has already been called and IpClient should not
+                // get restarted to prevent a provisioning failure loop.
+                Log.i(TAG, String.format("maybeRestart() called on stopped interface %s", name));
+                return;
+            }
+            if (DBG) Log.d(TAG, "restart IpClient");
             stop();
             start();
         }

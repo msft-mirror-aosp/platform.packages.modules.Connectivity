@@ -58,6 +58,7 @@ import static android.net.wifi.WifiManager.IFACE_IP_MODE_CONFIGURATION_ERROR;
 import static android.net.wifi.WifiManager.IFACE_IP_MODE_LOCAL_ONLY;
 import static android.net.wifi.WifiManager.IFACE_IP_MODE_TETHERED;
 import static android.net.wifi.WifiManager.IFACE_IP_MODE_UNSPECIFIED;
+import static android.net.wifi.WifiManager.SoftApCallback;
 import static android.net.wifi.WifiManager.WIFI_AP_STATE_DISABLED;
 import static android.telephony.CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED;
 import static android.telephony.SubscriptionManager.INVALID_SUBSCRIPTION_ID;
@@ -88,7 +89,6 @@ import android.net.IpPrefix;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
-import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.TetherStatesParcel;
 import android.net.TetheredClient;
@@ -146,6 +146,7 @@ import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
 import com.android.networkstack.tethering.util.TetheringUtils;
 import com.android.networkstack.tethering.util.VersionedBroadcastListener;
+import com.android.networkstack.tethering.wear.WearableConnectionManager;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -156,6 +157,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
@@ -257,6 +259,7 @@ public class Tethering {
     private final BpfCoordinator mBpfCoordinator;
     private final PrivateAddressCoordinator mPrivateAddressCoordinator;
     private final TetheringMetrics mTetheringMetrics;
+    private final WearableConnectionManager mWearableConnectionManager;
     private int mActiveDataSubId = INVALID_SUBSCRIPTION_ID;
 
     private volatile TetheringConfiguration mConfig;
@@ -393,6 +396,12 @@ public class Tethering {
                     }
                 });
 
+        if (SdkLevel.isAtLeastT() && mConfig.isWearTetheringEnabled()) {
+            mWearableConnectionManager = mDeps.getWearableConnectionManager(mContext);
+        } else {
+            mWearableConnectionManager = null;
+        }
+
         startStateMachineUpdaters();
     }
 
@@ -472,21 +481,14 @@ public class Tethering {
                 mStateReceiver, noUpstreamFilter, PERMISSION_MAINLINE_NETWORK_STACK, mHandler);
 
         final WifiManager wifiManager = getWifiManager();
-        TetheringSoftApCallback softApCallback = new TetheringSoftApCallback();
         if (wifiManager != null) {
-            wifiManager.registerSoftApCallback(mExecutor, softApCallback);
-        }
-        if (SdkLevel.isAtLeastT() && wifiManager != null) {
-            try {
+            wifiManager.registerSoftApCallback(mExecutor, new TetheringSoftApCallback());
+            if (SdkLevel.isAtLeastT()) {
                 // Although WifiManager#registerLocalOnlyHotspotSoftApCallback document that it need
                 // NEARBY_WIFI_DEVICES permission, but actually a caller who have NETWORK_STACK
-                // or MAINLINE_NETWORK_STACK permission would also able to use this API.
-                wifiManager.registerLocalOnlyHotspotSoftApCallback(mExecutor, softApCallback);
-            } catch (UnsupportedOperationException e) {
-                // Since wifi module development in internal branch,
-                // #registerLocalOnlyHotspotSoftApCallback currently doesn't supported in AOSP
-                // before AOSP switch to Android T + 1.
-                Log.wtf(TAG, "registerLocalOnlyHotspotSoftApCallback API is not supported");
+                // or MAINLINE_NETWORK_STACK permission can also use this API.
+                wifiManager.registerLocalOnlyHotspotSoftApCallback(mExecutor,
+                        new LocalOnlyHotspotCallback());
             }
         }
 
@@ -573,26 +575,17 @@ public class Tethering {
         }
     }
 
-    private class TetheringSoftApCallback implements WifiManager.SoftApCallback {
-        // TODO: Remove onStateChanged override when this method has default on
-        // WifiManager#SoftApCallback interface.
-        // Wifi listener for state change of the soft AP
-        @Override
-        public void onStateChanged(final int state, final int failureReason) {
-            // Nothing
-        }
-
-        // Called by wifi when the number of soft AP clients changed.
-        // Currently multiple softAp would not behave well in PrivateAddressCoordinator
-        // (where it gets the address from cache), it ensure tethering only support one ipServer for
-        // TETHERING_WIFI. Once tethering support multiple softAp enabled simultaneously,
-        // onConnectedClientsChanged should also be updated to support tracking different softAp's
-        // clients individually.
-        // TODO: Add wtf log and have check to reject request duplicated type with different
-        // interface.
+    private class TetheringSoftApCallback implements SoftApCallback {
         @Override
         public void onConnectedClientsChanged(final List<WifiClient> clients) {
-            updateConnectedClients(clients);
+            updateConnectedClients(clients, null);
+        }
+    }
+
+    private class LocalOnlyHotspotCallback implements SoftApCallback {
+        @Override
+        public void onConnectedClientsChanged(final List<WifiClient> clients) {
+            updateConnectedClients(null, clients);
         }
     }
 
@@ -1008,8 +1001,7 @@ public class Tethering {
         if (request != null) {
             mActiveTetheringRequests.delete(type);
         }
-        tetherState.ipServer.sendMessage(IpServer.CMD_TETHER_REQUESTED, requestedState, 0,
-                request);
+        tetherState.ipServer.enable(requestedState, request);
         return TETHER_ERROR_NO_ERROR;
     }
 
@@ -1033,7 +1025,7 @@ public class Tethering {
             Log.e(TAG, "Tried to untether an inactive iface :" + iface + ", ignoring");
             return TETHER_ERROR_UNAVAIL_IFACE;
         }
-        tetherState.ipServer.sendMessage(IpServer.CMD_TETHER_UNREQUESTED);
+        tetherState.ipServer.unwanted();
         return TETHER_ERROR_NO_ERROR;
     }
 
@@ -1093,8 +1085,6 @@ public class Tethering {
         final ArrayList<TetheringInterface> localOnly = new ArrayList<>();
         final ArrayList<TetheringInterface> errored = new ArrayList<>();
         final ArrayList<Integer> lastErrors = new ArrayList<>();
-
-        final TetheringConfiguration cfg = mConfig;
 
         int downstreamTypesMask = DOWNSTREAM_NONE;
         for (int i = 0; i < mTetherStates.size(); i++) {
@@ -1205,6 +1195,9 @@ public class Tethering {
         }
 
         private void handleConnectivityAction(Intent intent) {
+            // CONNECTIVITY_ACTION is not handled since U+ device.
+            if (SdkLevel.isAtLeastU()) return;
+
             final NetworkInfo networkInfo =
                     (NetworkInfo) intent.getParcelableExtra(EXTRA_NETWORK_INFO);
             if (networkInfo == null
@@ -1853,11 +1846,16 @@ public class Tethering {
 
             setUpstreamNetwork(ns);
             final Network newUpstream = (ns != null) ? ns.network : null;
-            if (mTetherUpstream != newUpstream) {
+            if (!Objects.equals(mTetherUpstream, newUpstream)) {
                 mTetherUpstream = newUpstream;
-                mUpstreamNetworkMonitor.setCurrentUpstream(mTetherUpstream);
-                reportUpstreamChanged(ns);
+                reportUpstreamChanged(mTetherUpstream);
+                // Need to notify capabilities change after upstream network changed because
+                // upstream may switch to existing network which don't have
+                // UpstreamNetworkMonitor.EVENT_ON_CAPABILITIES callback.
+                mNotificationUpdater.onUpstreamCapabilitiesChanged(
+                        (ns != null) ? ns.networkCapabilities : null);
             }
+            mTetheringMetrics.maybeUpdateUpstreamType(ns);
         }
 
         protected void setUpstreamNetwork(UpstreamNetworkState ns) {
@@ -1964,7 +1962,7 @@ public class Tethering {
             mIPv6TetheringCoordinator.removeActiveDownstream(who);
             mOffload.excludeDownstreamInterface(who.interfaceName());
             mForwardedDownstreams.remove(who);
-            updateConnectedClients(null /* wifiClients */);
+            maybeDhcpLeasesChanged();
 
             // If this is a Wi-Fi interface, tell WifiManager of any errors
             // or the inactive serving state.
@@ -2036,6 +2034,11 @@ public class Tethering {
                     // broadcasts that result in being passed a
                     // TetherMainSM.CMD_UPSTREAM_CHANGED.
                     handleNewUpstreamNetworkState(null);
+
+                    if (SdkLevel.isAtLeastU()) {
+                        // Need to try DUN immediately if Wi-Fi goes down.
+                        chooseUpstreamType(true);
+                    }
                     break;
                 default:
                     mLog.e("Unknown arg1 value: " + arg1);
@@ -2079,8 +2082,10 @@ public class Tethering {
                 if (mTetherUpstream != null) {
                     mTetherUpstream = null;
                     reportUpstreamChanged(null);
+                    mNotificationUpdater.onUpstreamCapabilitiesChanged(null);
                 }
                 mBpfCoordinator.stopPolling();
+                mTetheringMetrics.cleanup();
             }
 
             private boolean updateUpstreamWanted() {
@@ -2409,6 +2414,9 @@ public class Tethering {
 
     /** Unregister tethering event callback */
     void unregisterTetheringEventCallback(ITetheringEventCallback callback) {
+        if (callback == null) {
+            throw new NullPointerException();
+        }
         mHandler.post(() -> {
             mTetheringEventCallbacks.unregister(callback);
         });
@@ -2430,10 +2438,8 @@ public class Tethering {
         }
     }
 
-    private void reportUpstreamChanged(UpstreamNetworkState ns) {
+    private void reportUpstreamChanged(final Network network) {
         final int length = mTetheringEventCallbacks.beginBroadcast();
-        final Network network = (ns != null) ? ns.network : null;
-        final NetworkCapabilities capabilities = (ns != null) ? ns.networkCapabilities : null;
         try {
             for (int i = 0; i < length; i++) {
                 try {
@@ -2445,9 +2451,6 @@ public class Tethering {
         } finally {
             mTetheringEventCallbacks.finishBroadcast();
         }
-        // Need to notify capabilities change after upstream network changed because new network's
-        // capabilities should be checked every time.
-        mNotificationUpdater.onUpstreamCapabilitiesChanged(capabilities);
     }
 
     private void reportConfigurationChanged(TetheringConfigurationParcel config) {
@@ -2648,6 +2651,13 @@ public class Tethering {
         mPrivateAddressCoordinator.dump(pw);
         pw.decreaseIndent();
 
+        if (mWearableConnectionManager != null) {
+            pw.println("WearableConnectionManager:");
+            pw.increaseIndent();
+            mWearableConnectionManager.dump(pw);
+            pw.decreaseIndent();
+        }
+
         pw.println("Log:");
         pw.increaseIndent();
         if (CollectionUtils.contains(args, "--short")) {
@@ -2694,9 +2704,15 @@ public class Tethering {
         if (e != null) throw e;
     }
 
-    private void updateConnectedClients(final List<WifiClient> wifiClients) {
+    private void maybeDhcpLeasesChanged() {
+        // null means wifi clients did not change.
+        updateConnectedClients(null, null);
+    }
+
+    private void updateConnectedClients(final List<WifiClient> wifiClients,
+            final List<WifiClient> localOnlyClients) {
         if (mConnectedClientsTracker.updateConnectedClients(mTetherMainSM.getAllDownstreams(),
-                wifiClients)) {
+                wifiClients, localOnlyClients)) {
             reportTetherClientsChanged(mConnectedClientsTracker.getLastTetheredClients());
         }
     }
@@ -2715,7 +2731,7 @@ public class Tethering {
 
             @Override
             public void dhcpLeasesChanged() {
-                updateConnectedClients(null /* wifiClients */);
+                maybeDhcpLeasesChanged();
             }
 
             @Override

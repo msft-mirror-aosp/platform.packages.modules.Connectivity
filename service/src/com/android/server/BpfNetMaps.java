@@ -139,7 +139,7 @@ public class BpfNetMaps {
     @VisibleForTesting public static final long OEM_DENY_1_MATCH = (1 << 9);
     @VisibleForTesting public static final long OEM_DENY_2_MATCH = (1 << 10);
     @VisibleForTesting public static final long OEM_DENY_3_MATCH = (1 << 11);
-    // LINT.ThenChange(packages/modules/Connectivity/bpf_progs/bpf_shared.h)
+    // LINT.ThenChange(packages/modules/Connectivity/bpf_progs/netd.h)
 
     private static final List<Pair<Integer, String>> PERMISSION_LIST = Arrays.asList(
             Pair.create(PERMISSION_INTERNET, "PERMISSION_INTERNET"),
@@ -279,9 +279,10 @@ public class BpfNetMaps {
     private static synchronized void ensureInitialized(final Context context) {
         if (sInitialized) return;
         if (sEnableJavaBpfMap == null) {
-            sEnableJavaBpfMap = DeviceConfigUtils.isFeatureEnabled(context,
-                    DeviceConfig.NAMESPACE_TETHERING, BPF_NET_MAPS_ENABLE_JAVA_BPF_MAP,
-                    SdkLevel.isAtLeastU() /* defaultValue */);
+            sEnableJavaBpfMap = SdkLevel.isAtLeastU() ||
+                    DeviceConfigUtils.isFeatureEnabled(context,
+                            DeviceConfig.NAMESPACE_TETHERING, BPF_NET_MAPS_ENABLE_JAVA_BPF_MAP,
+                            DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultValue */);
         }
         Log.d(TAG, "BpfNetMaps is initialized with sEnableJavaBpfMap=" + sEnableJavaBpfMap);
 
@@ -383,7 +384,6 @@ public class BpfNetMaps {
      * ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
      * DENYLIST means the firewall allows all by default, uids must be explicitly denyed
      */
-    @VisibleForTesting
     public boolean isFirewallAllowList(final int chain) {
         switch (chain) {
             case FIREWALL_CHAIN_DOZABLE:
@@ -717,6 +717,90 @@ public class BpfNetMaps {
             final int err = native_setUidRule(childChain, uid, firewallRule);
             maybeThrow(err, "Unable to set uid rule");
         }
+    }
+
+    /**
+     * Get firewall rule of specified firewall chain on specified uid.
+     *
+     * @param childChain target chain
+     * @param uid        target uid
+     * @return either FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
+     * @throws UnsupportedOperationException if called on pre-T devices.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    public int getUidRule(final int childChain, final int uid) {
+        throwIfPreT("isUidChainEnabled is not available on pre-T devices");
+
+        final long match = getMatchByFirewallChain(childChain);
+        final boolean isAllowList = isFirewallAllowList(childChain);
+        try {
+            final UidOwnerValue uidMatch = sUidOwnerMap.getValue(new S32(uid));
+            final boolean isMatchEnabled = uidMatch != null && (uidMatch.rule & match) != 0;
+            return isMatchEnabled == isAllowList ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DENY;
+        } catch (ErrnoException e) {
+            throw new ServiceSpecificException(e.errno,
+                    "Unable to get uid rule status: " + Os.strerror(e.errno));
+        }
+    }
+
+    private Set<Integer> getUidsMatchEnabled(final int childChain) throws ErrnoException {
+        final long match = getMatchByFirewallChain(childChain);
+        Set<Integer> uids = new ArraySet<>();
+        synchronized (sUidOwnerMap) {
+            sUidOwnerMap.forEach((uid, val) -> {
+                if (val == null) {
+                    Log.wtf(TAG, "sUidOwnerMap entry was deleted while holding a lock");
+                } else {
+                    if ((val.rule & match) != 0) {
+                        uids.add(uid.val);
+                    }
+                }
+            });
+        }
+        return uids;
+    }
+
+    /**
+     * Get uids that has FIREWALL_RULE_ALLOW on allowlist chain.
+     * Allowlist means the firewall denies all by default, uids must be explicitly allowed.
+     *
+     * Note that uids that has FIREWALL_RULE_DENY on allowlist chain can not be computed from the
+     * bpf map, since all the uids that does not have explicit FIREWALL_RULE_ALLOW rule in bpf map
+     * are determined to have FIREWALL_RULE_DENY.
+     *
+     * @param childChain target chain
+     * @return Set of uids
+     */
+    public Set<Integer> getUidsWithAllowRuleOnAllowListChain(final int childChain)
+            throws ErrnoException {
+        if (!isFirewallAllowList(childChain)) {
+            throw new IllegalArgumentException("getUidsWithAllowRuleOnAllowListChain is called with"
+                    + " denylist chain:" + childChain);
+        }
+        // Corresponding match is enabled for uids that has FIREWALL_RULE_ALLOW on allowlist chain.
+        return getUidsMatchEnabled(childChain);
+    }
+
+    /**
+     * Get uids that has FIREWALL_RULE_DENY on denylist chain.
+     * Denylist means the firewall allows all by default, uids must be explicitly denyed
+     *
+     * Note that uids that has FIREWALL_RULE_ALLOW on denylist chain can not be computed from the
+     * bpf map, since all the uids that does not have explicit FIREWALL_RULE_DENY rule in bpf map
+     * are determined to have the FIREWALL_RULE_ALLOW.
+     *
+     * @param childChain target chain
+     * @return Set of uids
+     */
+    public Set<Integer> getUidsWithDenyRuleOnDenyListChain(final int childChain)
+            throws ErrnoException {
+        if (isFirewallAllowList(childChain)) {
+            throw new IllegalArgumentException("getUidsWithDenyRuleOnDenyListChain is called with"
+                    + " allowlist chain:" + childChain);
+        }
+        // Corresponding match is enabled for uids that has FIREWALL_RULE_DENY on denylist chain.
+        return getUidsMatchEnabled(childChain);
     }
 
     /**

@@ -54,7 +54,6 @@ cc_library_headers {
         "//packages/modules/Connectivity/tests/native/utilities",
         "//packages/modules/Connectivity/service-t/native/libs/libnetworkstats",
         "//packages/modules/Connectivity/tests/unit/jni",
-        "//system/netd/tests",
     ],
 }
 
@@ -104,18 +103,6 @@ bpf {
 }
 
 bpf {
-    name: "offload@inprocess.o",
-    srcs: ["offload@inprocess.c"],
-    btf: true,
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-DBTF",
-        "-DINPROCESS",
-    ],
-}
-
-bpf {
     name: "test.o",
     srcs: ["test.c"],
     cflags: [
@@ -132,18 +119,6 @@ bpf {
         "-Wall",
         "-Werror",
         "-DBTF",
-    ],
-}
-
-bpf {
-    name: "test@inprocess.o",
-    srcs: ["test@inprocess.c"],
-    btf: true,
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-DBTF",
-        "-DINPROCESS",
     ],
 }
 
