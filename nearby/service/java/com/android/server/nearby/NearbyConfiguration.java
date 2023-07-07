@@ -73,13 +73,12 @@ public class NearbyConfiguration {
     }
 
     /**
-     * Returns the DeviceConfig namespace for Nearby. The DeviceConfig#NAMESPACE_NEARBY was
+     * Returns the DeviceConfig namespace for Nearby. The {@link DeviceConfig#NAMESPACE_NEARBY} was
      * added in UpsideDownCake, in Tiramisu, we use {@link DeviceConfig#NAMESPACE_TETHERING}.
      */
     public static String getNamespace() {
         if (SdkLevel.isAtLeastU()) {
-            // DeviceConfig.NAMESPACE_NEARBY
-            return "nearby";
+            return DeviceConfig.NAMESPACE_NEARBY;
         }
         return DeviceConfig.NAMESPACE_TETHERING;
     }

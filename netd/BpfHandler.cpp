@@ -19,8 +19,10 @@
 #include "BpfHandler.h"
 
 #include <linux/bpf.h>
+#include <inttypes.h>
 
 #include <android-base/unique_fd.h>
+#include <android-modules-utils/sdk_level.h>
 #include <bpf/WaitForProgsLoaded.h>
 #include <log/log.h>
 #include <netdutils/UidConstants.h>
@@ -50,35 +52,37 @@ static_assert(STATS_MAP_SIZE - TOTAL_UID_STATS_ENTRIES_LIMIT > 100,
 static Status attachProgramToCgroup(const char* programPath, const unique_fd& cgroupFd,
                                     bpf_attach_type type) {
     unique_fd cgroupProg(retrieveProgram(programPath));
-    if (cgroupProg == -1) {
-        int ret = errno;
-        ALOGE("Failed to get program from %s: %s", programPath, strerror(ret));
-        return statusFromErrno(ret, "cgroup program get failed");
+    if (!cgroupProg.ok()) {
+        const int err = errno;
+        ALOGE("Failed to get program from %s: %s", programPath, strerror(err));
+        return statusFromErrno(err, "cgroup program get failed");
     }
     if (android::bpf::attachProgram(type, cgroupProg, cgroupFd)) {
-        int ret = errno;
-        ALOGE("Program from %s attach failed: %s", programPath, strerror(ret));
-        return statusFromErrno(ret, "program attach failed");
+        const int err = errno;
+        ALOGE("Program from %s attach failed: %s", programPath, strerror(err));
+        return statusFromErrno(err, "program attach failed");
     }
     return netdutils::status::ok;
 }
 
 static Status checkProgramAccessible(const char* programPath) {
     unique_fd prog(retrieveProgram(programPath));
-    if (prog == -1) {
-        int ret = errno;
-        ALOGE("Failed to get program from %s: %s", programPath, strerror(ret));
-        return statusFromErrno(ret, "program retrieve failed");
+    if (!prog.ok()) {
+        const int err = errno;
+        ALOGE("Failed to get program from %s: %s", programPath, strerror(err));
+        return statusFromErrno(err, "program retrieve failed");
     }
     return netdutils::status::ok;
 }
 
 static Status initPrograms(const char* cg2_path) {
+    if (modules::sdklevel::IsAtLeastU() && !!strcmp(cg2_path, "/sys/fs/cgroup")) abort();
+
     unique_fd cg_fd(open(cg2_path, O_DIRECTORY | O_RDONLY | O_CLOEXEC));
-    if (cg_fd == -1) {
-        int ret = errno;
-        ALOGE("Failed to open the cgroup directory: %s", strerror(ret));
-        return statusFromErrno(ret, "Open the cgroup directory failed");
+    if (!cg_fd.ok()) {
+        const int err = errno;
+        ALOGE("Failed to open the cgroup directory: %s", strerror(err));
+        return statusFromErrno(err, "Open the cgroup directory failed");
     }
     RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_ALLOWLIST_PROG_PATH));
     RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_DENYLIST_PROG_PATH));
@@ -243,6 +247,8 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
               mCookieTagMap.getMap().get());
         return -res.error().code();
     }
+    ALOGD("Socket with cookie %" PRIu64 " tagged successfully with tag %" PRIu32 " uid %u "
+              "and real uid %u", sock_cookie, tag, chargeUid, realUid);
     return 0;
 }
 
@@ -256,6 +262,7 @@ int BpfHandler::untagSocket(int sockFd) {
         ALOGE("Failed to untag socket: %s", strerror(res.error().code()));
         return -res.error().code();
     }
+    ALOGD("Socket with cookie %" PRIu64 " untagged successfully.", sock_cookie);
     return 0;
 }
 
