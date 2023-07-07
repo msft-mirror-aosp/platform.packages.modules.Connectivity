@@ -44,10 +44,14 @@ public class MdnsSearchOptions implements Parcelable {
             new Parcelable.Creator<MdnsSearchOptions>() {
                 @Override
                 public MdnsSearchOptions createFromParcel(Parcel source) {
-                    return new MdnsSearchOptions(source.createStringArrayList(),
-                            source.readBoolean(), source.readBoolean(),
+                    return new MdnsSearchOptions(
+                            source.createStringArrayList(),
+                            source.readBoolean(),
+                            source.readBoolean(),
                             source.readParcelable(null),
-                            source.readString());
+                            source.readString(),
+                            source.readBoolean(),
+                            source.readInt());
                 }
 
                 @Override
@@ -59,20 +63,29 @@ public class MdnsSearchOptions implements Parcelable {
     private final List<String> subtypes;
     @Nullable
     private final String resolveInstanceName;
-
     private final boolean isPassiveMode;
+    private final boolean onlyUseIpv6OnIpv6OnlyNetworks;
+    private final int numOfQueriesBeforeBackoff;
     private final boolean removeExpiredService;
     // The target network for searching. Null network means search on all possible interfaces.
     @Nullable private final Network mNetwork;
 
     /** Parcelable constructs for a {@link MdnsSearchOptions}. */
-    MdnsSearchOptions(List<String> subtypes, boolean isPassiveMode, boolean removeExpiredService,
-            @Nullable Network network, @Nullable String resolveInstanceName) {
+    MdnsSearchOptions(
+            List<String> subtypes,
+            boolean isPassiveMode,
+            boolean removeExpiredService,
+            @Nullable Network network,
+            @Nullable String resolveInstanceName,
+            boolean onlyUseIpv6OnIpv6OnlyNetworks,
+            int numOfQueriesBeforeBackoff) {
         this.subtypes = new ArrayList<>();
         if (subtypes != null) {
             this.subtypes.addAll(subtypes);
         }
         this.isPassiveMode = isPassiveMode;
+        this.onlyUseIpv6OnIpv6OnlyNetworks = onlyUseIpv6OnIpv6OnlyNetworks;
+        this.numOfQueriesBeforeBackoff = numOfQueriesBeforeBackoff;
         this.removeExpiredService = removeExpiredService;
         mNetwork = network;
         this.resolveInstanceName = resolveInstanceName;
@@ -102,6 +115,22 @@ public class MdnsSearchOptions implements Parcelable {
      */
     public boolean isPassiveMode() {
         return isPassiveMode;
+    }
+
+    /**
+     * @return {@code true} if only the IPv4 mDNS host should be queried on network that supports
+     * both IPv6 as well as IPv4. On an IPv6-only network, this is ignored.
+     */
+    public boolean onlyUseIpv6OnIpv6OnlyNetworks() {
+        return onlyUseIpv6OnIpv6OnlyNetworks;
+    }
+
+    /**
+     *  Returns number of queries should be executed before backoff mode is enabled.
+     *  The default number is 3 if it is not set.
+     */
+    public int numOfQueriesBeforeBackoff() {
+        return numOfQueriesBeforeBackoff;
     }
 
     /** Returns {@code true} if service will be removed after its TTL expires. */
@@ -140,12 +169,16 @@ public class MdnsSearchOptions implements Parcelable {
         out.writeBoolean(removeExpiredService);
         out.writeParcelable(mNetwork, 0);
         out.writeString(resolveInstanceName);
+        out.writeBoolean(onlyUseIpv6OnIpv6OnlyNetworks);
+        out.writeInt(numOfQueriesBeforeBackoff);
     }
 
     /** A builder to create {@link MdnsSearchOptions}. */
     public static final class Builder {
         private final Set<String> subtypes;
         private boolean isPassiveMode = true;
+        private boolean onlyUseIpv6OnIpv6OnlyNetworks = false;
+        private int numOfQueriesBeforeBackoff = 3;
         private boolean removeExpiredService;
         private Network mNetwork;
         private String resolveInstanceName;
@@ -190,6 +223,23 @@ public class MdnsSearchOptions implements Parcelable {
         }
 
         /**
+         * Sets if only the IPv4 mDNS host should be queried on a network that is both IPv4 & IPv6.
+         * On an IPv6-only network, this is ignored.
+         */
+        public Builder setOnlyUseIpv6OnIpv6OnlyNetworks(boolean onlyUseIpv6OnIpv6OnlyNetworks) {
+            this.onlyUseIpv6OnIpv6OnlyNetworks = onlyUseIpv6OnIpv6OnlyNetworks;
+            return this;
+        }
+
+        /**
+         * Sets if the query backoff mode should be turned on.
+         */
+        public Builder setNumOfQueriesBeforeBackoff(int numOfQueriesBeforeBackoff) {
+            this.numOfQueriesBeforeBackoff = numOfQueriesBeforeBackoff;
+            return this;
+        }
+
+        /**
          * Sets if the service should be removed after TTL.
          *
          * @param removeExpiredService If set to {@code true}, the service will be removed after TTL
@@ -223,8 +273,14 @@ public class MdnsSearchOptions implements Parcelable {
 
         /** Builds a {@link MdnsSearchOptions} with the arguments supplied to this builder. */
         public MdnsSearchOptions build() {
-            return new MdnsSearchOptions(new ArrayList<>(subtypes), isPassiveMode,
-                    removeExpiredService, mNetwork, resolveInstanceName);
+            return new MdnsSearchOptions(
+                    new ArrayList<>(subtypes),
+                    isPassiveMode,
+                    removeExpiredService,
+                    mNetwork,
+                    resolveInstanceName,
+                    onlyUseIpv6OnIpv6OnlyNetworks,
+                    numOfQueriesBeforeBackoff);
         }
     }
 }

@@ -14,29 +14,13 @@
  * limitations under the License.
  */
 
-package com.android.server.connectivity.mdns;
+package com.android.nearby.halfsheet.constants;
 
-/**
- * The interface for netlink monitor.
- */
-public interface ISocketNetLinkMonitor {
+/** Constants to share with other team. */
+public class FastPairConstants {
+    private static final String PACKAGE_NAME = "com.android.server.nearby";
+    public static final String PREFIX = PACKAGE_NAME + ".common.bluetooth.fastpair.";
 
-    /**
-     * Returns if the netlink monitor is supported or not. By default, it is not supported.
-     */
-    default boolean isSupported() {
-        return false;
-    }
-
-    /**
-     * Starts the monitor.
-     */
-    default void startMonitoring() {
-    }
-
-    /**
-     * Stops the monitor.
-     */
-    default void stopMonitoring() {
-    }
+    /** MODEL_ID item name for extended intent field. */
+    public static final String EXTRA_MODEL_ID = PREFIX + "MODEL_ID";
 }
