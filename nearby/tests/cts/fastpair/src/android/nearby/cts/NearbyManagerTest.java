@@ -20,7 +20,7 @@ import static android.Manifest.permission.BLUETOOTH_PRIVILEGED;
 import static android.Manifest.permission.READ_DEVICE_CONFIG;
 import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
 import static android.nearby.PresenceCredential.IDENTITY_TYPE_PRIVATE;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
+import static android.nearby.ScanCallback.ERROR_UNSUPPORTED;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -37,6 +37,7 @@ import android.nearby.NearbyDevice;
 import android.nearby.NearbyManager;
 import android.nearby.OffloadCapability;
 import android.nearby.PresenceBroadcastRequest;
+import android.nearby.PresenceDevice;
 import android.nearby.PrivateCredential;
 import android.nearby.ScanCallback;
 import android.nearby.ScanRequest;
@@ -48,6 +49,8 @@ import androidx.annotation.RequiresApi;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SdkSuppress;
+
+import com.android.modules.utils.build.SdkLevel;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -68,7 +71,7 @@ import java.util.function.Consumer;
 @RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class NearbyManagerTest {
     private static final byte[] SALT = new byte[]{1, 2};
-    private static final byte[] SECRETE_ID = new byte[]{1, 2, 3, 4};
+    private static final byte[] SECRET_ID = new byte[]{1, 2, 3, 4};
     private static final byte[] META_DATA_ENCRYPTION_KEY = new byte[14];
     private static final byte[] AUTHENTICITY_KEY = new byte[]{0, 1, 1, 1};
     private static final String DEVICE_NAME = "test_device";
@@ -84,6 +87,9 @@ public class NearbyManagerTest {
             .setScanMode(ScanRequest.SCAN_MODE_LOW_LATENCY)
             .setBleEnabled(true)
             .build();
+    private PresenceDevice.Builder mBuilder =
+            new PresenceDevice.Builder("deviceId", SALT, SECRET_ID, META_DATA_ENCRYPTION_KEY);
+
     private  ScanCallback mScanCallback = new ScanCallback() {
         @Override
         public void onDiscovered(@NonNull NearbyDevice device) {
@@ -108,7 +114,9 @@ public class NearbyManagerTest {
     public void setUp() {
         mUiAutomation.adoptShellPermissionIdentity(READ_DEVICE_CONFIG, WRITE_DEVICE_CONFIG,
                 BLUETOOTH_PRIVILEGED);
-        DeviceConfig.setProperty(NAMESPACE_TETHERING,
+        String nameSpace = SdkLevel.isAtLeastU() ? DeviceConfig.NAMESPACE_NEARBY
+                : DeviceConfig.NAMESPACE_TETHERING;
+        DeviceConfig.setProperty(nameSpace,
                 "nearby_enable_presence_broadcast_legacy",
                 "true", false);
 
@@ -144,7 +152,7 @@ public class NearbyManagerTest {
     @Test
     @SdkSuppress(minSdkVersion = 32, codeName = "T")
     public void testStartStopBroadcast() throws InterruptedException {
-        PrivateCredential credential = new PrivateCredential.Builder(SECRETE_ID, AUTHENTICITY_KEY,
+        PrivateCredential credential = new PrivateCredential.Builder(SECRET_ID, AUTHENTICITY_KEY,
                 META_DATA_ENCRYPTION_KEY, DEVICE_NAME)
                 .setIdentityType(IDENTITY_TYPE_PRIVATE)
                 .build();
@@ -170,6 +178,15 @@ public class NearbyManagerTest {
     public void queryOffloadScanSupport() {
         OffloadCallback callback = new OffloadCallback();
         mNearbyManager.queryOffloadCapability(EXECUTOR, callback);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public void testAllCallbackMethodsExits() {
+        mScanCallback.onDiscovered(mBuilder.setRssi(-10).build());
+        mScanCallback.onUpdated(mBuilder.setRssi(-5).build());
+        mScanCallback.onLost(mBuilder.setRssi(-8).build());
+        mScanCallback.onError(ERROR_UNSUPPORTED);
     }
 
     private void enableBluetooth() {

@@ -22,6 +22,7 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.HandlerThread
 import com.android.net.module.util.HexDump
+import com.android.net.module.util.SharedLog
 import com.android.server.connectivity.mdns.MdnsAnnouncer.AnnouncementInfo
 import com.android.server.connectivity.mdns.MdnsAnnouncer.BaseAnnouncementInfo
 import com.android.server.connectivity.mdns.MdnsAnnouncer.ExitAnnouncementInfo
@@ -55,6 +56,7 @@ private const val TIMEOUT_MS = 10_000L
 
 private val TEST_ADDRS = listOf(LinkAddress(parseNumericAddress("2001:db8::123"), 64))
 private val TEST_BUFFER = ByteArray(1300)
+private val TEST_HOSTNAME = arrayOf("Android_test", "local")
 
 private const val TEST_SERVICE_ID_1 = 42
 private val TEST_SERVICE_1 = NsdServiceInfo().apply {
@@ -74,6 +76,7 @@ class MdnsInterfaceAdvertiserTest {
     private val replySender = mock(MdnsReplySender::class.java)
     private val announcer = mock(MdnsAnnouncer::class.java)
     private val prober = mock(MdnsProber::class.java)
+    private val sharedlog = SharedLog("MdnsInterfaceAdvertiserTest")
     @Suppress("UNCHECKED_CAST")
     private val probeCbCaptor = ArgumentCaptor.forClass(PacketRepeaterCallback::class.java)
             as ArgumentCaptor<PacketRepeaterCallback<ProbingInfo>>
@@ -88,12 +91,23 @@ class MdnsInterfaceAdvertiserTest {
     private val packetHandler get() = packetHandlerCaptor.value
 
     private val advertiser by lazy {
-        MdnsInterfaceAdvertiser(LOG_TAG, socket, TEST_ADDRS, thread.looper, TEST_BUFFER, cb, deps)
+        MdnsInterfaceAdvertiser(
+            socket,
+            TEST_ADDRS,
+            thread.looper,
+            TEST_BUFFER,
+            cb,
+            deps,
+            TEST_HOSTNAME,
+            sharedlog
+        )
     }
 
     @Before
     fun setUp() {
-        doReturn(repository).`when`(deps).makeRecordRepository(any())
+        doReturn(repository).`when`(deps).makeRecordRepository(any(),
+            eq(TEST_HOSTNAME)
+        )
         doReturn(replySender).`when`(deps).makeReplySender(anyString(), any(), any(), any())
         doReturn(announcer).`when`(deps).makeMdnsAnnouncer(anyString(), any(), any(), any())
         doReturn(prober).`when`(deps).makeMdnsProber(anyString(), any(), any(), any())
@@ -101,8 +115,9 @@ class MdnsInterfaceAdvertiserTest {
         val knownServices = mutableSetOf<Int>()
         doAnswer { inv ->
             knownServices.add(inv.getArgument(0))
+
             -1
-        }.`when`(repository).addService(anyInt(), any())
+        }.`when`(repository).addService(anyInt(), any(), any())
         doAnswer { inv ->
             knownServices.remove(inv.getArgument(0))
             null
@@ -124,6 +139,7 @@ class MdnsInterfaceAdvertiserTest {
     @After
     fun tearDown() {
         thread.quitSafely()
+        thread.join()
     }
 
     @Test
@@ -262,8 +278,8 @@ class MdnsInterfaceAdvertiserTest {
         doReturn(serviceId).`when`(testProbingInfo).serviceId
         doReturn(testProbingInfo).`when`(repository).setServiceProbing(serviceId)
 
-        advertiser.addService(serviceId, serviceInfo)
-        verify(repository).addService(serviceId, serviceInfo)
+        advertiser.addService(serviceId, serviceInfo, null /* subtype */)
+        verify(repository).addService(serviceId, serviceInfo, null /* subtype */)
         verify(prober).startProbing(testProbingInfo)
 
         // Simulate probing success: continues to announcing

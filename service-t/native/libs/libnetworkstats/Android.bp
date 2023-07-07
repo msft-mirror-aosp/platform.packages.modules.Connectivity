@@ -26,9 +26,11 @@ cc_library {
     srcs: [
         "BpfNetworkStats.cpp",
         "NetworkTraceHandler.cpp",
+        "NetworkTracePoller.cpp",
     ],
     shared_libs: [
         "libbase",
+        "libcutils",
         "liblog",
     ],
     static_libs: [
@@ -62,6 +64,7 @@ cc_test {
     srcs: [
         "BpfNetworkStatsTest.cpp",
         "NetworkTraceHandlerTest.cpp",
+        "NetworkTracePollerTest.cpp",
     ],
     cflags: [
         "-Wall",
@@ -73,10 +76,13 @@ cc_test {
         "libgmock",
         "libnetworkstats",
         "libperfetto_client_experimental",
+        "libprotobuf-cpp-lite",
+        "perfetto_trace_protos",
     ],
     shared_libs: [
         "libbase",
         "liblog",
+        "libcutils",
         "libandroid_net",
     ],
     compile_multilib: "both",

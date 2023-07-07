@@ -18,17 +18,16 @@ package com.android.server.connectivity.mdns;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
-import android.net.Network;
 import android.text.TextUtils;
 import android.util.Log;
 import android.util.Pair;
 
 import com.android.server.connectivity.mdns.util.MdnsLogger;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.lang.ref.WeakReference;
 import java.net.DatagramPacket;
-import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -60,13 +59,24 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
         }
     }
 
+    @NonNull
     private final WeakReference<MdnsSocketClientBase> weakRequestSender;
+    @NonNull
     private final MdnsPacketWriter packetWriter;
+    @NonNull
     private final String[] serviceTypeLabels;
+    @NonNull
     private final List<String> subtypes;
     private final boolean expectUnicastResponse;
     private final int transactionId;
-    private final Network network;
+    @NonNull
+    private final SocketKey socketKey;
+    private final boolean sendDiscoveryQueries;
+    @NonNull
+    private final List<MdnsResponse> servicesToResolve;
+    @NonNull
+    private final MdnsResponseDecoder.Clock clock;
+    private final boolean onlyUseIpv6OnIpv6OnlyNetworks;
 
     EnqueueMdnsQueryCallable(
             @NonNull MdnsSocketClientBase requestSender,
@@ -75,14 +85,22 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
             @NonNull Collection<String> subtypes,
             boolean expectUnicastResponse,
             int transactionId,
-            @Nullable Network network) {
+            @NonNull SocketKey socketKey,
+            boolean onlyUseIpv6OnIpv6OnlyNetworks,
+            boolean sendDiscoveryQueries,
+            @NonNull Collection<MdnsResponse> servicesToResolve,
+            @NonNull MdnsResponseDecoder.Clock clock) {
         weakRequestSender = new WeakReference<>(requestSender);
         this.packetWriter = packetWriter;
         serviceTypeLabels = TextUtils.split(serviceType, "\\.");
         this.subtypes = new ArrayList<>(subtypes);
         this.expectUnicastResponse = expectUnicastResponse;
         this.transactionId = transactionId;
-        this.network = network;
+        this.socketKey = socketKey;
+        this.onlyUseIpv6OnIpv6OnlyNetworks = onlyUseIpv6OnIpv6OnlyNetworks;
+        this.sendDiscoveryQueries = sendDiscoveryQueries;
+        this.servicesToResolve = new ArrayList<>(servicesToResolve);
+        this.clock = clock;
     }
 
     // Incompatible return type for override of Callable#call().
@@ -96,9 +114,51 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
                 return null;
             }
 
-            int numQuestions = 1;
-            if (!subtypes.isEmpty()) {
-                numQuestions += subtypes.size();
+            int numQuestions = 0;
+
+            if (sendDiscoveryQueries) {
+                numQuestions++; // Base service type
+                if (!subtypes.isEmpty()) {
+                    numQuestions += subtypes.size();
+                }
+            }
+
+            // List of (name, type) to query
+            final ArrayList<Pair<String[], Integer>> missingKnownAnswerRecords = new ArrayList<>();
+            final long now = clock.elapsedRealtime();
+            for (MdnsResponse response : servicesToResolve) {
+                final String[] serviceName = response.getServiceName();
+                if (serviceName == null) continue;
+                boolean renewTxt = !response.hasTextRecord() || MdnsUtils.isRecordRenewalNeeded(
+                        response.getTextRecord(), now);
+                boolean renewSrv = !response.hasServiceRecord() || MdnsUtils.isRecordRenewalNeeded(
+                        response.getServiceRecord(), now);
+                if (renewSrv && renewTxt) {
+                    missingKnownAnswerRecords.add(new Pair<>(serviceName, MdnsRecord.TYPE_ANY));
+                } else {
+                    if (renewTxt) {
+                        missingKnownAnswerRecords.add(new Pair<>(serviceName, MdnsRecord.TYPE_TXT));
+                    }
+                    if (renewSrv) {
+                        missingKnownAnswerRecords.add(new Pair<>(serviceName, MdnsRecord.TYPE_SRV));
+                        // The hostname is not yet known, so queries for address records will be
+                        // sent the next time the EnqueueMdnsQueryCallable is enqueued if the reply
+                        // does not contain them. In practice, advertisers should include the
+                        // address records when queried for SRV, although it's not a MUST
+                        // requirement (RFC6763 12.2).
+                    } else if (!response.hasInet4AddressRecord()
+                            && !response.hasInet6AddressRecord()) {
+                        final String[] host = response.getServiceRecord().getServiceHost();
+                        missingKnownAnswerRecords.add(new Pair<>(host, MdnsRecord.TYPE_A));
+                        missingKnownAnswerRecords.add(new Pair<>(host, MdnsRecord.TYPE_AAAA));
+                    }
+                }
+            }
+            numQuestions += missingKnownAnswerRecords.size();
+
+            if (numQuestions == 0) {
+                // No query to send
+                return null;
             }
 
             // Header.
@@ -109,47 +169,29 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
             packetWriter.writeUInt16(0); // number of authority entries
             packetWriter.writeUInt16(0); // number of additional records
 
-            // Question(s). There will be one question for each (fqdn+subtype, recordType)
-          // combination,
-            // as well as one for each (fqdn, recordType) combination.
-
-            for (String subtype : subtypes) {
-                String[] labels = new String[serviceTypeLabels.length + 2];
-                labels[0] = MdnsConstants.SUBTYPE_PREFIX + subtype;
-                labels[1] = MdnsConstants.SUBTYPE_LABEL;
-                System.arraycopy(serviceTypeLabels, 0, labels, 2, serviceTypeLabels.length);
-
-                packetWriter.writeLabels(labels);
-                packetWriter.writeUInt16(MdnsRecord.TYPE_PTR);
-                packetWriter.writeUInt16(
-                        MdnsConstants.QCLASS_INTERNET
-                                | (expectUnicastResponse ? MdnsConstants.QCLASS_UNICAST : 0));
+            // Question(s) for missing records on known answers
+            for (Pair<String[], Integer> question : missingKnownAnswerRecords) {
+                writeQuestion(question.first, question.second);
             }
 
-            packetWriter.writeLabels(serviceTypeLabels);
-            packetWriter.writeUInt16(MdnsRecord.TYPE_PTR);
-            packetWriter.writeUInt16(
-                    MdnsConstants.QCLASS_INTERNET
-                            | (expectUnicastResponse ? MdnsConstants.QCLASS_UNICAST : 0));
+            // Question(s) for discovering other services with the type. There will be one question
+            // for each (fqdn+subtype, recordType) combination, as well as one for each (fqdn,
+            // recordType) combination.
+            if (sendDiscoveryQueries) {
+                for (String subtype : subtypes) {
+                    String[] labels = new String[serviceTypeLabels.length + 2];
+                    labels[0] = MdnsConstants.SUBTYPE_PREFIX + subtype;
+                    labels[1] = MdnsConstants.SUBTYPE_LABEL;
+                    System.arraycopy(serviceTypeLabels, 0, labels, 2, serviceTypeLabels.length);
 
-            if (requestSender instanceof MdnsMultinetworkSocketClient) {
-                sendPacketToIpv4AndIpv6(requestSender, MdnsConstants.MDNS_PORT, network);
-                for (Integer emulatorPort : castShellEmulatorMdnsPorts) {
-                    sendPacketToIpv4AndIpv6(requestSender, emulatorPort, network);
+                    writeQuestion(labels, MdnsRecord.TYPE_PTR);
                 }
-            } else if (requestSender instanceof MdnsSocketClient) {
-                final MdnsSocketClient client = (MdnsSocketClient) requestSender;
-                InetAddress mdnsAddress = MdnsConstants.getMdnsIPv4Address();
-                if (client.isOnIPv6OnlyNetwork()) {
-                    mdnsAddress = MdnsConstants.getMdnsIPv6Address();
-                }
+                writeQuestion(serviceTypeLabels, MdnsRecord.TYPE_PTR);
+            }
 
-                sendPacketTo(client, new InetSocketAddress(mdnsAddress, MdnsConstants.MDNS_PORT));
-                for (Integer emulatorPort : castShellEmulatorMdnsPorts) {
-                    sendPacketTo(client, new InetSocketAddress(mdnsAddress, emulatorPort));
-                }
-            } else {
-                throw new IOException("Unknown socket client type: " + requestSender.getClass());
+            sendPacketToIpv4AndIpv6(requestSender, MdnsConstants.MDNS_PORT);
+            for (Integer emulatorPort : castShellEmulatorMdnsPorts) {
+                sendPacketToIpv4AndIpv6(requestSender, emulatorPort);
             }
             return Pair.create(transactionId, subtypes);
         } catch (IOException e) {
@@ -159,38 +201,47 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
         }
     }
 
-    private void sendPacketTo(MdnsSocketClientBase requestSender, InetSocketAddress address)
+    private void writeQuestion(String[] labels, int type) throws IOException {
+        packetWriter.writeLabels(labels);
+        packetWriter.writeUInt16(type);
+        packetWriter.writeUInt16(
+                MdnsConstants.QCLASS_INTERNET
+                        | (expectUnicastResponse ? MdnsConstants.QCLASS_UNICAST : 0));
+    }
+
+    private void sendPacket(MdnsSocketClientBase requestSender, InetSocketAddress address)
             throws IOException {
         DatagramPacket packet = packetWriter.getPacket(address);
         if (expectUnicastResponse) {
-            requestSender.sendUnicastPacket(packet);
+            if (requestSender instanceof MdnsMultinetworkSocketClient) {
+                ((MdnsMultinetworkSocketClient) requestSender).sendPacketRequestingUnicastResponse(
+                        packet, socketKey, onlyUseIpv6OnIpv6OnlyNetworks);
+            } else {
+                requestSender.sendPacketRequestingUnicastResponse(
+                        packet, onlyUseIpv6OnIpv6OnlyNetworks);
+            }
         } else {
-            requestSender.sendMulticastPacket(packet);
+            if (requestSender instanceof MdnsMultinetworkSocketClient) {
+                ((MdnsMultinetworkSocketClient) requestSender)
+                        .sendPacketRequestingMulticastResponse(
+                                packet, socketKey, onlyUseIpv6OnIpv6OnlyNetworks);
+            } else {
+                requestSender.sendPacketRequestingMulticastResponse(
+                        packet, onlyUseIpv6OnIpv6OnlyNetworks);
+            }
         }
     }
 
-    private void sendPacketFromNetwork(MdnsSocketClientBase requestSender,
-            InetSocketAddress address, Network network)
-            throws IOException {
-        DatagramPacket packet = packetWriter.getPacket(address);
-        if (expectUnicastResponse) {
-            requestSender.sendUnicastPacket(packet, network);
-        } else {
-            requestSender.sendMulticastPacket(packet, network);
-        }
-    }
-
-    private void sendPacketToIpv4AndIpv6(MdnsSocketClientBase requestSender, int port,
-            Network network) {
+    private void sendPacketToIpv4AndIpv6(MdnsSocketClientBase requestSender, int port) {
         try {
-            sendPacketFromNetwork(requestSender,
-                    new InetSocketAddress(MdnsConstants.getMdnsIPv4Address(), port), network);
+            sendPacket(requestSender,
+                    new InetSocketAddress(MdnsConstants.getMdnsIPv4Address(), port));
         } catch (IOException e) {
             Log.i(TAG, "Can't send packet to IPv4", e);
         }
         try {
-            sendPacketFromNetwork(requestSender,
-                    new InetSocketAddress(MdnsConstants.getMdnsIPv6Address(), port), network);
+            sendPacket(requestSender,
+                    new InetSocketAddress(MdnsConstants.getMdnsIPv6Address(), port));
         } catch (IOException e) {
             Log.i(TAG, "Can't send packet to IPv6", e);
         }

@@ -17,29 +17,42 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+java_genrule {
+    name: "net-http-test-jarjar-rules",
+    tool_files: [
+        ":NetHttpTestsLibPreJarJar{.jar}",
+        "jarjar_excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["net_http_test_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "$(location :NetHttpTestsLibPreJarJar{.jar}) " +
+        "--prefix android.net.connectivity " +
+        "--excludes $(location jarjar_excludes.txt) " +
+        "--output $(out)",
+}
+
+// Library to be used in coverage tests. cronet_java_tests can't be used directly because the common
+// tests need to inherit the NetHttpTests manifest.
 android_library {
     name: "NetHttpTestsLibPreJarJar",
-    srcs: [":cronet_aml_javatests_sources"],
-    static_libs: [
-        "androidx.test.ext.junit",
-        "androidx.test.rules",
-        "junit",
-    ],
-    libs: [
-        "android.test.base",
-        "framework-tethering-pre-jarjar",
-    ]
+    static_libs: ["cronet_java_tests"],
+    sdk_version: "module_current",
+    min_sdk_version: "30",
 }
 
 android_test {
      name: "NetHttpTests",
      defaults: [
-        "CronetTestJavaDefaults",
         "mts-target-sdk-version-current",
      ],
-     sdk_version: "test_current",
      static_libs: ["NetHttpTestsLibPreJarJar"],
-     jarjar_rules: ":framework-tethering-jarjar-rules",
+     jarjar_rules: ":net-http-test-jarjar-rules",
+     jni_libs: [
+        "cronet_aml_components_cronet_android_cronet_tests__testing"
+     ],
      test_suites: [
          "general-tests",
          "mts-tethering",

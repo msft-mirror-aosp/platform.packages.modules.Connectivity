@@ -16,6 +16,7 @@
 
 package android.net.nsd;
 
+import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_PLATFORM_MDNS_BACKEND;
 import static android.net.connectivity.ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER;
 
 import android.annotation.IntDef;
@@ -280,6 +281,9 @@ public final class NsdManager {
         EVENT_NAMES.put(UNREGISTER_SERVICE_CALLBACK, "UNREGISTER_SERVICE_CALLBACK");
         EVENT_NAMES.put(UNREGISTER_SERVICE_CALLBACK_SUCCEEDED,
                 "UNREGISTER_SERVICE_CALLBACK_SUCCEEDED");
+        EVENT_NAMES.put(MDNS_DISCOVERY_MANAGER_EVENT, "MDNS_DISCOVERY_MANAGER_EVENT");
+        EVENT_NAMES.put(REGISTER_CLIENT, "REGISTER_CLIENT");
+        EVENT_NAMES.put(UNREGISTER_CLIENT, "UNREGISTER_CLIENT");
     }
 
     /** @hide */
@@ -425,6 +429,10 @@ public final class NsdManager {
             private final DiscoveryListener mWrapped;
             private final Executor mWrappedExecutor;
             private final ArraySet<TrackedNsdInfo> mFoundInfo = new ArraySet<>();
+            // When this flag is set to true, no further service found or lost callbacks should be
+            // handled. This flag indicates that the network for this DelegatingDiscoveryListener is
+            // lost, and any further callbacks would be redundant.
+            private boolean mAllServicesLost = false;
 
             private DelegatingDiscoveryListener(Network network, DiscoveryListener listener,
                     Executor executor) {
@@ -441,6 +449,7 @@ public final class NsdManager {
                     serviceInfo.setNetwork(mNetwork);
                     mWrappedExecutor.execute(() -> mWrapped.onServiceLost(serviceInfo));
                 }
+                mAllServicesLost = true;
             }
 
             @Override
@@ -482,12 +491,22 @@ public final class NsdManager {
 
             @Override
             public void onServiceFound(NsdServiceInfo serviceInfo) {
+                if (mAllServicesLost) {
+                    // This DelegatingDiscoveryListener no longer has a network connection. Ignore
+                    // the callback.
+                    return;
+                }
                 mFoundInfo.add(new TrackedNsdInfo(serviceInfo));
                 mWrappedExecutor.execute(() -> mWrapped.onServiceFound(serviceInfo));
             }
 
             @Override
             public void onServiceLost(NsdServiceInfo serviceInfo) {
+                if (mAllServicesLost) {
+                    // This DelegatingDiscoveryListener no longer has a network connection. Ignore
+                    // the callback.
+                    return;
+                }
                 mFoundInfo.remove(new TrackedNsdInfo(serviceInfo));
                 mWrappedExecutor.execute(() -> mWrapped.onServiceLost(serviceInfo));
             }
@@ -510,7 +529,8 @@ public final class NsdManager {
         mHandler = new ServiceHandler(t.getLooper());
 
         try {
-            mService = service.connect(new NsdCallbackImpl(mHandler));
+            mService = service.connect(new NsdCallbackImpl(mHandler), CompatChanges.isChangeEnabled(
+                    ENABLE_PLATFORM_MDNS_BACKEND));
         } catch (RemoteException e) {
             throw new RuntimeException("Failed to connect to NsdService");
         }
@@ -1312,7 +1332,7 @@ public final class NsdManager {
      * before registering other callbacks. Upon failure to register a callback for example if
      * it's a duplicated registration, the application is notified through
      * {@link ServiceInfoCallback#onServiceInfoCallbackRegistrationFailed} with
-     * {@link #FAILURE_BAD_PARAMETERS} or {@link #FAILURE_ALREADY_ACTIVE}.
+     * {@link #FAILURE_BAD_PARAMETERS}.
      *
      * @param serviceInfo the service to receive updates for
      * @param executor Executor to run callbacks with

@@ -57,6 +57,8 @@ import android.system.OsConstants;
 import android.text.TextUtils;
 import android.util.Log;
 
+import androidx.annotation.Nullable;
+
 import com.android.compatibility.common.util.PollingCheck;
 import com.android.compatibility.common.util.ShellIdentityUtils;
 import com.android.compatibility.common.util.SystemUtil;
@@ -68,6 +70,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -75,7 +79,14 @@ import java.util.concurrent.TimeoutException;
 
 public final class CtsNetUtils {
     private static final String TAG = CtsNetUtils.class.getSimpleName();
-    private static final int SOCKET_TIMEOUT_MS = 2000;
+
+    // Redefine this flag here so that IPsec code shipped in a mainline module can build on old
+    // platforms before FEATURE_IPSEC_TUNNEL_MIGRATION API is released.
+    // TODO: b/275378783 Remove this flag and use the platform API when it is available.
+    private static final String FEATURE_IPSEC_TUNNEL_MIGRATION =
+            "android.software.ipsec_tunnel_migration";
+
+    private static final int SOCKET_TIMEOUT_MS = 10_000;
     private static final int PRIVATE_DNS_PROBE_MS = 1_000;
 
     private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 10_000;
@@ -113,6 +124,11 @@ public final class CtsNetUtils {
     public boolean hasIpsecTunnelsFeature() {
         return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_IPSEC_TUNNELS)
                 || getFirstApiLevel() >= Build.VERSION_CODES.Q;
+    }
+
+    /** Checks if FEATURE_IPSEC_TUNNEL_MIGRATION is enabled on the device */
+    public boolean hasIpsecTunnelMigrateFeature() {
+        return mContext.getPackageManager().hasSystemFeature(FEATURE_IPSEC_TUNNEL_MIGRATION);
     }
 
     /**
@@ -410,7 +426,7 @@ public final class CtsNetUtils {
                 .build();
     }
 
-    private void testHttpRequest(Socket s) throws IOException {
+    public void testHttpRequest(Socket s) throws IOException {
         OutputStream out = s.getOutputStream();
         InputStream in = s.getInputStream();
 
@@ -418,7 +434,9 @@ public final class CtsNetUtils {
         byte[] responseBytes = new byte[4096];
         out.write(requestBytes);
         in.read(responseBytes);
-        assertTrue(new String(responseBytes, "UTF-8").startsWith("HTTP/1.0 204 No Content\r\n"));
+        final String response = new String(responseBytes, "UTF-8");
+        assertTrue("Received unexpected response: " + response,
+                response.startsWith("HTTP/1.0 204 No Content\r\n"));
     }
 
     private Socket getBoundSocket(Network network, String host, int port) throws IOException {
@@ -494,17 +512,18 @@ public final class CtsNetUtils {
      * @throws InterruptedException If the thread is interrupted.
      */
     public void awaitPrivateDnsSetting(@NonNull String msg, @NonNull Network network,
-            @NonNull String server, boolean requiresValidatedServer) throws InterruptedException {
+            @Nullable String server, boolean requiresValidatedServer) throws InterruptedException {
         final CountDownLatch latch = new CountDownLatch(1);
         final NetworkRequest request = new NetworkRequest.Builder().clearCapabilities().build();
-        NetworkCallback callback = new NetworkCallback() {
+        final NetworkCallback callback = new NetworkCallback() {
             @Override
             public void onLinkPropertiesChanged(Network n, LinkProperties lp) {
                 Log.i(TAG, "Link properties of network " + n + " changed to " + lp);
                 if (requiresValidatedServer && lp.getValidatedPrivateDnsServers().isEmpty()) {
                     return;
                 }
-                if (network.equals(n) && server.equals(lp.getPrivateDnsServerName())) {
+                Log.i(TAG, "Set private DNS server to " + server);
+                if (network.equals(n) && Objects.equals(server, lp.getPrivateDnsServerName())) {
                     latch.countDown();
                 }
             }
@@ -524,6 +543,27 @@ public final class CtsNetUtils {
         if (requiresValidatedServer) {
             Thread.sleep(PRIVATE_DNS_PROBE_MS);
         }
+    }
+
+    /**
+     * Get all testable Networks with internet capability.
+     */
+    public Network[] getTestableNetworks() {
+        final ArrayList<Network> testableNetworks = new ArrayList<Network>();
+        for (Network network : mCm.getAllNetworks()) {
+            final NetworkCapabilities nc = mCm.getNetworkCapabilities(network);
+            if (nc != null
+                    && nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                    && nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                testableNetworks.add(network);
+            }
+        }
+
+        assertTrue("This test requires that at least one public Internet-providing"
+                        + " network be connected. Please ensure that the device is connected to"
+                        + " a network.",
+                testableNetworks.size() >= 1);
+        return testableNetworks.toArray(new Network[0]);
     }
 
     /**

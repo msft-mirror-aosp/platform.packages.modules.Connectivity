@@ -44,9 +44,11 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.nearby.common.locator.LocatorContextWrapper;
 import com.android.server.nearby.fastpair.FastPairManager;
 import com.android.server.nearby.injector.Injector;
+import com.android.server.nearby.managers.BroadcastProviderManager;
+import com.android.server.nearby.managers.DiscoveryManager;
+import com.android.server.nearby.managers.DiscoveryProviderManager;
+import com.android.server.nearby.managers.DiscoveryProviderManagerLegacy;
 import com.android.server.nearby.presence.PresenceManager;
-import com.android.server.nearby.provider.BroadcastProviderManager;
-import com.android.server.nearby.provider.DiscoveryProviderManager;
 import com.android.server.nearby.provider.FastPairDataProvider;
 import com.android.server.nearby.util.identity.CallerIdentity;
 import com.android.server.nearby.util.permissions.BroadcastPermissions;
@@ -57,14 +59,12 @@ public class NearbyService extends INearbyManager.Stub {
     public static final String TAG = "NearbyService";
     // Sets to true to start BLE scan from PresenceManager for manual testing.
     public static final Boolean MANUAL_TEST = false;
-    // Sets to true to support Mainline Test App.
-    // This will disable BLE privilege check and legacy broadcast support check.
-    public static final Boolean SUPPORT_TEST_APP = false;
 
     private final Context mContext;
-    private Injector mInjector;
     private final FastPairManager mFastPairManager;
     private final PresenceManager mPresenceManager;
+    private final NearbyConfiguration mNearbyConfiguration;
+    private Injector mInjector;
     private final BroadcastReceiver mBluetoothReceiver =
             new BroadcastReceiver() {
                 @Override
@@ -82,17 +82,21 @@ public class NearbyService extends INearbyManager.Stub {
                     }
                 }
             };
-    private DiscoveryProviderManager mProviderManager;
-    private BroadcastProviderManager mBroadcastProviderManager;
+    private final DiscoveryManager mDiscoveryProviderManager;
+    private final BroadcastProviderManager mBroadcastProviderManager;
 
     public NearbyService(Context context) {
         mContext = context;
         mInjector = new SystemInjector(context);
-        mProviderManager = new DiscoveryProviderManager(context, mInjector);
         mBroadcastProviderManager = new BroadcastProviderManager(context, mInjector);
         final LocatorContextWrapper lcw = new LocatorContextWrapper(context, null);
         mFastPairManager = new FastPairManager(lcw);
         mPresenceManager = new PresenceManager(lcw);
+        mNearbyConfiguration = new NearbyConfiguration();
+        mDiscoveryProviderManager =
+                mNearbyConfiguration.refactorDiscoveryManager()
+                        ? new DiscoveryProviderManager(context, mInjector)
+                        : new DiscoveryProviderManagerLegacy(context, mInjector);
     }
 
     @VisibleForTesting
@@ -109,7 +113,7 @@ public class NearbyService extends INearbyManager.Stub {
         CallerIdentity identity = CallerIdentity.fromBinder(mContext, packageName, attributionTag);
         DiscoveryPermissions.enforceDiscoveryPermission(mContext, identity);
 
-        return mProviderManager.registerScanListener(scanRequest, listener, identity);
+        return mDiscoveryProviderManager.registerScanListener(scanRequest, listener, identity);
     }
 
     @Override
@@ -120,7 +124,7 @@ public class NearbyService extends INearbyManager.Stub {
         CallerIdentity identity = CallerIdentity.fromBinder(mContext, packageName, attributionTag);
         DiscoveryPermissions.enforceDiscoveryPermission(mContext, identity);
 
-        mProviderManager.unregisterScanListener(listener);
+        mDiscoveryProviderManager.unregisterScanListener(listener);
     }
 
     @Override
@@ -148,7 +152,7 @@ public class NearbyService extends INearbyManager.Stub {
 
     @Override
     public void queryOffloadCapability(IOffloadCallback callback) {
-
+        mDiscoveryProviderManager.queryOffloadCapability(callback);
     }
 
     /**
@@ -175,7 +179,7 @@ public class NearbyService extends INearbyManager.Stub {
                     // Initialize ContextManager for CHRE scan.
                     ((SystemInjector) mInjector).initializeContextHubManager();
                 }
-                mProviderManager.init();
+                mDiscoveryProviderManager.init();
                 mContext.registerReceiver(
                         mBluetoothReceiver,
                         new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
@@ -194,8 +198,8 @@ public class NearbyService extends INearbyManager.Stub {
      * throw a {@link SecurityException}.
      */
     @RequiresPermission(android.Manifest.permission.BLUETOOTH_PRIVILEGED)
-    private static void enforceBluetoothPrivilegedPermission(Context context) {
-        if (!SUPPORT_TEST_APP) {
+    private void enforceBluetoothPrivilegedPermission(Context context) {
+        if (!mNearbyConfiguration.isTestAppSupported()) {
             context.enforceCallingOrSelfPermission(
                     android.Manifest.permission.BLUETOOTH_PRIVILEGED,
                     "Need BLUETOOTH PRIVILEGED permission");
