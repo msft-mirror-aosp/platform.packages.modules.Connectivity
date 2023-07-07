@@ -25,7 +25,6 @@ import static com.android.internal.annotations.VisibleForTesting.Visibility.PACK
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
-import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.INetd;
@@ -57,6 +56,7 @@ import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkMessage;
 import com.android.net.module.util.netlink.RtNetlinkLinkMessage;
 import com.android.net.module.util.netlink.StructIfinfoMsg;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.FileDescriptor;
 import java.net.InetAddress;
@@ -302,9 +302,14 @@ public class EthernetTracker {
         final int state = getInterfaceState(iface);
         final int role = getInterfaceRole(iface);
         final IpConfiguration config = getIpConfigurationForCallback(iface, state);
+        final boolean isRestricted = isRestrictedInterface(iface);
         final int n = mListeners.beginBroadcast();
         for (int i = 0; i < n; i++) {
             try {
+                if (isRestricted) {
+                    final ListenerInfo info = (ListenerInfo) mListeners.getBroadcastCookie(i);
+                    if (!info.canUseRestrictedNetworks) continue;
+                }
                 mListeners.getBroadcastItem(i).onInterfaceStateChanged(iface, state, role, config);
             } catch (RemoteException e) {
                 // Do nothing here.
@@ -366,15 +371,9 @@ public class EthernetTracker {
     }
 
     @VisibleForTesting(visibility = PACKAGE)
-    protected void enableInterface(@NonNull final String iface,
+    protected void setInterfaceEnabled(@NonNull final String iface, boolean enabled,
             @Nullable final EthernetCallback cb) {
-        mHandler.post(() -> updateInterfaceState(iface, true, cb));
-    }
-
-    @VisibleForTesting(visibility = PACKAGE)
-    protected void disableInterface(@NonNull final String iface,
-            @Nullable final EthernetCallback cb) {
-        mHandler.post(() -> updateInterfaceState(iface, false, cb));
+        mHandler.post(() -> updateInterfaceState(iface, enabled, cb));
     }
 
     IpConfiguration getIpConfiguration(String iface) {
@@ -386,7 +385,7 @@ public class EthernetTracker {
         return mFactory.hasInterface(iface);
     }
 
-    String[] getInterfaces(boolean includeRestricted) {
+    String[] getClientModeInterfaces(boolean includeRestricted) {
         return mFactory.getAvailableInterfaces(includeRestricted);
     }
 
@@ -429,8 +428,11 @@ public class EthernetTracker {
                 // Remote process has already died
                 return;
             }
-            for (String iface : getInterfaces(canUseRestrictedNetworks)) {
+            for (String iface : getClientModeInterfaces(canUseRestrictedNetworks)) {
                 unicastInterfaceStateChange(listener, iface);
+            }
+            if (mTetheringInterfaceMode == INTERFACE_MODE_SERVER) {
+                unicastInterfaceStateChange(listener, mTetheringInterface);
             }
 
             unicastEthernetStateChange(listener, mEthernetState);

@@ -23,7 +23,10 @@ import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkScore.KEEP_CONNECTED_NONE;
 import static android.net.NetworkScore.POLICY_YIELD_TO_BAD_WIFI;
 
+import static com.android.net.module.util.BitUtils.describeDifferences;
+
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.net.NetworkAgentConfig;
 import android.net.NetworkCapabilities;
 import android.net.NetworkScore;
@@ -331,6 +334,18 @@ public class FullScore {
         return 2 * ((int) mPolicies)
                 + 3 * (int) (mPolicies >>> 32)
                 + 5 * mKeepConnectedReason;
+    }
+
+    /**
+     * Returns a short but human-readable string of updates from an older score.
+     * @param old the old score to diff from
+     * @return a string fit for logging differences, or null if no differences.
+     *         this method cannot return the empty string. See BitUtils#describeDifferences.
+     */
+    @Nullable
+    public String describeDifferencesFrom(@Nullable final FullScore old) {
+        final long oldPolicies = null == old ? 0 : old.mPolicies;
+        return describeDifferences(oldPolicies, mPolicies, FullScore::policyNameOf);
     }
 
     // Example output :

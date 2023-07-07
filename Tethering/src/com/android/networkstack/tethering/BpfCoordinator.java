@@ -27,6 +27,7 @@ import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED
 import static android.system.OsConstants.ETH_P_IP;
 import static android.system.OsConstants.ETH_P_IPV6;
 
+import static com.android.net.module.util.NetworkStackConstants.IPV4_MIN_MTU;
 import static com.android.net.module.util.ip.ConntrackMonitor.ConntrackEvent;
 import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
@@ -36,6 +37,7 @@ import static com.android.networkstack.tethering.util.TetheringUtils.getTetherin
 
 import android.app.usage.NetworkStatsManager;
 import android.net.INetd;
+import android.net.LinkProperties;
 import android.net.MacAddress;
 import android.net.NetworkStats;
 import android.net.NetworkStats.Entry;
@@ -74,7 +76,7 @@ import com.android.net.module.util.ip.ConntrackMonitor;
 import com.android.net.module.util.ip.ConntrackMonitor.ConntrackEventConsumer;
 import com.android.net.module.util.netlink.ConntrackMessage;
 import com.android.net.module.util.netlink.NetlinkConstants;
-import com.android.net.module.util.netlink.NetlinkSocket;
+import com.android.net.module.util.netlink.NetlinkUtils;
 import com.android.networkstack.tethering.apishim.common.BpfCoordinatorShim;
 import com.android.networkstack.tethering.util.TetheringUtils.ForwardedStats;
 
@@ -82,6 +84,8 @@ import java.io.IOException;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -126,7 +130,7 @@ public class BpfCoordinator {
     private static final String DUMPSYS_RAWMAP_ARG_STATS = "--stats";
     private static final String DUMPSYS_RAWMAP_ARG_UPSTREAM4 = "--upstream4";
 
-    /** The names of all the BPF counters defined in bpf_tethering.h. */
+    /** The names of all the BPF counters defined in offload.h. */
     public static final String[] sBpfCounterNames = getBpfCounterNames();
 
     private static String makeMapPath(String which) {
@@ -143,6 +147,8 @@ public class BpfCoordinator {
     static final int NF_CONNTRACK_TCP_TIMEOUT_ESTABLISHED = 432_000;
     @VisibleForTesting
     static final int NF_CONNTRACK_UDP_TIMEOUT_STREAM = 180;
+    @VisibleForTesting
+    static final int INVALID_MTU = 0;
 
     // List of TCP port numbers which aren't offloaded because the packets require the netfilter
     // conntrack helper. See also TetherController::setForwardRules in netd.
@@ -263,6 +269,10 @@ public class BpfCoordinator {
     // TODO: Support multi-upstream interfaces.
     private int mLastIPv4UpstreamIfindex = 0;
 
+    // Tracks the IPv4 upstream interface information.
+    @Nullable
+    private UpstreamInfo mIpv4UpstreamInfo = null;
+
     // Runnable that used by scheduling next polling of stats.
     private final Runnable mScheduledPollingStats = () -> {
         updateForwardedStats();
@@ -318,6 +328,19 @@ public class BpfCoordinator {
          */
         public boolean isAtLeastS() {
             return SdkLevel.isAtLeastS();
+        }
+
+        /**
+         * Gets the MTU of the given interface.
+         */
+        public int getNetworkInterfaceMtu(@NonNull String iface) {
+            try {
+                final NetworkInterface networkInterface = NetworkInterface.getByName(iface);
+                return networkInterface == null ? INVALID_MTU : networkInterface.getMTU();
+            } catch (SocketException e) {
+                Log.e(TAG, "Could not get MTU for interface " + iface, e);
+                return INVALID_MTU;
+            }
         }
 
         /** Get downstream4 BPF map. */
@@ -400,6 +423,18 @@ public class BpfCoordinator {
                     BpfMap.BPF_F_RDWR, TetherDevKey.class, TetherDevValue.class);
             } catch (ErrnoException e) {
                 Log.e(TAG, "Cannot create dev map: " + e);
+                return null;
+            }
+        }
+
+        /** Get error BPF map. */
+        @Nullable public IBpfMap<S32, S32> getBpfErrorMap() {
+            if (!isAtLeastS()) return null;
+            try {
+                return new BpfMap<>(TETHER_ERROR_MAP_PATH,
+                    BpfMap.BPF_F_RDONLY, S32.class, S32.class);
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Cannot create error map: " + e);
                 return null;
             }
         }
@@ -535,6 +570,13 @@ public class BpfCoordinator {
     public void stopMonitoring(@NonNull final IpServer ipServer) {
         // TODO: Wrap conntrackMonitor stopping function into mBpfCoordinatorShim.
         if (!isUsingBpf() || !mDeps.isAtLeastS()) return;
+
+        // Ignore stopping monitoring if the monitor has never started for a given IpServer.
+        if (!mMonitoringIpServers.contains(ipServer)) {
+            mLog.e("Ignore stopping monitoring because monitoring has never started for "
+                    + ipServer.interfaceName());
+            return;
+        }
 
         mMonitoringIpServers.remove(ipServer);
 
@@ -837,6 +879,27 @@ public class BpfCoordinator {
         return true;
     }
 
+    private int getMtu(@NonNull final String ifaceName, @NonNull final LinkProperties lp) {
+        int mtu = INVALID_MTU;
+
+        if (ifaceName.equals(lp.getInterfaceName())) {
+            mtu = lp.getMtu();
+        }
+
+        // Get mtu via kernel if mtu is not found in LinkProperties.
+        if (mtu == INVALID_MTU) {
+            mtu = mDeps.getNetworkInterfaceMtu(ifaceName);
+        }
+
+        // Use default mtu if can't find any.
+        if (mtu == INVALID_MTU) mtu = NetworkStackConstants.ETHER_MTU;
+
+        // Clamp to minimum ipv4 mtu
+        if (mtu < IPV4_MIN_MTU) mtu = IPV4_MIN_MTU;
+
+        return mtu;
+    }
+
     /**
      * Call when UpstreamNetworkState may be changed.
      * If upstream has ipv4 for tethering, update this new UpstreamNetworkState
@@ -849,6 +912,7 @@ public class BpfCoordinator {
         if (!isUsingBpf()) return;
 
         int upstreamIndex = 0;
+        int mtu = INVALID_MTU;
 
         // This will not work on a network that is using 464xlat because hasIpv4Address will not be
         // true.
@@ -858,6 +922,8 @@ public class BpfCoordinator {
             final String ifaceName = ns.linkProperties.getInterfaceName();
             final InterfaceParams params = mDeps.getInterfaceParams(ifaceName);
             final boolean isVcn = isVcnInterface(ifaceName);
+            mtu = getMtu(ifaceName, ns.linkProperties);
+
             if (!isVcn && params != null && !params.hasMacAddress /* raw ip upstream only */) {
                 upstreamIndex = params.index;
             }
@@ -886,8 +952,11 @@ public class BpfCoordinator {
         // after the upstream is lost do not incorrectly add rules pointing at the upstream.
         if (upstreamIndex == 0) {
             mIpv4UpstreamIndices.clear();
+            mIpv4UpstreamInfo = null;
             return;
         }
+
+        mIpv4UpstreamInfo = new UpstreamInfo(upstreamIndex, mtu);
         Collection<InetAddress> addresses = ns.linkProperties.getAddresses();
         for (final InetAddress addr: addresses) {
             if (isValidUpstreamIpv4Address(addr)) {
@@ -1031,6 +1100,9 @@ public class BpfCoordinator {
             pw.println(mIpv4UpstreamIndices.toString());
         }
         pw.decreaseIndent();
+
+        pw.println("IPv4 Upstream Information: "
+                + (mIpv4UpstreamInfo != null ? mIpv4UpstreamInfo : "<empty>"));
 
         pw.println();
         pw.println("Forwarding counters:");
@@ -1239,10 +1311,10 @@ public class BpfCoordinator {
 
         final String ageStr = (value.lastUsed == 0) ? "-"
                 : String.format("%dms", (now - value.lastUsed) / 1_000_000);
-        return String.format("%s [%s] %d(%s) %s:%d -> %d(%s) %s:%d -> %s:%d [%s] %s",
+        return String.format("%s [%s] %d(%s) %s:%d -> %d(%s) %s:%d -> %s:%d [%s] %d %s",
                 l4protoToString(key.l4proto), key.dstMac, key.iif, getIfName(key.iif),
                 src4, key.srcPort, value.oif, getIfName(value.oif),
-                public4, publicPort, dst4, value.dstPort, value.ethDstMac, ageStr);
+                public4, publicPort, dst4, value.dstPort, value.ethDstMac, value.pmtu, ageStr);
     }
 
     private void dumpIpv4ForwardingRuleMap(long now, boolean downstream,
@@ -1264,13 +1336,13 @@ public class BpfCoordinator {
         try (IBpfMap<Tether4Key, Tether4Value> upstreamMap = mDeps.getBpfUpstream4Map();
                 IBpfMap<Tether4Key, Tether4Value> downstreamMap = mDeps.getBpfDownstream4Map()) {
             pw.println("IPv4 Upstream: proto [inDstMac] iif(iface) src -> nat -> "
-                    + "dst [outDstMac] age");
+                    + "dst [outDstMac] pmtu age");
             pw.increaseIndent();
             dumpIpv4ForwardingRuleMap(now, UPSTREAM, upstreamMap, pw);
             pw.decreaseIndent();
 
             pw.println("IPv4 Downstream: proto [inDstMac] iif(iface) src -> nat -> "
-                    + "dst [outDstMac] age");
+                    + "dst [outDstMac] pmtu age");
             pw.increaseIndent();
             dumpIpv4ForwardingRuleMap(now, DOWNSTREAM, downstreamMap, pw);
             pw.decreaseIndent();
@@ -1280,13 +1352,15 @@ public class BpfCoordinator {
     }
 
     private void dumpCounters(@NonNull IndentingPrintWriter pw) {
-        if (!mDeps.isAtLeastS()) {
-            pw.println("No counter support");
-            return;
-        }
-        try (IBpfMap<S32, S32> map = new BpfMap<>(TETHER_ERROR_MAP_PATH, BpfMap.BPF_F_RDONLY,
-                S32.class, S32.class)) {
-
+        try (IBpfMap<S32, S32> map = mDeps.getBpfErrorMap()) {
+            if (map == null) {
+                pw.println("No error counter support");
+                return;
+            }
+            if (map.isEmpty()) {
+                pw.println("<empty>");
+                return;
+            }
             map.forEach((k, v) -> {
                 String counterName;
                 try {
@@ -1300,7 +1374,7 @@ public class BpfCoordinator {
                 if (v.val > 0) pw.println(String.format("%s: %d", counterName, v.val));
             });
         } catch (ErrnoException | IOException e) {
-            pw.println("Error dumping counter map: " + e);
+            pw.println("Error dumping error counter map: " + e);
         }
     }
 
@@ -1466,6 +1540,15 @@ public class BpfCoordinator {
             // to Objects.hash() to avoid autoboxing overhead.
             return Objects.hash(upstreamIfindex, downstreamIfindex, address, srcMac, dstMac);
         }
+
+        @Override
+        public String toString() {
+            return "upstreamIfindex: " + upstreamIfindex
+                    + ", downstreamIfindex: " + downstreamIfindex
+                    + ", address: " + address.getHostAddress()
+                    + ", srcMac: " + srcMac
+                    + ", dstMac: " + dstMac;
+        }
     }
 
     /** Tethering client information class. */
@@ -1507,6 +1590,28 @@ public class BpfCoordinator {
         public String toString() {
             return String.format("downstream: %d (%s), client: %s (%s)",
                     downstreamIfindex, downstreamMac, clientAddress, clientMac);
+        }
+    }
+
+    /** Upstream information class. */
+    private static final class UpstreamInfo {
+        // TODO: add clat interface information
+        public final int ifIndex;
+        public final int mtu;
+
+        private UpstreamInfo(final int ifIndex, final int mtu) {
+            this.ifIndex = ifIndex;
+            this.mtu = mtu;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(ifIndex, mtu);
+        }
+
+        @Override
+        public String toString() {
+            return String.format("ifIndex: %d, mtu: %d", ifIndex, mtu);
         }
     }
 
@@ -1681,20 +1786,20 @@ public class BpfCoordinator {
 
         @NonNull
         private Tether4Value makeTetherUpstream4Value(@NonNull ConntrackEvent e,
-                int upstreamIndex) {
-            return new Tether4Value(upstreamIndex,
+                @NonNull UpstreamInfo upstreamInfo) {
+            return new Tether4Value(upstreamInfo.ifIndex,
                     NULL_MAC_ADDRESS /* ethDstMac (rawip) */,
                     NULL_MAC_ADDRESS /* ethSrcMac (rawip) */, ETH_P_IP,
-                    NetworkStackConstants.ETHER_MTU, toIpv4MappedAddressBytes(e.tupleReply.dstIp),
+                    upstreamInfo.mtu, toIpv4MappedAddressBytes(e.tupleReply.dstIp),
                     toIpv4MappedAddressBytes(e.tupleReply.srcIp), e.tupleReply.dstPort,
                     e.tupleReply.srcPort, 0 /* lastUsed, filled by bpf prog only */);
         }
 
         @NonNull
         private Tether4Value makeTetherDownstream4Value(@NonNull ConntrackEvent e,
-                @NonNull ClientInfo c, int upstreamIndex) {
+                @NonNull ClientInfo c, @NonNull UpstreamInfo upstreamInfo) {
             return new Tether4Value(c.downstreamIfindex,
-                    c.clientMac, c.downstreamMac, ETH_P_IP, NetworkStackConstants.ETHER_MTU,
+                    c.clientMac, c.downstreamMac, ETH_P_IP, upstreamInfo.mtu,
                     toIpv4MappedAddressBytes(e.tupleOrig.dstIp),
                     toIpv4MappedAddressBytes(e.tupleOrig.srcIp),
                     e.tupleOrig.dstPort, e.tupleOrig.srcPort,
@@ -1743,9 +1848,11 @@ public class BpfCoordinator {
                 return;
             }
 
-            final Tether4Value upstream4Value = makeTetherUpstream4Value(e, upstreamIndex);
+            if (mIpv4UpstreamInfo == null || mIpv4UpstreamInfo.ifIndex != upstreamIndex) return;
+
+            final Tether4Value upstream4Value = makeTetherUpstream4Value(e, mIpv4UpstreamInfo);
             final Tether4Value downstream4Value = makeTetherDownstream4Value(e, tetherClient,
-                    upstreamIndex);
+                    mIpv4UpstreamInfo);
 
             maybeAddDevMap(upstreamIndex, tetherClient.downstreamIfindex);
             maybeSetLimit(upstreamIndex);
@@ -2045,7 +2152,7 @@ public class BpfCoordinator {
         final byte[] msg = ConntrackMessage.newIPv4TimeoutUpdateRequest(
                 proto, src4, (int) srcPort, dst4, (int) dstPort, timeoutSec);
         try {
-            NetlinkSocket.sendOneShotKernelMessage(OsConstants.NETLINK_NETFILTER, msg);
+            NetlinkUtils.sendOneShotKernelMessage(OsConstants.NETLINK_NETFILTER, msg);
         } catch (ErrnoException e) {
             // Lower the log level for the entry not existing. The conntrack entry may have been
             // deleted and not handled by the conntrack event monitor yet. In other words, the
@@ -2147,6 +2254,14 @@ public class BpfCoordinator {
     final HashMap<IpServer, HashMap<Inet4Address, ClientInfo>>
             getTetherClientsForTesting() {
         return mTetherClients;
+    }
+
+    // Return map of upstream interface IPv4 address to interface index.
+    // This is used for testing only.
+    @NonNull
+    @VisibleForTesting
+    final HashMap<Inet4Address, Integer> getIpv4UpstreamIndicesForTesting() {
+        return mIpv4UpstreamIndices;
     }
 
     private static native String[] getBpfCounterNames();

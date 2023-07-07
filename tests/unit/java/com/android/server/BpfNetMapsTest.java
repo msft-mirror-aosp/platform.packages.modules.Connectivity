@@ -37,10 +37,15 @@ import static com.android.server.BpfNetMaps.DOZABLE_MATCH;
 import static com.android.server.BpfNetMaps.HAPPY_BOX_MATCH;
 import static com.android.server.BpfNetMaps.IIF_MATCH;
 import static com.android.server.BpfNetMaps.LOCKDOWN_VPN_MATCH;
+import static com.android.server.BpfNetMaps.LOW_POWER_STANDBY_MATCH;
 import static com.android.server.BpfNetMaps.NO_MATCH;
+import static com.android.server.BpfNetMaps.OEM_DENY_1_MATCH;
+import static com.android.server.BpfNetMaps.OEM_DENY_2_MATCH;
+import static com.android.server.BpfNetMaps.OEM_DENY_3_MATCH;
 import static com.android.server.BpfNetMaps.PENALTY_BOX_MATCH;
 import static com.android.server.BpfNetMaps.POWERSAVE_MATCH;
 import static com.android.server.BpfNetMaps.RESTRICTED_MATCH;
+import static com.android.server.BpfNetMaps.STANDBY_MATCH;
 import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
 
 import static org.junit.Assert.assertEquals;
@@ -61,6 +66,8 @@ import android.net.INetd;
 import android.os.Build;
 import android.os.ServiceSpecificException;
 import android.system.ErrnoException;
+import android.util.ArraySet;
+import android.util.IndentingPrintWriter;
 
 import androidx.test.filters.SmallTest;
 
@@ -84,6 +91,8 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.io.FileDescriptor;
+import java.io.StringWriter;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -138,6 +147,9 @@ public final class BpfNetMapsTest {
         doReturn(0).when(mDeps).synchronizeKernelRCU();
         BpfNetMaps.setEnableJavaBpfMapForTest(true /* enable */);
         BpfNetMaps.setConfigurationMapForTest(mConfigurationMap);
+        mConfigurationMap.updateEntry(UID_RULES_CONFIGURATION_KEY, new U32(0));
+        mConfigurationMap.updateEntry(
+                CURRENT_STATS_MAP_CONFIGURATION_KEY, new U32(STATS_SELECT_MAP_A));
         BpfNetMaps.setUidOwnerMapForTest(mUidOwnerMap);
         BpfNetMaps.setUidPermissionMapForTest(mUidPermissionMap);
         BpfNetMaps.setCookieTagMapForTest(mCookieTagMap);
@@ -679,6 +691,80 @@ public final class BpfNetMapsTest {
                 mBpfNetMaps.setUidRule(FIREWALL_CHAIN_DOZABLE, TEST_UID, FIREWALL_RULE_ALLOW));
     }
 
+    private void doTestGetUidRule(final List<Integer> enableChains) throws Exception {
+        mUidOwnerMap.updateEntry(new S32(TEST_UID), new UidOwnerValue(0, getMatch(enableChains)));
+
+        for (final int chain: FIREWALL_CHAINS) {
+            final String testCase = "EnabledChains: " + enableChains + " CheckedChain: " + chain;
+            if (enableChains.contains(chain)) {
+                final int expectedRule = mBpfNetMaps.isFirewallAllowList(chain)
+                        ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DENY;
+                assertEquals(testCase, expectedRule, mBpfNetMaps.getUidRule(chain, TEST_UID));
+            } else {
+                final int expectedRule = mBpfNetMaps.isFirewallAllowList(chain)
+                        ? FIREWALL_RULE_DENY : FIREWALL_RULE_ALLOW;
+                assertEquals(testCase, expectedRule, mBpfNetMaps.getUidRule(chain, TEST_UID));
+            }
+        }
+    }
+
+    private void doTestGetUidRule(final int enableChain) throws Exception {
+        doTestGetUidRule(List.of(enableChain));
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testGetUidRule() throws Exception {
+        doTestGetUidRule(FIREWALL_CHAIN_DOZABLE);
+        doTestGetUidRule(FIREWALL_CHAIN_STANDBY);
+        doTestGetUidRule(FIREWALL_CHAIN_POWERSAVE);
+        doTestGetUidRule(FIREWALL_CHAIN_RESTRICTED);
+        doTestGetUidRule(FIREWALL_CHAIN_LOW_POWER_STANDBY);
+        doTestGetUidRule(FIREWALL_CHAIN_OEM_DENY_1);
+        doTestGetUidRule(FIREWALL_CHAIN_OEM_DENY_2);
+        doTestGetUidRule(FIREWALL_CHAIN_OEM_DENY_3);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testGetUidRuleMultipleChainEnabled() throws Exception {
+        doTestGetUidRule(List.of(
+                FIREWALL_CHAIN_DOZABLE,
+                FIREWALL_CHAIN_STANDBY));
+        doTestGetUidRule(List.of(
+                FIREWALL_CHAIN_DOZABLE,
+                FIREWALL_CHAIN_STANDBY,
+                FIREWALL_CHAIN_POWERSAVE,
+                FIREWALL_CHAIN_RESTRICTED));
+        doTestGetUidRule(FIREWALL_CHAINS);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testGetUidRuleNoEntry() throws Exception {
+        mUidOwnerMap.clear();
+        for (final int chain: FIREWALL_CHAINS) {
+            final int expectedRule = mBpfNetMaps.isFirewallAllowList(chain)
+                    ? FIREWALL_RULE_DENY : FIREWALL_RULE_ALLOW;
+            assertEquals(expectedRule, mBpfNetMaps.getUidRule(chain, TEST_UID));
+        }
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testGetUidRuleInvalidChain() {
+        final Class<ServiceSpecificException> expected = ServiceSpecificException.class;
+        assertThrows(expected, () -> mBpfNetMaps.getUidRule(-1 /* childChain */, TEST_UID));
+        assertThrows(expected, () -> mBpfNetMaps.getUidRule(1000 /* childChain */, TEST_UID));
+    }
+
+    @Test
+    @IgnoreAfter(Build.VERSION_CODES.S_V2)
+    public void testGetUidRuleBeforeT() {
+        assertThrows(UnsupportedOperationException.class,
+                () -> mBpfNetMaps.getUidRule(FIREWALL_CHAIN_DOZABLE, TEST_UID));
+    }
+
     @Test
     @IgnoreUpTo(Build.VERSION_CODES.S_V2)
     public void testReplaceUidChain() throws Exception {
@@ -926,5 +1012,173 @@ public final class BpfNetMapsTest {
     public void testPullBpfMapInfoUnexpectedAtomTag() {
         final int ret = mBpfNetMaps.pullBpfMapInfoAtom(-1 /* atomTag */, new ArrayList<>());
         assertEquals(StatsManager.PULL_SKIP, ret);
+    }
+
+    private void assertDumpContains(final String dump, final String message) {
+        assertTrue(String.format("dump(%s) does not contain '%s'", dump, message),
+                dump.contains(message));
+    }
+
+    private String getDump() throws Exception {
+        final StringWriter sw = new StringWriter();
+        mBpfNetMaps.dump(new IndentingPrintWriter(sw), new FileDescriptor(), true /* verbose */);
+        return sw.toString();
+    }
+
+    private void doTestDumpUidPermissionMap(final int permission, final String permissionString)
+            throws Exception {
+        mUidPermissionMap.updateEntry(new S32(TEST_UID), new U8((short) permission));
+        assertDumpContains(getDump(), TEST_UID + " " + permissionString);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpUidPermissionMap() throws Exception {
+        doTestDumpUidPermissionMap(PERMISSION_NONE, "PERMISSION_NONE");
+        doTestDumpUidPermissionMap(PERMISSION_INTERNET | PERMISSION_UPDATE_DEVICE_STATS,
+                "PERMISSION_INTERNET PERMISSION_UPDATE_DEVICE_STATS");
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpUidPermissionMapInvalidPermission() throws Exception {
+        doTestDumpUidPermissionMap(PERMISSION_UNINSTALLED, "PERMISSION_UNINSTALLED error!");
+        doTestDumpUidPermissionMap(PERMISSION_INTERNET | 1 << 6,
+                "PERMISSION_INTERNET PERMISSION_UNKNOWN(64)");
+    }
+
+    void doTestDumpUidOwnerMap(final int iif, final long match, final String matchString)
+            throws Exception {
+        mUidOwnerMap.updateEntry(new S32(TEST_UID), new UidOwnerValue(iif, match));
+        assertDumpContains(getDump(), TEST_UID + " " + matchString);
+    }
+
+    void doTestDumpUidOwnerMap(final long match, final String matchString) throws Exception {
+        doTestDumpUidOwnerMap(0 /* iif */, match, matchString);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpUidOwnerMap() throws Exception {
+        doTestDumpUidOwnerMap(HAPPY_BOX_MATCH, "HAPPY_BOX_MATCH");
+        doTestDumpUidOwnerMap(PENALTY_BOX_MATCH, "PENALTY_BOX_MATCH");
+        doTestDumpUidOwnerMap(DOZABLE_MATCH, "DOZABLE_MATCH");
+        doTestDumpUidOwnerMap(STANDBY_MATCH, "STANDBY_MATCH");
+        doTestDumpUidOwnerMap(POWERSAVE_MATCH, "POWERSAVE_MATCH");
+        doTestDumpUidOwnerMap(RESTRICTED_MATCH, "RESTRICTED_MATCH");
+        doTestDumpUidOwnerMap(LOW_POWER_STANDBY_MATCH, "LOW_POWER_STANDBY_MATCH");
+        doTestDumpUidOwnerMap(LOCKDOWN_VPN_MATCH, "LOCKDOWN_VPN_MATCH");
+        doTestDumpUidOwnerMap(OEM_DENY_1_MATCH, "OEM_DENY_1_MATCH");
+        doTestDumpUidOwnerMap(OEM_DENY_2_MATCH, "OEM_DENY_2_MATCH");
+        doTestDumpUidOwnerMap(OEM_DENY_3_MATCH, "OEM_DENY_3_MATCH");
+
+        doTestDumpUidOwnerMap(HAPPY_BOX_MATCH | POWERSAVE_MATCH,
+                "HAPPY_BOX_MATCH POWERSAVE_MATCH");
+        doTestDumpUidOwnerMap(DOZABLE_MATCH | LOCKDOWN_VPN_MATCH | OEM_DENY_1_MATCH,
+                "DOZABLE_MATCH LOCKDOWN_VPN_MATCH OEM_DENY_1_MATCH");
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpUidOwnerMapWithIifMatch() throws Exception {
+        doTestDumpUidOwnerMap(TEST_IF_INDEX, IIF_MATCH, "IIF_MATCH " + TEST_IF_INDEX);
+        doTestDumpUidOwnerMap(TEST_IF_INDEX,
+                IIF_MATCH | DOZABLE_MATCH | LOCKDOWN_VPN_MATCH | OEM_DENY_1_MATCH,
+                "DOZABLE_MATCH IIF_MATCH LOCKDOWN_VPN_MATCH OEM_DENY_1_MATCH " + TEST_IF_INDEX);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpUidOwnerMapWithInvalidMatch() throws Exception {
+        final long invalid_match = 1L << 31;
+        doTestDumpUidOwnerMap(invalid_match, "UNKNOWN_MATCH(" + invalid_match + ")");
+        doTestDumpUidOwnerMap(DOZABLE_MATCH | invalid_match,
+                "DOZABLE_MATCH UNKNOWN_MATCH(" + invalid_match + ")");
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpCurrentStatsMapConfig() throws Exception {
+        mConfigurationMap.updateEntry(
+                CURRENT_STATS_MAP_CONFIGURATION_KEY, new U32(STATS_SELECT_MAP_A));
+        assertDumpContains(getDump(), "current statsMap configuration: 0 SELECT_MAP_A");
+
+        mConfigurationMap.updateEntry(
+                CURRENT_STATS_MAP_CONFIGURATION_KEY, new U32(STATS_SELECT_MAP_B));
+        assertDumpContains(getDump(), "current statsMap configuration: 1 SELECT_MAP_B");
+    }
+
+    private void doTestDumpOwnerMatchConfig(final long match, final String matchString)
+            throws Exception {
+        mConfigurationMap.updateEntry(UID_RULES_CONFIGURATION_KEY, new U32(match));
+        assertDumpContains(getDump(),
+                "current ownerMatch configuration: " + match + " " + matchString);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpUidOwnerMapConfig() throws Exception {
+        doTestDumpOwnerMatchConfig(HAPPY_BOX_MATCH, "HAPPY_BOX_MATCH");
+        doTestDumpOwnerMatchConfig(PENALTY_BOX_MATCH, "PENALTY_BOX_MATCH");
+        doTestDumpOwnerMatchConfig(DOZABLE_MATCH, "DOZABLE_MATCH");
+        doTestDumpOwnerMatchConfig(STANDBY_MATCH, "STANDBY_MATCH");
+        doTestDumpOwnerMatchConfig(POWERSAVE_MATCH, "POWERSAVE_MATCH");
+        doTestDumpOwnerMatchConfig(RESTRICTED_MATCH, "RESTRICTED_MATCH");
+        doTestDumpOwnerMatchConfig(LOW_POWER_STANDBY_MATCH, "LOW_POWER_STANDBY_MATCH");
+        doTestDumpOwnerMatchConfig(IIF_MATCH, "IIF_MATCH");
+        doTestDumpOwnerMatchConfig(LOCKDOWN_VPN_MATCH, "LOCKDOWN_VPN_MATCH");
+        doTestDumpOwnerMatchConfig(OEM_DENY_1_MATCH, "OEM_DENY_1_MATCH");
+        doTestDumpOwnerMatchConfig(OEM_DENY_2_MATCH, "OEM_DENY_2_MATCH");
+        doTestDumpOwnerMatchConfig(OEM_DENY_3_MATCH, "OEM_DENY_3_MATCH");
+
+        doTestDumpOwnerMatchConfig(HAPPY_BOX_MATCH | POWERSAVE_MATCH,
+                "HAPPY_BOX_MATCH POWERSAVE_MATCH");
+        doTestDumpOwnerMatchConfig(DOZABLE_MATCH | LOCKDOWN_VPN_MATCH | OEM_DENY_1_MATCH,
+                "DOZABLE_MATCH LOCKDOWN_VPN_MATCH OEM_DENY_1_MATCH");
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpUidOwnerMapConfigWithInvalidMatch() throws Exception {
+        final long invalid_match = 1L << 31;
+        doTestDumpOwnerMatchConfig(invalid_match, "UNKNOWN_MATCH(" + invalid_match + ")");
+        doTestDumpOwnerMatchConfig(DOZABLE_MATCH | invalid_match,
+                "DOZABLE_MATCH UNKNOWN_MATCH(" + invalid_match + ")");
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpCookieTagMap() throws Exception {
+        mCookieTagMap.updateEntry(new CookieTagMapKey(123), new CookieTagMapValue(456, 0x789));
+        assertDumpContains(getDump(), "cookie=123 tag=0x789 uid=456");
+    }
+
+    @Test
+    public void testGetUids() throws ErrnoException {
+        final int uid0 = TEST_UIDS[0];
+        final int uid1 = TEST_UIDS[1];
+        final long match0 = DOZABLE_MATCH | POWERSAVE_MATCH;
+        final long match1 = DOZABLE_MATCH | STANDBY_MATCH;
+        mUidOwnerMap.updateEntry(new S32(uid0), new UidOwnerValue(NULL_IIF, match0));
+        mUidOwnerMap.updateEntry(new S32(uid1), new UidOwnerValue(NULL_IIF, match1));
+
+        assertEquals(new ArraySet<>(List.of(uid0, uid1)),
+                mBpfNetMaps.getUidsWithAllowRuleOnAllowListChain(FIREWALL_CHAIN_DOZABLE));
+        assertEquals(new ArraySet<>(List.of(uid0)),
+                mBpfNetMaps.getUidsWithAllowRuleOnAllowListChain(FIREWALL_CHAIN_POWERSAVE));
+
+        assertEquals(new ArraySet<>(List.of(uid1)),
+                mBpfNetMaps.getUidsWithDenyRuleOnDenyListChain(FIREWALL_CHAIN_STANDBY));
+        assertEquals(new ArraySet<>(),
+                mBpfNetMaps.getUidsWithDenyRuleOnDenyListChain(FIREWALL_CHAIN_OEM_DENY_1));
+    }
+
+    @Test
+    public void testGetUidsIllegalArgument() {
+        final Class<IllegalArgumentException> expected = IllegalArgumentException.class;
+        assertThrows(expected,
+                () -> mBpfNetMaps.getUidsWithDenyRuleOnDenyListChain(FIREWALL_CHAIN_DOZABLE));
+        assertThrows(expected,
+                () -> mBpfNetMaps.getUidsWithAllowRuleOnAllowListChain(FIREWALL_CHAIN_OEM_DENY_1));
     }
 }

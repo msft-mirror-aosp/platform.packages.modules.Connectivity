@@ -18,9 +18,7 @@ package com.android.cts.net.hostside;
 
 import static android.app.job.JobScheduler.RESULT_SUCCESS;
 import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED;
-import static android.os.BatteryManager.BATTERY_PLUGGED_AC;
-import static android.os.BatteryManager.BATTERY_PLUGGED_USB;
-import static android.os.BatteryManager.BATTERY_PLUGGED_WIRELESS;
+import static android.os.BatteryManager.BATTERY_PLUGGED_ANY;
 
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.executeShellCommand;
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.forceRunJob;
@@ -54,6 +52,7 @@ import android.net.NetworkRequest;
 import android.os.BatteryManager;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.PowerManager;
 import android.os.RemoteCallback;
 import android.os.SystemClock;
 import android.provider.DeviceConfig;
@@ -61,6 +60,7 @@ import android.service.notification.NotificationListenerService;
 import android.util.Log;
 import android.util.Pair;
 
+import com.android.compatibility.common.util.AmUtils;
 import com.android.compatibility.common.util.BatteryUtils;
 import com.android.compatibility.common.util.DeviceConfigStateHelper;
 
@@ -118,10 +118,6 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     protected static final String NOTIFICATION_TYPE_ACTION_BUNDLE = "ACTION_BUNDLE";
     protected static final String NOTIFICATION_TYPE_ACTION_REMOTE_INPUT = "ACTION_REMOTE_INPUT";
 
-    // TODO: Update BatteryManager.BATTERY_PLUGGED_ANY as @TestApi
-    public static final int BATTERY_PLUGGED_ANY =
-            BATTERY_PLUGGED_AC | BATTERY_PLUGGED_USB | BATTERY_PLUGGED_WIRELESS;
-
     private static final String NETWORK_STATUS_SEPARATOR = "\\|";
     private static final int SECOND_IN_MS = 1000;
     static final int NETWORK_TIMEOUT_MS = 15 * SECOND_IN_MS;
@@ -163,6 +159,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     private int mMyUid;
     private MyServiceClient mServiceClient;
     private DeviceConfigStateHelper mDeviceIdleDeviceConfigStateHelper;
+    private PowerManager mPowerManager;
+    private PowerManager.WakeLock mLock;
 
     @Rule
     public final RuleChain mRuleChain = RuleChain.outerRule(new RequiredPropertiesRule())
@@ -181,8 +179,10 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         mMyUid = getUid(mContext.getPackageName());
         mServiceClient = new MyServiceClient(mContext);
         mServiceClient.bind();
+        mPowerManager = mContext.getSystemService(PowerManager.class);
         executeShellCommand("cmd netpolicy start-watching " + mUid);
         setAppIdle(false);
+        mLock = mPowerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG);
 
         Log.i(TAG, "Apps status:\n"
                 + "\ttest app: uid=" + mMyUid + ", state=" + getProcessStateByUid(mMyUid) + "\n"
@@ -192,6 +192,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     protected void tearDown() throws Exception {
         executeShellCommand("cmd netpolicy stop-watching");
         mServiceClient.unbind();
+        if (mLock.isHeld()) mLock.release();
     }
 
     protected int getUid(String packageName) throws Exception {
@@ -695,11 +696,13 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     }
 
     protected void turnScreenOff() throws Exception {
+        if (!mLock.isHeld()) mLock.acquire();
         executeSilentShellCommand("input keyevent KEYCODE_SLEEP");
     }
 
     protected void turnScreenOn() throws Exception {
         executeSilentShellCommand("input keyevent KEYCODE_WAKEUP");
+        if (mLock.isHeld()) mLock.release();
         executeSilentShellCommand("wm dismiss-keyguard");
     }
 
@@ -710,10 +713,12 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         Log.i(TAG, "Setting Battery Saver Mode to " + enabled);
         if (enabled) {
             turnBatteryOn();
+            AmUtils.waitForBroadcastBarrier();
             executeSilentShellCommand("cmd power set-mode 1");
         } else {
             executeSilentShellCommand("cmd power set-mode 0");
             turnBatteryOff();
+            AmUtils.waitForBroadcastBarrier();
         }
     }
 

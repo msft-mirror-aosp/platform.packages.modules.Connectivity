@@ -68,6 +68,8 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.server.ConnectivityService;
 
 import java.io.PrintWriter;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -1003,9 +1005,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
             @NonNull final NetworkCapabilities nc) {
         final NetworkCapabilities oldNc = networkCapabilities;
         networkCapabilities = nc;
-        mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig, everValidated(),
-                0L != getAvoidUnvalidated(), yieldToBadWiFi(),
-                0L != mFirstEvaluationConcludedTime, isDestroyed());
+        updateScoreForNetworkAgentUpdate();
         final NetworkMonitorManager nm = mNetworkMonitor;
         if (nm != null) {
             nm.notifyNetworkCapabilitiesChanged(nc);
@@ -1032,6 +1032,30 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
 
     public Network network() {
         return network;
+    }
+
+    /**
+     * Get the generated v6 address of clat.
+     */
+    @Nullable
+    public Inet6Address getClatv6SrcAddress() {
+        return clatd.getClatv6SrcAddress();
+    }
+
+    /**
+     * Get the generated v4 address of clat.
+     */
+    @Nullable
+    public Inet4Address getClatv4SrcAddress() {
+        return clatd.getClatv4SrcAddress();
+    }
+
+    /**
+     * Translate the input v4 address to v6 clat address.
+     */
+    @Nullable
+    public Inet6Address translateV4toClatV6(@NonNull Inet4Address addr) {
+        return clatd.translateV4toV6(addr);
     }
 
     /**
@@ -1207,9 +1231,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * Mix-in the ConnectivityService-managed bits in the score.
      */
     public void setScore(final NetworkScore score) {
+        final FullScore oldScore = mScore;
         mScore = FullScore.fromNetworkScore(score, networkCapabilities, networkAgentConfig,
-                everValidated(), 0L == getAvoidUnvalidated(), yieldToBadWiFi(),
+                everValidated(), 0L != getAvoidUnvalidated(), yieldToBadWiFi(),
                 0L != mFirstEvaluationConcludedTime, isDestroyed());
+        maybeLogDifferences(oldScore);
     }
 
     /**
@@ -1218,9 +1244,22 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * Call this after changing any data that might affect the score (e.g., agent config).
      */
     public void updateScoreForNetworkAgentUpdate() {
+        final FullScore oldScore = mScore;
         mScore = mScore.mixInScore(networkCapabilities, networkAgentConfig,
                 everValidated(), 0L != getAvoidUnvalidated(), yieldToBadWiFi(),
                 0L != mFirstEvaluationConcludedTime, isDestroyed());
+        maybeLogDifferences(oldScore);
+    }
+
+    /**
+     * Prints score differences to logcat, if any.
+     * @param oldScore the old score. Differences from |oldScore| to |this| are logged, if any.
+     */
+    public void maybeLogDifferences(final FullScore oldScore) {
+        final String differences = mScore.describeDifferencesFrom(oldScore);
+        if (null != differences) {
+            Log.i(TAG, "Update score for net " + network + " : " + differences);
+        }
     }
 
     /**
