@@ -20,6 +20,10 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.Network;
 import android.os.Handler;
+import android.util.ArraySet;
+
+import com.android.server.connectivity.mdns.MdnsConstants;
+import com.android.server.connectivity.mdns.MdnsRecord;
 
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -50,6 +54,17 @@ public class MdnsUtils {
     }
 
     /**
+     * Convert the array of labels to DNS case-insensitive lowercase.
+     */
+    public static String[] toDnsLabelsLowerCase(@NonNull String[] labels) {
+        final String[] outStrings = new String[labels.length];
+        for (int i = 0; i < labels.length; ++i) {
+            outStrings[i] = toDnsLowerCase(labels[i]);
+        }
+        return outStrings;
+    }
+
+    /**
      * Compare two strings by DNS case-insensitive lowercase.
      */
     public static boolean equalsIgnoreDnsCase(@NonNull String a, @NonNull String b) {
@@ -62,22 +77,72 @@ public class MdnsUtils {
         return true;
     }
 
+    /**
+     * Compare two set of DNS labels by DNS case-insensitive lowercase.
+     */
+    public static boolean equalsDnsLabelIgnoreDnsCase(@NonNull String[] a, @NonNull String[] b) {
+        if (a == b) {
+            return true;
+        }
+        int length = a.length;
+        if (b.length != length) {
+            return false;
+        }
+        for (int i = 0; i < length; i++) {
+            if (!equalsIgnoreDnsCase(a[i], b[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Compare labels a equals b or a is suffix of b.
+     *
+     * @param a the type or subtype.
+     * @param b the base type
+     */
+    public static boolean typeEqualsOrIsSubtype(@NonNull String[] a,
+            @NonNull String[] b) {
+        return MdnsUtils.equalsDnsLabelIgnoreDnsCase(a, b)
+                || ((b.length == (a.length + 2))
+                && MdnsUtils.equalsIgnoreDnsCase(b[1], MdnsConstants.SUBTYPE_LABEL)
+                && MdnsRecord.labelsAreSuffix(a, b));
+    }
+
     private static char toDnsLowerCase(char a) {
         return a >= 'A' && a <= 'Z' ? (char) (a + ('a' - 'A')) : a;
     }
 
     /*** Ensure that current running thread is same as given handler thread */
     public static void ensureRunningOnHandlerThread(@NonNull Handler handler) {
-        if (handler.getLooper().getThread() != Thread.currentThread()) {
+        if (!isRunningOnHandlerThread(handler)) {
             throw new IllegalStateException(
                     "Not running on Handler thread: " + Thread.currentThread().getName());
         }
     }
 
-    /*** Check whether the target network is matched current network */
+    /*** Check that current running thread is same as given handler thread */
+    public static boolean isRunningOnHandlerThread(@NonNull Handler handler) {
+        if (handler.getLooper().getThread() == Thread.currentThread()) {
+            return true;
+        }
+        return false;
+    }
+
+    /*** Check whether the target network matches the current network */
     public static boolean isNetworkMatched(@Nullable Network targetNetwork,
             @Nullable Network currentNetwork) {
         return targetNetwork == null || targetNetwork.equals(currentNetwork);
+    }
+
+    /*** Check whether the target network matches any of the current networks */
+    public static boolean isAnyNetworkMatched(@Nullable Network targetNetwork,
+            ArraySet<Network> currentNetworks) {
+        if (targetNetwork == null) {
+            return !currentNetworks.isEmpty();
+        }
+        return currentNetworks.contains(targetNetwork);
     }
 
     /**
@@ -96,5 +161,16 @@ public class MdnsUtils {
         // return code here, this method truncates the name on purpose).
         encoder.encode(CharBuffer.wrap(originalName), out, true /* endOfInput */);
         return new String(out.array(), 0, out.position(), utf8);
+    }
+
+    /**
+     * Checks if the MdnsRecord needs to be renewed or not.
+     *
+     * <p>As per RFC6762 7.1 no need to query if remaining TTL is more than half the original one,
+     * so send the queries if half the TTL has passed.
+     */
+    public static boolean isRecordRenewalNeeded(@NonNull MdnsRecord mdnsRecord, final long now) {
+        return mdnsRecord.getTtl() > 0
+                && mdnsRecord.getRemainingTTL(now) <= mdnsRecord.getTtl() / 2;
     }
 }
