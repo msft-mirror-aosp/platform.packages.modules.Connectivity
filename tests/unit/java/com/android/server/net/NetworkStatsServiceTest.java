@@ -96,7 +96,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.res.Resources;
 import android.database.ContentObserver;
-import android.net.ConnectivityResources;
 import android.net.DataUsageRequest;
 import android.net.INetd;
 import android.net.INetworkStatsSession;
@@ -145,6 +144,7 @@ import com.android.net.module.util.Struct.U8;
 import com.android.net.module.util.bpf.CookieTagMapKey;
 import com.android.net.module.util.bpf.CookieTagMapValue;
 import com.android.server.BpfNetMaps;
+import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.net.NetworkStatsService.AlertObserver;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings;
 import com.android.server.net.NetworkStatsService.NetworkStatsSettings.Config;
@@ -1926,12 +1926,17 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         // Templates w/o wifi network keys can query stats as usual.
         assertNetworkTotal(sTemplateCarrierWifi1, 0L, 0L, 0L, 0L, 0);
         assertNetworkTotal(sTemplateImsi1, 0L, 0L, 0L, 0L, 0);
+        // Templates for test network does not need to enforce location permission.
+        final NetworkTemplate templateTestIface1 = new NetworkTemplate.Builder(MATCH_TEST)
+                .setWifiNetworkKeys(Set.of(TEST_IFACE)).build();
+        assertNetworkTotal(templateTestIface1, 0L, 0L, 0L, 0L, 0);
 
         doReturn(true).when(mLocationPermissionChecker)
                 .checkCallersLocationPermission(any(), any(), anyInt(), anyBoolean(), any());
         assertNetworkTotal(sTemplateCarrierWifi1, 0L, 0L, 0L, 0L, 0);
         assertNetworkTotal(sTemplateWifi, 0L, 0L, 0L, 0L, 0);
         assertNetworkTotal(sTemplateImsi1, 0L, 0L, 0L, 0L, 0);
+        assertNetworkTotal(templateTestIface1, 0L, 0L, 0L, 0L, 0);
     }
 
     /**

@@ -29,10 +29,13 @@ import android.hardware.location.NanoAppMessage;
 import android.nearby.DataElement;
 import android.nearby.NearbyDevice;
 import android.nearby.NearbyDeviceParcelable;
+import android.nearby.OffloadCapability;
 import android.nearby.PresenceDevice;
 import android.nearby.PresenceScanFilter;
 import android.nearby.PublicCredential;
 import android.nearby.ScanFilter;
+import android.nearby.aidl.IOffloadCallback;
+import android.os.RemoteException;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
@@ -41,6 +44,7 @@ import com.android.server.nearby.NearbyConfiguration;
 
 import com.google.protobuf.ByteString;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.Executor;
@@ -128,7 +132,6 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     protected void onSetScanFilters(List<ScanFilter> filters) {
         synchronized (mLock) {
             mScanFilters = filters == null ? null : List.copyOf(filters);
-            updateFiltersLocked();
         }
     }
 
@@ -139,6 +142,23 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
     @Nullable
     public Boolean available() {
         return mChreCommunication.available();
+    }
+
+    /**
+     * Query offload capability in a device.
+     */
+    public void queryOffloadCapability(IOffloadCallback callback) {
+        OffloadCapability.Builder builder = new OffloadCapability.Builder();
+        mExecutor.execute(() -> {
+            long version = mChreCommunication.queryNanoAppVersion();
+            builder.setVersion(version);
+            builder.setFastPairSupported(version != ChreCommunication.INVALID_NANO_APP_VERSION);
+            try {
+                callback.onQueryComplete(builder.build());
+            } catch (RemoteException e) {
+                e.printStackTrace();
+            }
+        });
     }
 
     @VisibleForTesting
@@ -342,6 +362,7 @@ public class ChreDiscoveryProvider extends AbstractDiscoveryProvider {
 
                         NearbyDeviceParcelable device =
                                 new NearbyDeviceParcelable.Builder()
+                                        .setDeviceId(Arrays.hashCode(secretId))
                                         .setScanType(SCAN_TYPE_NEARBY_PRESENCE)
                                         .setMedium(NearbyDevice.Medium.BLE)
                                         .setTxPower(filterResult.getTxPower())

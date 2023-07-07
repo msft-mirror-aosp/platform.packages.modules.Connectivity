@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 The Android Open Source Project
+ * Copyright (C) 2022 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,33 +14,30 @@
  * limitations under the License.
  */
 
-package android.net;
+package com.android.server.nearby.fastpair;
 
-import static android.content.pm.PackageManager.MATCH_SYSTEM_ONLY;
+import static com.android.server.nearby.fastpair.Constant.TAG;
 
+import android.annotation.ColorInt;
+import android.annotation.ColorRes;
+import android.annotation.DrawableRes;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.StringRes;
 import android.content.Context;
-import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.pm.ResolveInfo;
 import android.content.res.Resources;
+import android.graphics.drawable.Drawable;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 
-import java.util.List;
-
 /**
- * Utility to obtain the {@link com.android.server.ConnectivityService} {@link Resources}, in the
- * ServiceConnectivityResources APK.
+ * Utility to obtain the {@link com.android.nearby.halfsheet} {@link Resources}, in the
+ * HalfSheetUX APK.
  * @hide
  */
-public class ConnectivityResources {
-    private static final String RESOURCES_APK_INTENT =
-            "com.android.server.connectivity.intent.action.SERVICE_CONNECTIVITY_RESOURCES_APK";
-    private static final String RES_PKG_DIR = "/apex/com.android.tethering/";
-
+public class HalfSheetResources {
     @NonNull
     private final Context mContext;
 
@@ -50,7 +47,7 @@ public class ConnectivityResources {
     @Nullable
     private static Context sTestResourcesContext = null;
 
-    public ConnectivityResources(Context context) {
+    public HalfSheetResources(Context context) {
         mContext = context;
     }
 
@@ -67,6 +64,7 @@ public class ConnectivityResources {
     /**
      * Get the {@link Context} of the resources package.
      */
+    @Nullable
     public synchronized Context getResourcesContext() {
         if (sTestResourcesContext != null) {
             return sTestResourcesContext;
@@ -76,23 +74,17 @@ public class ConnectivityResources {
             return mResourcesContext;
         }
 
-        final List<ResolveInfo> pkgs = mContext.getPackageManager()
-                .queryIntentActivities(new Intent(RESOURCES_APK_INTENT), MATCH_SYSTEM_ONLY);
-        pkgs.removeIf(pkg -> !pkg.activityInfo.applicationInfo.sourceDir.startsWith(RES_PKG_DIR));
-        if (pkgs.size() > 1) {
-            Log.wtf(ConnectivityResources.class.getSimpleName(),
-                    "More than one package found: " + pkgs);
+        String packageName = PackageUtils.getHalfSheetApkPkgName(mContext);
+        if (packageName == null) {
+            Log.e(TAG, "Resolved package not found");
+            return null;
         }
-        if (pkgs.isEmpty()) {
-            throw new IllegalStateException("No connectivity resource package found");
-        }
-
         final Context pkgContext;
         try {
-            pkgContext = mContext.createPackageContext(
-                    pkgs.get(0).activityInfo.applicationInfo.packageName, 0 /* flags */);
+            pkgContext = mContext.createPackageContext(packageName, 0 /* flags */);
         } catch (PackageManager.NameNotFoundException e) {
-            throw new IllegalStateException("Resolved package not found", e);
+            Log.e(TAG, "Resolved package not found");
+            return null;
         }
 
         mResourcesContext = pkgContext;
@@ -104,5 +96,34 @@ public class ConnectivityResources {
      */
     public Resources get() {
         return getResourcesContext().getResources();
+    }
+
+    /**
+     * Gets the {@code String} with given resource Id.
+     */
+    public String getString(@StringRes int id) {
+        return get().getString(id);
+    }
+
+    /**
+     * Gets the {@code String} with given resource Id and formatted arguments.
+     */
+    public String getString(@StringRes int id, Object... formatArgs) {
+        return get().getString(id, formatArgs);
+    }
+
+    /**
+     * Gets the {@link Drawable} with given resource Id.
+     */
+    public Drawable getDrawable(@DrawableRes int id) {
+        return get().getDrawable(id, getResourcesContext().getTheme());
+    }
+
+    /**
+     * Gets a themed color integer associated with a particular resource ID.
+     */
+    @ColorInt
+    public int getColor(@ColorRes int id) {
+        return get().getColor(id, getResourcesContext().getTheme());
     }
 }
