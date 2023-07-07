@@ -17,6 +17,7 @@
 package com.android.server.connectivity;
 
 import static android.net.INetd.IF_STATE_UP;
+import static android.net.INetd.PERMISSION_NETWORK;
 import static android.net.INetd.PERMISSION_SYSTEM;
 import static android.system.OsConstants.ETH_P_IP;
 import static android.system.OsConstants.ETH_P_IPV6;
@@ -29,15 +30,17 @@ import android.net.INetd;
 import android.net.InetAddresses;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpPrefix;
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.system.ErrnoException;
 import android.util.Log;
 
+import androidx.annotation.RequiresApi;
+
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
-import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.InterfaceParams;
@@ -46,6 +49,8 @@ import com.android.net.module.util.bpf.ClatEgress4Key;
 import com.android.net.module.util.bpf.ClatEgress4Value;
 import com.android.net.module.util.bpf.ClatIngress6Key;
 import com.android.net.module.util.bpf.ClatIngress6Value;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
@@ -60,8 +65,13 @@ import java.util.Objects;
  *
  * {@hide}
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class ClatCoordinator {
     private static final String TAG = ClatCoordinator.class.getSimpleName();
+
+    // Sync from system/core/libcutils/include/private/android_filesystem_config.h
+    @VisibleForTesting
+    static final int AID_CLAT = 1029;
 
     // Sync from external/android-clat/clatd.c
     // 40 bytes IPv6 header - 20 bytes IPv4 header + 8 bytes fragment header.
@@ -97,6 +107,8 @@ public class ClatCoordinator {
     @VisibleForTesting
     static final int PRIO_CLAT = 4;
 
+    private static final String COOKIE_TAG_MAP_PATH =
+            "/sys/fs/bpf/netd_shared/map_netd_cookie_tag_map";
     private static final String CLAT_EGRESS4_MAP_PATH = makeMapPath("egress4");
     private static final String CLAT_INGRESS6_MAP_PATH = makeMapPath("ingress6");
 
@@ -104,12 +116,12 @@ public class ClatCoordinator {
         return "/sys/fs/bpf/net_shared/map_clatd_clat_" + which + "_map";
     }
 
-    private static String makeProgPath(boolean ingress, boolean ether) {
-        String path = "/sys/fs/bpf/net_shared/prog_clatd_schedcls_"
-                + (ingress ? "ingress6" : "egress4")
-                + "_clat_"
+    private static final String CLAT_EGRESS4_RAWIP_PROG_PATH =
+            "/sys/fs/bpf/net_shared/prog_clatd_schedcls_egress4_clat_rawip";
+
+    private static String makeIngressProgPath(boolean ether) {
+        return "/sys/fs/bpf/net_shared/prog_clatd_schedcls_ingress6_clat_"
                 + (ether ? "ether" : "rawip");
-        return path;
     }
 
     @NonNull
@@ -120,6 +132,8 @@ public class ClatCoordinator {
     private final IBpfMap<ClatIngress6Key, ClatIngress6Value> mIngressMap;
     @Nullable
     private final IBpfMap<ClatEgress4Key, ClatEgress4Value> mEgressMap;
+    @Nullable
+    private final IBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap;
     @Nullable
     private ClatdTracker mClatdTracker = null;
 
@@ -172,8 +186,8 @@ public class ClatCoordinator {
          */
         @NonNull
         public String generateIpv6Address(@NonNull String iface, @NonNull String v4,
-                @NonNull String prefix64) throws IOException {
-            return native_generateIpv6Address(iface, v4, prefix64);
+                @NonNull String prefix64, int mark) throws IOException {
+            return native_generateIpv6Address(iface, v4, prefix64, mark);
         }
 
         /**
@@ -226,33 +240,20 @@ public class ClatCoordinator {
         /**
          * Stop clatd.
          */
-        public void stopClatd(String iface, String pfx96, String v4, String v6, int pid)
-                throws IOException {
-            native_stopClatd(iface, pfx96, v4, v6, pid);
+        public void stopClatd(int pid) throws IOException {
+            native_stopClatd(pid);
         }
 
         /**
-         * Tag socket as clat.
+         * Get socket cookie.
          */
-        public long tagSocketAsClat(@NonNull FileDescriptor sock) throws IOException {
-            return native_tagSocketAsClat(sock);
-        }
-
-        /**
-         * Untag socket.
-         */
-        public void untagSocket(long cookie) throws IOException {
-            native_untagSocket(cookie);
+        public long getSocketCookie(@NonNull FileDescriptor sock) throws IOException {
+            return native_getSocketCookie(sock);
         }
 
         /** Get ingress6 BPF map. */
         @Nullable
         public IBpfMap<ClatIngress6Key, ClatIngress6Value> getBpfIngress6Map() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(CLAT_INGRESS6_MAP_PATH,
                     BpfMap.BPF_F_RDWR, ClatIngress6Key.class, ClatIngress6Value.class);
@@ -265,16 +266,23 @@ public class ClatCoordinator {
         /** Get egress4 BPF map. */
         @Nullable
         public IBpfMap<ClatEgress4Key, ClatEgress4Value> getBpfEgress4Map() {
-            // Pre-T devices don't use ClatCoordinator to access clat map. Since Nat464Xlat
-            // initializes a ClatCoordinator object to avoid redundant null pointer check
-            // while using, ignore the BPF map initialization on pre-T devices.
-            // TODO: probably don't initialize ClatCoordinator object on pre-T devices.
-            if (!SdkLevel.isAtLeastT()) return null;
             try {
                 return new BpfMap<>(CLAT_EGRESS4_MAP_PATH,
                     BpfMap.BPF_F_RDWR, ClatEgress4Key.class, ClatEgress4Value.class);
             } catch (ErrnoException e) {
                 Log.e(TAG, "Cannot create egress4 map: " + e);
+                return null;
+            }
+        }
+
+        /** Get cookie tag map */
+        @Nullable
+        public IBpfMap<CookieTagMapKey, CookieTagMapValue> getBpfCookieTagMap() {
+            try {
+                return new BpfMap<>(COOKIE_TAG_MAP_PATH,
+                        BpfMap.BPF_F_RDWR, CookieTagMapKey.class, CookieTagMapValue.class);
+            } catch (ErrnoException e) {
+                Log.wtf(TAG, "Cannot open cookie tag map: " + e);
                 return null;
             }
         }
@@ -347,15 +355,28 @@ public class ClatCoordinator {
                     && this.pid == that.pid
                     && this.cookie == that.cookie;
         }
+
+        @Override
+        public String toString() {
+            return "iface: " + iface
+                    + " (" + ifIndex + ")"
+                    + ", v4iface: " + v4iface
+                    + " (" + v4ifIndex + ")"
+                    + ", v4: " + v4
+                    + ", v6: " + v6
+                    + ", pfx96: " + pfx96
+                    + ", pid: " + pid
+                    + ", cookie: " + cookie;
+        }
     };
 
     @VisibleForTesting
     static int getFwmark(int netId) {
         // See union Fwmark in system/netd/include/Fwmark.h
         return (netId & 0xffff)
-                | 0x1 << 16  // protectedFromVpn: true
-                | 0x1 << 17  // explicitlySelected: true
-                | (PERMISSION_SYSTEM & 0x3) << 18;
+                | 0x1 << 16  // explicitlySelected: true
+                | 0x1 << 17  // protectedFromVpn: true
+                | ((PERMISSION_NETWORK | PERMISSION_SYSTEM) & 0x3) << 18;  // 2 permission bits = 3
     }
 
     @VisibleForTesting
@@ -375,6 +396,7 @@ public class ClatCoordinator {
         mNetd = mDeps.getNetd();
         mIngressMap = mDeps.getBpfIngress6Map();
         mEgressMap = mDeps.getBpfEgress4Map();
+        mCookieTagMap = mDeps.getBpfCookieTagMap();
     }
 
     private void maybeStartBpf(final ClatdTracker tracker) {
@@ -443,7 +465,7 @@ public class ClatCoordinator {
             // tc filter add dev .. egress prio 4 protocol ip bpf object-pinned /sys/fs/bpf/...
             // direct-action
             mDeps.tcFilterAddDevBpf(tracker.v4ifIndex, EGRESS, (short) PRIO_CLAT, (short) ETH_P_IP,
-                    makeProgPath(EGRESS, RAWIP));
+                    CLAT_EGRESS4_RAWIP_PROG_PATH);
         } catch (IOException e) {
             Log.e(TAG, "tc filter add dev (" + tracker.v4ifIndex + "[" + tracker.v4iface
                     + "]) egress prio PRIO_CLAT protocol ip failure: " + e);
@@ -469,7 +491,7 @@ public class ClatCoordinator {
             // tc filter add dev .. ingress prio 4 protocol ipv6 bpf object-pinned /sys/fs/bpf/...
             // direct-action
             mDeps.tcFilterAddDevBpf(tracker.ifIndex, INGRESS, (short) PRIO_CLAT,
-                    (short) ETH_P_IPV6, makeProgPath(INGRESS, isEthernet));
+                    (short) ETH_P_IPV6, makeIngressProgPath(isEthernet));
         } catch (IOException e) {
             Log.e(TAG, "tc filter add dev (" + tracker.ifIndex + "[" + tracker.iface
                     + "]) ingress prio PRIO_CLAT protocol ipv6 failure: " + e);
@@ -523,13 +545,54 @@ public class ClatCoordinator {
         }
     }
 
+    private void tagSocketAsClat(long cookie) throws IOException {
+        if (mCookieTagMap == null) {
+            throw new IOException("Cookie tag map is not initialized");
+        }
+
+        // Tag raw socket with uid AID_CLAT and set tag as zero because tag is unused in bpf
+        // program for counting data usage in netd.c. Tagging socket is used to avoid counting
+        // duplicated clat traffic in bpf stat.
+        final CookieTagMapKey key = new CookieTagMapKey(cookie);
+        final CookieTagMapValue value = new CookieTagMapValue(AID_CLAT, 0 /* tag, unused */);
+        try {
+            mCookieTagMap.insertEntry(key, value);
+        } catch (ErrnoException | IllegalStateException e) {
+            throw new IOException("Could not insert entry (" + key + ", " + value
+                    + ") on cookie tag map: " + e);
+        }
+        Log.i(TAG, "tag socket cookie " + cookie);
+    }
+
+    private void untagSocket(long cookie) throws IOException {
+        if (mCookieTagMap == null) {
+            throw new IOException("Cookie tag map is not initialized");
+        }
+
+        // The reason that deleting entry from cookie tag map directly is that the tag socket
+        // destroy listener only monitors on group INET_TCP, INET_UDP, INET6_TCP, INET6_UDP.
+        // The other socket types, ex: raw, are not able to be removed automatically by the
+        // listener. See TrafficController::makeSkDestroyListener.
+        final CookieTagMapKey key = new CookieTagMapKey(cookie);
+        try {
+            mCookieTagMap.deleteEntry(key);
+        } catch (ErrnoException | IllegalStateException e) {
+            throw new IOException("Could not delete entry (" + key + ") on cookie tag map: " + e);
+        }
+        Log.i(TAG, "untag socket cookie " + cookie);
+    }
+
+    private boolean isStarted() {
+        return mClatdTracker != null;
+    }
+
     /**
      * Start clatd for a given interface and NAT64 prefix.
      */
     public String clatStart(final String iface, final int netId,
             @NonNull final IpPrefix nat64Prefix)
             throws IOException {
-        if (mClatdTracker != null) {
+        if (isStarted()) {
             throw new IOException("Clatd is already running on " + mClatdTracker.iface
                     + " (pid " + mClatdTracker.pid + ")");
         }
@@ -553,10 +616,11 @@ public class ClatCoordinator {
         }
 
         // [2] Generate a checksum-neutral IID.
+        final Integer fwmark = getFwmark(netId);
         final String pfx96Str = nat64Prefix.getAddress().getHostAddress();
         final String v6Str;
         try {
-            v6Str = mDeps.generateIpv6Address(iface, v4Str, pfx96Str);
+            v6Str = mDeps.generateIpv6Address(iface, v4Str, pfx96Str, fwmark);
         } catch (IOException e) {
             throw new IOException("no IPv6 addresses were available for clat: " + e);
         }
@@ -600,7 +664,6 @@ public class ClatCoordinator {
         }
 
         // Detect ipv4 mtu.
-        final Integer fwmark = getFwmark(netId);
         final int detectedMtu;
         try {
             detectedMtu = mDeps.detectMtu(pfx96Str,
@@ -673,7 +736,8 @@ public class ClatCoordinator {
         // Tag socket as AID_CLAT to avoid duplicated CLAT data usage accounting.
         final long cookie;
         try {
-            cookie = mDeps.tagSocketAsClat(writeSock6.getFileDescriptor());
+            cookie = mDeps.getSocketCookie(writeSock6.getFileDescriptor());
+            tagSocketAsClat(cookie);
         } catch (IOException e) {
             maybeCleanUp(tunFd, readSock6, writeSock6);
             throw new IOException("tag raw socket failed: " + e);
@@ -683,6 +747,11 @@ public class ClatCoordinator {
         try {
             mDeps.configurePacketSocket(readSock6.getFileDescriptor(), v6Str, ifIndex);
         } catch (IOException e) {
+            try {
+                untagSocket(cookie);
+            } catch (IOException e2) {
+                Log.e(TAG, "untagSocket cookie " + cookie + " failed: " + e2);
+            }
             maybeCleanUp(tunFd, readSock6, writeSock6);
             throw new IOException("configure packet socket failed: " + e);
         }
@@ -693,8 +762,11 @@ public class ClatCoordinator {
             pid = mDeps.startClatd(tunFd.getFileDescriptor(), readSock6.getFileDescriptor(),
                     writeSock6.getFileDescriptor(), iface, pfx96Str, v4Str, v6Str);
         } catch (IOException e) {
-            // TODO: probably refactor to handle the exception of #untagSocket if any.
-            mDeps.untagSocket(cookie);
+            try {
+                untagSocket(cookie);
+            } catch (IOException e2) {
+                Log.e(TAG, "untagSocket cookie " + cookie + " failed: " + e2);
+            }
             throw new IOException("Error start clatd on " + iface + ": " + e);
         } finally {
             // The file descriptors have been duplicated (dup2) to clatd in native_startClatd().
@@ -752,16 +824,14 @@ public class ClatCoordinator {
      * Stop clatd
      */
     public void clatStop() throws IOException {
-        if (mClatdTracker == null) {
+        if (!isStarted()) {
             throw new IOException("Clatd has not started");
         }
         Log.i(TAG, "Stopping clatd pid=" + mClatdTracker.pid + " on " + mClatdTracker.iface);
 
         maybeStopBpf(mClatdTracker);
-        mDeps.stopClatd(mClatdTracker.iface, mClatdTracker.pfx96.getHostAddress(),
-                mClatdTracker.v4.getHostAddress(), mClatdTracker.v6.getHostAddress(),
-                mClatdTracker.pid);
-        mDeps.untagSocket(mClatdTracker.cookie);
+        mDeps.stopClatd(mClatdTracker.pid);
+        untagSocket(mClatdTracker.cookie);
 
         Log.i(TAG, "clatd on " + mClatdTracker.iface + " stopped");
         mClatdTracker = null;
@@ -814,19 +884,23 @@ public class ClatCoordinator {
     }
 
     /**
-     * Dump the cordinator information.
+     * Dump the coordinator information.
      *
      * @param pw print writer.
      */
     public void dump(@NonNull IndentingPrintWriter pw) {
-        // TODO: dump ClatdTracker
         // TODO: move map dump to a global place to avoid duplicate dump while there are two or
         // more IPv6 only networks.
-        pw.println("Forwarding rules:");
-        pw.increaseIndent();
-        dumpBpfIngress(pw);
-        dumpBpfEgress(pw);
-        pw.decreaseIndent();
+        if (isStarted()) {
+            pw.println("CLAT tracker: " + mClatdTracker);
+            pw.println("Forwarding rules:");
+            pw.increaseIndent();
+            dumpBpfIngress(pw);
+            dumpBpfEgress(pw);
+            pw.decreaseIndent();
+        } else {
+            pw.println("<not started>");
+        }
         pw.println();
     }
 
@@ -842,7 +916,7 @@ public class ClatCoordinator {
     private static native String native_selectIpv4Address(String v4addr, int prefixlen)
             throws IOException;
     private static native String native_generateIpv6Address(String iface, String v4,
-            String prefix64) throws IOException;
+            String prefix64, int mark) throws IOException;
     private static native int native_createTunInterface(String tuniface) throws IOException;
     private static native int native_detectMtu(String platSubnet, int platSuffix, int mark)
             throws IOException;
@@ -855,8 +929,6 @@ public class ClatCoordinator {
     private static native int native_startClatd(FileDescriptor tunfd, FileDescriptor readsock6,
             FileDescriptor writesock6, String iface, String pfx96, String v4, String v6)
             throws IOException;
-    private static native void native_stopClatd(String iface, String pfx96, String v4, String v6,
-            int pid) throws IOException;
-    private static native long native_tagSocketAsClat(FileDescriptor sock) throws IOException;
-    private static native void native_untagSocket(long cookie) throws IOException;
+    private static native void native_stopClatd(int pid) throws IOException;
+    private static native long native_getSocketCookie(FileDescriptor sock) throws IOException;
 }

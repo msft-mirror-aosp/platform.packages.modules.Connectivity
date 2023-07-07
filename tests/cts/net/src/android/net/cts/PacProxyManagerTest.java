@@ -23,12 +23,14 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
 
 import android.app.Instrumentation;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.pm.PackageManager;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.PacProxyManager;
@@ -42,12 +44,15 @@ import android.util.Range;
 
 import androidx.test.InstrumentationRegistry;
 
+import com.android.compatibility.common.util.RequiredFeatureRule;
+
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.TestHttpServer;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -73,6 +78,11 @@ public final class PacProxyManagerTest {
     private PacProxyManager mPacProxyManager;
     private ServerSocket mServerSocket;
     private Instrumentation mInstrumentation;
+
+    // Devices without WebView/JavaScript cannot support PAC proxies.
+    @Rule
+    public RequiredFeatureRule mRequiredWebviewFeatureRule =
+        new RequiredFeatureRule(PackageManager.FEATURE_WEBVIEW);
 
     private static final String PAC_FILE = "function FindProxyForURL(url, host)"
             + "{"

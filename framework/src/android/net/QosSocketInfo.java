@@ -73,9 +73,10 @@ public final class QosSocketInfo implements Parcelable {
      * The parcel file descriptor wrapped around the socket's file descriptor.
      *
      * @return the parcel file descriptor of the socket
+     * @hide
      */
     @NonNull
-    ParcelFileDescriptor getParcelFileDescriptor() {
+    public ParcelFileDescriptor getParcelFileDescriptor() {
         return mParcelFileDescriptor;
     }
 
@@ -143,7 +144,6 @@ public final class QosSocketInfo implements Parcelable {
      *
      * @param network the network
      * @param socket the bound {@link DatagramSocket}
-     * @hide
      */
     public QosSocketInfo(@NonNull final Network network, @NonNull final DatagramSocket socket)
             throws IOException {

@@ -24,15 +24,18 @@ import static android.content.Intent.ACTION_SHUTDOWN;
 import static android.content.Intent.ACTION_UID_REMOVED;
 import static android.content.Intent.ACTION_USER_REMOVED;
 import static android.content.Intent.EXTRA_UID;
-import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkStats.DEFAULT_NETWORK_ALL;
+import static android.net.NetworkStats.DEFAULT_NETWORK_NO;
 import static android.net.NetworkStats.IFACE_ALL;
 import static android.net.NetworkStats.IFACE_VT;
 import static android.net.NetworkStats.INTERFACES_ALL;
 import static android.net.NetworkStats.METERED_ALL;
+import static android.net.NetworkStats.METERED_NO;
+import static android.net.NetworkStats.METERED_YES;
 import static android.net.NetworkStats.ROAMING_ALL;
+import static android.net.NetworkStats.ROAMING_NO;
 import static android.net.NetworkStats.SET_ALL;
 import static android.net.NetworkStats.SET_DEFAULT;
 import static android.net.NetworkStats.SET_FOREGROUND;
@@ -42,8 +45,9 @@ import static android.net.NetworkStats.TAG_ALL;
 import static android.net.NetworkStats.TAG_NONE;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.NetworkStatsHistory.FIELD_ALL;
-import static android.net.NetworkTemplate.buildTemplateMobileWildcard;
-import static android.net.NetworkTemplate.buildTemplateWifiWildcard;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_TEST;
+import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.TrafficStats.KB_IN_BYTES;
 import static android.net.TrafficStats.MB_IN_BYTES;
 import static android.net.TrafficStats.UID_TETHERING;
@@ -66,6 +70,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.TargetApi;
 import android.app.AlarmManager;
+import android.app.BroadcastOptions;
 import android.app.PendingIntent;
 import android.app.usage.NetworkStatsManager;
 import android.content.ApexEnvironment;
@@ -79,7 +84,6 @@ import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.net.ConnectivityManager;
-import android.net.ConnectivityResources;
 import android.net.DataUsageRequest;
 import android.net.INetd;
 import android.net.INetworkStatsService;
@@ -102,6 +106,7 @@ import android.net.TelephonyNetworkSpecifier;
 import android.net.TetherStatsParcel;
 import android.net.TetheringManager;
 import android.net.TrafficStats;
+import android.net.TransportInfo;
 import android.net.UnderlyingNetworkInfo;
 import android.net.Uri;
 import android.net.netstats.IUsageCallback;
@@ -109,8 +114,10 @@ import android.net.netstats.NetworkStatsDataMigrationUtils;
 import android.net.netstats.provider.INetworkStatsProvider;
 import android.net.netstats.provider.INetworkStatsProviderCallback;
 import android.net.netstats.provider.NetworkStatsProvider;
+import android.net.wifi.WifiInfo;
 import android.os.Binder;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.DropBoxManager;
 import android.os.Environment;
 import android.os.Handler;
@@ -146,9 +153,11 @@ import com.android.connectivity.resources.R;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.FileRotator;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.BestClock;
 import com.android.net.module.util.BinderUtils;
+import com.android.net.module.util.BpfDump;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
@@ -156,8 +165,17 @@ import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.LocationPermissionChecker;
 import com.android.net.module.util.NetworkStatsUtils;
 import com.android.net.module.util.PermissionUtils;
-import com.android.net.module.util.Struct.U32;
+import com.android.net.module.util.SharedLog;
+import com.android.net.module.util.Struct;
+import com.android.net.module.util.Struct.S32;
 import com.android.net.module.util.Struct.U8;
+import com.android.net.module.util.bpf.CookieTagMapKey;
+import com.android.net.module.util.bpf.CookieTagMapValue;
+import com.android.networkstack.apishim.BroadcastOptionsShimImpl;
+import com.android.networkstack.apishim.ConstantsShim;
+import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
+import com.android.server.BpfNetMaps;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.File;
 import java.io.FileDescriptor;
@@ -243,6 +261,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             "/sys/fs/bpf/netd_shared/map_netd_stats_map_A";
     private static final String STATS_MAP_B_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_stats_map_B";
+    private static final String IFACE_STATS_MAP_PATH =
+            "/sys/fs/bpf/netd_shared/map_netd_iface_stats_map";
 
     /**
      * DeviceConfig flag used to indicate whether the files should be stored in the apex data
@@ -304,7 +324,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /**
          * When enabled, all mobile data is reported under {@link NetworkTemplate#NETWORK_TYPE_ALL}.
          * When disabled, mobile data is broken down by a granular ratType representative of the
-         * actual ratType. {@see android.app.usage.NetworkStatsManager#getCollapsedRatType}.
+         * actual ratType. See {@link android.app.usage.NetworkStatsManager#getCollapsedRatType}.
          * Enabling this decreases the level of detail but saves performance, disk space and
          * amount of data logged.
          */
@@ -322,13 +342,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             }
         }
 
-        Config getDevConfig();
         Config getXtConfig();
         Config getUidConfig();
         Config getUidTagConfig();
 
         long getGlobalAlertBytes(long def);
-        long getDevPersistBytes(long def);
         long getXtPersistBytes(long def);
         long getUidPersistBytes(long def);
         long getUidTagPersistBytes(long def);
@@ -378,8 +396,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private final Semaphore mStatsProviderSem = new Semaphore(0, true);
 
     @GuardedBy("mStatsLock")
-    private NetworkStatsRecorder mDevRecorder;
-    @GuardedBy("mStatsLock")
     private NetworkStatsRecorder mXtRecorder;
     @GuardedBy("mStatsLock")
     private NetworkStatsRecorder mUidRecorder;
@@ -397,11 +413,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      * mActiveUidCounterSet to avoid accessing kernel too frequently.
      */
     private SparseIntArray mActiveUidCounterSet = new SparseIntArray();
-    private final IBpfMap<U32, U8> mUidCounterSetMap;
+    private final IBpfMap<S32, U8> mUidCounterSetMap;
     private final IBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap;
     private final IBpfMap<StatsMapKey, StatsMapValue> mStatsMapA;
     private final IBpfMap<StatsMapKey, StatsMapValue> mStatsMapB;
     private final IBpfMap<UidStatsMapKey, StatsMapValue> mAppUidStatsMap;
+    private final IBpfMap<S32, StatsMapValue> mIfaceStatsMap;
 
     /** Data layer operation counters for splicing into other structures. */
     private NetworkStats mUidOperations = new NetworkStats(0L, 10);
@@ -418,12 +435,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private long mLastStatsSessionPoll;
 
     private final Object mOpenSessionCallsLock = new Object();
-    /**
-     * Map from UID to number of opened sessions. This is used for rate-limt an app to open
-     * session frequently
-     */
-    @GuardedBy("mOpenSessionCallsLock")
-    private final SparseIntArray mOpenSessionCallsPerUid = new SparseIntArray();
+
     /**
      * Map from key {@code OpenSessionKey} to count of opened sessions. This is for recording
      * the caller of open session and it is only for debugging.
@@ -444,6 +456,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     @NonNull
     private final BpfInterfaceMapUpdater mInterfaceMapUpdater;
+
+    @Nullable
+    private final SkDestroyListener mSkDestroyListener;
 
     private static @NonNull Clock getDefaultClock() {
         return new BestClock(ZoneOffset.UTC, SystemClock.currentNetworkTimeClock(),
@@ -516,8 +531,24 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 case MSG_BROADCAST_NETWORK_STATS_UPDATED: {
                     final Intent updatedIntent = new Intent(ACTION_NETWORK_STATS_UPDATED);
                     updatedIntent.setFlags(Intent.FLAG_RECEIVER_REGISTERED_ONLY);
+                    Bundle opts = null;
+                    if (SdkLevel.isAtLeastU()) {
+                        try {
+                            // This allows us to discard older broadcasts still waiting to
+                            // be delivered.
+                            opts = BroadcastOptionsShimImpl.newInstance(
+                                    BroadcastOptions.makeBasic())
+                                    .setDeliveryGroupPolicy(
+                                            ConstantsShim.DELIVERY_GROUP_POLICY_MOST_RECENT)
+                                    .setDeferralPolicy(
+                                            ConstantsShim.DEFERRAL_POLICY_UNTIL_ACTIVE)
+                                    .toBundle();
+                        } catch (UnsupportedApiLevelException e) {
+                            Log.wtf(TAG, "Using unsupported API" + e);
+                        }
+                    }
                     mContext.sendBroadcastAsUser(updatedIntent, UserHandle.ALL,
-                            READ_NETWORK_USAGE_HISTORY);
+                            READ_NETWORK_USAGE_HISTORY, opts);
                     break;
                 }
             }
@@ -578,6 +609,19 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mStatsMapA = mDeps.getStatsMapA();
         mStatsMapB = mDeps.getStatsMapB();
         mAppUidStatsMap = mDeps.getAppUidStatsMap();
+        mIfaceStatsMap = mDeps.getIfaceStatsMap();
+
+        // TODO: Remove bpfNetMaps creation and always start SkDestroyListener
+        // Following code is for the experiment to verify the SkDestroyListener refactoring. Based
+        // on the experiment flag, BpfNetMaps starts C SkDestroyListener (existing code) or
+        // NetworkStatsService starts Java SkDestroyListener (new code).
+        final BpfNetMaps bpfNetMaps = mDeps.makeBpfNetMaps(mContext);
+        if (bpfNetMaps.isSkDestroyListenerRunning()) {
+            mSkDestroyListener = null;
+        } else {
+            mSkDestroyListener = mDeps.makeSkDestroyListener(mCookieTagMap, mHandler);
+            mHandler.post(mSkDestroyListener::start);
+        }
     }
 
     /**
@@ -715,10 +759,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
 
         /** Get counter sets map for each UID. */
-        public IBpfMap<U32, U8> getUidCounterSetMap() {
+        public IBpfMap<S32, U8> getUidCounterSetMap() {
             try {
-                return new BpfMap<U32, U8>(UID_COUNTERSET_MAP_PATH, BpfMap.BPF_F_RDWR,
-                        U32.class, U8.class);
+                return new BpfMap<S32, U8>(UID_COUNTERSET_MAP_PATH, BpfMap.BPF_F_RDWR,
+                        S32.class, U8.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open uid counter set map: " + e);
                 return null;
@@ -769,9 +813,30 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             }
         }
 
+        /** Gets interface stats map */
+        public IBpfMap<S32, StatsMapValue> getIfaceStatsMap() {
+            try {
+                return new BpfMap<S32, StatsMapValue>(IFACE_STATS_MAP_PATH,
+                        BpfMap.BPF_F_RDWR, S32.class, StatsMapValue.class);
+            } catch (ErrnoException e) {
+                throw new IllegalStateException("Failed to open interface stats map", e);
+            }
+        }
+
         /** Gets whether the build is userdebug. */
         public boolean isDebuggable() {
             return Build.isDebuggable();
+        }
+
+        /** Create a new BpfNetMaps. */
+        public BpfNetMaps makeBpfNetMaps(Context ctx) {
+            return new BpfNetMaps(ctx);
+        }
+
+        /** Create a new SkDestroyListener. */
+        public SkDestroyListener makeSkDestroyListener(
+                IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap, Handler handler) {
+            return new SkDestroyListener(cookieTagMap, handler, new SharedLog(TAG));
         }
     }
 
@@ -800,8 +865,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             mSystemReady = true;
 
             // create data recorders along with historical rotators
-            mDevRecorder = buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, mStatsDir,
-                    true /* wipeOnError */);
             mXtRecorder = buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, mStatsDir,
                     true /* wipeOnError */);
             mUidRecorder = buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, mStatsDir,
@@ -884,7 +947,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @GuardedBy("mStatsLock")
     private void shutdownLocked() {
         final TetheringManager tetheringManager = mContext.getSystemService(TetheringManager.class);
-        tetheringManager.unregisterTetheringEventCallback(mTetherListener);
+        try {
+            tetheringManager.unregisterTetheringEventCallback(mTetherListener);
+        } catch (IllegalStateException e) {
+            Log.i(TAG, "shutdownLocked: error when unregister tethering, ignored. e=" + e);
+        }
         mContext.unregisterReceiver(mPollReceiver);
         mContext.unregisterReceiver(mRemovedReceiver);
         mContext.unregisterReceiver(mUserReceiver);
@@ -899,7 +966,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         final long currentTime = mClock.millis();
 
         // persist any pending stats
-        mDevRecorder.forcePersistLocked(currentTime);
         mXtRecorder.forcePersistLocked(currentTime);
         mUidRecorder.forcePersistLocked(currentTime);
         mUidTagRecorder.forcePersistLocked(currentTime);
@@ -966,8 +1032,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             Log.i(TAG, "Starting import : attempts " + attempts + "/" + targetAttempts);
         }
 
+        // Still create a legacy dev recorder locally but the service doesn't really use it.
+        // This is for backward compatibility where the OEMs might call readPlatformCollection to
+        // perform proprietary operations and relying on the side-effects to complete the follow-up
+        // import process.
+        final NetworkStatsSettings.Config devConfig =
+                new NetworkStatsSettings.Config(HOUR_IN_MILLIS,
+                15 * DAY_IN_MILLIS, 90 * DAY_IN_MILLIS);
+        final NetworkStatsRecorder devRecorder = buildRecorder(PREFIX_DEV, devConfig,
+                false, mStatsDir, true /* wipeOnError */);
         final MigrationInfo[] migrations = new MigrationInfo[]{
-                new MigrationInfo(mDevRecorder), new MigrationInfo(mXtRecorder),
+                new MigrationInfo(devRecorder), new MigrationInfo(mXtRecorder),
                 new MigrationInfo(mUidRecorder), new MigrationInfo(mUidTagRecorder)
         };
 
@@ -977,9 +1052,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             final File legacyBaseDir = mDeps.getLegacyStatsDir();
             // Set wipeOnError flag false so the recorder won't damage persistent data if reads
             // failed and calling deleteAll.
+            // Set DEV legacy recorder as null since the DEV recorder has been removed.
+            // Thus it doesn't need to build DEV legacy recorder for comparing with imported data.
             legacyRecorders = new NetworkStatsRecorder[]{
-                buildRecorder(PREFIX_DEV, mSettings.getDevConfig(), false, legacyBaseDir,
-                        false /* wipeOnError */),
+                null /* dev Recorder */,
                 buildRecorder(PREFIX_XT, mSettings.getXtConfig(), false, legacyBaseDir,
                         false /* wipeOnError */),
                 buildRecorder(PREFIX_UID, mSettings.getUidConfig(), false, legacyBaseDir,
@@ -996,7 +1072,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             // commit any data to disk until all are read.
             for (int i = 0; i < migrations.length; i++) {
                 final MigrationInfo migration = migrations[i];
-
                 // Read the collection from platform code, and set fallbacks counter if throws
                 // for better debugging.
                 try {
@@ -1030,6 +1105,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
             // Find the latest end time.
             for (final MigrationInfo migration : migrations) {
+                if (PREFIX_DEV.equals(migration.recorder.getCookie())) continue;
                 final long migrationEnd = migration.collection.getEndMillis();
                 if (migrationEnd > migrationEndTime) migrationEndTime = migrationEnd;
             }
@@ -1046,7 +1122,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             for (final MigrationInfo migration : migrations) {
                 migration.imported = true;
                 migration.recorder.removeDataBefore(migrationEndTime);
-                if (migration.collection.isEmpty()) continue;
+                if (migration.collection.isEmpty()
+                        || PREFIX_DEV.equals(migration.recorder.getCookie())) continue;
                 migration.recorder.importCollectionLocked(migration.collection);
             }
 
@@ -1069,6 +1146,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             if (migrationEndTime > Long.MIN_VALUE) {
                 try {
                     for (final MigrationInfo migration : migrations) {
+                        if (PREFIX_DEV.equals(migration.recorder.getCookie())) continue;
                         if (migration.imported) {
                             migration.recorder.removeDataBefore(migrationEndTime);
                         }
@@ -1079,6 +1157,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                     // framework will reboot, and if there are remaining tries, the migration
                     // process will retry, which is fine because it's idempotent.
                     for (final MigrationInfo migration : migrations) {
+                        if (PREFIX_DEV.equals(migration.recorder.getCookie())) continue;
                         migration.recorder.recoverAndDeleteData();
                     }
                 }
@@ -1132,11 +1211,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     /**
      * Compare imported data with the data returned by legacy recorders.
      *
-     * @return true if the data matches, false if the data does not match or throw with exceptions.
+     * @return true if the data matches or if {@code legacyRecorder} is null, false if the data
+     * does not match or throw with exceptions.
      */
     private boolean compareImportedToLegacyStats(@NonNull MigrationInfo migration,
-            @NonNull NetworkStatsRecorder legacyRecorder) {
+            @Nullable NetworkStatsRecorder legacyRecorder) {
         final NetworkStatsCollection legacyStats;
+        // Skip the recorder that doesn't need to be compared.
+        if (legacyRecorder == null) return true;
         try {
             legacyStats = legacyRecorder.getOrLoadCompleteLocked();
         } catch (Throwable e) {
@@ -1284,7 +1366,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             mNetd.bandwidthSetGlobalAlert(mGlobalAlertBytes);
         } catch (IllegalStateException e) {
             Log.w(TAG, "problem registering for global alert: " + e);
-        } catch (RemoteException e) {
+        } catch (RemoteException | ServiceSpecificException e) {
             // ignored; service lives in system_server
         }
         invokeForAllStatsProviderCallbacks((cb) -> cb.mProvider.onSetAlert(mGlobalAlertBytes));
@@ -1311,9 +1393,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             } else {
                 mOpenSessionCallsPerCaller.put(key, Integer.sum(callsPerCaller, 1));
             }
-
-            int callsPerUid = mOpenSessionCallsPerUid.get(key.uid, 0);
-            mOpenSessionCallsPerUid.put(key.uid, callsPerUid + 1);
 
             if (key.uid == android.os.Process.SYSTEM_UID) {
                 return false;
@@ -1504,7 +1583,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         // For a template with wifi network keys, it is possible for a malicious
         // client to track the user locations via querying data usage. Thus, enforce
         // fine location permission check.
-        if (!template.getWifiNetworkKeys().isEmpty()) {
+        // For a template with MATCH_TEST, since the wifi network key is just a placeholder
+        // to identify a specific test network, it is not related to track user location.
+        if (!template.getWifiNetworkKeys().isEmpty() && template.getMatchRule() != MATCH_TEST) {
             final boolean canAccessFineLocation = mLocationPermissionChecker
                     .checkCallersLocationPermission(callingPackage,
                     null /* featureId */,
@@ -1658,11 +1739,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         PermissionUtils.enforceNetworkStackPermission(mContext);
         try {
             final String[] ifaceArray = getAllIfacesSinceBoot(transport);
-            // TODO(b/215633405) : mMobileIfaces and mWifiIfaces already contain the stacked
-            // interfaces, so this is not useful, remove it.
-            final String[] ifacesToQuery =
-                    mStatsFactory.augmentWithStackedInterfaces(ifaceArray);
-            final NetworkStats stats = getNetworkStatsUidDetail(ifacesToQuery);
+            final NetworkStats stats = getNetworkStatsUidDetail(ifaceArray);
             // Clear the interfaces of the stats before returning, so callers won't get this
             // information. This is because no caller needs this information for now, and it
             // makes it easier to change the implementation later by using the histories in the
@@ -1710,7 +1787,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
         if (set == SET_DEFAULT) {
             try {
-                mUidCounterSetMap.deleteEntry(new U32(uid));
+                mUidCounterSetMap.deleteEntry(new S32(uid));
             } catch (ErrnoException e) {
                 Log.w(TAG, "UidCounterSetMap.deleteEntry(" + uid + ") failed with errno: " + e);
             }
@@ -1718,7 +1795,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
 
         try {
-            mUidCounterSetMap.updateEntry(new U32(uid), new U8((short) set));
+            mUidCounterSetMap.updateEntry(new S32(uid), new U8((short) set));
         } catch (ErrnoException e) {
             Log.w(TAG, "UidCounterSetMap.updateEntry(" + uid + ", " + set
                     + ") failed with errno: " + e);
@@ -1793,7 +1870,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
             updatePersistThresholdsLocked();
 
-            mDevRecorder.maybePersistLocked(currentTime);
             mXtRecorder.maybePersistLocked(currentTime);
             mUidRecorder.maybePersistLocked(currentTime);
             mUidTagRecorder.maybePersistLocked(currentTime);
@@ -1909,7 +1985,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     @GuardedBy("mStatsLock")
     private void updatePersistThresholdsLocked() {
-        mDevRecorder.setPersistThreshold(mSettings.getDevPersistBytes(mPersistThreshold));
         mXtRecorder.setPersistThreshold(mSettings.getXtPersistBytes(mPersistThreshold));
         mUidRecorder.setPersistThreshold(mSettings.getUidPersistBytes(mPersistThreshold));
         mUidTagRecorder.setPersistThreshold(mSettings.getUidTagPersistBytes(mPersistThreshold));
@@ -2056,6 +2131,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             final NetworkIdentity ident = NetworkIdentity.buildNetworkIdentity(mContext, snapshot,
                     isDefault, ratType);
 
+            // If WifiInfo contains a null network key then this identity should not be added into
+            // the network identity set. See b/266598304.
+            final TransportInfo transportInfo = snapshot.getNetworkCapabilities()
+                    .getTransportInfo();
+            if (transportInfo instanceof WifiInfo) {
+                final WifiInfo info = (WifiInfo) transportInfo;
+                if (info.getNetworkKey() == null) continue;
+            }
             // Traffic occurring on the base interface is always counted for
             // both total usage and UID details.
             final String baseIface = snapshot.getLinkProperties().getInterfaceName();
@@ -2189,30 +2272,23 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @GuardedBy("mStatsLock")
     private void recordSnapshotLocked(long currentTime) throws RemoteException {
         // snapshot and record current counters; read UID stats first to
-        // avoid over counting dev stats.
+        // avoid over counting xt stats.
         Trace.traceBegin(TRACE_TAG_NETWORK, "snapshotUid");
         final NetworkStats uidSnapshot = getNetworkStatsUidDetail(INTERFACES_ALL);
         Trace.traceEnd(TRACE_TAG_NETWORK);
         Trace.traceBegin(TRACE_TAG_NETWORK, "snapshotXt");
         final NetworkStats xtSnapshot = readNetworkStatsSummaryXt();
         Trace.traceEnd(TRACE_TAG_NETWORK);
-        Trace.traceBegin(TRACE_TAG_NETWORK, "snapshotDev");
-        final NetworkStats devSnapshot = readNetworkStatsSummaryDev();
-        Trace.traceEnd(TRACE_TAG_NETWORK);
 
-        // Snapshot for dev/xt stats from all custom stats providers. Counts per-interface data
-        // from stats providers that isn't already counted by dev and XT stats.
+        // Snapshot for xt stats from all custom stats providers. Counts per-interface data
+        // from stats providers that isn't already counted by XT stats.
         Trace.traceBegin(TRACE_TAG_NETWORK, "snapshotStatsProvider");
         final NetworkStats providersnapshot = getNetworkStatsFromProviders(STATS_PER_IFACE);
         Trace.traceEnd(TRACE_TAG_NETWORK);
         xtSnapshot.combineAllValues(providersnapshot);
-        devSnapshot.combineAllValues(providersnapshot);
 
-        // For xt/dev, we pass a null VPN array because usage is aggregated by UID, so VPN traffic
+        // For xt, we pass a null VPN array because usage is aggregated by UID, so VPN traffic
         // can't be reattributed to responsible apps.
-        Trace.traceBegin(TRACE_TAG_NETWORK, "recordDev");
-        mDevRecorder.recordSnapshotLocked(devSnapshot, mActiveIfaces, currentTime);
-        Trace.traceEnd(TRACE_TAG_NETWORK);
         Trace.traceBegin(TRACE_TAG_NETWORK, "recordXt");
         mXtRecorder.recordSnapshotLocked(xtSnapshot, mActiveIfaces, currentTime);
         Trace.traceEnd(TRACE_TAG_NETWORK);
@@ -2292,13 +2368,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         // persist any pending data depending on requested flags
         Trace.traceBegin(TRACE_TAG_NETWORK, "[persisting]");
         if (persistForce) {
-            mDevRecorder.forcePersistLocked(currentTime);
             mXtRecorder.forcePersistLocked(currentTime);
             mUidRecorder.forcePersistLocked(currentTime);
             mUidTagRecorder.forcePersistLocked(currentTime);
         } else {
             if (persistNetwork) {
-                mDevRecorder.maybePersistLocked(currentTime);
                 mXtRecorder.maybePersistLocked(currentTime);
             }
             if (persistUid) {
@@ -2355,33 +2429,49 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         final long currentTime = mClock.millis();
 
         NetworkTemplate template;
-        NetworkStats.Entry devTotal;
         NetworkStats.Entry xtTotal;
         NetworkStats.Entry uidTotal;
 
         // collect mobile sample
-        template = buildTemplateMobileWildcard();
-        devTotal = mDevRecorder.getTotalSinceBootLocked(template);
+        template = new NetworkTemplate.Builder(MATCH_MOBILE).setMeteredness(METERED_YES).build();
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
 
-        EventLog.writeEvent(LOG_TAG_NETSTATS_MOBILE_SAMPLE,
-                devTotal.rxBytes, devTotal.rxPackets, devTotal.txBytes, devTotal.txPackets,
-                xtTotal.rxBytes, xtTotal.rxPackets, xtTotal.txBytes, xtTotal.txPackets,
-                uidTotal.rxBytes, uidTotal.rxPackets, uidTotal.txBytes, uidTotal.txPackets,
-                currentTime);
+        if (SdkLevel.isAtLeastU()) {
+            EventLog.writeEvent(LOG_TAG_NETSTATS_MOBILE_SAMPLE,
+                    xtTotal.rxBytes, xtTotal.txBytes, xtTotal.rxPackets, xtTotal.txPackets,
+                    uidTotal.rxBytes, uidTotal.txBytes, uidTotal.rxPackets, uidTotal.txPackets,
+                    currentTime);
+        } else {
+            // To keep the format of event log, here replaces the value of DevRecorder with the
+            // value of XtRecorder because they have the same content in old design.
+            EventLog.writeEvent(LOG_TAG_NETSTATS_MOBILE_SAMPLE,
+                    xtTotal.rxBytes, xtTotal.rxPackets, xtTotal.txBytes, xtTotal.txPackets,
+                    xtTotal.rxBytes, xtTotal.rxPackets, xtTotal.txBytes, xtTotal.txPackets,
+                    uidTotal.rxBytes, uidTotal.rxPackets, uidTotal.txBytes, uidTotal.txPackets,
+                    currentTime);
+        }
 
         // collect wifi sample
-        template = buildTemplateWifiWildcard();
-        devTotal = mDevRecorder.getTotalSinceBootLocked(template);
+        template = new NetworkTemplate.Builder(MATCH_WIFI).build();
         xtTotal = mXtRecorder.getTotalSinceBootLocked(template);
         uidTotal = mUidRecorder.getTotalSinceBootLocked(template);
 
-        EventLog.writeEvent(LOG_TAG_NETSTATS_WIFI_SAMPLE,
-                devTotal.rxBytes, devTotal.rxPackets, devTotal.txBytes, devTotal.txPackets,
-                xtTotal.rxBytes, xtTotal.rxPackets, xtTotal.txBytes, xtTotal.txPackets,
-                uidTotal.rxBytes, uidTotal.rxPackets, uidTotal.txBytes, uidTotal.txPackets,
-                currentTime);
+        if (SdkLevel.isAtLeastU()) {
+            EventLog.writeEvent(LOG_TAG_NETSTATS_WIFI_SAMPLE,
+                    xtTotal.rxBytes, xtTotal.txBytes, xtTotal.rxPackets, xtTotal.txPackets,
+                    uidTotal.rxBytes, uidTotal.txBytes, uidTotal.rxPackets, uidTotal.txPackets,
+                    currentTime);
+        } else {
+            // To keep the format of event log, here replaces the value of DevRecorder with the
+            // value of XtRecorder because they have the same content in old design.
+            EventLog.writeEvent(LOG_TAG_NETSTATS_WIFI_SAMPLE,
+                    xtTotal.rxBytes, xtTotal.rxPackets, xtTotal.txBytes, xtTotal.txPackets,
+                    xtTotal.rxBytes, xtTotal.rxPackets, xtTotal.txBytes, xtTotal.txPackets,
+                    uidTotal.rxBytes, uidTotal.rxPackets, uidTotal.txBytes, uidTotal.txPackets,
+                    currentTime);
+
+        }
     }
 
     // deleteKernelTagData can ignore ENOENT; otherwise we should log an error
@@ -2435,7 +2525,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         deleteStatsMapTagData(mStatsMapB, uid);
 
         try {
-            mUidCounterSetMap.deleteEntry(new U32(uid));
+            mUidCounterSetMap.deleteEntry(new S32(uid));
         } catch (ErrnoException e) {
             logErrorIfNotErrNoent(e, "Failed to delete tag data from uid counter set map");
         }
@@ -2460,13 +2550,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mUidRecorder.removeUidsLocked(uids);
         mUidTagRecorder.removeUidsLocked(uids);
 
+        mStatsFactory.removeUidsLocked(uids);
         // Clear kernel stats associated with UID
         for (int uid : uids) {
             deleteKernelTagData(uid);
         }
-
-       // TODO: Remove the UID's entries from mOpenSessionCallsPerUid and
-       // mOpenSessionCallsPerCaller
+        // TODO: Remove the UID's entries from mOpenSessionCallsPerCaller.
     }
 
     /**
@@ -2524,6 +2613,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         // usage: dumpsys netstats --full --uid --tag --poll --checkin
         final boolean poll = argSet.contains("--poll") || argSet.contains("poll");
         final boolean checkin = argSet.contains("--checkin");
+        final boolean bpfRawMap = argSet.contains("--bpfRawMap");
         final boolean fullHistory = argSet.contains("--full") || argSet.contains("full");
         final boolean includeUid = argSet.contains("--uid") || argSet.contains("detail");
         final boolean includeTag = argSet.contains("--tag") || argSet.contains("detail");
@@ -2562,6 +2652,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                     pw.println("tag");
                     mUidTagRecorder.dumpCheckin(rawWriter, start, end);
                 }
+                return;
+            }
+
+            if (bpfRawMap) {
+                dumpRawMapLocked(pw, args);
                 return;
             }
 
@@ -2675,7 +2770,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
             pw.println("Dev stats:");
             pw.increaseIndent();
-            mDevRecorder.dumpLocked(pw, fullHistory);
+            pw.println("Pending bytes: ");
+            if (fullHistory) {
+                pw.println("Complete history:");
+            } else {
+                pw.println("History since boot:");
+            }
             pw.decreaseIndent();
 
             pw.println("Xt stats:");
@@ -2696,6 +2796,32 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 mUidTagRecorder.dumpLocked(pw, fullHistory);
                 pw.decreaseIndent();
             }
+
+            pw.println();
+            pw.println("InterfaceMapUpdater:");
+            pw.increaseIndent();
+            mInterfaceMapUpdater.dump(pw);
+            pw.decreaseIndent();
+
+            pw.println();
+            pw.println("BPF map status:");
+            pw.increaseIndent();
+            dumpMapStatus(pw);
+            pw.decreaseIndent();
+            pw.println();
+
+            // Following BPF map content dump contains uid and tag regardless of the flags because
+            // following dumps are moved from TrafficController and bug report already contains this
+            // information.
+            pw.println("BPF map content:");
+            pw.increaseIndent();
+            dumpCookieTagMapLocked(pw);
+            dumpUidCounterSetMapLocked(pw);
+            dumpAppUidStatsMapLocked(pw);
+            dumpStatsMapLocked(mStatsMapA, pw, "mStatsMapA");
+            dumpStatsMapLocked(mStatsMapB, pw, "mStatsMapB");
+            dumpIfaceStatsMapLocked(pw);
+            pw.decreaseIndent();
         }
     }
 
@@ -2709,13 +2835,44 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 mActiveIfaces);
         dumpInterfaces(proto, NetworkStatsServiceDumpProto.ACTIVE_UID_INTERFACES,
                 mActiveUidIfaces);
-        mDevRecorder.dumpDebugLocked(proto, NetworkStatsServiceDumpProto.DEV_STATS);
         mXtRecorder.dumpDebugLocked(proto, NetworkStatsServiceDumpProto.XT_STATS);
         mUidRecorder.dumpDebugLocked(proto, NetworkStatsServiceDumpProto.UID_STATS);
         mUidTagRecorder.dumpDebugLocked(proto,
                 NetworkStatsServiceDumpProto.UID_TAG_STATS);
 
         proto.flush();
+    }
+
+    private <K extends Struct, V extends Struct> void dumpRawMap(IBpfMap<K, V> map,
+            IndentingPrintWriter pw) throws ErrnoException {
+        if (map == null) {
+            pw.println("Map is null");
+            return;
+        }
+        if (map.isEmpty()) {
+            pw.println("");
+            return;
+        }
+        // If there is a concurrent entry deletion, value could be null. http://b/220084230.
+        // Also, map.forEach could restart iteration from the beginning and dump could contain
+        // duplicated entries. User of this dump needs to take care of the duplicated entries.
+        map.forEach((k, v) -> {
+            if (v != null) {
+                pw.println(BpfDump.toBase64EncodedString(k, v));
+            }
+        });
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpRawMapLocked(final IndentingPrintWriter pw, final String[] args) {
+        if (CollectionUtils.contains(args, "--cookieTagMap")) {
+            try {
+                dumpRawMap(mCookieTagMap, pw);
+            } catch (ErrnoException e) {
+                pw.println("Error dumping cookieTag map: " + e);
+            }
+            return;
+        }
     }
 
     private static void dumpInterfaces(ProtoOutputStream proto, long tag,
@@ -2730,12 +2887,86 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
     }
 
-    private NetworkStats readNetworkStatsSummaryDev() {
-        try {
-            return mStatsFactory.readNetworkStatsSummaryDev();
-        } catch (IOException e) {
-            throw new IllegalStateException(e);
+    private void dumpMapStatus(final IndentingPrintWriter pw) {
+        BpfDump.dumpMapStatus(mCookieTagMap, pw, "mCookieTagMap", COOKIE_TAG_MAP_PATH);
+        BpfDump.dumpMapStatus(mUidCounterSetMap, pw, "mUidCounterSetMap", UID_COUNTERSET_MAP_PATH);
+        BpfDump.dumpMapStatus(mAppUidStatsMap, pw, "mAppUidStatsMap", APP_UID_STATS_MAP_PATH);
+        BpfDump.dumpMapStatus(mStatsMapA, pw, "mStatsMapA", STATS_MAP_A_PATH);
+        BpfDump.dumpMapStatus(mStatsMapB, pw, "mStatsMapB", STATS_MAP_B_PATH);
+        // mIfaceStatsMap is always not null but dump status to be consistent with other maps.
+        BpfDump.dumpMapStatus(mIfaceStatsMap, pw, "mIfaceStatsMap", IFACE_STATS_MAP_PATH);
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpCookieTagMapLocked(final IndentingPrintWriter pw) {
+        if (mCookieTagMap == null) {
+            return;
         }
+        BpfDump.dumpMap(mCookieTagMap, pw, "mCookieTagMap",
+                (key, value) -> "cookie=" + key.socketCookie
+                        + " tag=0x" + Long.toHexString(value.tag)
+                        + " uid=" + value.uid);
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpUidCounterSetMapLocked(final IndentingPrintWriter pw) {
+        if (mUidCounterSetMap == null) {
+            return;
+        }
+        BpfDump.dumpMap(mUidCounterSetMap, pw, "mUidCounterSetMap",
+                (uid, set) -> "uid=" + uid.val + " set=" + set.val);
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpAppUidStatsMapLocked(final IndentingPrintWriter pw) {
+        if (mAppUidStatsMap == null) {
+            return;
+        }
+        BpfDump.dumpMap(mAppUidStatsMap, pw, "mAppUidStatsMap",
+                "uid rxBytes rxPackets txBytes txPackets",
+                (key, value) -> key.uid + " "
+                        + value.rxBytes + " "
+                        + value.rxPackets + " "
+                        + value.txBytes + " "
+                        + value.txPackets);
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpStatsMapLocked(final IBpfMap<StatsMapKey, StatsMapValue> statsMap,
+            final IndentingPrintWriter pw, final String mapName) {
+        if (statsMap == null) {
+            return;
+        }
+
+        BpfDump.dumpMap(statsMap, pw, mapName,
+                "ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets",
+                (key, value) -> {
+                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.ifaceIndex);
+                    return key.ifaceIndex + " "
+                            + (ifName != null ? ifName : "unknown") + " "
+                            + "0x" + Long.toHexString(key.tag) + " "
+                            + key.uid + " "
+                            + key.counterSet + " "
+                            + value.rxBytes + " "
+                            + value.rxPackets + " "
+                            + value.txBytes + " "
+                            + value.txPackets;
+                });
+    }
+
+    @GuardedBy("mStatsLock")
+    private void dumpIfaceStatsMapLocked(final IndentingPrintWriter pw) {
+        BpfDump.dumpMap(mIfaceStatsMap, pw, "mIfaceStatsMap",
+                "ifaceIndex ifaceName rxBytes rxPackets txBytes txPackets",
+                (key, value) -> {
+                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.val);
+                    return key.val + " "
+                            + (ifName != null ? ifName : "unknown") + " "
+                            + value.rxBytes + " "
+                            + value.rxPackets + " "
+                            + value.txBytes + " "
+                            + value.txPackets;
+                });
     }
 
     private NetworkStats readNetworkStatsSummaryXt() {
@@ -2764,7 +2995,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     private NetworkStats getNetworkStatsUidDetail(String[] ifaces)
             throws RemoteException {
-        final NetworkStats uidSnapshot = readNetworkStatsUidDetail(UID_ALL,  ifaces, TAG_ALL);
+        final NetworkStats uidSnapshot = readNetworkStatsUidDetail(UID_ALL, ifaces, TAG_ALL);
 
         // fold tethering stats and operations into uid snapshot
         final NetworkStats tetherSnapshot = getNetworkStatsTethering(STATS_PER_UID);
@@ -2779,6 +3010,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         uidSnapshot.combineAllValues(providerStats);
 
         uidSnapshot.combineAllValues(mUidOperations);
+        uidSnapshot.filter(UID_ALL, ifaces, TAG_ALL);
 
         return uidSnapshot;
     }
@@ -2804,34 +3036,17 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             for (TetherStatsParcel tetherStats : tetherStatsParcels) {
                 try {
                     stats.combineValues(new NetworkStats.Entry(tetherStats.iface, UID_TETHERING,
-                            SET_DEFAULT, TAG_NONE, tetherStats.rxBytes, tetherStats.rxPackets,
+                            SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO,
+                            tetherStats.rxBytes, tetherStats.rxPackets,
                             tetherStats.txBytes, tetherStats.txPackets, 0L));
                 } catch (ArrayIndexOutOfBoundsException e) {
                     throw new IllegalStateException("invalid tethering stats " + e);
                 }
             }
-        } catch (IllegalStateException e) {
+        } catch (IllegalStateException | ServiceSpecificException e) {
             Log.wtf(TAG, "problem reading network stats", e);
         }
         return stats;
-    }
-
-    // TODO: It is copied from ConnectivityService, consider refactor these check permission
-    //  functions to a proper util.
-    private boolean checkAnyPermissionOf(String... permissions) {
-        for (String permission : permissions) {
-            if (mContext.checkCallingOrSelfPermission(permission) == PERMISSION_GRANTED) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private void enforceAnyPermissionOf(String... permissions) {
-        if (!checkAnyPermissionOf(permissions)) {
-            throw new SecurityException("Requires one of the following permissions: "
-                    + String.join(", ", permissions) + ".");
-        }
     }
 
     /**
@@ -2848,7 +3063,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     public @NonNull INetworkStatsProviderCallback registerNetworkStatsProvider(
             @NonNull String tag, @NonNull INetworkStatsProvider provider) {
-        enforceAnyPermissionOf(NETWORK_STATS_PROVIDER,
+        PermissionUtils.enforceAnyPermissionOf(mContext, NETWORK_STATS_PROVIDER,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
         Objects.requireNonNull(provider, "provider is null");
         Objects.requireNonNull(tag, "tag is null");
@@ -3062,12 +3277,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             return false;
         }
         @Override
-        public Config getDevConfig() {
-            return new Config(HOUR_IN_MILLIS, 15 * DAY_IN_MILLIS, 90 * DAY_IN_MILLIS);
-        }
-        @Override
         public Config getXtConfig() {
-            return getDevConfig();
+            return new Config(HOUR_IN_MILLIS, 15 * DAY_IN_MILLIS, 90 * DAY_IN_MILLIS);
         }
         @Override
         public Config getUidConfig() {
@@ -3076,10 +3287,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         @Override
         public Config getUidTagConfig() {
             return new Config(2 * HOUR_IN_MILLIS, 5 * DAY_IN_MILLIS, 15 * DAY_IN_MILLIS);
-        }
-        @Override
-        public long getDevPersistBytes(long def) {
-            return def;
         }
         @Override
         public long getXtPersistBytes(long def) {
@@ -3098,4 +3305,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private static native long nativeGetTotalStat(int type);
     private static native long nativeGetIfaceStat(String iface, int type);
     private static native long nativeGetUidStat(int uid, int type);
+
+    /** Initializes and registers the Perfetto Network Trace data source */
+    public static native void nativeInitNetworkTracing();
 }

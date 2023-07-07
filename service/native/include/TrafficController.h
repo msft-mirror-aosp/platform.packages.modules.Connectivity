@@ -21,7 +21,7 @@
 
 #include "android-base/thread_annotations.h"
 #include "bpf/BpfMap.h"
-#include "bpf_shared.h"
+#include "netd.h"
 #include "netdutils/DumpWriter.h"
 #include "netdutils/NetlinkListener.h"
 #include "netdutils/StatusOr.h"
@@ -38,7 +38,7 @@ class TrafficController {
     /*
      * Initialize the whole controller
      */
-    netdutils::Status start();
+    netdutils::Status start(bool startSkDestroyListener);
 
     /*
      * Swap the stats map config from current active stats map to the idle one.
@@ -70,6 +70,8 @@ class TrafficController {
 
     netdutils::Status updateUidOwnerMap(const uint32_t uid,
                                         UidOwnerMatchType matchType, IptOp op) EXCLUDES(mMutex);
+
+    int toggleUidOwnerMap(ChildChain chain, bool enable) EXCLUDES(mMutex);
 
     static netdutils::StatusOr<std::unique_ptr<netdutils::NetlinkListenerInterface>>
     makeSkDestroyListener();

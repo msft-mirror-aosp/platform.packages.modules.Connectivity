@@ -19,8 +19,10 @@
 #include "BpfHandler.h"
 
 #include <linux/bpf.h>
+#include <inttypes.h>
 
 #include <android-base/unique_fd.h>
+#include <android-modules-utils/sdk_level.h>
 #include <bpf/WaitForProgsLoaded.h>
 #include <log/log.h>
 #include <netdutils/UidConstants.h>
@@ -32,7 +34,6 @@ namespace android {
 namespace net {
 
 using base::unique_fd;
-using bpf::NONEXISTENT_COOKIE;
 using bpf::getSocketCookie;
 using bpf::retrieveProgram;
 using netdutils::Status;
@@ -51,29 +52,54 @@ static_assert(STATS_MAP_SIZE - TOTAL_UID_STATS_ENTRIES_LIMIT > 100,
 static Status attachProgramToCgroup(const char* programPath, const unique_fd& cgroupFd,
                                     bpf_attach_type type) {
     unique_fd cgroupProg(retrieveProgram(programPath));
-    if (cgroupProg == -1) {
-        int ret = errno;
-        ALOGE("Failed to get program from %s: %s", programPath, strerror(ret));
-        return statusFromErrno(ret, "cgroup program get failed");
+    if (!cgroupProg.ok()) {
+        const int err = errno;
+        ALOGE("Failed to get program from %s: %s", programPath, strerror(err));
+        return statusFromErrno(err, "cgroup program get failed");
     }
     if (android::bpf::attachProgram(type, cgroupProg, cgroupFd)) {
-        int ret = errno;
-        ALOGE("Program from %s attach failed: %s", programPath, strerror(ret));
-        return statusFromErrno(ret, "program attach failed");
+        const int err = errno;
+        ALOGE("Program from %s attach failed: %s", programPath, strerror(err));
+        return statusFromErrno(err, "program attach failed");
+    }
+    return netdutils::status::ok;
+}
+
+static Status checkProgramAccessible(const char* programPath) {
+    unique_fd prog(retrieveProgram(programPath));
+    if (!prog.ok()) {
+        const int err = errno;
+        ALOGE("Failed to get program from %s: %s", programPath, strerror(err));
+        return statusFromErrno(err, "program retrieve failed");
     }
     return netdutils::status::ok;
 }
 
 static Status initPrograms(const char* cg2_path) {
+    if (modules::sdklevel::IsAtLeastU() && !!strcmp(cg2_path, "/sys/fs/cgroup")) abort();
+
     unique_fd cg_fd(open(cg2_path, O_DIRECTORY | O_RDONLY | O_CLOEXEC));
-    if (cg_fd == -1) {
-        int ret = errno;
-        ALOGE("Failed to open the cgroup directory: %s", strerror(ret));
-        return statusFromErrno(ret, "Open the cgroup directory failed");
+    if (!cg_fd.ok()) {
+        const int err = errno;
+        ALOGE("Failed to open the cgroup directory: %s", strerror(err));
+        return statusFromErrno(err, "Open the cgroup directory failed");
     }
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_ALLOWLIST_PROG_PATH));
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_DENYLIST_PROG_PATH));
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_EGRESS_PROG_PATH));
+    RETURN_IF_NOT_OK(checkProgramAccessible(XT_BPF_INGRESS_PROG_PATH));
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_EGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_EGRESS));
     RETURN_IF_NOT_OK(attachProgramToCgroup(BPF_INGRESS_PROG_PATH, cg_fd, BPF_CGROUP_INET_INGRESS));
-    RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
+
+    // For the devices that support cgroup socket filter, the socket filter
+    // should be loaded successfully by bpfloader. So we attach the filter to
+    // cgroup if the program is pinned properly.
+    // TODO: delete the if statement once all devices should support cgroup
+    // socket filter (ie. the minimum kernel version required is 4.14).
+    if (bpf::isAtLeastKernelVersion(4, 14, 0)) {
+        RETURN_IF_NOT_OK(
+                attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
+    }
     return netdutils::status::ok;
 }
 
@@ -96,12 +122,12 @@ Status BpfHandler::init(const char* cg2_path) {
 }
 
 Status BpfHandler::initMaps() {
-    std::lock_guard guard(mMutex);
-    RETURN_IF_NOT_OK(mCookieTagMap.init(COOKIE_TAG_MAP_PATH));
     RETURN_IF_NOT_OK(mStatsMapA.init(STATS_MAP_A_PATH));
     RETURN_IF_NOT_OK(mStatsMapB.init(STATS_MAP_B_PATH));
     RETURN_IF_NOT_OK(mConfigurationMap.init(CONFIGURATION_MAP_PATH));
     RETURN_IF_NOT_OK(mUidPermissionMap.init(UID_PERMISSION_MAP_PATH));
+    // initialized last so mCookieTagMap.isValid() implies everything else is valid too
+    RETURN_IF_NOT_OK(mCookieTagMap.init(COOKIE_TAG_MAP_PATH));
     ALOGI("%s successfully", __func__);
 
     return netdutils::status::ok;
@@ -119,19 +145,16 @@ bool BpfHandler::hasUpdateDeviceStatsPermission(uid_t uid) {
 }
 
 int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realUid) {
-    std::lock_guard guard(mMutex);
-    if (chargeUid != realUid && !hasUpdateDeviceStatsPermission(realUid)) {
-        return -EPERM;
-    }
+    if (!mCookieTagMap.isValid()) return -EPERM;
+
+    if (chargeUid != realUid && !hasUpdateDeviceStatsPermission(realUid)) return -EPERM;
 
     // Note that tagging the socket to AID_CLAT is only implemented in JNI ClatCoordinator.
     // The process is not allowed to tag socket to AID_CLAT via tagSocket() which would cause
     // process data usage accounting to be bypassed. Tagging AID_CLAT is used for avoiding counting
     // CLAT traffic data usage twice. See packages/modules/Connectivity/service/jni/
     // com_android_server_connectivity_ClatCoordinator.cpp
-    if (chargeUid == AID_CLAT) {
-        return -EPERM;
-    }
+    if (chargeUid == AID_CLAT) return -EPERM;
 
     // The socket destroy listener only monitors on the group {INET_TCP, INET_UDP, INET6_TCP,
     // INET6_UDP}. Tagging listener unsupported socket causes that the tag can't be removed from
@@ -165,16 +188,17 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
     }
 
     uint64_t sock_cookie = getSocketCookie(sockFd);
-    if (sock_cookie == NONEXISTENT_COOKIE) return -errno;
+    if (!sock_cookie) return -errno;
+
     UidTagValue newKey = {.uid = (uint32_t)chargeUid, .tag = tag};
 
     uint32_t totalEntryCount = 0;
     uint32_t perUidEntryCount = 0;
     // Now we go through the stats map and count how many entries are associated
     // with chargeUid. If the uid entry hit the limit for each chargeUid, we block
-    // the request to prevent the map from overflow. It is safe here to iterate
-    // over the map since when mMutex is hold, system server cannot toggle
-    // the live stats map and clean it. So nobody can delete entries from the map.
+    // the request to prevent the map from overflow. Note though that it isn't really
+    // safe here to iterate over the map since it might be modified by the system server,
+    // which might toggle the live stats map and clean it.
     const auto countUidStatsEntries = [chargeUid, &totalEntryCount, &perUidEntryCount](
                                               const StatsKey& key,
                                               const BpfMap<StatsKey, StatsValue>&) {
@@ -214,28 +238,31 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
     }
     // Update the tag information of a socket to the cookieUidMap. Use BPF_ANY
     // flag so it will insert a new entry to the map if that value doesn't exist
-    // yet. And update the tag if there is already a tag stored. Since the eBPF
+    // yet and update the tag if there is already a tag stored. Since the eBPF
     // program in kernel only read this map, and is protected by rcu read lock. It
-    // should be fine to cocurrently update the map while eBPF program is running.
+    // should be fine to concurrently update the map while eBPF program is running.
     res = mCookieTagMap.writeValue(sock_cookie, newKey, BPF_ANY);
     if (!res.ok()) {
         ALOGE("Failed to tag the socket: %s, fd: %d", strerror(res.error().code()),
               mCookieTagMap.getMap().get());
         return -res.error().code();
     }
+    ALOGD("Socket with cookie %" PRIu64 " tagged successfully with tag %" PRIu32 " uid %u "
+              "and real uid %u", sock_cookie, tag, chargeUid, realUid);
     return 0;
 }
 
 int BpfHandler::untagSocket(int sockFd) {
-    std::lock_guard guard(mMutex);
     uint64_t sock_cookie = getSocketCookie(sockFd);
+    if (!sock_cookie) return -errno;
 
-    if (sock_cookie == NONEXISTENT_COOKIE) return -errno;
+    if (!mCookieTagMap.isValid()) return -EPERM;
     base::Result<void> res = mCookieTagMap.deleteValue(sock_cookie);
     if (!res.ok()) {
         ALOGE("Failed to untag socket: %s", strerror(res.error().code()));
         return -res.error().code();
     }
+    ALOGD("Socket with cookie %" PRIu64 " untagged successfully.", sock_cookie);
     return 0;
 }
 

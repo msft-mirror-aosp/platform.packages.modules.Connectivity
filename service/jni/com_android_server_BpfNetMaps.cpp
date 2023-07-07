@@ -18,7 +18,8 @@
 
 #include "TrafficController.h"
 
-#include <bpf_shared.h>
+#include "netd.h"
+
 #include <jni.h>
 #include <log/log.h>
 #include <nativehelper/JNIHelp.h>
@@ -26,6 +27,8 @@
 #include <nativehelper/ScopedPrimitiveArray.h>
 #include <netjniutils/netjniutils.h>
 #include <net/if.h>
+#include <private/android_filesystem_config.h>
+#include <unistd.h>
 #include <vector>
 
 
@@ -45,9 +48,19 @@ namespace android {
       ALOGE("%s failed, error code = %d", __func__, status.code()); \
   } while (0)
 
-static void native_init(JNIEnv* env, jclass clazz) {
-  Status status = mTc.start();
+static void native_init(JNIEnv* env, jclass clazz, jboolean startSkDestroyListener) {
+  Status status = mTc.start(startSkDestroyListener);
   CHECK_LOG(status);
+  if (!isOk(status)) {
+    uid_t uid = getuid();
+    ALOGE("BpfNetMaps jni init failure as uid=%d", uid);
+    // We probably only ever get called from system_server (ie. AID_SYSTEM)
+    // or from tests, and never from network_stack (ie. AID_NETWORK_STACK).
+    // However, if we ever do add calls from production network_stack code
+    // we do want to make sure this initializes correctly.
+    // TODO: Fix tests to not use this jni lib, so we can unconditionally abort()
+    if (uid == AID_SYSTEM || uid == AID_NETWORK_STACK) abort();
+  }
 }
 
 static jint native_addNaughtyApp(JNIEnv* env, jobject self, jint uid) {
@@ -80,6 +93,13 @@ static jint native_removeNiceApp(JNIEnv* env, jobject self, jint uid) {
       TrafficController::IptOp::IptOpDelete);
   CHECK_LOG(status);
   return (jint)status.code();
+}
+
+static jint native_setChildChain(JNIEnv* env, jobject self, jint childChain, jboolean enable) {
+  auto chain = static_cast<ChildChain>(childChain);
+  int res = mTc.toggleUidOwnerMap(chain, enable);
+  if (res) ALOGE("%s failed, error code = %d", __func__, res);
+  return (jint)res;
 }
 
 static jint native_replaceUidChain(JNIEnv* env, jobject self, jstring name, jboolean isAllowlist,
@@ -176,13 +196,17 @@ static void native_dump(JNIEnv* env, jobject self, jobject javaFd, jboolean verb
     mTc.dump(fd, verbose);
 }
 
+static jint native_synchronizeKernelRCU(JNIEnv* env, jobject self) {
+    return -bpf::synchronizeKernelRCU();
+}
+
 /*
  * JNI registration.
  */
 // clang-format off
 static const JNINativeMethod gMethods[] = {
     /* name, signature, funcPtr */
-    {"native_init", "()V",
+    {"native_init", "(Z)V",
     (void*)native_init},
     {"native_addNaughtyApp", "(I)I",
     (void*)native_addNaughtyApp},
@@ -192,6 +216,8 @@ static const JNINativeMethod gMethods[] = {
     (void*)native_addNiceApp},
     {"native_removeNiceApp", "(I)I",
     (void*)native_removeNiceApp},
+    {"native_setChildChain", "(IZ)I",
+    (void*)native_setChildChain},
     {"native_replaceUidChain", "(Ljava/lang/String;Z[I)I",
     (void*)native_replaceUidChain},
     {"native_setUidRule", "(III)I",
@@ -208,11 +234,13 @@ static const JNINativeMethod gMethods[] = {
     (void*)native_setPermissionForUids},
     {"native_dump", "(Ljava/io/FileDescriptor;Z)V",
     (void*)native_dump},
+    {"native_synchronizeKernelRCU", "()I",
+    (void*)native_synchronizeKernelRCU},
 };
 // clang-format on
 
 int register_com_android_server_BpfNetMaps(JNIEnv* env) {
-    return jniRegisterNativeMethods(env, "com/android/server/BpfNetMaps",
+    return jniRegisterNativeMethods(env, "android/net/connectivity/com/android/server/BpfNetMaps",
                                     gMethods, NELEM(gMethods));
 }
 

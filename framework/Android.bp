@@ -45,14 +45,12 @@ filegroup {
 // TODO: use a java_library in the bootclasspath instead
 filegroup {
     name: "framework-connectivity-sources",
+    defaults: ["framework-sources-module-defaults"],
     srcs: [
         ":framework-connectivity-internal-sources",
         ":framework-connectivity-aidl-export-sources",
     ],
-    visibility: [
-        "//frameworks/base",
-        "//packages/modules/Connectivity:__subpackages__",
-    ],
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
 java_defaults {
@@ -80,7 +78,9 @@ java_defaults {
         "framework-connectivity-t.stubs.module_lib",
     ],
     impl_only_libs: [
-        "framework-tethering.stubs.module_lib",
+        // TODO: figure out why just using "framework-tethering" uses the stubs, even though both
+        // framework-connectivity and framework-tethering are in the same APEX.
+        "framework-tethering.impl",
         "framework-wifi.stubs.module_lib",
         "net-utils-device-common",
     ],
@@ -92,6 +92,7 @@ java_defaults {
         "framework-connectivity-javastream-protos",
     ],
     libs: [
+        "androidx.annotation_annotation",
         "app-compat-annotations",
         "framework-connectivity-t.stubs.module_lib",
         "unsupportedappusage",
@@ -104,22 +105,43 @@ java_defaults {
 
 java_library {
     name: "framework-connectivity-pre-jarjar",
-    defaults: ["framework-connectivity-defaults"],
+    defaults: [
+        "framework-connectivity-defaults",
+    ],
+    static_libs: [
+        "cronet_aml_api_java",
+        "cronet_aml_java",
+    ],
     libs: [
         // This cannot be in the defaults clause above because if it were, it would be used
         // to generate the connectivity stubs. That would create a circular dependency
-        // because the tethering stubs depend on the connectivity stubs (e.g.,
+        // because the tethering impl depend on the connectivity stubs (e.g.,
         // TetheringRequest depends on LinkAddress).
-        "framework-tethering.stubs.module_lib",
+        "framework-tethering.impl",
+        "framework-wifi.stubs.module_lib",
     ],
     visibility: ["//packages/modules/Connectivity:__subpackages__"]
 }
 
+java_defaults {
+    name: "CronetJavaDefaults",
+    srcs: [":cronet_aml_api_sources"],
+    libs: [
+        "androidx.annotation_annotation",
+    ],
+    impl_only_static_libs: [
+        "cronet_aml_java",
+    ],
+}
+
 java_sdk_library {
     name: "framework-connectivity",
-    defaults: ["framework-connectivity-defaults"],
+    defaults: [
+        "framework-connectivity-defaults",
+        "CronetJavaDefaults",
+    ],
     installable: true,
-    jarjar_rules: ":connectivity-jarjar-rules",
+    jarjar_rules: ":framework-connectivity-jarjar-rules",
     permitted_packages: ["android.net"],
     impl_library_visibility: [
         "//packages/modules/Connectivity/Tethering/apex",
@@ -145,6 +167,7 @@ java_sdk_library {
         "//frameworks/opt/net/ethernet/tests:__subpackages__",
         "//frameworks/opt/telephony/tests/telephonytests",
         "//packages/modules/CaptivePortalLogin/tests",
+        "//packages/modules/Connectivity/Cronet/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
@@ -181,6 +204,7 @@ cc_library_shared {
         "libnativehelper",
     ],
     header_libs: [
+        "bpf_headers",
         "dnsproxyd_protocol_headers",
     ],
     stl: "none",
@@ -208,5 +232,57 @@ java_library {
     min_sdk_version: "30",
     apex_available: [
         "com.android.tethering",
+    ],
+}
+
+java_genrule {
+    name: "framework-connectivity-jarjar-rules",
+    tool_files: [
+        ":connectivity-hiddenapi-files",
+        ":framework-connectivity-pre-jarjar{.jar}",
+        ":framework-connectivity-t-pre-jarjar{.jar}",
+        ":framework-connectivity.stubs.module_lib{.jar}",
+        ":framework-connectivity-t.stubs.module_lib{.jar}",
+        "jarjar-excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["framework_connectivity_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "$(location :framework-connectivity-pre-jarjar{.jar}) " +
+        "$(location :framework-connectivity-t-pre-jarjar{.jar}) " +
+        "--prefix android.net.connectivity " +
+        "--apistubs $(location :framework-connectivity.stubs.module_lib{.jar}) " +
+        "--apistubs $(location :framework-connectivity-t.stubs.module_lib{.jar}) " +
+        // Make a ":"-separated list. There will be an extra ":" but empty items are ignored.
+        "--unsupportedapi $$(printf ':%s' $(locations :connectivity-hiddenapi-files)) " +
+        "--excludes $(location jarjar-excludes.txt) " +
+        "--output $(out)",
+    visibility: [
+        "//packages/modules/Connectivity/framework:__subpackages__",
+        "//packages/modules/Connectivity/framework-t:__subpackages__",
+        "//packages/modules/Connectivity/service",
+    ],
+}
+
+// Library providing limited APIs within the connectivity module, so that R+ components like
+// Tethering have a controlled way to depend on newer components like framework-connectivity that
+// are not loaded on R.
+java_library {
+    name: "connectivity-internal-api-util",
+    sdk_version: "module_current",
+    libs: [
+        "androidx.annotation_annotation",
+        "framework-connectivity.impl",
+    ],
+    jarjar_rules: ":framework-connectivity-jarjar-rules",
+    srcs: [
+        // Files listed here MUST all be annotated with @RequiresApi(Build.VERSION_CODES.TIRAMISU),
+        // so that API checks are enforced for R+ users of this library
+        "src/android/net/connectivity/TiramisuConnectivityInternalApiUtil.java",
+    ],
+    visibility: [
+        "//packages/modules/Connectivity/Tethering:__subpackages__",
     ],
 }

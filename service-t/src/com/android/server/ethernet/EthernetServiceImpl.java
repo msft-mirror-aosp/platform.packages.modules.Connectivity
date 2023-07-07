@@ -32,7 +32,6 @@ import android.net.ITetheredInterfaceCallback;
 import android.net.IpConfiguration;
 import android.net.NetworkCapabilities;
 import android.net.NetworkSpecifier;
-import android.os.Binder;
 import android.os.Handler;
 import android.os.RemoteException;
 import android.util.Log;
@@ -93,7 +92,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     @Override
     public String[] getAvailableInterfaces() throws RemoteException {
         PermissionUtils.enforceAccessNetworkStatePermission(mContext, TAG);
-        return mTracker.getInterfaces(checkUseRestrictedNetworksPermission());
+        return mTracker.getClientModeInterfaces(checkUseRestrictedNetworksPermission());
     }
 
     /**
@@ -188,13 +187,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     @Override
     protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
         final IndentingPrintWriter pw = new IndentingPrintWriter(writer, "  ");
-        if (mContext.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
-                != PackageManager.PERMISSION_GRANTED) {
-            pw.println("Permission Denial: can't dump EthernetService from pid="
-                    + Binder.getCallingPid()
-                    + ", uid=" + Binder.getCallingUid());
-            return;
-        }
+        if (!PermissionUtils.checkDumpPermission(mContext, TAG, pw)) return;
 
         pw.println("Current Ethernet state: ");
         pw.increaseIndent();
@@ -267,7 +260,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     @Override
     public void updateConfiguration(@NonNull final String iface,
             @NonNull final EthernetNetworkUpdateRequest request,
-            @Nullable final INetworkInterfaceOutcomeReceiver listener) {
+            @Nullable final INetworkInterfaceOutcomeReceiver cb) {
         Objects.requireNonNull(iface);
         Objects.requireNonNull(request);
         throwIfEthernetNotStarted();
@@ -284,31 +277,31 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
         }
 
         mTracker.updateConfiguration(
-                iface, request.getIpConfiguration(), nc, listener);
+                iface, request.getIpConfiguration(), nc, new EthernetCallback(cb));
     }
 
     @Override
     public void enableInterface(@NonNull final String iface,
-            @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        Log.i(TAG, "enableInterface called with: iface=" + iface + ", listener=" + listener);
+            @Nullable final INetworkInterfaceOutcomeReceiver cb) {
+        Log.i(TAG, "enableInterface called with: iface=" + iface + ", cb=" + cb);
         Objects.requireNonNull(iface);
         throwIfEthernetNotStarted();
 
         enforceAdminPermission(iface, false, "enableInterface()");
 
-        mTracker.enableInterface(iface, listener);
+        mTracker.setInterfaceEnabled(iface, true /* enabled */, new EthernetCallback(cb));
     }
 
     @Override
     public void disableInterface(@NonNull final String iface,
-            @Nullable final INetworkInterfaceOutcomeReceiver listener) {
-        Log.i(TAG, "disableInterface called with: iface=" + iface + ", listener=" + listener);
+            @Nullable final INetworkInterfaceOutcomeReceiver cb) {
+        Log.i(TAG, "disableInterface called with: iface=" + iface + ", cb=" + cb);
         Objects.requireNonNull(iface);
         throwIfEthernetNotStarted();
 
         enforceAdminPermission(iface, false, "disableInterface()");
 
-        mTracker.disableInterface(iface, listener);
+        mTracker.setInterfaceEnabled(iface, false /* enabled */, new EthernetCallback(cb));
     }
 
     @Override
