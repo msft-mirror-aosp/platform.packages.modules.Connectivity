@@ -20,6 +20,7 @@ import static com.android.server.nearby.NearbyService.TAG;
 
 import android.content.Context;
 import android.nearby.NearbyDeviceParcelable;
+import android.nearby.ScanCallback;
 import android.nearby.ScanFilter;
 import android.nearby.ScanRequest;
 import android.util.Log;
@@ -88,6 +89,11 @@ public abstract class AbstractDiscoveryProvider {
          * Called when a provider has a new nearby device available. May be invoked from any thread.
          */
         void onNearbyDeviceDiscovered(NearbyDeviceParcelable nearbyDevice);
+
+        /**
+         * Called when a provider found error from the scan.
+         */
+        void onError(@ScanCallback.ErrorCode int errorCode);
     }
 
     private class Controller implements DiscoveryProviderController {
@@ -104,6 +110,7 @@ public abstract class AbstractDiscoveryProvider {
         public boolean isStarted() {
             return mStarted;
         }
+
         @Override
         public void start() {
             if (mStarted) {

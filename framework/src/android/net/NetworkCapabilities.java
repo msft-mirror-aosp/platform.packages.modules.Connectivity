@@ -675,7 +675,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Indicates that this network should be able to prioritize latency for the internet.
      *
-     * Starting with {@code Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, requesting this capability with
+     * Starting with {@link Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, requesting this capability with
      * {@link ConnectivityManager#requestNetwork} requires declaration in the self-certified
      * network capabilities. See {@link NetworkRequest} for the self-certification documentation.
      */
@@ -684,7 +684,7 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Indicates that this network should be able to prioritize bandwidth for the internet.
      *
-     * Starting with {@code Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, requesting this capability with
+     * Starting with {@link Build.VERSION_CODES#UPSIDE_DOWN_CAKE}, requesting this capability with
      * {@link ConnectivityManager#requestNetwork} requires declaration in the self-certified
      * network capabilities. See {@link NetworkRequest} for the self-certification documentation.
      */
@@ -1345,6 +1345,18 @@ public final class NetworkCapabilities implements Parcelable {
     @SystemApi
     @NonNull public @Transport int[] getTransportTypes() {
         return BitUtils.unpackBits(mTransportTypes);
+    }
+
+    /**
+     * Gets the transports as an int. Internal callers only.
+     *
+     * Prefer getTransportTypes/hasTransportType if not immediately collapsing back into a scalar.
+     *
+     * @return a long integer representing the transport types.
+     * @hide
+     */
+    public long getTransportTypesInternal() {
+        return mTransportTypes;
     }
 
     /**
