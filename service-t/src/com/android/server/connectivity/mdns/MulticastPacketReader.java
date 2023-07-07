@@ -16,7 +16,7 @@
 
 package com.android.server.connectivity.mdns;
 
-import static com.android.server.connectivity.mdns.MdnsSocketProvider.ensureRunningOnHandlerThread;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
 
 import android.annotation.NonNull;
 import android.os.Handler;
@@ -59,11 +59,14 @@ public class MulticastPacketReader extends FdEventsReader<MulticastPacketReader.
      * Create a new {@link MulticastPacketReader}.
      * @param socket Socket to read from. This will *not* be closed when the reader terminates.
      * @param buffer Buffer to read packets into. Will only be used from the handler thread.
+     * @param port the port number for the socket
      */
     protected MulticastPacketReader(@NonNull String interfaceTag,
             @NonNull ParcelFileDescriptor socket, @NonNull Handler handler,
             @NonNull byte[] buffer) {
-        super(handler, new RecvBuffer(buffer, new InetSocketAddress()));
+        // Set the port to zero as placeholder as the recvfrom() call will fill the actual port
+        // value later.
+        super(handler, new RecvBuffer(buffer, new InetSocketAddress(0 /* port */)));
         mLogTag = MulticastPacketReader.class.getSimpleName() + "/" + interfaceTag;
         mSocket = socket;
         mHandler = handler;

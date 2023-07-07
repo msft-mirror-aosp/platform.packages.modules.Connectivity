@@ -17,20 +17,9 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// Both cronet_java_defaults and cronet_java_prejarjar_defaults can be used to
-// specify a java_defaults target that either enables or disables Cronet. This
-// is used to disable Cronet on tm-mainline-prod.
-// Note: they must either both be enabled or disabled.
-cronet_java_defaults = "CronetJavaDefaultsDisabled"
-cronet_java_prejarjar_defaults = "CronetJavaPrejarjarDefaultsDisabled"
-// This is a placeholder comment to avoid merge conflicts
-// as cronet_defaults may have different values
-// depending on the branch
-
 java_sdk_library {
     name: "framework-tethering",
     defaults: [
-        "CronetJavaDefaults",
         "framework-tethering-defaults",
     ],
     impl_library_visibility: [
@@ -54,7 +43,6 @@ java_sdk_library {
         "//packages/modules/CaptivePortalLogin/tests",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
-        "//packages/modules/Connectivity/Cronet/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
@@ -69,49 +57,10 @@ java_sdk_library {
     lint: { strict_updatability_linting: true },
 }
 
-java_defaults {
-    name: "CronetJavaDefaults",
-    defaults: [cronet_java_defaults],
-}
-
-java_defaults {
-    name: "CronetJavaDefaultsEnabled",
-    srcs: [":cronet_aml_api_sources"],
-    libs: [
-        "androidx.annotation_annotation",
-    ],
-    impl_only_static_libs: [
-        "cronet_aml_java",
-    ],
-    api_dir: "cronet_enabled/api",
-}
-
-java_defaults {
-  name: "CronetJavaDefaultsDisabled",
-}
-
-java_defaults {
-  name: "CronetJavaPrejarjarDefaults",
-  defaults: [cronet_java_prejarjar_defaults],
-}
-
-java_defaults {
-  name: "CronetJavaPrejarjarDefaultsDisabled",
-}
-
-java_defaults {
-  name: "CronetJavaPrejarjarDefaultsEnabled",
-  static_libs: [
-    "cronet_aml_api_java",
-    "cronet_aml_java"
-  ],
-}
-
 java_library {
   name: "framework-tethering-pre-jarjar",
   defaults: [
     "framework-tethering-defaults",
-    "CronetJavaPrejarjarDefaults",
   ],
 }
 
