@@ -30,8 +30,8 @@
 #define __kernel_udphdr udphdr
 #include <linux/udp.h>
 
-// The resulting .o needs to load on the Android T beta 3 bpfloader
-#define BPFLOADER_MIN_VER BPFLOADER_T_BETA3_VERSION
+// The resulting .o needs to load on the Android T bpfloader
+#define BPFLOADER_MIN_VER BPFLOADER_T_VERSION
 
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
@@ -416,3 +416,4 @@ DEFINE_BPF_PROG("schedcls/egress4/clat_rawip", AID_ROOT, AID_SYSTEM, sched_cls_e
 
 LICENSE("Apache 2.0");
 CRITICAL("Connectivity");
+DISABLE_BTF_ON_USER_BUILDS();
