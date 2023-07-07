@@ -29,39 +29,23 @@ java_genrule {
     out: ["net_http_test_jarjar_rules.txt"],
     cmd: "$(location jarjar-rules-generator) " +
         "$(location :NetHttpTestsLibPreJarJar{.jar}) " +
-        "--prefix android.net.http.internal " +
+        "--prefix android.net.connectivity " +
         "--excludes $(location jarjar_excludes.txt) " +
         "--output $(out)",
 }
 
+// Library to be used in coverage tests. cronet_java_tests can't be used directly because the common
+// tests need to inherit the NetHttpTests manifest.
 android_library {
     name: "NetHttpTestsLibPreJarJar",
-    srcs: [":cronet_aml_javatests_sources"],
+    static_libs: ["cronet_java_tests"],
     sdk_version: "module_current",
     min_sdk_version: "30",
-    static_libs: [
-        "cronet_testserver_utils",
-        "androidx.test.ext.junit",
-        "androidx.test.rules",
-        "junit",
-    ],
-    libs: [
-        "android.test.base",
-        // Needed for direct access to tethering's hidden apis and to avoid `symbol not found`
-        // errors on some builds.
-        "framework-tethering.impl",
-        // android.net.Network apis
-        "framework-connectivity",
-        // android.net.TrafficStats apis
-        "framework-connectivity-t",
-    ],
-    lint: { test: true }
 }
 
 android_test {
      name: "NetHttpTests",
      defaults: [
-        "CronetTestJavaDefaults",
         "mts-target-sdk-version-current",
      ],
      static_libs: ["NetHttpTestsLibPreJarJar"],
