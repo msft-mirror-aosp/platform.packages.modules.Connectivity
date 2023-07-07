@@ -30,8 +30,8 @@
 #define __kernel_udphdr udphdr
 #include <linux/udp.h>
 
-// The resulting .o needs to load on the Android T beta 3 bpfloader
-#define BPFLOADER_MIN_VER BPFLOADER_T_BETA3_VERSION
+// The resulting .o needs to load on the Android T bpfloader
+#define BPFLOADER_MIN_VER BPFLOADER_T_VERSION
 
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
@@ -51,12 +51,6 @@ struct frag_hdr {
     __be16 frag_off;        // 13 bit offset, 2 bits zero, 1 bit "More Fragments"
     __be32 identification;
 };
-
-// constants for passing in to 'bool is_ethernet'
-static const bool RAWIP = false;
-static const bool ETHER = true;
-
-#define KVER_4_14 KVER(4, 14, 0)
 
 DEFINE_BPF_MAP_GRW(clat_ingress6_map, HASH, ClatIngress6Key, ClatIngress6Value, 16, AID_SYSTEM)
 
@@ -422,3 +416,4 @@ DEFINE_BPF_PROG("schedcls/egress4/clat_rawip", AID_ROOT, AID_SYSTEM, sched_cls_e
 
 LICENSE("Apache 2.0");
 CRITICAL("Connectivity");
+DISABLE_BTF_ON_USER_BUILDS();
