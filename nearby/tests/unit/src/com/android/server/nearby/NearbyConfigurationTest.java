@@ -18,7 +18,6 @@ package com.android.server.nearby;
 
 import static android.Manifest.permission.READ_DEVICE_CONFIG;
 import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 
 import static com.android.server.nearby.NearbyConfiguration.NEARBY_ENABLE_PRESENCE_BROADCAST_LEGACY;
 import static com.android.server.nearby.NearbyConfiguration.NEARBY_MAINLINE_NANO_APP_MIN_VERSION;
@@ -26,6 +25,7 @@ import static com.android.server.nearby.NearbyConfiguration.NEARBY_SUPPORT_TEST_
 
 import static com.google.common.truth.Truth.assertThat;
 
+import android.os.Build;
 import android.provider.DeviceConfig;
 
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -36,6 +36,7 @@ import org.junit.Test;
 
 public final class NearbyConfigurationTest {
 
+    private static final String NAMESPACE = NearbyConfiguration.getNamespace();
     private NearbyConfiguration mNearbyConfiguration;
 
     @Before
@@ -48,11 +49,11 @@ public final class NearbyConfigurationTest {
     public void testDeviceConfigChanged() throws InterruptedException {
         mNearbyConfiguration = new NearbyConfiguration();
 
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_SUPPORT_TEST_APP,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_SUPPORT_TEST_APP,
                 "false", false);
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_ENABLE_PRESENCE_BROADCAST_LEGACY,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_ENABLE_PRESENCE_BROADCAST_LEGACY,
                 "false", false);
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_MAINLINE_NANO_APP_MIN_VERSION,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_MAINLINE_NANO_APP_MIN_VERSION,
                 "1", false);
         Thread.sleep(500);
 
@@ -60,15 +61,20 @@ public final class NearbyConfigurationTest {
         assertThat(mNearbyConfiguration.isPresenceBroadcastLegacyEnabled()).isFalse();
         assertThat(mNearbyConfiguration.getNanoAppMinVersion()).isEqualTo(1);
 
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_SUPPORT_TEST_APP,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_SUPPORT_TEST_APP,
                 "true", false);
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_ENABLE_PRESENCE_BROADCAST_LEGACY,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_ENABLE_PRESENCE_BROADCAST_LEGACY,
                 "true", false);
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_MAINLINE_NANO_APP_MIN_VERSION,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_MAINLINE_NANO_APP_MIN_VERSION,
                 "3", false);
         Thread.sleep(500);
 
-        assertThat(mNearbyConfiguration.isTestAppSupported()).isTrue();
+        // TestAppSupported Flag can only be set to true in user-debug devices.
+        if (Build.isDebuggable()) {
+            assertThat(mNearbyConfiguration.isTestAppSupported()).isTrue();
+        } else {
+            assertThat(mNearbyConfiguration.isTestAppSupported()).isFalse();
+        }
         assertThat(mNearbyConfiguration.isPresenceBroadcastLegacyEnabled()).isTrue();
         assertThat(mNearbyConfiguration.getNanoAppMinVersion()).isEqualTo(3);
     }
@@ -76,11 +82,11 @@ public final class NearbyConfigurationTest {
     @After
     public void tearDown() {
         // Sets DeviceConfig values back to default
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_SUPPORT_TEST_APP,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_SUPPORT_TEST_APP,
                 "false", true);
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_ENABLE_PRESENCE_BROADCAST_LEGACY,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_ENABLE_PRESENCE_BROADCAST_LEGACY,
                 "false", true);
-        DeviceConfig.setProperty(NAMESPACE_TETHERING, NEARBY_MAINLINE_NANO_APP_MIN_VERSION,
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_MAINLINE_NANO_APP_MIN_VERSION,
                 "0", true);
     }
 }
