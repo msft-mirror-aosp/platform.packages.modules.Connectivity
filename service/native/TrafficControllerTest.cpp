@@ -59,8 +59,6 @@ constexpr uid_t TEST_UID2 = 54321;
 constexpr uid_t TEST_UID3 = 98765;
 constexpr uint32_t TEST_TAG = 42;
 constexpr uint32_t TEST_COUNTERSET = 1;
-constexpr int TEST_COOKIE = 1;
-constexpr char TEST_IFNAME[] = "test0";
 constexpr int TEST_IFINDEX = 999;
 constexpr int RXPACKETS = 1;
 constexpr int RXBYTES = 100;
@@ -768,116 +766,6 @@ TEST_F(TrafficControllerTest, TestGrantDuplicatePermissionSlientlyFail) {
 
     mTc.setPermissionForUids(INetd::PERMISSION_NONE, appUids);
     expectPrivilegedUserSetEmpty();
-}
-
-TEST_F(TrafficControllerTest, TestDumpsys) {
-    StatsKey tagStatsMapKey;
-    populateFakeStats(TEST_COOKIE, TEST_UID, TEST_TAG, &tagStatsMapKey);
-    populateFakeCounterSet(TEST_UID3, TEST_COUNTERSET);
-
-    // Expect: (part of this depends on hard-code values in populateFakeStats())
-    //
-    // mCookieTagMap:
-    // cookie=1 tag=0x2a uid=10086
-    //
-    // mUidCounterSetMap:
-    // 98765 1
-    //
-    // mAppUidStatsMap::
-    // uid rxBytes rxPackets txBytes txPackets
-    // 10086 100 1 0 0
-    //
-    // mStatsMapA:
-    // ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets
-    // 999 test0 0x2a 10086 1 100 1 0 0
-    std::vector<std::string> expectedLines = {
-        "mCookieTagMap:",
-        fmt::format("cookie={} tag={:#x} uid={}", TEST_COOKIE, TEST_TAG, TEST_UID),
-        "mStatsMapA",
-        "ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets",
-        fmt::format("{} {} {:#x} {} {} {} {} {} {}",
-                    TEST_IFINDEX, TEST_IFNAME, TEST_TAG, TEST_UID, TEST_COUNTERSET, RXBYTES,
-                    RXPACKETS, TXBYTES, TXPACKETS)};
-
-    populateFakeIfaceIndexName(TEST_IFNAME, TEST_IFINDEX);
-    expectedLines.emplace_back("mIfaceIndexNameMap:");
-    expectedLines.emplace_back(fmt::format("ifaceIndex={} ifaceName={}",
-                                           TEST_IFINDEX, TEST_IFNAME));
-
-    ASSERT_TRUE(isOk(updateUidOwnerMaps({TEST_UID}, HAPPY_BOX_MATCH,
-                                        TrafficController::IptOpInsert)));
-    expectedLines.emplace_back("mUidOwnerMap:");
-    expectedLines.emplace_back(fmt::format("{}  HAPPY_BOX_MATCH", TEST_UID));
-
-    mTc.setPermissionForUids(INetd::PERMISSION_UPDATE_DEVICE_STATS, {TEST_UID2});
-    expectedLines.emplace_back("mUidPermissionMap:");
-    expectedLines.emplace_back(fmt::format("{}  BPF_PERMISSION_UPDATE_DEVICE_STATS", TEST_UID2));
-    expectedLines.emplace_back("mPrivilegedUser:");
-    expectedLines.emplace_back(fmt::format("{} ALLOW_UPDATE_DEVICE_STATS", TEST_UID2));
-    EXPECT_TRUE(expectDumpsysContains(expectedLines));
-}
-
-TEST_F(TrafficControllerTest, dumpsysInvalidMaps) {
-    makeTrafficControllerMapsInvalid();
-
-    const std::string kErrIterate = "print end with error: Get firstKey map -1 failed: "
-            "Bad file descriptor";
-    const std::string kErrReadRulesConfig = "read ownerMatch configure failed with error: "
-            "Read value of map -1 failed: Bad file descriptor";
-    const std::string kErrReadStatsMapConfig = "read stats map configure failed with error: "
-            "Read value of map -1 failed: Bad file descriptor";
-
-    std::vector<std::string> expectedLines = {
-        fmt::format("mCookieTagMap {}", kErrIterate),
-        fmt::format("mStatsMapA {}", kErrIterate),
-        fmt::format("mStatsMapB {}", kErrIterate),
-        fmt::format("mIfaceIndexNameMap {}", kErrIterate),
-        fmt::format("mIfaceStatsMap {}", kErrIterate),
-        fmt::format("mConfigurationMap {}", kErrReadRulesConfig),
-        fmt::format("mConfigurationMap {}", kErrReadStatsMapConfig),
-        fmt::format("mUidOwnerMap {}", kErrIterate),
-        fmt::format("mUidPermissionMap {}", kErrIterate)};
-    EXPECT_TRUE(expectDumpsysContains(expectedLines));
-}
-
-TEST_F(TrafficControllerTest, uidMatchTypeToString) {
-    // NO_MATCH(0) can't be verified because match type flag is added by OR operator.
-    // See TrafficController::addRule()
-    static const struct TestConfig {
-        UidOwnerMatchType uidOwnerMatchType;
-        std::string expected;
-    } testConfigs[] = {
-            // clang-format off
-            {HAPPY_BOX_MATCH, "HAPPY_BOX_MATCH"},
-            {DOZABLE_MATCH, "DOZABLE_MATCH"},
-            {STANDBY_MATCH, "STANDBY_MATCH"},
-            {POWERSAVE_MATCH, "POWERSAVE_MATCH"},
-            {HAPPY_BOX_MATCH, "HAPPY_BOX_MATCH"},
-            {RESTRICTED_MATCH, "RESTRICTED_MATCH"},
-            {LOW_POWER_STANDBY_MATCH, "LOW_POWER_STANDBY_MATCH"},
-            {IIF_MATCH, "IIF_MATCH"},
-            {LOCKDOWN_VPN_MATCH, "LOCKDOWN_VPN_MATCH"},
-            {OEM_DENY_1_MATCH, "OEM_DENY_1_MATCH"},
-            {OEM_DENY_2_MATCH, "OEM_DENY_2_MATCH"},
-            {OEM_DENY_3_MATCH, "OEM_DENY_3_MATCH"},
-            // clang-format on
-    };
-
-    for (const auto& config : testConfigs) {
-        SCOPED_TRACE(fmt::format("testConfig: [{}, {}]", config.uidOwnerMatchType,
-                     config.expected));
-
-        // Test private function uidMatchTypeToString() via dumpsys.
-        ASSERT_TRUE(isOk(updateUidOwnerMaps({TEST_UID}, config.uidOwnerMatchType,
-                                            TrafficController::IptOpInsert)));
-        std::vector<std::string> expectedLines;
-        expectedLines.emplace_back(fmt::format("{}  {}", TEST_UID, config.expected));
-        EXPECT_TRUE(expectDumpsysContains(expectedLines));
-
-        // Clean up the stubs.
-        ASSERT_TRUE(isOk(updateUidOwnerMaps({TEST_UID}, config.uidOwnerMatchType,
-                                            TrafficController::IptOpDelete)));
-    }
 }
 
 TEST_F(TrafficControllerTest, getFirewallType) {

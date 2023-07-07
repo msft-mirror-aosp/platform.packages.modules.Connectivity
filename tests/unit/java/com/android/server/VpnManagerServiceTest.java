@@ -75,12 +75,15 @@ import java.util.List;
 @IgnoreUpTo(R) // VpnManagerService is not available before R
 @SmallTest
 public class VpnManagerServiceTest extends VpnTestBase {
+    private static final String CONTEXT_ATTRIBUTION_TAG = "VPN_MANAGER";
+
     @Rule
     public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
 
     private static final int TIMEOUT_MS = 2_000;
 
     @Mock Context mContext;
+    @Mock Context mContextWithoutAttributionTag;
     @Mock Context mSystemContext;
     @Mock Context mUserAllContext;
     private HandlerThread mHandlerThread;
@@ -131,6 +134,11 @@ public class VpnManagerServiceTest extends VpnTestBase {
                 Vpn vpn, VpnProfile profile) {
             return mLockdownVpnTracker;
         }
+
+        @Override
+        public @UserIdInt int getMainUserId() {
+            return UserHandle.USER_SYSTEM;
+        }
     }
 
     @Before
@@ -139,6 +147,13 @@ public class VpnManagerServiceTest extends VpnTestBase {
 
         mHandlerThread = new HandlerThread("TestVpnManagerService");
         mDeps = new VpnManagerServiceDependencies();
+
+        // The attribution tag is a dependency for IKE library to collect VPN metrics correctly
+        // and thus should not be changed without updating the IKE code.
+        doReturn(mContext)
+                .when(mContextWithoutAttributionTag)
+                .createAttributionContext(CONTEXT_ATTRIBUTION_TAG);
+
         doReturn(mUserAllContext).when(mContext).createContextAsUser(UserHandle.ALL, 0);
         doReturn(mSystemContext).when(mContext).createContextAsUser(UserHandle.SYSTEM, 0);
         doReturn(mPackageManager).when(mContext).getPackageManager();
@@ -148,7 +163,7 @@ public class VpnManagerServiceTest extends VpnTestBase {
         mockService(mContext, UserManager.class, Context.USER_SERVICE, mUserManager);
         doReturn(SYSTEM_USER).when(mUserManager).getUserInfo(eq(SYSTEM_USER_ID));
 
-        mService = new VpnManagerService(mContext, mDeps);
+        mService = new VpnManagerService(mContextWithoutAttributionTag, mDeps);
         mService.systemReady();
 
         final ArgumentCaptor<BroadcastReceiver> intentReceiverCaptor =

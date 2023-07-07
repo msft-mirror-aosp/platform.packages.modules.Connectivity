@@ -29,6 +29,7 @@ import static android.net.ConnectivityManager.TYPE_MOBILE_DUN;
 import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_DUN;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.TRANSPORT_BLUETOOTH;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
@@ -67,7 +68,7 @@ import static com.android.modules.utils.build.SdkLevel.isAtLeastS;
 import static com.android.modules.utils.build.SdkLevel.isAtLeastT;
 import static com.android.net.module.util.Inet4AddressUtils.inet4AddressToIntHTH;
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_0;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_HIDL_1_0;
 import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_NONE;
 import static com.android.networkstack.tethering.TestConnectivityManager.BROADCAST_FIRST;
 import static com.android.networkstack.tethering.TestConnectivityManager.CALLBACKS_FIRST;
@@ -82,6 +83,8 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeFalse;
@@ -179,6 +182,7 @@ import android.test.mock.MockContentResolver;
 import android.util.ArraySet;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
@@ -196,6 +200,7 @@ import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 import com.android.networkstack.tethering.TestConnectivityManager.TestNetworkAgent;
 import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.MiscAsserts;
 
@@ -235,6 +240,7 @@ public class TetheringTest {
     private static final String TEST_RNDIS_IFNAME = "test_rndis0";
     private static final String TEST_WIFI_IFNAME = "test_wlan0";
     private static final String TEST_WLAN_IFNAME = "test_wlan1";
+    private static final String TEST_WLAN2_IFNAME = "test_wlan2";
     private static final String TEST_P2P_IFNAME = "test_p2p-p2p0-0";
     private static final String TEST_NCM_IFNAME = "test_ncm0";
     private static final String TEST_ETH_IFNAME = "test_eth0";
@@ -256,6 +262,8 @@ public class TetheringTest {
     private static final int TETHER_USB_RNDIS_NCM_FUNCTIONS = 2;
 
     private static final int DHCPSERVER_START_TIMEOUT_MS = 1000;
+
+    private static final Network[] NULL_NETWORK = new Network[] {null};
 
     @Mock private ApplicationInfo mApplicationInfo;
     @Mock private Context mContext;
@@ -299,6 +307,7 @@ public class TetheringTest {
     private MockContentResolver mContentResolver;
     private BroadcastReceiver mBroadcastReceiver;
     private Tethering mTethering;
+    private TestTetheringEventCallback mTetheringEventCallback;
     private PhoneStateListener mPhoneStateListener;
     private InterfaceConfigurationParcel mInterfaceConfiguration;
     private TetheringConfiguration mConfig;
@@ -384,6 +393,7 @@ public class TetheringTest {
             assertTrue("Non-mocked interface " + ifName,
                     ifName.equals(TEST_RNDIS_IFNAME)
                             || ifName.equals(TEST_WLAN_IFNAME)
+                            || ifName.equals(TEST_WLAN2_IFNAME)
                             || ifName.equals(TEST_WIFI_IFNAME)
                             || ifName.equals(TEST_MOBILE_IFNAME)
                             || ifName.equals(TEST_DUN_IFNAME)
@@ -392,13 +402,15 @@ public class TetheringTest {
                             || ifName.equals(TEST_ETH_IFNAME)
                             || ifName.equals(TEST_BT_IFNAME));
             final String[] ifaces = new String[] {
-                    TEST_RNDIS_IFNAME, TEST_WLAN_IFNAME, TEST_WIFI_IFNAME, TEST_MOBILE_IFNAME,
-                    TEST_DUN_IFNAME, TEST_P2P_IFNAME, TEST_NCM_IFNAME, TEST_ETH_IFNAME};
+                    TEST_RNDIS_IFNAME, TEST_WLAN_IFNAME, TEST_WLAN2_IFNAME, TEST_WIFI_IFNAME,
+                    TEST_MOBILE_IFNAME, TEST_DUN_IFNAME, TEST_P2P_IFNAME, TEST_NCM_IFNAME,
+                    TEST_ETH_IFNAME};
             return new InterfaceParams(ifName,
                     CollectionUtils.indexOf(ifaces, ifName) + IFINDEX_OFFSET,
                     MacAddress.ALL_ZEROS_ADDRESS);
         }
 
+        @SuppressWarnings("DoNotCall") // Ignore warning for synchronous to call to Thread.run()
         @Override
         public void makeDhcpServer(String ifName, DhcpServingParamsParcel params,
                 DhcpServerCallbacks cb) {
@@ -419,7 +431,7 @@ public class TetheringTest {
 
     public class MockTetheringDependencies extends TetheringDependencies {
         StateMachine mUpstreamNetworkMonitorSM;
-        ArrayList<IpServer> mIpv6CoordinatorNotifyList;
+        ArrayList<IpServer> mAllDownstreams;
 
         @Override
         public BpfCoordinator getBpfCoordinator(
@@ -454,7 +466,7 @@ public class TetheringTest {
         @Override
         public IPv6TetheringCoordinator getIPv6TetheringCoordinator(
                 ArrayList<IpServer> notifyList, SharedLog log) {
-            mIpv6CoordinatorNotifyList = notifyList;
+            mAllDownstreams = notifyList;
             return mIPv6TetheringCoordinator;
         }
 
@@ -633,15 +645,14 @@ public class TetheringTest {
                 false);
         when(mNetd.interfaceGetList())
                 .thenReturn(new String[] {
-                        TEST_MOBILE_IFNAME, TEST_WLAN_IFNAME, TEST_RNDIS_IFNAME, TEST_P2P_IFNAME,
-                        TEST_NCM_IFNAME, TEST_ETH_IFNAME, TEST_BT_IFNAME});
+                        TEST_MOBILE_IFNAME, TEST_WLAN_IFNAME, TEST_WLAN2_IFNAME, TEST_RNDIS_IFNAME,
+                        TEST_P2P_IFNAME, TEST_NCM_IFNAME, TEST_ETH_IFNAME, TEST_BT_IFNAME});
         when(mResources.getString(R.string.config_wifi_tether_enable)).thenReturn("");
         mInterfaceConfiguration = new InterfaceConfigurationParcel();
         mInterfaceConfiguration.flags = new String[0];
         when(mRouterAdvertisementDaemon.start())
                 .thenReturn(true);
-        initOffloadConfiguration(true /* offloadConfig */, OFFLOAD_HAL_VERSION_1_0,
-                0 /* defaultDisabled */);
+        initOffloadConfiguration(OFFLOAD_HAL_VERSION_HIDL_1_0, 0 /* defaultDisabled */);
         when(mOffloadHardwareInterface.getForwardedStats(any())).thenReturn(mForwardedStats);
 
         mServiceContext = new TestContext(mContext);
@@ -665,6 +676,7 @@ public class TetheringTest {
         verify(mStatsManager, times(1)).registerNetworkStatsProvider(anyString(), any());
         verify(mNetd).registerUnsolicitedEventListener(any());
         verifyDefaultNetworkRequestFiled();
+        mTetheringEventCallback = registerTetheringEventCallback();
 
         final ArgumentCaptor<PhoneStateListener> phoneListenerCaptor =
                 ArgumentCaptor.forClass(PhoneStateListener.class);
@@ -738,6 +750,16 @@ public class TetheringTest {
         request.connectivityScope = scope;
 
         return request;
+    }
+
+    @NonNull
+    private TestTetheringEventCallback registerTetheringEventCallback() {
+        TestTetheringEventCallback callback = new TestTetheringEventCallback();
+        mTethering.registerTetheringEventCallback(callback);
+        mLooper.dispatchAll();
+        // Pull the first event which is filed immediately after the callback registration.
+        callback.expectUpstreamChanged(NULL_NETWORK);
+        return callback;
     }
 
     @After
@@ -919,9 +941,9 @@ public class TetheringTest {
         // tetherMatchingInterfaces() which starts by fetching all interfaces).
         verify(mNetd, times(1)).interfaceGetList();
 
-        // UpstreamNetworkMonitor should receive selected upstream
+        // Event callback should receive selected upstream
         verify(mUpstreamNetworkMonitor, times(1)).getCurrentPreferredUpstream();
-        verify(mUpstreamNetworkMonitor, times(1)).setCurrentUpstream(upstreamState.network);
+        mTetheringEventCallback.expectUpstreamChanged(upstreamState.network);
     }
 
     @Test
@@ -1007,7 +1029,7 @@ public class TetheringTest {
      */
     private void sendIPv6TetherUpdates(UpstreamNetworkState upstreamState) {
         // IPv6TetheringCoordinator must have been notified of downstream
-        for (IpServer ipSrv : mTetheringDependencies.mIpv6CoordinatorNotifyList) {
+        for (IpServer ipSrv : mTetheringDependencies.mAllDownstreams) {
             UpstreamNetworkState ipv6OnlyState = buildMobileUpstreamState(false, true, false);
             ipSrv.sendMessage(IpServer.CMD_IPV6_TETHER_UPDATE, 0, 0,
                     upstreamState.linkProperties.isIpv6Provisioned()
@@ -1176,7 +1198,7 @@ public class TetheringTest {
         verify(mUpstreamNetworkMonitor, times(1)).getCurrentPreferredUpstream();
         verify(mUpstreamNetworkMonitor, never()).selectPreferredUpstreamType(any());
 
-        verify(mUpstreamNetworkMonitor, times(1)).setCurrentUpstream(upstreamState.network);
+        mTetheringEventCallback.expectUpstreamChanged(upstreamState.network);
     }
 
     private void verifyDisableTryCellWhenTetheringStop(InOrder inOrder) {
@@ -1201,23 +1223,22 @@ public class TetheringTest {
         mobile.fakeConnect();
         mCm.makeDefaultNetwork(mobile, BROADCAST_FIRST);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(mobile.networkId);
 
         // Switch upstream to wifi.
         wifi.fakeConnect();
         mCm.makeDefaultNetwork(wifi, BROADCAST_FIRST);
         mLooper.dispatchAll();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(false);
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(wifi.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(wifi.networkId);
     }
 
-    @Test
-    public void testAutomaticUpstreamSelection() throws Exception {
+    private void verifyAutomaticUpstreamSelection(boolean configAutomatic) throws Exception {
         TestNetworkAgent mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
         TestNetworkAgent wifi = new TestNetworkAgent(mCm, buildWifiUpstreamState());
         InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
         // Enable automatic upstream selection.
-        upstreamSelectionTestCommon(true, inOrder, mobile, wifi);
+        upstreamSelectionTestCommon(configAutomatic, inOrder, mobile, wifi);
 
         // This code has historically been racy, so test different orderings of CONNECTIVITY_ACTION
         // broadcasts and callbacks, and add mLooper.dispatchAll() calls between the two.
@@ -1226,30 +1247,30 @@ public class TetheringTest {
         // Switch upstreams a few times.
         mCm.makeDefaultNetwork(mobile, BROADCAST_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(mobile.networkId);
 
         mCm.makeDefaultNetwork(wifi, BROADCAST_FIRST, doDispatchAll);
         mLooper.dispatchAll();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(false);
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(wifi.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(wifi.networkId);
 
         mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(mobile.networkId);
 
         mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST);
         mLooper.dispatchAll();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(false);
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(wifi.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(wifi.networkId);
 
         mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(mobile.networkId);
 
         // Wifi disconnecting should not have any affect since it's not the current upstream.
         wifi.fakeDisconnect();
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor, never()).setCurrentUpstream(any());
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
 
         // Lose and regain upstream.
         assertTrue(mUpstreamNetworkMonitor.getCurrentPreferredUpstream().linkProperties
@@ -1259,13 +1280,13 @@ public class TetheringTest {
         mobile.fakeDisconnect();
         mLooper.dispatchAll();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(null);
+        mTetheringEventCallback.expectUpstreamChanged(NULL_NETWORK);
 
         mobile = new TestNetworkAgent(mCm, buildMobile464xlatUpstreamState());
         mobile.fakeConnect();
         mCm.makeDefaultNetwork(mobile, BROADCAST_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(mobile.networkId);
 
         // Check the IP addresses to ensure that the upstream is indeed not the same as the previous
         // mobile upstream, even though the netId is (unrealistically) the same.
@@ -1277,13 +1298,13 @@ public class TetheringTest {
         mobile.fakeDisconnect();
         mLooper.dispatchAll();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(null);
+        mTetheringEventCallback.expectUpstreamChanged(NULL_NETWORK);
 
         mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
         mobile.fakeConnect();
         mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(mobile.networkId);
 
         assertTrue(mUpstreamNetworkMonitor.getCurrentPreferredUpstream().linkProperties
                 .hasIPv4Address());
@@ -1297,6 +1318,20 @@ public class TetheringTest {
     }
 
     @Test
+    public void testAutomaticUpstreamSelection() throws Exception {
+        verifyAutomaticUpstreamSelection(true /* configAutomatic */);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.TIRAMISU)
+    public void testAutomaticUpstreamSelectionWithConfigDisabled() throws Exception {
+        // Expect that automatic config can't disable the automatic mode because automatic mode
+        // is always enabled on U+ device.
+        verifyAutomaticUpstreamSelection(false /* configAutomatic */);
+    }
+
+    @Test
+    @IgnoreAfter(Build.VERSION_CODES.TIRAMISU)
     public void testLegacyUpstreamSelection() throws Exception {
         TestNetworkAgent mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
         TestNetworkAgent wifi = new TestNetworkAgent(mCm, buildWifiUpstreamState());
@@ -1310,54 +1345,417 @@ public class TetheringTest {
         mLooper.dispatchAll();
         mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST, null);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(mobile.networkId);
 
         wifi.fakeConnect();
         mLooper.dispatchAll();
         mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST, null);
         mLooper.dispatchAll();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(false);
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(wifi.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(wifi.networkId);
+
+        verifyDisableTryCellWhenTetheringStop(inOrder);
+    }
+
+    private void verifyWifiUpstreamAndUnregisterDunCallback(@NonNull final InOrder inOrder,
+            @NonNull final TestNetworkAgent wifi, @NonNull final NetworkCallback currentDunCallack)
+            throws Exception {
+        assertNotNull(currentDunCallack);
+
+        inOrder.verify(mUpstreamNetworkMonitor).setTryCell(false);
+        inOrder.verify(mCm).unregisterNetworkCallback(eq(currentDunCallack));
+        mTetheringEventCallback.expectUpstreamChanged(wifi.networkId);
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
+    }
+
+    @Nullable
+    private NetworkCallback verifyDunUpstream(@NonNull final InOrder inOrder,
+            @NonNull final TestNetworkAgent dun, final boolean needToRequestNetwork)
+            throws Exception {
+        inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
+        ArgumentCaptor<NetworkCallback> captor = ArgumentCaptor.forClass(NetworkCallback.class);
+        NetworkCallback dunNetworkCallback = null;
+        if (needToRequestNetwork) {
+            inOrder.verify(mCm).requestNetwork(any(), eq(0), eq(TYPE_MOBILE_DUN), any(),
+                    captor.capture());
+            dunNetworkCallback = captor.getValue();
+        }
+        mTetheringEventCallback.expectUpstreamChanged(NULL_NETWORK);
+        final Runnable doDispatchAll = () -> mLooper.dispatchAll();
+        dun.fakeConnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        mTetheringEventCallback.expectUpstreamChanged(dun.networkId);
+
+        if (needToRequestNetwork) {
+            assertNotNull(dunNetworkCallback);
+        } else {
+            assertNull(dunNetworkCallback);
+        }
+
+        return dunNetworkCallback;
+    }
+
+    // Overall test coverage:
+    // - verifyChooseDunUpstreamByAutomaticMode: common, test#1, test#2
+    // - testChooseDunUpstreamByAutomaticMode_defaultNetworkWifi: test#3, test#4
+    // - testChooseDunUpstreamByAutomaticMode_loseDefaultNetworkWifi: test#5
+    // - testChooseDunUpstreamByAutomaticMode_defaultNetworkCell: test#5, test#7
+    // - testChooseDunUpstreamByAutomaticMode_loseAndRegainDun: test#8
+    // - testChooseDunUpstreamByAutomaticMode_switchDefaultFromWifiToCell: test#9, test#10
+    //
+    // Overall test cases:
+    // +-------+-------+-------+-------+-------+
+    // | Test  | WiFi  | Cellu |  Dun  | Expec |
+    // | Case  |       | alr   |       | ted   |
+    // |   #   |       |       |       | Upstr |
+    // |       |       |       |       | eam   |
+    // +-------+-------+-------+-------+-------+
+    // |   -   |       |       |       |   -   | --+
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |       |   V   |       |   -   |   |
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |       |   V   |   O   |  Dun  |   +-- chooseDunUpstreamTestCommon
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |   V   |   O   |   O   |  WiFi |   |
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |   V   |   O   |       |  WiFi | --+
+    // +-------+-------+-------+-------+-------+
+    // |       |   O   |   V   |       |   -   |
+    // |   1   +-------+-------+-------+-------+
+    // |       |   O   |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |       |   O   |   V   |       |   -   |
+    // |   2   +-------+-------+-------+-------+
+    // |       |   O   |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |   3   |   V   |   O   |       |  WiFi |
+    // +-------+-------+-------+-------+-------+
+    // |   4   |   V   |       |       |  WiFi |
+    // +-------+-------+-------+-------+-------+
+    // |   5   |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |   6   |       |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |   7   |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |       |       |       |       |   -   |
+    // |   8   +-------+-------+-------+-------+
+    // |       |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |       |   V   |       |   O   |  WiFi |
+    // |   9   +-------+-------+-------+-------+
+    // |       |   V   |       |       |  WiFi |
+    // +-------+-------+-------+-------+-------+
+    // |       |   O   |   V   |       |   -   |
+    // |   10  +-------+-------+-------+-------+
+    // |       |   O   |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    //
+    // Annotation:
+    // 1. "V" means that the given network is connected and it is default network.
+    // 2. "O" means that the given network is connected and it is not default network.
+    //
+
+    // Test case:
+    // +-------+-------+-------+-------+-------+
+    // | Test  | WiFi  | Cellu |  Dun  | Expec |
+    // | Case  |       | alr   |       | ted   |
+    // |   #   |       |       |       | Upstr |
+    // |       |       |       |       | eam   |
+    // +-------+-------+-------+-------+-------+
+    // |   -   |       |       |       |   -   | --+
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |       |   V   |       |   -   |   |
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |       |   V   |   O   |  Dun  |   +-- chooseDunUpstreamTestCommon
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |   V   |   O   |   O   |  WiFi |   |
+    // +-------+-------+-------+-------+-------+   |
+    // |   -   |   V   |   O   |       |  WiFi | --+
+    // +-------+-------+-------+-------+-------+
+    // |       |   O   |   V   |       |   -   |
+    // |   1   +-------+-------+-------+-------+
+    // |       |   O   |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |       |   O   |   V   |       |   -   |
+    // |   2   +-------+-------+-------+-------+
+    // |       |   O   |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    //
+    private void verifyChooseDunUpstreamByAutomaticMode(boolean configAutomatic) throws Exception {
+        // Enable automatic upstream selection.
+        TestNetworkAgent mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
+        TestNetworkAgent wifi = new TestNetworkAgent(mCm, buildWifiUpstreamState());
+        TestNetworkAgent dun = new TestNetworkAgent(mCm, buildDunUpstreamState());
+        InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
+        chooseDunUpstreamTestCommon(configAutomatic, inOrder, mobile, wifi, dun);
+
+        // [1] When default network switch to mobile and wifi is connected (may have low signal),
+        // automatic mode would request dun again and choose it as upstream.
+        mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST);
+        mLooper.dispatchAll();
+        verifyDunUpstream(inOrder, dun, true /* needToRequestNetwork */);
+
+        // [2] Lose and regain upstream again.
+        final Runnable doDispatchAll = () -> mLooper.dispatchAll();
+        dun.fakeDisconnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
+        mTetheringEventCallback.expectUpstreamChanged(NULL_NETWORK);
+        inOrder.verify(mCm, never()).unregisterNetworkCallback(any(NetworkCallback.class));
+        dun.fakeConnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        mTetheringEventCallback.expectUpstreamChanged(dun.networkId);
 
         verifyDisableTryCellWhenTetheringStop(inOrder);
     }
 
     @Test
     public void testChooseDunUpstreamByAutomaticMode() throws Exception {
-        // Enable automatic upstream selection.
+        verifyChooseDunUpstreamByAutomaticMode(true /* configAutomatic */);
+    }
+
+    // testChooseDunUpstreamByAutomaticMode_* doesn't verify configAutomatic:false because no
+    // matter |configAutomatic| set to true or false, the result always be automatic mode. We
+    // just need one test to make sure this behavior. Don't need to test this configuration
+    // in all tests.
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.TIRAMISU)
+    public void testChooseDunUpstreamByAutomaticModeWithConfigDisabled() throws Exception {
+        verifyChooseDunUpstreamByAutomaticMode(false /* configAutomatic */);
+    }
+
+    // Test case:
+    // +-------+-------+-------+-------+-------+
+    // | Test  | WiFi  | Cellu |  Dun  | Expec |
+    // | Case  |       | alr   |       | ted   |
+    // |   #   |       |       |       | Upstr |
+    // |       |       |       |       | eam   |
+    // +-------+-------+-------+-------+-------+
+    // |   -   |   O   |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |   3   |   V   |   O   |       |  WiFi |
+    // +-------+-------+-------+-------+-------+
+    // |   4   |   V   |       |       |  WiFi |
+    // +-------+-------+-------+-------+-------+
+    //
+    // See verifyChooseDunUpstreamByAutomaticMode for the annotation.
+    //
+    @Test
+    public void testChooseDunUpstreamByAutomaticMode_defaultNetworkWifi() throws Exception {
         TestNetworkAgent mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
         TestNetworkAgent wifi = new TestNetworkAgent(mCm, buildWifiUpstreamState());
         TestNetworkAgent dun = new TestNetworkAgent(mCm, buildDunUpstreamState());
-        InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
-        chooseDunUpstreamTestCommon(true, inOrder, mobile, wifi, dun);
+        final InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
+        final NetworkCallback dunNetworkCallback1 = setupDunUpstreamTest(
+                true /* configAutomatic */, inOrder);
+
+        // When wifi connected, unregister dun request and choose wifi as upstream.
+        wifi.fakeConnect();
+        mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST);
+        mLooper.dispatchAll();
+        verifyWifiUpstreamAndUnregisterDunCallback(inOrder, wifi, dunNetworkCallback1);
 
         // When default network switch to mobile and wifi is connected (may have low signal),
         // automatic mode would request dun again and choose it as upstream.
         mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
-        ArgumentCaptor<NetworkCallback> captor = ArgumentCaptor.forClass(NetworkCallback.class);
-        inOrder.verify(mCm).requestNetwork(any(), eq(0), eq(TYPE_MOBILE_DUN), any(), any());
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(null);
+        final NetworkCallback dunNetworkCallback2 = verifyDunUpstream(inOrder, dun,
+                true /* needToRequestNetwork */);
+
+        // [3] When default network switch to wifi and mobile is still connected,
+        // unregister dun request and choose wifi as upstream.
+        mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST);
+        mLooper.dispatchAll();
+        verifyWifiUpstreamAndUnregisterDunCallback(inOrder, wifi, dunNetworkCallback2);
+
+        // [4] When mobile is disconnected, keep wifi as upstream.
+        final Runnable doDispatchAll = () -> mLooper.dispatchAll();
+        mobile.fakeDisconnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
+
+        verifyDisableTryCellWhenTetheringStop(inOrder);
+    }
+
+    // Test case:
+    // +-------+-------+-------+-------+-------+
+    // | Test  | WiFi  | Cellu |  Dun  | Expec |
+    // | Case  |       | alr   |       | ted   |
+    // |   #   |       |       |       | Upstr |
+    // |       |       |       |       | eam   |
+    // +-------+-------+-------+-------+-------+
+    // |   -   |   V   |       |       |  WiFi |
+    // +-------+-------+-------+-------+-------+
+    // |   5   |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    //
+    // See verifyChooseDunUpstreamByAutomaticMode for the annotation.
+    //
+    @Test
+    public void testChooseDunUpstreamByAutomaticMode_loseDefaultNetworkWifi() throws Exception {
+        TestNetworkAgent wifi = new TestNetworkAgent(mCm, buildWifiUpstreamState());
+        TestNetworkAgent dun = new TestNetworkAgent(mCm, buildDunUpstreamState());
+        final InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
+        final NetworkCallback dunNetworkCallback = setupDunUpstreamTest(
+                true /* configAutomatic */, inOrder);
+
+        // When wifi connected, unregister dun request and choose wifi as upstream.
+        wifi.fakeConnect();
+        mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST);
+        mLooper.dispatchAll();
+        verifyWifiUpstreamAndUnregisterDunCallback(inOrder, wifi, dunNetworkCallback);
+
+        // [5] When wifi is disconnected, automatic mode would request dun again and choose it
+        // as upstream.
+        final Runnable doDispatchAll = () -> mLooper.dispatchAll();
+        mCm.makeDefaultNetwork(null, CALLBACKS_FIRST, doDispatchAll);
+        wifi.fakeDisconnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        verifyDunUpstream(inOrder, dun, true /* needToRequestNetwork */);
+
+        verifyDisableTryCellWhenTetheringStop(inOrder);
+    }
+
+    // Test case:
+    // +-------+-------+-------+-------+-------+
+    // | Test  | WiFi  | Cellu |  Dun  | Expec |
+    // | Case  |       | alr   |       | ted   |
+    // |   #   |       |       |       | Upstr |
+    // |       |       |       |       | eam   |
+    // +-------+-------+-------+-------+-------+
+    // |   -   |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |   6   |       |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |   7   |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    //
+    // See verifyChooseDunUpstreamByAutomaticMode for the annotation.
+    //
+    @Test
+    public void testChooseDunUpstreamByAutomaticMode_defaultNetworkCell() throws Exception {
+        TestNetworkAgent mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
+        TestNetworkAgent dun = new TestNetworkAgent(mCm, buildDunUpstreamState());
+        final InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
+        setupDunUpstreamTest(true /* configAutomatic */, inOrder);
+
+        // Pretend dun connected and expect choose dun as upstream.
         final Runnable doDispatchAll = () -> mLooper.dispatchAll();
         dun.fakeConnect(CALLBACKS_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(dun.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(dun.networkId);
 
-        // Lose and regain upstream again.
-        dun.fakeDisconnect(CALLBACKS_FIRST, doDispatchAll);
+        // [6] When mobile is connected and default network switch to mobile, keep dun as upstream.
+        mobile.fakeConnect();
+        mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(null);
-        inOrder.verify(mCm, never()).unregisterNetworkCallback(any(NetworkCallback.class));
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
+
+        // [7] When mobile is disconnected, keep dun as upstream.
+        mCm.makeDefaultNetwork(null, CALLBACKS_FIRST, doDispatchAll);
+        mobile.fakeDisconnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
+
+        verifyDisableTryCellWhenTetheringStop(inOrder);
+    }
+
+    // Test case:
+    // +-------+-------+-------+-------+-------+
+    // | Test  | WiFi  | Cellu |  Dun  | Expec |
+    // | Case  |       | alr   |       | ted   |
+    // |   #   |       |       |       | Upstr |
+    // |       |       |       |       | eam   |
+    // +-------+-------+-------+-------+-------+
+    // |   -   |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |       |       |       |       |   -   |
+    // |   8   +-------+-------+-------+-------+
+    // |       |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    //
+    // See verifyChooseDunUpstreamByAutomaticMode for the annotation.
+    //
+    @Test
+    public void testChooseDunUpstreamByAutomaticMode_loseAndRegainDun() throws Exception {
+        TestNetworkAgent dun = new TestNetworkAgent(mCm, buildDunUpstreamState());
+        final InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
+        setupDunUpstreamTest(true /* configAutomatic */, inOrder);
+
+        // Pretend dun connected and expect choose dun as upstream.
+        final Runnable doDispatchAll = () -> mLooper.dispatchAll();
         dun.fakeConnect(CALLBACKS_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(dun.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(dun.networkId);
+
+        // [8] Lose and regain upstream again.
+        dun.fakeDisconnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        verifyDunUpstream(inOrder, dun, false /* needToRequestNetwork */);
+
+        verifyDisableTryCellWhenTetheringStop(inOrder);
+    }
+
+    // Test case:
+    // +-------+-------+-------+-------+-------+
+    // | Test  | WiFi  | Cellu |  Dun  | Expec |
+    // | Case  |       | alr   |       | ted   |
+    // |   #   |       |       |       | Upstr |
+    // |       |       |       |       | eam   |
+    // +-------+-------+-------+-------+-------+
+    // |   -   |       |       |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    // |       |   V   |       |   O   |  WiFi |
+    // |   9   +-------+-------+-------+-------+
+    // |       |   V   |       |       |  WiFi |
+    // +-------+-------+-------+-------+-------+
+    // |       |   O   |   V   |       |   -   |
+    // |   10  +-------+-------+-------+-------+
+    // |       |   O   |   V   |   O   |  Dun  |
+    // +-------+-------+-------+-------+-------+
+    //
+    // See verifyChooseDunUpstreamByAutomaticMode for the annotation.
+    //
+    @Test
+    public void testChooseDunUpstreamByAutomaticMode_switchDefaultFromWifiToCell()
+            throws Exception {
+        TestNetworkAgent mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
+        TestNetworkAgent wifi = new TestNetworkAgent(mCm, buildWifiUpstreamState());
+        TestNetworkAgent dun = new TestNetworkAgent(mCm, buildDunUpstreamState());
+        final InOrder inOrder = inOrder(mCm, mUpstreamNetworkMonitor);
+        final NetworkCallback dunNetworkCallback = setupDunUpstreamTest(
+                true /* configAutomatic */, inOrder);
+
+        // Pretend dun connected and expect choose dun as upstream.
+        final Runnable doDispatchAll = () -> mLooper.dispatchAll();
+        dun.fakeConnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        mTetheringEventCallback.expectUpstreamChanged(dun.networkId);
+
+        // [9] When wifi is connected and default network switch to wifi, unregister dun request
+        // and choose wifi as upstream. When dun is disconnected, keep wifi as upstream.
+        wifi.fakeConnect();
+        mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST);
+        mLooper.dispatchAll();
+        verifyWifiUpstreamAndUnregisterDunCallback(inOrder, wifi, dunNetworkCallback);
+        dun.fakeDisconnect(CALLBACKS_FIRST, doDispatchAll);
+        mLooper.dispatchAll();
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
+
+        // [10] When mobile and mobile are connected and default network switch to mobile
+        // (may have low signal), automatic mode would request dun again and choose it as
+        // upstream.
+        mobile.fakeConnect();
+        mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST);
+        mLooper.dispatchAll();
+        verifyDunUpstream(inOrder, dun, true /* needToRequestNetwork */);
 
         verifyDisableTryCellWhenTetheringStop(inOrder);
     }
 
     @Test
+    @IgnoreAfter(Build.VERSION_CODES.TIRAMISU)
     public void testChooseDunUpstreamByLegacyMode() throws Exception {
         // Enable Legacy upstream selection.
         TestNetworkAgent mobile = new TestNetworkAgent(mCm, buildMobileDualStackUpstreamState());
@@ -1371,7 +1769,7 @@ public class TetheringTest {
         mCm.makeDefaultNetwork(mobile, CALLBACKS_FIRST);
         mLooper.dispatchAll();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(false);
-        inOrder.verify(mUpstreamNetworkMonitor, never()).setCurrentUpstream(any());
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
         // BUG: when wifi disconnect, the dun request would not be filed again because wifi is
         // no longer be default network which do not have CONNECTIVIY_ACTION broadcast.
         wifi.fakeDisconnect();
@@ -1399,8 +1797,7 @@ public class TetheringTest {
         verifyDisableTryCellWhenTetheringStop(inOrder);
     }
 
-    private void chooseDunUpstreamTestCommon(final boolean automatic, InOrder inOrder,
-            TestNetworkAgent mobile, TestNetworkAgent wifi, TestNetworkAgent dun) throws Exception {
+    private NetworkCallback setupDunUpstreamTest(final boolean automatic, InOrder inOrder) {
         when(mResources.getBoolean(R.bool.config_tether_upstream_automatic)).thenReturn(automatic);
         when(mTelephonyManager.isTetheringApnRequired()).thenReturn(true);
         sendConfigurationChanged();
@@ -1413,31 +1810,36 @@ public class TetheringTest {
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
         ArgumentCaptor<NetworkCallback> captor = ArgumentCaptor.forClass(NetworkCallback.class);
         inOrder.verify(mCm).requestNetwork(any(), eq(0), eq(TYPE_MOBILE_DUN), any(),
-                captor.capture());
-        final NetworkCallback dunNetworkCallback1 = captor.getValue();
+                captor.capture() /* DUN network callback */);
 
-        // Pretend cellular connected and expect the upstream to be set.
+        return captor.getValue();
+    }
+
+    private void chooseDunUpstreamTestCommon(final boolean automatic, InOrder inOrder,
+            TestNetworkAgent mobile, TestNetworkAgent wifi, TestNetworkAgent dun)
+            throws Exception {
+        final NetworkCallback dunNetworkCallback = setupDunUpstreamTest(automatic, inOrder);
+
+        // Pretend cellular connected and expect the upstream to be not set.
         mobile.fakeConnect();
         mCm.makeDefaultNetwork(mobile, BROADCAST_FIRST);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor, never()).setCurrentUpstream(mobile.networkId);
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
 
         // Pretend dun connected and expect choose dun as upstream.
         final Runnable doDispatchAll = () -> mLooper.dispatchAll();
         dun.fakeConnect(BROADCAST_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(dun.networkId);
+        mTetheringEventCallback.expectUpstreamChanged(dun.networkId);
 
         // When wifi connected, unregister dun request and choose wifi as upstream.
         wifi.fakeConnect();
         mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor).setTryCell(false);
-        inOrder.verify(mCm).unregisterNetworkCallback(eq(dunNetworkCallback1));
-        inOrder.verify(mUpstreamNetworkMonitor).setCurrentUpstream(wifi.networkId);
+        verifyWifiUpstreamAndUnregisterDunCallback(inOrder, wifi, dunNetworkCallback);
         dun.fakeDisconnect(BROADCAST_FIRST, doDispatchAll);
         mLooper.dispatchAll();
-        inOrder.verify(mUpstreamNetworkMonitor, never()).setCurrentUpstream(any());
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
     }
 
     private void runNcmTethering() {
@@ -1601,6 +2003,7 @@ public class TetheringTest {
         verify(mWifiManager).updateInterfaceIpState(
                 TEST_WLAN_IFNAME, WifiManager.IFACE_IP_MODE_CONFIGURATION_ERROR);
 
+        verify(mTetheringMetrics, times(0)).maybeUpdateUpstreamType(any());
         verify(mTetheringMetrics, times(2)).updateErrorCode(eq(TETHERING_WIFI),
                 eq(TETHER_ERROR_INTERNAL_ERROR));
         verify(mTetheringMetrics, times(2)).sendReport(eq(TETHERING_WIFI));
@@ -1741,7 +2144,7 @@ public class TetheringTest {
                     new ArrayList<Network>(Arrays.asList(networks));
             for (Network upstream : expectedUpstreams) {
                 // throws OOB if no expectations
-                assertEquals(mActualUpstreams.remove(0), upstream);
+                assertEquals(upstream, mActualUpstreams.remove(0));
             }
             assertNoUpstreamChangeCallback();
         }
@@ -1756,14 +2159,14 @@ public class TetheringTest {
             for (TetheringConfigurationParcel config : expectedTetherConfig) {
                 // throws OOB if no expectations
                 final TetheringConfigurationParcel actualConfig = mTetheringConfigs.remove(0);
-                assertTetherConfigParcelEqual(actualConfig, config);
+                assertTetherConfigParcelEqual(config, actualConfig);
             }
             assertNoConfigChangeCallback();
         }
 
         public void expectOffloadStatusChanged(final int expectedStatus) {
             assertOffloadStatusChangedCallback();
-            assertEquals(mOffloadStatus.remove(0), new Integer(expectedStatus));
+            assertEquals(Integer.valueOf(expectedStatus), mOffloadStatus.remove(0));
         }
 
         public TetherStatesParcel pollTetherStatesChanged() {
@@ -1854,20 +2257,12 @@ public class TetheringTest {
 
         private void assertTetherConfigParcelEqual(@NonNull TetheringConfigurationParcel actual,
                 @NonNull TetheringConfigurationParcel expect) {
-            assertEquals(actual.subId, expect.subId);
-            assertArrayEquals(actual.tetherableUsbRegexs, expect.tetherableUsbRegexs);
-            assertArrayEquals(actual.tetherableWifiRegexs, expect.tetherableWifiRegexs);
-            assertArrayEquals(actual.tetherableBluetoothRegexs, expect.tetherableBluetoothRegexs);
-            assertEquals(actual.isDunRequired, expect.isDunRequired);
-            assertEquals(actual.chooseUpstreamAutomatically, expect.chooseUpstreamAutomatically);
-            assertArrayEquals(actual.preferredUpstreamIfaceTypes,
-                    expect.preferredUpstreamIfaceTypes);
-            assertArrayEquals(actual.legacyDhcpRanges, expect.legacyDhcpRanges);
-            assertArrayEquals(actual.defaultIPv4DNS, expect.defaultIPv4DNS);
-            assertEquals(actual.enableLegacyDhcpServer, expect.enableLegacyDhcpServer);
-            assertArrayEquals(actual.provisioningApp, expect.provisioningApp);
-            assertEquals(actual.provisioningAppNoUi, expect.provisioningAppNoUi);
-            assertEquals(actual.provisioningCheckPeriod, expect.provisioningCheckPeriod);
+            assertArrayEquals(expect.tetherableUsbRegexs, actual.tetherableUsbRegexs);
+            assertArrayEquals(expect.tetherableWifiRegexs, actual.tetherableWifiRegexs);
+            assertArrayEquals(expect.tetherableBluetoothRegexs, actual.tetherableBluetoothRegexs);
+            assertArrayEquals(expect.legacyDhcpRanges, actual.legacyDhcpRanges);
+            assertArrayEquals(expect.provisioningApp, actual.provisioningApp);
+            assertEquals(expect.provisioningAppNoUi, actual.provisioningAppNoUi);
         }
     }
 
@@ -1892,7 +2287,7 @@ public class TetheringTest {
         mTethering.registerTetheringEventCallback(callback);
         mLooper.dispatchAll();
         callback.expectTetheredClientChanged(Collections.emptyList());
-        callback.expectUpstreamChanged(new Network[] {null});
+        callback.expectUpstreamChanged(NULL_NETWORK);
         callback.expectConfigurationChanged(
                 mTethering.getTetheringConfiguration().toStableParcelable());
         TetherStatesParcel tetherState = callback.pollTetherStatesChanged();
@@ -1940,7 +2335,7 @@ public class TetheringTest {
         tetherState = callback2.pollTetherStatesChanged();
         assertArrayEquals(tetherState.availableList, new TetheringInterface[] {wifiIface});
         mLooper.dispatchAll();
-        callback2.expectUpstreamChanged(new Network[] {null});
+        callback2.expectUpstreamChanged(NULL_NETWORK);
         callback2.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_STOPPED);
         callback.assertNoCallback();
     }
@@ -1953,25 +2348,15 @@ public class TetheringTest {
         mLooper.dispatchAll();
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_STOPPED);
 
-        // 1. Offload fail if no OffloadConfig.
-        initOffloadConfiguration(false /* offloadConfig */, OFFLOAD_HAL_VERSION_1_0,
-                0 /* defaultDisabled */);
+        // 1. Offload fail if no IOffloadHal.
+        initOffloadConfiguration(OFFLOAD_HAL_VERSION_NONE, 0 /* defaultDisabled */);
         runUsbTethering(upstreamState);
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_FAILED);
         runStopUSBTethering();
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_STOPPED);
         reset(mUsbManager, mIPv6TetheringCoordinator);
-        // 2. Offload fail if no OffloadControl.
-        initOffloadConfiguration(true /* offloadConfig */, OFFLOAD_HAL_VERSION_NONE,
-                0 /* defaultDisabled */);
-        runUsbTethering(upstreamState);
-        callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_FAILED);
-        runStopUSBTethering();
-        callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_STOPPED);
-        reset(mUsbManager, mIPv6TetheringCoordinator);
-        // 3. Offload fail if disabled by settings.
-        initOffloadConfiguration(true /* offloadConfig */, OFFLOAD_HAL_VERSION_1_0,
-                1 /* defaultDisabled */);
+        // 2. Offload fail if disabled by settings.
+        initOffloadConfiguration(OFFLOAD_HAL_VERSION_HIDL_1_0, 1 /* defaultDisabled */);
         runUsbTethering(upstreamState);
         callback.expectOffloadStatusChanged(TETHER_HARDWARE_OFFLOAD_FAILED);
         runStopUSBTethering();
@@ -1986,11 +2371,10 @@ public class TetheringTest {
         verify(mUsbManager).setCurrentFunctions(UsbManager.FUNCTION_NONE);
     }
 
-    private void initOffloadConfiguration(final boolean offloadConfig,
-            @OffloadHardwareInterface.OffloadHalVersion final int offloadControlVersion,
+    private void initOffloadConfiguration(
+            @OffloadHardwareInterface.OffloadHalVersion final int offloadHalVersion,
             final int defaultDisabled) {
-        when(mOffloadHardwareInterface.initOffloadConfig()).thenReturn(offloadConfig);
-        when(mOffloadHardwareInterface.initOffloadControl(any())).thenReturn(offloadControlVersion);
+        when(mOffloadHardwareInterface.initOffload(any())).thenReturn(offloadHalVersion);
         when(mOffloadHardwareInterface.getDefaultTetherOffloadDisabled()).thenReturn(
                 defaultDisabled);
     }
@@ -2287,27 +2671,68 @@ public class TetheringTest {
     public void testUpstreamNetworkChanged() {
         final Tethering.TetherMainSM stateMachine = (Tethering.TetherMainSM)
                 mTetheringDependencies.mUpstreamNetworkMonitorSM;
+        final InOrder inOrder = inOrder(mNotificationUpdater);
+
+        // Gain upstream.
         final UpstreamNetworkState upstreamState = buildMobileIPv4UpstreamState();
         initTetheringUpstream(upstreamState);
         stateMachine.chooseUpstreamType(true);
+        mTetheringEventCallback.expectUpstreamChanged(upstreamState.network);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
 
-        verify(mUpstreamNetworkMonitor, times(1)).setCurrentUpstream(eq(upstreamState.network));
-        verify(mNotificationUpdater, times(1)).onUpstreamCapabilitiesChanged(any());
+        // Set the upstream with the same network ID but different object and the same capability.
+        final UpstreamNetworkState upstreamState2 = buildMobileIPv4UpstreamState();
+        initTetheringUpstream(upstreamState2);
+        stateMachine.chooseUpstreamType(true);
+        // Expect that no upstream change event and capabilities changed event.
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
+        inOrder.verify(mNotificationUpdater, never()).onUpstreamCapabilitiesChanged(any());
+
+        // Set the upstream with the same network ID but different object and different capability.
+        final UpstreamNetworkState upstreamState3 = buildMobileIPv4UpstreamState();
+        assertFalse(upstreamState3.networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED));
+        upstreamState3.networkCapabilities.addCapability(NET_CAPABILITY_VALIDATED);
+        initTetheringUpstream(upstreamState3);
+        stateMachine.chooseUpstreamType(true);
+        // Expect that no upstream change event and capabilities changed event.
+        mTetheringEventCallback.assertNoUpstreamChangeCallback();
+        stateMachine.handleUpstreamNetworkMonitorCallback(EVENT_ON_CAPABILITIES, upstreamState3);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState3.networkCapabilities);
+
+
+        // Lose upstream.
+        initTetheringUpstream(null);
+        stateMachine.chooseUpstreamType(true);
+        mTetheringEventCallback.expectUpstreamChanged(NULL_NETWORK);
+        inOrder.verify(mNotificationUpdater).onUpstreamCapabilitiesChanged(null);
     }
 
     @Test
     public void testUpstreamCapabilitiesChanged() {
         final Tethering.TetherMainSM stateMachine = (Tethering.TetherMainSM)
                 mTetheringDependencies.mUpstreamNetworkMonitorSM;
+        final InOrder inOrder = inOrder(mNotificationUpdater);
         final UpstreamNetworkState upstreamState = buildMobileIPv4UpstreamState();
         initTetheringUpstream(upstreamState);
+
         stateMachine.chooseUpstreamType(true);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
 
         stateMachine.handleUpstreamNetworkMonitorCallback(EVENT_ON_CAPABILITIES, upstreamState);
-        // Should have two onUpstreamCapabilitiesChanged().
-        // One is called by reportUpstreamChanged(). One is called by EVENT_ON_CAPABILITIES.
-        verify(mNotificationUpdater, times(2)).onUpstreamCapabilitiesChanged(any());
-        reset(mNotificationUpdater);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
+
+        // Verify that onUpstreamCapabilitiesChanged is called if current upstream network
+        // capabilities changed.
+        // Expect that capability is changed with new capability VALIDATED.
+        assertFalse(upstreamState.networkCapabilities.hasCapability(NET_CAPABILITY_VALIDATED));
+        upstreamState.networkCapabilities.addCapability(NET_CAPABILITY_VALIDATED);
+        stateMachine.handleUpstreamNetworkMonitorCallback(EVENT_ON_CAPABILITIES, upstreamState);
+        inOrder.verify(mNotificationUpdater)
+                .onUpstreamCapabilitiesChanged(upstreamState.networkCapabilities);
 
         // Verify that onUpstreamCapabilitiesChanged won't be called if not current upstream network
         // capabilities changed.
@@ -2315,7 +2740,28 @@ public class TetheringTest {
                 upstreamState.linkProperties, upstreamState.networkCapabilities,
                 new Network(WIFI_NETID));
         stateMachine.handleUpstreamNetworkMonitorCallback(EVENT_ON_CAPABILITIES, upstreamState2);
-        verify(mNotificationUpdater, never()).onUpstreamCapabilitiesChanged(any());
+        inOrder.verify(mNotificationUpdater, never()).onUpstreamCapabilitiesChanged(any());
+    }
+
+    @Test
+    public void testUpstreamCapabilitiesChanged_startStopTethering() throws Exception {
+        final TestNetworkAgent wifi = new TestNetworkAgent(mCm, buildWifiUpstreamState());
+
+        // Start USB tethering with no current upstream.
+        prepareUsbTethering();
+        sendUsbBroadcast(true, true, TETHER_USB_RNDIS_FUNCTION);
+
+        // Pretend wifi connected and expect the upstream to be set.
+        wifi.fakeConnect();
+        mCm.makeDefaultNetwork(wifi, CALLBACKS_FIRST);
+        mLooper.dispatchAll();
+        verify(mNotificationUpdater).onUpstreamCapabilitiesChanged(
+                wifi.networkCapabilities);
+
+        // Stop tethering.
+        // Expect that TetherModeAliveState#exit sends capabilities change notification to null.
+        runStopUSBTethering();
+        verify(mNotificationUpdater).onUpstreamCapabilitiesChanged(null);
     }
 
     @Test
@@ -2546,9 +2992,9 @@ public class TetheringTest {
         final MacAddress testMac1 = MacAddress.fromString("11:11:11:11:11:11");
         final DhcpLeaseParcelable p2pLease = createDhcpLeaseParcelable("clientId1", testMac1,
                 "192.168.50.24", 24, Long.MAX_VALUE, "test1");
-        final List<TetheredClient> p2pClients = notifyDhcpLeasesChanged(TETHERING_WIFI_P2P,
+        final List<TetheredClient> connectedClients = notifyDhcpLeasesChanged(TETHERING_WIFI_P2P,
                 eventCallbacks, p2pLease);
-        callback.expectTetheredClientChanged(p2pClients);
+        callback.expectTetheredClientChanged(connectedClients);
         reset(mDhcpServer);
 
         // Run wifi tethering.
@@ -2557,21 +3003,11 @@ public class TetheringTest {
         verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS)).startWithCallbacks(
                 any(), dhcpEventCbsCaptor.capture());
         eventCallbacks = dhcpEventCbsCaptor.getValue();
-        // Update mac address from softAp callback before getting dhcp lease.
         final MacAddress testMac2 = MacAddress.fromString("22:22:22:22:22:22");
-        final TetheredClient noAddrClient = notifyConnectedWifiClientsChanged(testMac2,
-                false /* isLocalOnly */);
-        final List<TetheredClient> p2pAndNoAddrClients = new ArrayList<>(p2pClients);
-        p2pAndNoAddrClients.add(noAddrClient);
-        callback.expectTetheredClientChanged(p2pAndNoAddrClients);
-
-        // Update dhcp lease for wifi tethering.
         final DhcpLeaseParcelable wifiLease = createDhcpLeaseParcelable("clientId2", testMac2,
                 "192.168.43.24", 24, Long.MAX_VALUE, "test2");
-        final List<TetheredClient> p2pAndWifiClients = new ArrayList<>(p2pClients);
-        p2pAndWifiClients.addAll(notifyDhcpLeasesChanged(TETHERING_WIFI,
-                eventCallbacks, wifiLease));
-        callback.expectTetheredClientChanged(p2pAndWifiClients);
+        verifyHotspotClientUpdate(false /* isLocalOnly */, testMac2, wifiLease, connectedClients,
+                eventCallbacks, callback);
 
         // Test onStarted callback that register second callback when tethering is running.
         TestTetheringEventCallback callback2 = new TestTetheringEventCallback();
@@ -2579,7 +3015,7 @@ public class TetheringTest {
             mTethering.registerTetheringEventCallback(callback2);
             mLooper.dispatchAll();
         });
-        callback2.expectTetheredClientChanged(p2pAndWifiClients);
+        callback2.expectTetheredClientChanged(connectedClients);
     }
 
     @Test
@@ -2601,24 +3037,84 @@ public class TetheringTest {
         verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS)).startWithCallbacks(
                 any(), dhcpEventCbsCaptor.capture());
         final IDhcpEventCallbacks eventCallbacks = dhcpEventCbsCaptor.getValue();
-        // Update mac address from softAp callback before getting dhcp lease.
-        final MacAddress testMac = MacAddress.fromString("22:22:22:22:22:22");
-        final TetheredClient noAddrClient = notifyConnectedWifiClientsChanged(testMac,
-                true /* isLocalOnly */);
-        final List<TetheredClient> noAddrLocalOnlyClients = new ArrayList<>();
-        noAddrLocalOnlyClients.add(noAddrClient);
-        callback.expectTetheredClientChanged(noAddrLocalOnlyClients);
 
-        // Update dhcp lease for local only hotspot.
+        final List<TetheredClient> connectedClients = new ArrayList<>();
+        final MacAddress testMac = MacAddress.fromString("22:22:22:22:22:22");
         final DhcpLeaseParcelable wifiLease = createDhcpLeaseParcelable("clientId", testMac,
                 "192.168.43.24", 24, Long.MAX_VALUE, "test");
-        final List<TetheredClient> localOnlyClients = notifyDhcpLeasesChanged(TETHERING_WIFI,
-                eventCallbacks, wifiLease);
-        callback.expectTetheredClientChanged(localOnlyClients);
+        verifyHotspotClientUpdate(true /* isLocalOnly */, testMac, wifiLease, connectedClients,
+                eventCallbacks, callback);
 
         // Client disconnect from local only hotspot.
         mLocalOnlyHotspotCallback.onConnectedClientsChanged(Collections.emptyList());
         callback.expectTetheredClientChanged(Collections.emptyList());
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testConnectedClientsForSapAndLohsConcurrency() throws Exception {
+        TestTetheringEventCallback callback = new TestTetheringEventCallback();
+        runAsShell(NETWORK_SETTINGS, () -> {
+            mTethering.registerTetheringEventCallback(callback);
+            mLooper.dispatchAll();
+        });
+        callback.expectTetheredClientChanged(Collections.emptyList());
+
+        mTethering.interfaceStatusChanged(TEST_WLAN_IFNAME, true);
+        sendWifiApStateChanged(WIFI_AP_STATE_ENABLED, TEST_WLAN_IFNAME, IFACE_IP_MODE_TETHERED);
+        final ArgumentCaptor<IDhcpEventCallbacks> dhcpEventCbsCaptor =
+                 ArgumentCaptor.forClass(IDhcpEventCallbacks.class);
+        verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS)).startWithCallbacks(
+                any(), dhcpEventCbsCaptor.capture());
+        IDhcpEventCallbacks eventCallbacks = dhcpEventCbsCaptor.getValue();
+        final List<TetheredClient> connectedClients = new ArrayList<>();
+        final MacAddress wifiMac = MacAddress.fromString("11:11:11:11:11:11");
+        final DhcpLeaseParcelable wifiLease = createDhcpLeaseParcelable("clientId", wifiMac,
+                "192.168.2.12", 24, Long.MAX_VALUE, "test");
+        verifyHotspotClientUpdate(false /* isLocalOnly */, wifiMac, wifiLease, connectedClients,
+                eventCallbacks, callback);
+        reset(mDhcpServer);
+
+        mTethering.interfaceStatusChanged(TEST_WLAN2_IFNAME, true);
+        sendWifiApStateChanged(WIFI_AP_STATE_ENABLED, TEST_WLAN2_IFNAME, IFACE_IP_MODE_LOCAL_ONLY);
+
+        verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS)).startWithCallbacks(
+                any(), dhcpEventCbsCaptor.capture());
+        eventCallbacks = dhcpEventCbsCaptor.getValue();
+        final MacAddress localOnlyMac = MacAddress.fromString("22:22:22:22:22:22");
+        final DhcpLeaseParcelable localOnlyLease = createDhcpLeaseParcelable("clientId",
+                localOnlyMac, "192.168.43.24", 24, Long.MAX_VALUE, "test");
+        verifyHotspotClientUpdate(true /* isLocalOnly */, localOnlyMac, localOnlyLease,
+                connectedClients, eventCallbacks, callback);
+
+        assertTrue(isIpServerActive(TETHERING_WIFI, TEST_WLAN_IFNAME, IpServer.STATE_TETHERED));
+        assertTrue(isIpServerActive(TETHERING_WIFI, TEST_WLAN2_IFNAME, IpServer.STATE_LOCAL_ONLY));
+    }
+
+    private boolean isIpServerActive(int type, String ifName, int mode) {
+        for (IpServer ipSrv : mTetheringDependencies.mAllDownstreams) {
+            if (ipSrv.interfaceType() == type && ipSrv.interfaceName().equals(ifName)
+                    && ipSrv.servingMode() == mode) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void verifyHotspotClientUpdate(final boolean isLocalOnly, final MacAddress testMac,
+            final DhcpLeaseParcelable dhcpLease, final List<TetheredClient> currentClients,
+            final IDhcpEventCallbacks dhcpCallback, final TestTetheringEventCallback callback)
+            throws Exception {
+        // Update mac address from softAp callback before getting dhcp lease.
+        final TetheredClient noAddrClient = notifyConnectedWifiClientsChanged(testMac, isLocalOnly);
+        final List<TetheredClient> withNoAddrClients = new ArrayList<>(currentClients);
+        withNoAddrClients.add(noAddrClient);
+        callback.expectTetheredClientChanged(withNoAddrClients);
+
+        // Update dhcp lease for hotspot.
+        currentClients.addAll(notifyDhcpLeasesChanged(TETHERING_WIFI, dhcpCallback, dhcpLease));
+        callback.expectTetheredClientChanged(currentClients);
     }
 
     private TetheredClient notifyConnectedWifiClientsChanged(final MacAddress mac,
@@ -2924,6 +3420,7 @@ public class TetheringTest {
         verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS).times(1)).startWithCallbacks(
                 any(), any());
         verify(mTetheringMetrics).createBuilder(eq(TETHERING_NCM), anyString());
+        verify(mTetheringMetrics, times(1)).maybeUpdateUpstreamType(any());
 
         // Change the USB tethering function to NCM. Because the USB tethering function was set to
         // RNDIS (the default), tethering is stopped.
@@ -2940,6 +3437,7 @@ public class TetheringTest {
         mLooper.dispatchAll();
         ncmResult.assertHasResult();
         verify(mTetheringMetrics, times(2)).createBuilder(eq(TETHERING_NCM), anyString());
+        verify(mTetheringMetrics, times(1)).maybeUpdateUpstreamType(any());
         verify(mTetheringMetrics).updateErrorCode(eq(TETHERING_NCM),
                 eq(TETHER_ERROR_SERVICE_UNAVAIL));
         verify(mTetheringMetrics, times(2)).sendReport(eq(TETHERING_NCM));
@@ -3043,6 +3541,29 @@ public class TetheringTest {
             final ArraySet<Integer> expectedTypes) {
         assertEquals(expectedTypes.size() > 0, mTethering.isTetheringSupported());
         callback.expectSupportedTetheringTypes(expectedTypes);
+    }
+
+    @Test
+    public void testIpv4AddressForSapAndLohsConcurrency() throws Exception {
+        mTethering.interfaceStatusChanged(TEST_WLAN_IFNAME, true);
+        sendWifiApStateChanged(WIFI_AP_STATE_ENABLED, TEST_WLAN_IFNAME, IFACE_IP_MODE_TETHERED);
+
+        ArgumentCaptor<InterfaceConfigurationParcel> ifaceConfigCaptor =
+                ArgumentCaptor.forClass(InterfaceConfigurationParcel.class);
+        verify(mNetd).interfaceSetCfg(ifaceConfigCaptor.capture());
+        InterfaceConfigurationParcel ifaceConfig = ifaceConfigCaptor.getValue();
+        final IpPrefix sapPrefix = new IpPrefix(
+                InetAddresses.parseNumericAddress(ifaceConfig.ipv4Addr), ifaceConfig.prefixLength);
+
+        mTethering.interfaceStatusChanged(TEST_WLAN2_IFNAME, true);
+        sendWifiApStateChanged(WIFI_AP_STATE_ENABLED, TEST_WLAN2_IFNAME, IFACE_IP_MODE_LOCAL_ONLY);
+
+        ifaceConfigCaptor = ArgumentCaptor.forClass(InterfaceConfigurationParcel.class);
+        verify(mNetd, times(2)).interfaceSetCfg(ifaceConfigCaptor.capture());
+        ifaceConfig = ifaceConfigCaptor.getValue();
+        final IpPrefix lohsPrefix = new IpPrefix(
+                InetAddresses.parseNumericAddress(ifaceConfig.ipv4Addr), ifaceConfig.prefixLength);
+        assertFalse(sapPrefix.equals(lohsPrefix));
     }
     // TODO: Test that a request for hotspot mode doesn't interfere with an
     // already operating tethering mode interface.

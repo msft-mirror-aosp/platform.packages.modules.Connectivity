@@ -21,8 +21,12 @@ package {
 java_defaults {
     name: "TetheringApiLevel",
     sdk_version: "module_current",
-    target_sdk_version: "33",
     min_sdk_version: "30",
+}
+
+java_defaults {
+    name: "TetheringReleaseTargetSdk",
+    target_sdk_version: "33",
 }
 
 java_defaults {
@@ -30,6 +34,8 @@ java_defaults {
     // Libraries not including Tethering's own framework-tethering (different flavors of that one
     // are needed depending on the build rule)
     libs: [
+        "connectivity-internal-api-util",
+        "framework-configinfrastructure",
         "framework-connectivity.stubs.module_lib",
         "framework-connectivity-t.stubs.module_lib",
         "framework-statsd.stubs.module_lib",
@@ -55,9 +61,13 @@ java_defaults {
         "modules-utils-build",
         "modules-utils-statemachine",
         "networkstack-client",
+        // AIDL tetheroffload implementation
+        "android.hardware.tetheroffload-V1-java",
+        // HIDL tetheroffload implementation
         "android.hardware.tetheroffload.config-V1.0-java",
         "android.hardware.tetheroffload.control-V1.0-java",
         "android.hardware.tetheroffload.control-V1.1-java",
+        "android.hidl.manager-V1.2-java",
         "net-utils-framework-common",
         "net-utils-device-common",
         "net-utils-device-common-bpf",
@@ -70,7 +80,6 @@ java_defaults {
     libs: [
         "framework-tethering.impl",
     ],
-    plugins: ["java_api_finder"],
     manifest: "AndroidManifestBase.xml",
     lint: { strict_updatability_linting: true },
 }
@@ -81,7 +90,8 @@ android_library {
     defaults: [
         "ConnectivityNextEnableDefaults",
         "TetheringAndroidLibraryDefaults",
-        "TetheringApiLevel"
+        "TetheringApiLevel",
+        "TetheringReleaseTargetSdk"
     ],
     static_libs: [
         "NetworkStackApiCurrentShims",
@@ -94,7 +104,8 @@ android_library {
     name: "TetheringApiStableLib",
     defaults: [
         "TetheringAndroidLibraryDefaults",
-        "TetheringApiLevel"
+        "TetheringApiLevel",
+        "TetheringReleaseTargetSdk"
     ],
     static_libs: [
         "NetworkStackApiStableShims",
@@ -108,7 +119,6 @@ cc_library {
     name: "libcom_android_networkstack_tethering_util_jni",
     sdk_version: "30",
     apex_available: [
-        "//apex_available:platform", // Used by InProcessTethering
         "com.android.tethering",
     ],
     min_sdk_version: "30",
@@ -177,19 +187,6 @@ java_defaults {
     lint: { strict_updatability_linting: true },
 }
 
-// Non-updatable tethering running in the system server process for devices not using the module
-android_app {
-    name: "InProcessTethering",
-    defaults: ["TetheringAppDefaults", "TetheringApiLevel", "ConnectivityNextEnableDefaults"],
-    static_libs: ["TetheringApiCurrentLib"],
-    certificate: "platform",
-    manifest: "AndroidManifest_InProcess.xml",
-    // InProcessTethering is a replacement for Tethering
-    overrides: ["Tethering"],
-    apex_available: ["com.android.tethering"],
-    lint: { strict_updatability_linting: true },
-}
-
 // Updatable tethering packaged for finalized API
 android_app {
     name: "Tethering",
@@ -198,11 +195,7 @@ android_app {
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The network stack *must* be included to ensure security of the device
-    required: [
-        "NetworkStack",
-        "privapp_allowlist_com.android.tethering",
-    ],
+    privapp_allowlist: ":privapp_allowlist_com.android.tethering",
     apex_available: ["com.android.tethering"],
     lint: { strict_updatability_linting: true },
 }
@@ -218,11 +211,7 @@ android_app {
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The network stack *must* be included to ensure security of the device
-    required: [
-        "NetworkStackNext",
-        "privapp_allowlist_com.android.tethering",
-    ],
+    privapp_allowlist: ":privapp_allowlist_com.android.tethering",
     apex_available: ["com.android.tethering"],
     lint: { strict_updatability_linting: true },
 }
@@ -233,6 +222,9 @@ sdk {
         // Adds exportable dependencies of the APEX to the sdk,
         // e.g. *classpath_fragments.
         "com.android.tethering",
+    ],
+    native_shared_libs: [
+        "libnetd_updatable",
     ],
 }
 

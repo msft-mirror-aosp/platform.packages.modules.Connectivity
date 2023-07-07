@@ -16,6 +16,12 @@
 
 package com.android.server.nearby.provider;
 
+import static android.Manifest.permission.READ_DEVICE_CONFIG;
+import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
+
+import static com.android.server.nearby.NearbyConfiguration.NEARBY_MAINLINE_NANO_APP_MIN_VERSION;
+import static com.android.server.nearby.provider.ChreCommunication.INVALID_NANO_APP_VERSION;
+
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.any;
@@ -30,7 +36,13 @@ import android.hardware.location.ContextHubManager;
 import android.hardware.location.ContextHubTransaction;
 import android.hardware.location.NanoAppMessage;
 import android.hardware.location.NanoAppState;
+import android.os.Build;
+import android.provider.DeviceConfig;
 
+import androidx.test.filters.SdkSuppress;
+import androidx.test.platform.app.InstrumentationRegistry;
+
+import com.android.server.nearby.NearbyConfiguration;
 import com.android.server.nearby.injector.Injector;
 
 import org.junit.Before;
@@ -45,6 +57,9 @@ import java.util.List;
 import java.util.concurrent.Executor;
 
 public class ChreCommunicationTest {
+    private static final String NAMESPACE = NearbyConfiguration.getNamespace();
+    private static final int APP_VERSION = 1;
+
     @Mock Injector mInjector;
     @Mock Context mContext;
     @Mock ContextHubManager mManager;
@@ -60,6 +75,11 @@ public class ChreCommunicationTest {
 
     @Before
     public void setUp() {
+        InstrumentationRegistry.getInstrumentation().getUiAutomation()
+                .adoptShellPermissionIdentity(WRITE_DEVICE_CONFIG, READ_DEVICE_CONFIG);
+        DeviceConfig.setProperty(
+                NAMESPACE, NEARBY_MAINLINE_NANO_APP_MIN_VERSION, "1", false);
+
         MockitoAnnotations.initMocks(this);
         when(mInjector.getContextHubManager()).thenReturn(mManager);
         when(mManager.getContextHubs()).thenReturn(Collections.singletonList(new ContextHubInfo()));
@@ -69,29 +89,64 @@ public class ChreCommunicationTest {
         when(mTransactionResponse.getContents())
                 .thenReturn(
                         Collections.singletonList(
-                                new NanoAppState(ChreDiscoveryProvider.NANOAPP_ID, 1, true)));
+                                new NanoAppState(
+                                        ChreDiscoveryProvider.NANOAPP_ID,
+                                        APP_VERSION,
+                                        true)));
 
         mChreCommunication = new ChreCommunication(mInjector, mContext, new InlineExecutor());
+    }
+
+    @Test
+    public void testStart() {
         mChreCommunication.start(
                 mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
 
         verify(mTransaction).setOnCompleteListener(mOnQueryCompleteListenerCaptor.capture(), any());
         mOnQueryCompleteListenerCaptor.getValue().onComplete(mTransaction, mTransactionResponse);
-    }
-
-    @Test
-    public void testStart() {
         verify(mChreCallback).started(true);
     }
 
     @Test
     public void testStop() {
+        mChreCommunication.start(
+                mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
+
+        verify(mTransaction).setOnCompleteListener(mOnQueryCompleteListenerCaptor.capture(), any());
+        mOnQueryCompleteListenerCaptor.getValue().onComplete(mTransaction, mTransactionResponse);
         mChreCommunication.stop();
         verify(mClient).close();
     }
 
     @Test
+    public void testNotReachMinVersion() {
+        DeviceConfig.setProperty(NAMESPACE, NEARBY_MAINLINE_NANO_APP_MIN_VERSION, "3", false);
+        mChreCommunication.start(
+                mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
+        verify(mTransaction).setOnCompleteListener(mOnQueryCompleteListenerCaptor.capture(), any());
+        mOnQueryCompleteListenerCaptor.getValue().onComplete(mTransaction, mTransactionResponse);
+        verify(mChreCallback).started(false);
+    }
+
+    @Test
+    @SdkSuppress(minSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public void test_getNanoVersion() {
+        assertThat(mChreCommunication.queryNanoAppVersion()).isEqualTo(INVALID_NANO_APP_VERSION);
+
+        mChreCommunication.start(
+                mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
+        verify(mTransaction).setOnCompleteListener(mOnQueryCompleteListenerCaptor.capture(), any());
+        mOnQueryCompleteListenerCaptor.getValue().onComplete(mTransaction, mTransactionResponse);
+
+        assertThat(mChreCommunication.queryNanoAppVersion()).isEqualTo(APP_VERSION);
+    }
+
+    @Test
     public void testSendMessageToNanApp() {
+        mChreCommunication.start(
+                mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
+        verify(mTransaction).setOnCompleteListener(mOnQueryCompleteListenerCaptor.capture(), any());
+        mOnQueryCompleteListenerCaptor.getValue().onComplete(mTransaction, mTransactionResponse);
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         ChreDiscoveryProvider.NANOAPP_ID,
@@ -103,6 +158,8 @@ public class ChreCommunicationTest {
 
     @Test
     public void testOnMessageFromNanoApp() {
+        mChreCommunication.start(
+                mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
         NanoAppMessage message =
                 NanoAppMessage.createMessageToNanoApp(
                         ChreDiscoveryProvider.NANOAPP_ID,
@@ -110,7 +167,6 @@ public class ChreCommunicationTest {
                         new byte[] {1, 2, 3});
         mChreCommunication.onMessageFromNanoApp(mClient, message);
         verify(mChreCallback).onMessageFromNanoApp(eq(message));
-
     }
 
     @Test
@@ -158,12 +214,16 @@ public class ChreCommunicationTest {
 
     @Test
     public void testOnHubReset() {
+        mChreCommunication.start(
+                mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
         mChreCommunication.onHubReset(mClient);
         verify(mChreCallback).onHubReset();
     }
 
     @Test
     public void testOnNanoAppLoaded() {
+        mChreCommunication.start(
+                mChreCallback, Collections.singleton(ChreDiscoveryProvider.NANOAPP_ID));
         mChreCommunication.onNanoAppLoaded(mClient, ChreDiscoveryProvider.NANOAPP_ID);
         verify(mChreCallback).onNanoAppRestart(eq(ChreDiscoveryProvider.NANOAPP_ID));
     }

@@ -25,7 +25,6 @@ import static com.android.internal.annotations.VisibleForTesting.Visibility.PACK
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
-import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.INetd;
@@ -57,6 +56,7 @@ import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkMessage;
 import com.android.net.module.util.netlink.RtNetlinkLinkMessage;
 import com.android.net.module.util.netlink.StructIfinfoMsg;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.FileDescriptor;
 import java.net.InetAddress;
@@ -302,9 +302,14 @@ public class EthernetTracker {
         final int state = getInterfaceState(iface);
         final int role = getInterfaceRole(iface);
         final IpConfiguration config = getIpConfigurationForCallback(iface, state);
+        final boolean isRestricted = isRestrictedInterface(iface);
         final int n = mListeners.beginBroadcast();
         for (int i = 0; i < n; i++) {
             try {
+                if (isRestricted) {
+                    final ListenerInfo info = (ListenerInfo) mListeners.getBroadcastCookie(i);
+                    if (!info.canUseRestrictedNetworks) continue;
+                }
                 mListeners.getBroadcastItem(i).onInterfaceStateChanged(iface, state, role, config);
             } catch (RemoteException e) {
                 // Do nothing here.
@@ -366,15 +371,9 @@ public class EthernetTracker {
     }
 
     @VisibleForTesting(visibility = PACKAGE)
-    protected void enableInterface(@NonNull final String iface,
+    protected void setInterfaceEnabled(@NonNull final String iface, boolean enabled,
             @Nullable final EthernetCallback cb) {
-        mHandler.post(() -> updateInterfaceState(iface, true, cb));
-    }
-
-    @VisibleForTesting(visibility = PACKAGE)
-    protected void disableInterface(@NonNull final String iface,
-            @Nullable final EthernetCallback cb) {
-        mHandler.post(() -> updateInterfaceState(iface, false, cb));
+        mHandler.post(() -> updateInterfaceState(iface, enabled, cb));
     }
 
     IpConfiguration getIpConfiguration(String iface) {
@@ -386,7 +385,7 @@ public class EthernetTracker {
         return mFactory.hasInterface(iface);
     }
 
-    String[] getInterfaces(boolean includeRestricted) {
+    String[] getClientModeInterfaces(boolean includeRestricted) {
         return mFactory.getAvailableInterfaces(includeRestricted);
     }
 
@@ -429,8 +428,11 @@ public class EthernetTracker {
                 // Remote process has already died
                 return;
             }
-            for (String iface : getInterfaces(canUseRestrictedNetworks)) {
+            for (String iface : getClientModeInterfaces(canUseRestrictedNetworks)) {
                 unicastInterfaceStateChange(listener, iface);
+            }
+            if (mTetheringInterfaceMode == INTERFACE_MODE_SERVER) {
+                unicastInterfaceStateChange(listener, mTetheringInterface);
             }
 
             unicastEthernetStateChange(listener, mEthernetState);
@@ -622,31 +624,32 @@ public class EthernetTracker {
         // restarted while it was running), we need to fake a link up notification so we
         // start configuring it.
         if (NetdUtils.hasFlag(config, INetd.IF_FLAG_RUNNING)) {
-            updateInterfaceState(iface, true);
+            // no need to send an interface state change as this is not a true "state change". The
+            // callers (maybeTrackInterface() and setTetheringInterfaceMode()) already broadcast the
+            // state change.
+            mFactory.updateInterfaceLinkState(iface, true);
         }
     }
 
     private void updateInterfaceState(String iface, boolean up) {
-        // TODO: pull EthernetCallbacks out of EthernetNetworkFactory.
         updateInterfaceState(iface, up, new EthernetCallback(null /* cb */));
     }
 
-    private void updateInterfaceState(@NonNull final String iface, final boolean up,
-            @Nullable final EthernetCallback cb) {
+    // TODO(b/225315248): enable/disableInterface() should not affect link state.
+    private void updateInterfaceState(String iface, boolean up, EthernetCallback cb) {
         final int mode = getInterfaceMode(iface);
-        final boolean factoryLinkStateUpdated = (mode == INTERFACE_MODE_CLIENT)
-                && mFactory.updateInterfaceLinkState(iface, up);
-
-        if (factoryLinkStateUpdated) {
-            broadcastInterfaceStateChange(iface);
-            cb.onResult(iface);
-        } else {
-            // The interface may already be in the correct state. While usually this should not be
-            // an error, since updateInterfaceState is used in setInterfaceEnabled() /
-            // setInterfaceDisabled() it has to be reported as such.
-            // It is also possible that the interface disappeared or is in server mode.
+        if (mode == INTERFACE_MODE_SERVER || !mFactory.hasInterface(iface)) {
+            // The interface is in server mode or is not tracked.
             cb.onError("Failed to set link state " + (up ? "up" : "down") + " for " + iface);
+            return;
         }
+
+        if (mFactory.updateInterfaceLinkState(iface, up)) {
+            broadcastInterfaceStateChange(iface);
+        }
+        // If updateInterfaceLinkState returns false, the interface is already in the correct state.
+        // Always return success.
+        cb.onResult(iface);
     }
 
     private void maybeUpdateServerModeInterfaceState(String iface, boolean available) {
