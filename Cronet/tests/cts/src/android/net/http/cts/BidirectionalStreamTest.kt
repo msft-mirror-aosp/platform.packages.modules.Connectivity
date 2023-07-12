@@ -58,6 +58,11 @@ class BidirectionalStreamTest {
     @After
     @Throws(Exception::class)
     fun tearDown() {
+        // cancel active requests to enable engine shutdown.
+        stream?.let {
+            it.cancel()
+            callback.blockForDone()
+        }
         httpEngine.shutdown()
     }
 

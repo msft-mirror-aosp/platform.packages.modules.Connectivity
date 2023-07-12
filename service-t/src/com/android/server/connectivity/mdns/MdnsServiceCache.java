@@ -96,14 +96,7 @@ public class MdnsServiceCache {
                 : Collections.emptyList();
     }
 
-    /**
-     * Find a matched response for given service name
-     *
-     * @param responses the responses to be searched.
-     * @param serviceName the target service name
-     * @return the response which matches the given service name or null if not found.
-     */
-    public static MdnsResponse findMatchedResponse(@NonNull List<MdnsResponse> responses,
+    private MdnsResponse findMatchedResponse(@NonNull List<MdnsResponse> responses,
             @NonNull String serviceName) {
         for (MdnsResponse response : responses) {
             if (equalsIgnoreDnsCase(serviceName, response.getServiceInstanceName())) {

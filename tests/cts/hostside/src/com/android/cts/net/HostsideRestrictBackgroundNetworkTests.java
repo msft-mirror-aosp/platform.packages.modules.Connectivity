@@ -32,12 +32,16 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestC
 
     @Before
     public void setUp() throws Exception {
+        super.setUp();
+
         uninstallPackage(TEST_APP2_PKG, false);
         installPackage(TEST_APP2_APK);
     }
 
     @After
     public void tearDown() throws Exception {
+        super.tearDown();
+
         uninstallPackage(TEST_APP2_PKG, true);
     }
 

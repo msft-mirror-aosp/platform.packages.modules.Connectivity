@@ -51,7 +51,6 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     @NonNull private final PerSocketServiceTypeClients perSocketServiceTypeClients;
     @NonNull private final Handler handler;
     @Nullable private final HandlerThread handlerThread;
-    @NonNull private final MdnsServiceCache serviceCache;
 
     private static class PerSocketServiceTypeClients {
         private final ArrayMap<Pair<String, SocketKey>, MdnsServiceTypeClient> clients =
@@ -120,12 +119,10 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         if (socketClient.getLooper() != null) {
             this.handlerThread = null;
             this.handler = new Handler(socketClient.getLooper());
-            this.serviceCache = new MdnsServiceCache(socketClient.getLooper());
         } else {
             this.handlerThread = new HandlerThread(MdnsDiscoveryManager.class.getSimpleName());
             this.handlerThread.start();
             this.handler = new Handler(handlerThread.getLooper());
-            this.serviceCache = new MdnsServiceCache(handlerThread.getLooper());
         }
     }
 
@@ -292,6 +289,6 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         return new MdnsServiceTypeClient(
                 serviceType, socketClient,
                 executorProvider.newServiceTypeClientSchedulerExecutor(), socketKey,
-                sharedLog.forSubComponent(tag), handler.getLooper(), serviceCache);
+                sharedLog.forSubComponent(tag), handler.getLooper());
     }
 }
