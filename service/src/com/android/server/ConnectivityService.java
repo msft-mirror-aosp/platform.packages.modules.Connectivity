@@ -4007,6 +4007,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
             } else if (portalChanged) {
                 if (portal && ConnectivitySettingsManager.CAPTIVE_PORTAL_MODE_AVOID
                         == getCaptivePortalMode()) {
+                    if (nai.networkCapabilities.hasTransport(
+                            NetworkCapabilities.TRANSPORT_BLUETOOTH)) {
+                        if (DBG) log("Proxy behind captive portal: " + nai.toShortString());
+                        return;
+                    }
                     if (DBG) log("Avoiding captive portal network: " + nai.toShortString());
                     nai.onPreventAutomaticReconnect();
                     teardownUnneededNetwork(nai);
