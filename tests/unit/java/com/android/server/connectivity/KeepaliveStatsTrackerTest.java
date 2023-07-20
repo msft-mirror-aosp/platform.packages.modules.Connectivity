@@ -19,6 +19,8 @@ package com.android.server.connectivity;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 
+import static com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
+import static com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import static com.android.testutils.HandlerUtils.visibleOnHandlerThread;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -27,12 +29,16 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.TelephonyNetworkSpecifier;
@@ -59,6 +65,7 @@ import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
@@ -100,6 +107,8 @@ public class KeepaliveStatsTrackerTest {
                 .build();
     }
 
+    @Rule public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
+
     private HandlerThread mHandlerThread;
     private Handler mTestHandler;
 
@@ -108,6 +117,18 @@ public class KeepaliveStatsTrackerTest {
     @Mock private Context mContext;
     @Mock private KeepaliveStatsTracker.Dependencies mDependencies;
     @Mock private SubscriptionManager mSubscriptionManager;
+
+    private void triggerBroadcastDefaultSubId(int subId) {
+        final ArgumentCaptor<BroadcastReceiver> receiverCaptor =
+                ArgumentCaptor.forClass(BroadcastReceiver.class);
+        verify(mContext).registerReceiver(receiverCaptor.capture(), /* filter= */ any(),
+                /* broadcastPermission= */ any(), eq(mTestHandler));
+        final Intent intent =
+                new Intent(TelephonyManager.ACTION_SUBSCRIPTION_CARRIER_IDENTITY_CHANGED);
+        intent.putExtra(SubscriptionManager.EXTRA_SUBSCRIPTION_INDEX, subId);
+
+        receiverCaptor.getValue().onReceive(mContext, intent);
+    }
 
     private OnSubscriptionsChangedListener getOnSubscriptionsChangedListener() {
         final ArgumentCaptor<OnSubscriptionsChangedListener> listenerCaptor =
@@ -1127,5 +1148,93 @@ public class KeepaliveStatsTrackerTest {
                             writeTime * 3 - startTime1 - startTime2 - startTime3,
                             writeTime * 3 - startTime1 - startTime2 - startTime3)
                 });
+    }
+
+    @Test
+    public void testUpdateDefaultSubId() {
+        final int startTime1 = 1000;
+        final int startTime2 = 3000;
+        final int writeTime = 5000;
+
+        // No TelephonyNetworkSpecifier set with subId to force the use of default subId.
+        final NetworkCapabilities nc =
+                new NetworkCapabilities.Builder().addTransportType(TRANSPORT_CELLULAR).build();
+        onStartKeepalive(startTime1, TEST_SLOT, nc);
+        // Update default subId
+        triggerBroadcastDefaultSubId(TEST_SUB_ID_1);
+        onStartKeepalive(startTime2, TEST_SLOT2, nc);
+
+        final DailykeepaliveInfoReported dailyKeepaliveInfoReported =
+                buildKeepaliveMetrics(writeTime);
+
+        final int[] expectRegisteredDurations =
+                new int[] {startTime1, startTime2 - startTime1, writeTime - startTime2};
+        final int[] expectActiveDurations =
+                new int[] {startTime1, startTime2 - startTime1, writeTime - startTime2};
+        // Expect the carrier id of the first keepalive to be unknown
+        final KeepaliveCarrierStats expectKeepaliveCarrierStats1 =
+                new KeepaliveCarrierStats(
+                        TelephonyManager.UNKNOWN_CARRIER_ID,
+                        /* transportTypes= */ (1 << TRANSPORT_CELLULAR),
+                        TEST_KEEPALIVE_INTERVAL_SEC * 1000,
+                        writeTime - startTime1,
+                        writeTime - startTime1);
+        // Expect the carrier id of the second keepalive to be TEST_CARRIER_ID_1, from TEST_SUB_ID_1
+        final KeepaliveCarrierStats expectKeepaliveCarrierStats2 =
+                new KeepaliveCarrierStats(
+                        TEST_CARRIER_ID_1,
+                        /* transportTypes= */ (1 << TRANSPORT_CELLULAR),
+                        TEST_KEEPALIVE_INTERVAL_SEC * 1000,
+                        writeTime - startTime2,
+                        writeTime - startTime2);
+        assertDailyKeepaliveInfoReported(
+                dailyKeepaliveInfoReported,
+                /* expectRequestsCount= */ 2,
+                /* expectAutoRequestsCount= */ 2,
+                /* expectAppUids= */ new int[] {TEST_UID},
+                expectRegisteredDurations,
+                expectActiveDurations,
+                new KeepaliveCarrierStats[] {
+                    expectKeepaliveCarrierStats1, expectKeepaliveCarrierStats2
+                });
+    }
+
+    @Test
+    @IgnoreAfter(Build.VERSION_CODES.S_V2)
+    public void testWriteMetrics_doNothingBeforeT() {
+        // Keepalive stats use repeated atoms, which are only supported on T+. If written to statsd
+        // on S- they will bootloop the system, so they must not be sent on S-. See b/289471411.
+        final int writeTime = 1000;
+        setElapsedRealtime(writeTime);
+        visibleOnHandlerThread(mTestHandler, () -> mKeepaliveStatsTracker.writeAndResetMetrics());
+        verify(mDependencies, never()).writeStats(any());
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testWriteMetrics() {
+        final int writeTime = 1000;
+
+        final ArgumentCaptor<DailykeepaliveInfoReported> dailyKeepaliveInfoReportedCaptor =
+                ArgumentCaptor.forClass(DailykeepaliveInfoReported.class);
+
+        setElapsedRealtime(writeTime);
+        visibleOnHandlerThread(mTestHandler, () -> mKeepaliveStatsTracker.writeAndResetMetrics());
+        // Ensure writeStats is called with the correct DailykeepaliveInfoReported metrics.
+        verify(mDependencies).writeStats(dailyKeepaliveInfoReportedCaptor.capture());
+        final DailykeepaliveInfoReported dailyKeepaliveInfoReported =
+                dailyKeepaliveInfoReportedCaptor.getValue();
+
+        // Same as the no keepalive case
+        final int[] expectRegisteredDurations = new int[] {writeTime};
+        final int[] expectActiveDurations = new int[] {writeTime};
+        assertDailyKeepaliveInfoReported(
+                dailyKeepaliveInfoReported,
+                /* expectRequestsCount= */ 0,
+                /* expectAutoRequestsCount= */ 0,
+                /* expectAppUids= */ new int[0],
+                expectRegisteredDurations,
+                expectActiveDurations,
+                new KeepaliveCarrierStats[0]);
     }
 }

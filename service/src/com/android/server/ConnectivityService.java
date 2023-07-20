@@ -390,7 +390,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     // Timeout in case the "actively prefer bad wifi" feature is on
     private static final int ACTIVELY_PREFER_BAD_WIFI_INITIAL_TIMEOUT_MS = 20 * 1000;
     // Timeout in case the "actively prefer bad wifi" feature is off
-    private static final int DONT_ACTIVELY_PREFER_BAD_WIFI_INITIAL_TIMEOUT_MS = 8 * 1000;
+    private static final int DEFAULT_EVALUATION_TIMEOUT_MS = 8 * 1000;
 
     // Default to 30s linger time-out, and 5s for nascent network. Modifiable only for testing.
     private static final String LINGER_DELAY_PROPERTY = "persist.netmon.linger";
@@ -1704,7 +1704,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mUserAllContext.registerReceiver(mPackageIntentReceiver, packageIntentFilter,
                 null /* broadcastPermission */, mHandler);
 
-        mNetworkActivityTracker = new LegacyNetworkActivityTracker(mContext, mHandler, mNetd);
+        mNetworkActivityTracker =
+                new LegacyNetworkActivityTracker(mContext, mNetd, mHandler, mDeps.isAtLeastU());
 
         final NetdCallback netdCallback = new NetdCallback();
         try {
@@ -4547,9 +4548,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     @VisibleForTesting
     protected static boolean shouldCreateNetworksImmediately() {
-        // Before U, physical networks are only created when the agent advances to CONNECTED.
-        // In U and above, all networks are immediately created when the agent is registered.
-        return SdkLevel.isAtLeastU();
+        // The feature of creating the networks immediately was slated for U, but race conditions
+        // detected late required this was flagged off.
+        // TODO : enable this in a Mainline update or in V, and re-enable the test for this
+        // in NetworkAgentTest.
+        return false;
     }
 
     private static boolean shouldCreateNativeNetwork(@NonNull NetworkAgentInfo nai,
@@ -5877,7 +5880,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     break;
                 }
                 case EVENT_REPORT_NETWORK_ACTIVITY:
-                    mNetworkActivityTracker.handleReportNetworkActivity();
+                    final NetworkActivityParams arg = (NetworkActivityParams) msg.obj;
+                    mNetworkActivityTracker.handleReportNetworkActivity(arg);
                     break;
                 case EVENT_MOBILE_DATA_PREFERRED_UIDS_CHANGED:
                     handleMobileDataPreferredUidsChanged();
@@ -9933,10 +9937,25 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 networkAgent.networkMonitor().notifyNetworkConnected(params.linkProperties,
                         params.networkCapabilities);
             }
-            final long delay = !avoidBadWifi() && activelyPreferBadWifi()
-                    ? ACTIVELY_PREFER_BAD_WIFI_INITIAL_TIMEOUT_MS
-                    : DONT_ACTIVELY_PREFER_BAD_WIFI_INITIAL_TIMEOUT_MS;
-            scheduleEvaluationTimeout(networkAgent.network, delay);
+            final long evaluationDelay;
+            if (!networkAgent.networkCapabilities.hasSingleTransport(TRANSPORT_WIFI)) {
+                // If the network is anything other than pure wifi, use the default timeout.
+                evaluationDelay = DEFAULT_EVALUATION_TIMEOUT_MS;
+            } else if (networkAgent.networkAgentConfig.isExplicitlySelected()) {
+                // If the network is explicitly selected, use the default timeout because it's
+                // shorter and the user is likely staring at the screen expecting it to validate
+                // right away.
+                evaluationDelay = DEFAULT_EVALUATION_TIMEOUT_MS;
+            } else if (avoidBadWifi() || !activelyPreferBadWifi()) {
+                // If avoiding bad wifi, or if not avoiding but also not preferring bad wifi
+                evaluationDelay = DEFAULT_EVALUATION_TIMEOUT_MS;
+            } else {
+                // It's wifi, automatically connected, and bad wifi is preferred : use the
+                // longer timeout to avoid the device switching to captive portals with bad
+                // signal or very slow response.
+                evaluationDelay = ACTIVELY_PREFER_BAD_WIFI_INITIAL_TIMEOUT_MS;
+            }
+            scheduleEvaluationTimeout(networkAgent.network, evaluationDelay);
 
             // Whether a particular NetworkRequest listen should cause signal strength thresholds to
             // be communicated to a particular NetworkAgent depends only on the network's immutable,
@@ -11060,11 +11079,34 @@ public class ConnectivityService extends IConnectivityManager.Stub
         notifyDataStallSuspected(p, network.getNetId());
     }
 
+    /**
+     * Class to hold the information for network activity change event from idle timers
+     * {@link NetdCallback#onInterfaceClassActivityChanged(boolean, int, long, int)}
+     */
+    private static final class NetworkActivityParams {
+        public final boolean isActive;
+        // Label used for idle timer. Transport type is used as label.
+        // label is int since NMS was using the identifier as int, and it has not been changed
+        public final int label;
+        public final long timestampNs;
+        // Uid represents the uid that was responsible for waking the radio.
+        // -1 for no uid and uid is -1 if isActive is false.
+        public final int uid;
+
+        NetworkActivityParams(boolean isActive, int label, long timestampNs, int uid) {
+            this.isActive = isActive;
+            this.label = label;
+            this.timestampNs = timestampNs;
+            this.uid = uid;
+        }
+    }
+
     private class NetdCallback extends BaseNetdUnsolicitedEventListener {
         @Override
-        public void onInterfaceClassActivityChanged(boolean isActive, int transportType,
+        public void onInterfaceClassActivityChanged(boolean isActive, int label,
                 long timestampNs, int uid) {
-            mNetworkActivityTracker.setAndReportNetworkActive(isActive, transportType, timestampNs);
+            mHandler.sendMessage(mHandler.obtainMessage(EVENT_REPORT_NETWORK_ACTIVITY,
+                    new NetworkActivityParams(isActive, label, timestampNs, uid)));
         }
 
         @Override
@@ -11092,14 +11134,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
         private static final int NO_UID = -1;
         private final Context mContext;
         private final INetd mNetd;
+        private final Handler mHandler;
         private final RemoteCallbackList<INetworkActivityListener> mNetworkActivityListeners =
                 new RemoteCallbackList<>();
         // Indicate the current system default network activity is active or not.
-        @GuardedBy("mActiveIdleTimers")
-        private boolean mNetworkActive;
-        @GuardedBy("mActiveIdleTimers")
+        // This needs to be volatile to allow non handler threads to read this value without lock.
+        private volatile boolean mIsDefaultNetworkActive;
         private final ArrayMap<String, IdleTimerParams> mActiveIdleTimers = new ArrayMap<>();
-        private final Handler mHandler;
+        private final boolean mIsAtLeastU;
 
         private static class IdleTimerParams {
             public final int timeout;
@@ -11111,34 +11153,37 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
         }
 
-        LegacyNetworkActivityTracker(@NonNull Context context, @NonNull Handler handler,
-                @NonNull INetd netd) {
+        LegacyNetworkActivityTracker(@NonNull Context context, @NonNull INetd netd,
+                @NonNull Handler handler, boolean isAtLeastU) {
             mContext = context;
             mNetd = netd;
             mHandler = handler;
+            mIsAtLeastU = isAtLeastU;
         }
 
-        public void setAndReportNetworkActive(boolean active, int transportType, long tsNanos) {
-            sendDataActivityBroadcast(transportTypeToLegacyType(transportType), active, tsNanos);
-            synchronized (mActiveIdleTimers) {
-                mNetworkActive = active;
-                // If there are no idle timers, it means that system is not monitoring
-                // activity, so the system default network for those default network
-                // unspecified apps is always considered active.
-                //
-                // TODO: If the mActiveIdleTimers is empty, netd will actually not send
-                // any network activity change event. Whenever this event is received,
-                // the mActiveIdleTimers should be always not empty. The legacy behavior
-                // is no-op. Remove to refer to mNetworkActive only.
-                if (mNetworkActive || mActiveIdleTimers.isEmpty()) {
-                    mHandler.sendMessage(mHandler.obtainMessage(EVENT_REPORT_NETWORK_ACTIVITY));
-                }
+        private void ensureRunningOnConnectivityServiceThread() {
+            if (mHandler.getLooper().getThread() != Thread.currentThread()) {
+                throw new IllegalStateException("Not running on ConnectivityService thread: "
+                                + Thread.currentThread().getName());
             }
         }
 
-        // The network activity should only be updated from ConnectivityService handler thread
-        // when mActiveIdleTimers lock is held.
-        @GuardedBy("mActiveIdleTimers")
+        public void handleReportNetworkActivity(NetworkActivityParams activityParams) {
+            ensureRunningOnConnectivityServiceThread();
+            if (mActiveIdleTimers.isEmpty()) {
+                // This activity change is not for the current default network.
+                // This can happen if netd callback post activity change event message but
+                // the default network is lost before processing this message.
+                return;
+            }
+            sendDataActivityBroadcast(transportTypeToLegacyType(activityParams.label),
+                    activityParams.isActive, activityParams.timestampNs);
+            mIsDefaultNetworkActive = activityParams.isActive;
+            if (mIsDefaultNetworkActive) {
+                reportNetworkActive();
+            }
+        }
+
         private void reportNetworkActive() {
             final int length = mNetworkActivityListeners.beginBroadcast();
             if (DDBG) log("reportNetworkActive, notify " + length + " listeners");
@@ -11152,13 +11197,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 }
             } finally {
                 mNetworkActivityListeners.finishBroadcast();
-            }
-        }
-
-        @GuardedBy("mActiveIdleTimers")
-        public void handleReportNetworkActivity() {
-            synchronized (mActiveIdleTimers) {
-                reportNetworkActive();
             }
         }
 
@@ -11203,8 +11241,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
          *
          * Every {@code setupDataActivityTracking} should be paired with a
          * {@link #removeDataActivityTracking} for cleanup.
+         *
+         * @return true if the idleTimer is added to the network, false otherwise
          */
-        private void setupDataActivityTracking(NetworkAgentInfo networkAgent) {
+        private boolean setupDataActivityTracking(NetworkAgentInfo networkAgent) {
             final String iface = networkAgent.linkProperties.getInterfaceName();
 
             final int timeout;
@@ -11223,25 +11263,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         15);
                 type = NetworkCapabilities.TRANSPORT_WIFI;
             } else {
-                return; // do not track any other networks
+                return false; // do not track any other networks
             }
 
             updateRadioPowerState(true /* isActive */, type);
 
             if (timeout > 0 && iface != null) {
                 try {
-                    synchronized (mActiveIdleTimers) {
-                        // Networks start up.
-                        mNetworkActive = true;
-                        mActiveIdleTimers.put(iface, new IdleTimerParams(timeout, type));
-                        mNetd.idletimerAddInterface(iface, timeout, Integer.toString(type));
-                        reportNetworkActive();
-                    }
+                    mActiveIdleTimers.put(iface, new IdleTimerParams(timeout, type));
+                    mNetd.idletimerAddInterface(iface, timeout, Integer.toString(type));
+                    return true;
                 } catch (Exception e) {
                     // You shall not crash!
                     loge("Exception in setupDataActivityTracking " + e);
                 }
             }
+            return false;
         }
 
         /**
@@ -11264,15 +11301,31 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
             try {
                 updateRadioPowerState(false /* isActive */, type);
-                synchronized (mActiveIdleTimers) {
-                    final IdleTimerParams params = mActiveIdleTimers.remove(iface);
-                    // The call fails silently if no idle timer setup for this interface
-                    mNetd.idletimerRemoveInterface(iface, params.timeout,
-                            Integer.toString(params.transportType));
+                final IdleTimerParams params = mActiveIdleTimers.remove(iface);
+                if (params == null) {
+                    // IdleTimer is not added if the configured timeout is 0 or negative value
+                    return;
                 }
+                // The call fails silently if no idle timer setup for this interface
+                mNetd.idletimerRemoveInterface(iface, params.timeout,
+                        Integer.toString(params.transportType));
             } catch (Exception e) {
                 // You shall not crash!
                 loge("Exception in removeDataActivityTracking " + e);
+            }
+        }
+
+        private void updateDefaultNetworkActivity(NetworkAgentInfo defaultNetwork,
+                boolean hasIdleTimer) {
+            if (defaultNetwork != null) {
+                mIsDefaultNetworkActive = true;
+                // On T-, callbacks are called only when the network has the idle timer.
+                if (mIsAtLeastU || hasIdleTimer) {
+                    reportNetworkActive();
+                }
+            } else {
+                // If there is no default network, default network is considered inactive.
+                mIsDefaultNetworkActive = false;
             }
         }
 
@@ -11281,9 +11334,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
          */
         public void updateDataActivityTracking(NetworkAgentInfo newNetwork,
                 NetworkAgentInfo oldNetwork) {
+            ensureRunningOnConnectivityServiceThread();
+            boolean hasIdleTimer = false;
             if (newNetwork != null) {
-                setupDataActivityTracking(newNetwork);
+                hasIdleTimer = setupDataActivityTracking(newNetwork);
             }
+            updateDefaultNetworkActivity(newNetwork, hasIdleTimer);
             if (oldNetwork != null) {
                 removeDataActivityTracking(oldNetwork);
             }
@@ -11304,15 +11360,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         public boolean isDefaultNetworkActive() {
-            synchronized (mActiveIdleTimers) {
-                // If there are no idle timers, it means that system is not monitoring activity,
-                // so the default network is always considered active.
-                //
-                // TODO : Distinguish between the cases where mActiveIdleTimers is empty because
-                // tracking is disabled (negative idle timer value configured), or no active default
-                // network. In the latter case, this reports active but it should report inactive.
-                return mNetworkActive || mActiveIdleTimers.isEmpty();
-            }
+            return mIsDefaultNetworkActive;
         }
 
         public void registerNetworkActivityListener(@NonNull INetworkActivityListener l) {
@@ -11324,15 +11372,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         public void dump(IndentingPrintWriter pw) {
-            synchronized (mActiveIdleTimers) {
-                pw.print("mNetworkActive="); pw.println(mNetworkActive);
-                pw.println("Idle timers:");
-                for (HashMap.Entry<String, IdleTimerParams> ent : mActiveIdleTimers.entrySet()) {
+            pw.print("mIsDefaultNetworkActive="); pw.println(mIsDefaultNetworkActive);
+            pw.println("Idle timers:");
+            try {
+                for (Map.Entry<String, IdleTimerParams> ent : mActiveIdleTimers.entrySet()) {
                     pw.print("  "); pw.print(ent.getKey()); pw.println(":");
                     final IdleTimerParams params = ent.getValue();
                     pw.print("    timeout="); pw.print(params.timeout);
                     pw.print(" type="); pw.println(params.transportType);
                 }
+            } catch (Exception e) {
+                // mActiveIdleTimers should only be accessed from handler thread, except dump().
+                // As dump() is never called in normal usage, it would be needlessly expensive
+                // to lock the collection only for its benefit.
+                // Also, mActiveIdleTimers is not expected to be updated frequently.
+                // So catching the exception and logging.
+                pw.println("Failed to dump NetworkActivityTracker: " + e);
             }
         }
     }

@@ -847,7 +847,7 @@ public class ConnectivityManagerTest {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_TELEPHONY));
 
-        Network wifiNetwork = mCtsNetUtils.connectToWifi();
+        Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
         Network cellNetwork = mCtsNetUtils.connectToCell();
         // This server returns the requestor's IP address as the response body.
         URL url = new URL("http://google-ipv6test.appspot.com/ip.js?fmt=text");
@@ -2560,9 +2560,10 @@ public class ConnectivityManagerTest {
         assertThrows(SecurityException.class, () -> mCm.factoryReset());
     }
 
-    @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
-    @Test
-    public void testFactoryReset() throws Exception {
+    // @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
+    // @Test
+    // Temporarily disable the unreliable test, which is blocked by b/254183718.
+    private void testFactoryReset() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
 
         // Store current settings.
@@ -3151,7 +3152,8 @@ public class ConnectivityManagerTest {
     }
 
     @AppModeFull(reason = "Need WiFi support to test the default active network")
-    @Test
+    // NetworkActivityTracker is not mainlined before S.
+    @Test @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
     public void testDefaultNetworkActiveListener() throws Exception {
         final boolean supportWifi = mPackageManager.hasSystemFeature(FEATURE_WIFI);
         final boolean supportTelephony = mPackageManager.hasSystemFeature(FEATURE_TELEPHONY);
@@ -3235,7 +3237,8 @@ public class ConnectivityManagerTest {
             newMobileDataPreferredUids.add(uid);
             ConnectivitySettingsManager.setMobileDataPreferredUids(
                     mContext, newMobileDataPreferredUids);
-            waitForAvailable(defaultTrackingCb, cellNetwork);
+            defaultTrackingCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
+                    entry -> cellNetwork.equals(entry.getNetwork()));
             // No change for system default network. Expect no callback except CapabilitiesChanged
             // or LinkPropertiesChanged which may be triggered randomly from wifi network.
             assertNoCallbackExceptCapOrLpChange(systemDefaultCb);
@@ -3247,7 +3250,8 @@ public class ConnectivityManagerTest {
             newMobileDataPreferredUids.remove(uid);
             ConnectivitySettingsManager.setMobileDataPreferredUids(
                     mContext, newMobileDataPreferredUids);
-            waitForAvailable(defaultTrackingCb, wifiNetwork);
+            defaultTrackingCb.eventuallyExpect(CallbackEntry.AVAILABLE, NETWORK_CALLBACK_TIMEOUT_MS,
+                    entry -> wifiNetwork.equals(entry.getNetwork()));
             // No change for system default network. Expect no callback except CapabilitiesChanged
             // or LinkPropertiesChanged which may be triggered randomly from wifi network.
             assertNoCallbackExceptCapOrLpChange(systemDefaultCb);
@@ -3410,6 +3414,7 @@ public class ConnectivityManagerTest {
 
     private void checkFirewallBlocking(final DatagramSocket srcSock, final DatagramSocket dstSock,
             final boolean expectBlock, final int chain) throws Exception {
+        final int uid = Process.myUid();
         final Random random = new Random();
         final byte[] sendData = new byte[100];
         random.nextBytes(sendData);
@@ -3425,7 +3430,8 @@ public class ConnectivityManagerTest {
             fail("Expect not to be blocked by firewall but sending packet was blocked:"
                     + " chain=" + chain
                     + " chainEnabled=" + mCm.getFirewallChainEnabled(chain)
-                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
+                    + " uid=" + uid
+                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, uid));
         }
 
         dstSock.receive(pkt);
@@ -3435,7 +3441,8 @@ public class ConnectivityManagerTest {
             fail("Expect to be blocked by firewall but sending packet was not blocked:"
                     + " chain=" + chain
                     + " chainEnabled=" + mCm.getFirewallChainEnabled(chain)
-                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, Process.myUid()));
+                    + " uid=" + uid
+                    + " uidFirewallRule=" + mCm.getUidFirewallRule(chain, uid));
         }
     }
 
