@@ -17,6 +17,7 @@
 package com.android.server.connectivity.mdns;
 
 import static com.android.server.connectivity.mdns.MdnsServiceCache.findMatchedResponse;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.Clock;
 import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
 
 import android.annotation.NonNull;
@@ -55,6 +56,7 @@ public class MdnsServiceTypeClient {
     @VisibleForTesting
     static final int EVENT_START_QUERYTASK = 1;
     static final int EVENT_QUERY_RESULT = 2;
+    static final int INVALID_TRANSACTION_ID = -1;
 
     private final String serviceType;
     private final String[] serviceTypeLabels;
@@ -73,7 +75,7 @@ public class MdnsServiceTypeClient {
             new ArrayMap<>();
     private final boolean removeServiceAfterTtlExpires =
             MdnsConfigs.removeServiceAfterTtlExpires();
-    private final MdnsResponseDecoder.Clock clock;
+    private final Clock clock;
 
     @Nullable private MdnsSearchOptions searchOptions;
 
@@ -108,16 +110,15 @@ public class MdnsServiceTypeClient {
                     break;
                 }
                 case EVENT_QUERY_RESULT: {
-                    final QuerySentResult sentResult = (QuerySentResult) msg.obj;
-                    if (MdnsConfigs.useSessionIdToScheduleMdnsTask()) {
-                        // In case that the task is not canceled successfully, use session ID to
-                        // check if this task should continue to schedule more.
-                        if (sentResult.taskArgs.sessionId != currentSessionId) {
-                            break;
-                        }
+                    final QuerySentArguments sentResult = (QuerySentArguments) msg.obj;
+                    // If a task is cancelled while the Executor is running it, EVENT_QUERY_RESULT
+                    // will still be sent when it ends. So use session ID to check if this task
+                    // should continue to schedule more.
+                    if (sentResult.taskArgs.sessionId != currentSessionId) {
+                        break;
                     }
 
-                    if ((sentResult.transactionId != -1)) {
+                    if ((sentResult.transactionId != INVALID_TRANSACTION_ID)) {
                         for (int i = 0; i < listeners.size(); i++) {
                             listeners.keyAt(i).onDiscoveryQuerySent(
                                     sentResult.subTypes, sentResult.transactionId);
@@ -193,8 +194,8 @@ public class MdnsServiceTypeClient {
             @NonNull SharedLog sharedLog,
             @NonNull Looper looper,
             @NonNull MdnsServiceCache serviceCache) {
-        this(serviceType, socketClient, executor, new MdnsResponseDecoder.Clock(), socketKey,
-                sharedLog, looper, new Dependencies(), serviceCache);
+        this(serviceType, socketClient, executor, new Clock(), socketKey, sharedLog, looper,
+                new Dependencies(), serviceCache);
     }
 
     @VisibleForTesting
@@ -202,7 +203,7 @@ public class MdnsServiceTypeClient {
             @NonNull String serviceType,
             @NonNull MdnsSocketClientBase socketClient,
             @NonNull ScheduledExecutorService executor,
-            @NonNull MdnsResponseDecoder.Clock clock,
+            @NonNull Clock clock,
             @NonNull SocketKey socketKey,
             @NonNull SharedLog sharedLog,
             @NonNull Looper looper,
@@ -746,12 +747,12 @@ public class MdnsServiceTypeClient {
         }
     }
 
-    private static class QuerySentResult {
+    private static class QuerySentArguments {
         private final int transactionId;
         private final List<String> subTypes = new ArrayList<>();
         private final ScheduledQueryTaskArgs taskArgs;
 
-        QuerySentResult(int transactionId, @NonNull List<String> subTypes,
+        QuerySentArguments(int transactionId, @NonNull List<String> subTypes,
                 @NonNull ScheduledQueryTaskArgs taskArgs) {
             this.transactionId = transactionId;
             this.subTypes.addAll(subTypes);
@@ -794,11 +795,11 @@ public class MdnsServiceTypeClient {
             } catch (RuntimeException e) {
                 sharedLog.e(String.format("Failed to run EnqueueMdnsQueryCallable for subtype: %s",
                         TextUtils.join(",", taskArgs.config.subtypes)), e);
-                result = Pair.create(-1, new ArrayList<>());
+                result = Pair.create(INVALID_TRANSACTION_ID, new ArrayList<>());
             }
             dependencies.sendMessage(
                     handler, handler.obtainMessage(EVENT_QUERY_RESULT,
-                            new QuerySentResult(result.first, result.second, taskArgs)));
+                            new QuerySentArguments(result.first, result.second, taskArgs)));
         }
     }
 
