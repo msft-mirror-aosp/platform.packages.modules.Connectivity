@@ -11318,17 +11318,18 @@ public class ConnectivityServiceTest {
     }
 
     @Test
-    public void testOnNetworkActive_NewEthernetConnects_Callback() throws Exception {
-        // On T-, LegacyNetworkActivityTracker calls onNetworkActive callback only for networks that
+    public void testOnNetworkActive_NewEthernetConnects_CallbackNotCalled() throws Exception {
+        // LegacyNetworkActivityTracker calls onNetworkActive callback only for networks that
         // tracker adds the idle timer to. And the tracker does not set the idle timer for the
         // ethernet network.
         // So onNetworkActive is not called when the ethernet becomes the default network
-        doTestOnNetworkActive_NewNetworkConnects(TRANSPORT_ETHERNET, mDeps.isAtLeastU());
+        doTestOnNetworkActive_NewNetworkConnects(TRANSPORT_ETHERNET, false /* expectCallback */);
     }
 
     @Test
     public void testIsDefaultNetworkActiveNoDefaultNetwork() throws Exception {
-        assertFalse(mCm.isDefaultNetworkActive());
+        // isDefaultNetworkActive returns true if there is no default network, which is known issue.
+        assertTrue(mCm.isDefaultNetworkActive());
 
         final LinkProperties cellLp = new LinkProperties();
         cellLp.setInterfaceName(MOBILE_IFNAME);
@@ -11340,7 +11341,7 @@ public class ConnectivityServiceTest {
         mCellAgent.disconnect();
         waitForIdle();
 
-        assertFalse(mCm.isDefaultNetworkActive());
+        assertTrue(mCm.isDefaultNetworkActive());
     }
 
     @Test
