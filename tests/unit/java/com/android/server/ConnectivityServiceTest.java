@@ -402,6 +402,7 @@ import com.android.server.connectivity.CarrierPrivilegeAuthenticator;
 import com.android.server.connectivity.ClatCoordinator;
 import com.android.server.connectivity.ConnectivityFlags;
 import com.android.server.connectivity.ConnectivityResources;
+import com.android.server.connectivity.KeepaliveTracker;
 import com.android.server.connectivity.MultinetworkPolicyTracker;
 import com.android.server.connectivity.MultinetworkPolicyTrackerTestDependencies;
 import com.android.server.connectivity.Nat464Xlat;
@@ -410,6 +411,7 @@ import com.android.server.connectivity.NetworkNotificationManager;
 import com.android.server.connectivity.NetworkNotificationManager.NotificationType;
 import com.android.server.connectivity.ProxyTracker;
 import com.android.server.connectivity.QosCallbackTracker;
+import com.android.server.connectivity.TcpKeepaliveController;
 import com.android.server.connectivity.UidRangeUtils;
 import com.android.server.connectivity.Vpn;
 import com.android.server.connectivity.VpnProfileStore;
@@ -626,6 +628,7 @@ public class ConnectivityServiceTest {
     @Mock ActivityManager mActivityManager;
     @Mock DestroySocketsWrapper mDestroySocketsWrapper;
     @Mock SubscriptionManager mSubscriptionManager;
+    @Mock KeepaliveTracker.Dependencies mMockKeepaliveTrackerDependencies;
 
     // BatteryStatsManager is final and cannot be mocked with regular mockito, so just mock the
     // underlying binder calls.
@@ -1897,6 +1900,12 @@ public class ConnectivityServiceTest {
         doReturn(mResources).when(mockResContext).getResources();
         ConnectivityResources.setResourcesContextForTest(mockResContext);
         mDeps = new ConnectivityServiceDependencies(mockResContext);
+        doReturn(true).when(mMockKeepaliveTrackerDependencies)
+                .isAddressTranslationEnabled(mServiceContext);
+        doReturn(new ConnectivityResources(mockResContext)).when(mMockKeepaliveTrackerDependencies)
+                .createConnectivityResources(mServiceContext);
+        doReturn(new int[] {1, 3, 0, 0}).when(mMockKeepaliveTrackerDependencies)
+                .getSupportedKeepalives(mServiceContext);
         mAutoOnOffKeepaliveDependencies =
                 new AutomaticOnOffKeepaliveTrackerDependencies(mServiceContext);
         mService = new ConnectivityService(mServiceContext,
@@ -2295,6 +2304,12 @@ public class ConnectivityServiceTest {
             // Tests for enabling the feature are verified in AutomaticOnOffKeepaliveTrackerTest.
             // Assuming enabled here to focus on ConnectivityService tests.
             return true;
+        }
+        public KeepaliveTracker newKeepaliveTracker(@NonNull Context context,
+                @NonNull Handler connectivityserviceHander) {
+            return new KeepaliveTracker(context, connectivityserviceHander,
+                    new TcpKeepaliveController(connectivityserviceHander),
+                    mMockKeepaliveTrackerDependencies);
         }
     }
 
