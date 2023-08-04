@@ -17,6 +17,7 @@
 package com.android.server.connectivity.mdns;
 
 import static com.android.server.connectivity.mdns.MdnsServiceCache.findMatchedResponse;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.Clock;
 import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
 
 import android.annotation.NonNull;
@@ -38,7 +39,6 @@ import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
@@ -55,6 +55,7 @@ public class MdnsServiceTypeClient {
     @VisibleForTesting
     static final int EVENT_START_QUERYTASK = 1;
     static final int EVENT_QUERY_RESULT = 2;
+    static final int INVALID_TRANSACTION_ID = -1;
 
     private final String serviceType;
     private final String[] serviceTypeLabels;
@@ -73,7 +74,7 @@ public class MdnsServiceTypeClient {
             new ArrayMap<>();
     private final boolean removeServiceAfterTtlExpires =
             MdnsConfigs.removeServiceAfterTtlExpires();
-    private final MdnsResponseDecoder.Clock clock;
+    private final Clock clock;
 
     @Nullable private MdnsSearchOptions searchOptions;
 
@@ -108,16 +109,15 @@ public class MdnsServiceTypeClient {
                     break;
                 }
                 case EVENT_QUERY_RESULT: {
-                    final QuerySentResult sentResult = (QuerySentResult) msg.obj;
-                    if (MdnsConfigs.useSessionIdToScheduleMdnsTask()) {
-                        // In case that the task is not canceled successfully, use session ID to
-                        // check if this task should continue to schedule more.
-                        if (sentResult.taskArgs.sessionId != currentSessionId) {
-                            break;
-                        }
+                    final QuerySentArguments sentResult = (QuerySentArguments) msg.obj;
+                    // If a task is cancelled while the Executor is running it, EVENT_QUERY_RESULT
+                    // will still be sent when it ends. So use session ID to check if this task
+                    // should continue to schedule more.
+                    if (sentResult.taskArgs.sessionId != currentSessionId) {
+                        break;
                     }
 
-                    if ((sentResult.transactionId != -1)) {
+                    if ((sentResult.transactionId != INVALID_TRANSACTION_ID)) {
                         for (int i = 0; i < listeners.size(); i++) {
                             listeners.keyAt(i).onDiscoveryQuerySent(
                                     sentResult.subTypes, sentResult.transactionId);
@@ -193,8 +193,8 @@ public class MdnsServiceTypeClient {
             @NonNull SharedLog sharedLog,
             @NonNull Looper looper,
             @NonNull MdnsServiceCache serviceCache) {
-        this(serviceType, socketClient, executor, new MdnsResponseDecoder.Clock(), socketKey,
-                sharedLog, looper, new Dependencies(), serviceCache);
+        this(serviceType, socketClient, executor, new Clock(), socketKey, sharedLog, looper,
+                new Dependencies(), serviceCache);
     }
 
     @VisibleForTesting
@@ -202,7 +202,7 @@ public class MdnsServiceTypeClient {
             @NonNull String serviceType,
             @NonNull MdnsSocketClientBase socketClient,
             @NonNull ScheduledExecutorService executor,
-            @NonNull MdnsResponseDecoder.Clock clock,
+            @NonNull Clock clock,
             @NonNull SocketKey socketKey,
             @NonNull SharedLog sharedLog,
             @NonNull Looper looper,
@@ -327,6 +327,13 @@ public class MdnsServiceTypeClient {
                     servicesToResolve.size() < listeners.size() /* sendDiscoveryQueries */);
             executor.submit(queryTask);
         }
+    }
+
+    /**
+     * Get the executor service.
+     */
+    public ScheduledExecutorService getExecutor() {
+        return executor;
     }
 
     private void removeScheduledTask() {
@@ -537,145 +544,6 @@ public class MdnsServiceTypeClient {
         return new MdnsPacketWriter(DEFAULT_MTU);
     }
 
-    // A configuration for the PeriodicalQueryTask that contains parameters to build a query packet.
-    // Call to getConfigForNextRun returns a config that can be used to build the next query task.
-    @VisibleForTesting
-    static class QueryTaskConfig {
-
-        private static final int INITIAL_TIME_BETWEEN_BURSTS_MS =
-                (int) MdnsConfigs.initialTimeBetweenBurstsMs();
-        private static final int TIME_BETWEEN_BURSTS_MS = (int) MdnsConfigs.timeBetweenBurstsMs();
-        private static final int QUERIES_PER_BURST = (int) MdnsConfigs.queriesPerBurst();
-        private static final int TIME_BETWEEN_QUERIES_IN_BURST_MS =
-                (int) MdnsConfigs.timeBetweenQueriesInBurstMs();
-        private static final int QUERIES_PER_BURST_PASSIVE_MODE =
-                (int) MdnsConfigs.queriesPerBurstPassive();
-        private static final int UNSIGNED_SHORT_MAX_VALUE = 65536;
-        // The following fields are used by QueryTask so we need to test them.
-        @VisibleForTesting
-        final List<String> subtypes;
-        private final boolean alwaysAskForUnicastResponse =
-                MdnsConfigs.alwaysAskForUnicastResponseInEachBurst();
-        private final boolean usePassiveMode;
-        private final boolean onlyUseIpv6OnIpv6OnlyNetworks;
-        private final int numOfQueriesBeforeBackoff;
-        @VisibleForTesting
-        final int transactionId;
-        @VisibleForTesting
-        final boolean expectUnicastResponse;
-        private final int queriesPerBurst;
-        private final int timeBetweenBurstsInMs;
-        private final int burstCounter;
-        private final long delayUntilNextTaskWithoutBackoffMs;
-        private final boolean isFirstBurst;
-        private final long queryCount;
-        @NonNull private final SocketKey socketKey;
-
-
-        QueryTaskConfig(@NonNull QueryTaskConfig other, long queryCount, int transactionId,
-                boolean expectUnicastResponse, boolean isFirstBurst, int burstCounter,
-                int queriesPerBurst, int timeBetweenBurstsInMs,
-                long delayUntilNextTaskWithoutBackoffMs) {
-            this.subtypes = new ArrayList<>(other.subtypes);
-            this.usePassiveMode = other.usePassiveMode;
-            this.onlyUseIpv6OnIpv6OnlyNetworks = other.onlyUseIpv6OnIpv6OnlyNetworks;
-            this.numOfQueriesBeforeBackoff = other.numOfQueriesBeforeBackoff;
-            this.transactionId = transactionId;
-            this.expectUnicastResponse = expectUnicastResponse;
-            this.queriesPerBurst = queriesPerBurst;
-            this.timeBetweenBurstsInMs = timeBetweenBurstsInMs;
-            this.burstCounter = burstCounter;
-            this.delayUntilNextTaskWithoutBackoffMs = delayUntilNextTaskWithoutBackoffMs;
-            this.isFirstBurst = isFirstBurst;
-            this.queryCount = queryCount;
-            this.socketKey = other.socketKey;
-        }
-        QueryTaskConfig(@NonNull Collection<String> subtypes,
-                boolean usePassiveMode,
-                boolean onlyUseIpv6OnIpv6OnlyNetworks,
-                int numOfQueriesBeforeBackoff,
-                @Nullable SocketKey socketKey) {
-            this.usePassiveMode = usePassiveMode;
-            this.onlyUseIpv6OnIpv6OnlyNetworks = onlyUseIpv6OnIpv6OnlyNetworks;
-            this.numOfQueriesBeforeBackoff = numOfQueriesBeforeBackoff;
-            this.subtypes = new ArrayList<>(subtypes);
-            this.queriesPerBurst = QUERIES_PER_BURST;
-            this.burstCounter = 0;
-            this.transactionId = 1;
-            this.expectUnicastResponse = true;
-            this.isFirstBurst = true;
-            // Config the scan frequency based on the scan mode.
-            if (this.usePassiveMode) {
-                // In passive scan mode, sends a single burst of QUERIES_PER_BURST queries, and then
-                // in each TIME_BETWEEN_BURSTS interval, sends QUERIES_PER_BURST_PASSIVE_MODE
-                // queries.
-                this.timeBetweenBurstsInMs = TIME_BETWEEN_BURSTS_MS;
-            } else {
-                // In active scan mode, sends a burst of QUERIES_PER_BURST queries,
-                // TIME_BETWEEN_QUERIES_IN_BURST_MS apart, then waits for the scan interval, and
-                // then repeats. The scan interval starts as INITIAL_TIME_BETWEEN_BURSTS_MS and
-                // doubles until it maxes out at TIME_BETWEEN_BURSTS_MS.
-                this.timeBetweenBurstsInMs = INITIAL_TIME_BETWEEN_BURSTS_MS;
-            }
-            this.socketKey = socketKey;
-            this.queryCount = 0;
-            this.delayUntilNextTaskWithoutBackoffMs = TIME_BETWEEN_QUERIES_IN_BURST_MS;
-        }
-
-        QueryTaskConfig getConfigForNextRun() {
-            long newQueryCount = queryCount + 1;
-            int newTransactionId = transactionId + 1;
-            if (newTransactionId > UNSIGNED_SHORT_MAX_VALUE) {
-                newTransactionId = 1;
-            }
-            boolean newExpectUnicastResponse = false;
-            boolean newIsFirstBurst = isFirstBurst;
-            int newQueriesPerBurst = queriesPerBurst;
-            int newBurstCounter = burstCounter + 1;
-            long newDelayUntilNextTaskWithoutBackoffMs = delayUntilNextTaskWithoutBackoffMs;
-            int newTimeBetweenBurstsInMs = timeBetweenBurstsInMs;
-            // Only the first query expects uni-cast response.
-            if (newBurstCounter == queriesPerBurst) {
-                newBurstCounter = 0;
-
-                if (alwaysAskForUnicastResponse) {
-                    newExpectUnicastResponse = true;
-                }
-                // In passive scan mode, sends a single burst of QUERIES_PER_BURST queries, and
-                // then in each TIME_BETWEEN_BURSTS interval, sends QUERIES_PER_BURST_PASSIVE_MODE
-                // queries.
-                if (isFirstBurst) {
-                    newIsFirstBurst = false;
-                    if (usePassiveMode) {
-                        newQueriesPerBurst = QUERIES_PER_BURST_PASSIVE_MODE;
-                    }
-                }
-                // In active scan mode, sends a burst of QUERIES_PER_BURST queries,
-                // TIME_BETWEEN_QUERIES_IN_BURST_MS apart, then waits for the scan interval, and
-                // then repeats. The scan interval starts as INITIAL_TIME_BETWEEN_BURSTS_MS and
-                // doubles until it maxes out at TIME_BETWEEN_BURSTS_MS.
-                newDelayUntilNextTaskWithoutBackoffMs = timeBetweenBurstsInMs;
-                if (timeBetweenBurstsInMs < TIME_BETWEEN_BURSTS_MS) {
-                    newTimeBetweenBurstsInMs = Math.min(timeBetweenBurstsInMs * 2,
-                            TIME_BETWEEN_BURSTS_MS);
-                }
-            } else {
-                newDelayUntilNextTaskWithoutBackoffMs = TIME_BETWEEN_QUERIES_IN_BURST_MS;
-            }
-            return new QueryTaskConfig(this, newQueryCount, newTransactionId,
-                    newExpectUnicastResponse, newIsFirstBurst, newBurstCounter, newQueriesPerBurst,
-                    newTimeBetweenBurstsInMs, newDelayUntilNextTaskWithoutBackoffMs);
-        }
-
-        private boolean shouldUseQueryBackoff() {
-            // Don't enable backoff mode during the burst or in the first burst
-            if (burstCounter != 0 || isFirstBurst) {
-                return false;
-            }
-            return queryCount > numOfQueriesBeforeBackoff;
-        }
-    }
-
     private List<MdnsResponse> makeResponsesForResolve(@NonNull SocketKey socketKey) {
         final List<MdnsResponse> resolveResponses = new ArrayList<>();
         for (int i = 0; i < listeners.size(); i++) {
@@ -746,12 +614,12 @@ public class MdnsServiceTypeClient {
         }
     }
 
-    private static class QuerySentResult {
+    private static class QuerySentArguments {
         private final int transactionId;
         private final List<String> subTypes = new ArrayList<>();
         private final ScheduledQueryTaskArgs taskArgs;
 
-        QuerySentResult(int transactionId, @NonNull List<String> subTypes,
+        QuerySentArguments(int transactionId, @NonNull List<String> subTypes,
                 @NonNull ScheduledQueryTaskArgs taskArgs) {
             this.transactionId = transactionId;
             this.subTypes.addAll(subTypes);
@@ -794,11 +662,11 @@ public class MdnsServiceTypeClient {
             } catch (RuntimeException e) {
                 sharedLog.e(String.format("Failed to run EnqueueMdnsQueryCallable for subtype: %s",
                         TextUtils.join(",", taskArgs.config.subtypes)), e);
-                result = Pair.create(-1, new ArrayList<>());
+                result = Pair.create(INVALID_TRANSACTION_ID, new ArrayList<>());
             }
             dependencies.sendMessage(
                     handler, handler.obtainMessage(EVENT_QUERY_RESULT,
-                            new QuerySentResult(result.first, result.second, taskArgs)));
+                            new QuerySentArguments(result.first, result.second, taskArgs)));
         }
     }
 
