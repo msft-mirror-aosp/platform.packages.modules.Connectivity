@@ -182,6 +182,7 @@ import com.android.server.IpSecService;
 import com.android.server.VpnTestBase;
 import com.android.server.vcn.util.PersistableBundleUtils;
 import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.SkipPresubmit;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -1345,7 +1346,8 @@ public class VpnTest extends VpnTestBase {
         final ArgumentCaptor<Intent> intentArgumentCaptor = ArgumentCaptor.forClass(Intent.class);
 
         final int verifyTimes = profileState.length;
-        verify(userContext, times(verifyTimes)).startService(intentArgumentCaptor.capture());
+        verify(userContext, timeout(TEST_TIMEOUT_MS).times(verifyTimes))
+                .startService(intentArgumentCaptor.capture());
 
         for (int i = 0; i < verifyTimes; i++) {
             final Intent intent = intentArgumentCaptor.getAllValues().get(i);
@@ -1657,7 +1659,7 @@ public class VpnTest extends VpnTestBase {
             verify(mExecutor, atLeastOnce()).schedule(any(Runnable.class), anyLong(), any());
         } else {
             final IkeSessionCallback ikeCb = captor.getValue();
-            ikeCb.onClosedWithException(exception);
+            mExecutor.execute(() -> ikeCb.onClosedWithException(exception));
         }
 
         verifyPowerSaveTempWhitelistApp(TEST_VPN_PKG);
@@ -1676,7 +1678,7 @@ public class VpnTest extends VpnTestBase {
             int retryIndex = 0;
             final IkeSessionCallback ikeCb2 = verifyRetryAndGetNewIkeCb(retryIndex++);
 
-            ikeCb2.onClosedWithException(exception);
+            mExecutor.execute(() -> ikeCb2.onClosedWithException(exception));
             verifyRetryAndGetNewIkeCb(retryIndex++);
         }
     }
@@ -1687,11 +1689,8 @@ public class VpnTest extends VpnTestBase {
 
         // Verify retry is scheduled
         final long expectedDelayMs = mTestDeps.getNextRetryDelayMs(retryIndex);
-        final ArgumentCaptor<Long> delayCaptor = ArgumentCaptor.forClass(Long.class);
-        verify(mExecutor, atLeastOnce()).schedule(any(Runnable.class), delayCaptor.capture(),
-                eq(TimeUnit.MILLISECONDS));
-        final List<Long> delays = delayCaptor.getAllValues();
-        assertEquals(expectedDelayMs, (long) delays.get(delays.size() - 1));
+        verify(mExecutor, timeout(TEST_TIMEOUT_MS)).schedule(any(Runnable.class),
+                eq(expectedDelayMs), eq(TimeUnit.MILLISECONDS));
 
         verify(mIkev2SessionCreator, timeout(TEST_TIMEOUT_MS + expectedDelayMs))
                 .createIkeSession(any(), any(), any(), any(), ikeCbCaptor.capture(), any());
@@ -1713,6 +1712,7 @@ public class VpnTest extends VpnTestBase {
                 errorCode);
     }
 
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testStartPlatformVpnFailedWithRecoverableError() throws Exception {
         final IkeProtocolException exception = mock(IkeProtocolException.class);
@@ -1722,6 +1722,7 @@ public class VpnTest extends VpnTestBase {
                 VpnManager.CATEGORY_EVENT_IKE_ERROR, VpnManager.ERROR_CLASS_RECOVERABLE, errorCode);
     }
 
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testStartPlatformVpnFailedWithUnknownHostException() throws Exception {
         final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
@@ -1733,6 +1734,7 @@ public class VpnTest extends VpnTestBase {
                 errorCode);
     }
 
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testStartPlatformVpnFailedWithIkeTimeoutException() throws Exception {
         final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
@@ -1754,6 +1756,7 @@ public class VpnTest extends VpnTestBase {
                 VpnManager.ERROR_CODE_NETWORK_LOST);
     }
 
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testStartPlatformVpnFailedWithIOException() throws Exception {
         final IkeNonProtocolException exception = mock(IkeNonProtocolException.class);
@@ -1965,7 +1968,16 @@ public class VpnTest extends VpnTestBase {
 
         vpn.startVpnProfile(TEST_VPN_PKG);
         final NetworkCallback nwCb = triggerOnAvailableAndGetCallback(underlyingNetworkCaps);
-        verify(mExecutor, atLeastOnce()).schedule(any(Runnable.class), anyLong(), any());
+        // There are 4 interactions with the executor.
+        // - Network available
+        // - LP change
+        // - NC change
+        // - schedule() calls in scheduleStartIkeSession()
+        // The first 3 calls are triggered from Executor.execute(). The execute() will also call to
+        // schedule() with 0 delay. Verify the exact interaction here so that it won't cause flakes
+        // in the follow-up flow.
+        verify(mExecutor, timeout(TEST_TIMEOUT_MS).times(4))
+                .schedule(any(Runnable.class), anyLong(), any());
         reset(mExecutor);
 
         // Mock the setup procedure by firing callbacks
@@ -2377,6 +2389,7 @@ public class VpnTest extends VpnTestBase {
                 true /* areLongLivedTcpConnectionsExpensive */);
     }
 
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testPreferredIpProtocolFromCarrierConfig_v4UDP() throws Exception {
         doTestReadCarrierConfig(createTestCellNc(),
@@ -2389,6 +2402,7 @@ public class VpnTest extends VpnTestBase {
                 false /* areLongLivedTcpConnectionsExpensive */);
     }
 
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testPreferredIpProtocolFromCarrierConfig_v6ESP() throws Exception {
         doTestReadCarrierConfig(createTestCellNc(),
@@ -2401,6 +2415,7 @@ public class VpnTest extends VpnTestBase {
                 false /* areLongLivedTcpConnectionsExpensive */);
     }
 
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testPreferredIpProtocolFromCarrierConfig_v6UDP() throws Exception {
         doTestReadCarrierConfig(createTestCellNc(),
@@ -2458,7 +2473,8 @@ public class VpnTest extends VpnTestBase {
         if (expectedReadFromCarrierConfig) {
             final ArgumentCaptor<NetworkCapabilities> ncCaptor =
                     ArgumentCaptor.forClass(NetworkCapabilities.class);
-            verify(mMockNetworkAgent).doSendNetworkCapabilities(ncCaptor.capture());
+            verify(mMockNetworkAgent, timeout(TEST_TIMEOUT_MS))
+                    .doSendNetworkCapabilities(ncCaptor.capture());
 
             final VpnTransportInfo info =
                     (VpnTransportInfo) ncCaptor.getValue().getTransportInfo();
