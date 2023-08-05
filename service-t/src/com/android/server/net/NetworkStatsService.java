@@ -1744,8 +1744,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             // information. This is because no caller needs this information for now, and it
             // makes it easier to change the implementation later by using the histories in the
             // recorder.
-            stats.clearInterfaces();
-            return stats;
+            return stats.clearInterfaces();
         } catch (RemoteException e) {
             Log.wtf(TAG, "Error compiling UID stats", e);
             return new NetworkStats(0L, 0);
@@ -3304,6 +3303,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private static native long nativeGetTotalStat(int type);
     private static native long nativeGetIfaceStat(String iface, int type);
+    private static native long nativeGetIfIndexStat(int ifindex, int type);
     private static native long nativeGetUidStat(int uid, int type);
 
     /** Initializes and registers the Perfetto Network Trace data source */
