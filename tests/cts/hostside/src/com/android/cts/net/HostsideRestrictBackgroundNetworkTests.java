@@ -21,6 +21,7 @@ import static org.junit.Assert.fail;
 import android.platform.test.annotations.SecurityTest;
 
 import com.android.ddmlib.Log;
+import com.android.testutils.SkipPresubmit;
 import com.android.tradefed.device.DeviceNotAvailableException;
 import com.android.tradefed.util.RunUtil;
 
@@ -28,20 +29,17 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+@SkipPresubmit(reason = "Out of SLO flakiness")
 public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkTestCase {
 
     @Before
     public void setUp() throws Exception {
-        super.setUp();
-
         uninstallPackage(TEST_APP2_PKG, false);
         installPackage(TEST_APP2_APK);
     }
 
     @After
     public void tearDown() throws Exception {
-        super.tearDown();
-
         uninstallPackage(TEST_APP2_PKG, true);
     }
 
