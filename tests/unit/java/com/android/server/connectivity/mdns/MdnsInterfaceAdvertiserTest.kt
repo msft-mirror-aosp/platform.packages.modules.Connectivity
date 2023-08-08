@@ -108,9 +108,9 @@ class MdnsInterfaceAdvertiserTest {
         doReturn(repository).`when`(deps).makeRecordRepository(any(),
             eq(TEST_HOSTNAME)
         )
-        doReturn(replySender).`when`(deps).makeReplySender(anyString(), any(), any(), any())
-        doReturn(announcer).`when`(deps).makeMdnsAnnouncer(anyString(), any(), any(), any())
-        doReturn(prober).`when`(deps).makeMdnsProber(anyString(), any(), any(), any())
+        doReturn(replySender).`when`(deps).makeReplySender(anyString(), any(), any(), any(), any())
+        doReturn(announcer).`when`(deps).makeMdnsAnnouncer(anyString(), any(), any(), any(), any())
+        doReturn(prober).`when`(deps).makeMdnsProber(anyString(), any(), any(), any(), any())
 
         val knownServices = mutableSetOf<Int>()
         doAnswer { inv ->
@@ -132,8 +132,8 @@ class MdnsInterfaceAdvertiserTest {
         advertiser.start()
 
         verify(socket).addPacketHandler(packetHandlerCaptor.capture())
-        verify(deps).makeMdnsProber(any(), any(), any(), probeCbCaptor.capture())
-        verify(deps).makeMdnsAnnouncer(any(), any(), any(), announceCbCaptor.capture())
+        verify(deps).makeMdnsProber(any(), any(), any(), probeCbCaptor.capture(), any())
+        verify(deps).makeMdnsAnnouncer(any(), any(), any(), announceCbCaptor.capture(), any())
     }
 
     @After
@@ -150,7 +150,7 @@ class MdnsInterfaceAdvertiserTest {
                 0L /* initialDelayMs */)
 
         thread.waitForIdle(TIMEOUT_MS)
-        verify(cb).onRegisterServiceSucceeded(advertiser, TEST_SERVICE_ID_1)
+        verify(cb).onServiceProbingSucceeded(advertiser, TEST_SERVICE_ID_1)
 
         // Remove the service: expect exit announcements
         val testExitInfo = mock(ExitAnnouncementInfo::class.java)
@@ -256,7 +256,7 @@ class MdnsInterfaceAdvertiserTest {
         val mockProbingInfo = mock(ProbingInfo::class.java)
         doReturn(mockProbingInfo).`when`(repository).setServiceProbing(TEST_SERVICE_ID_1)
 
-        advertiser.restartProbingForConflict(TEST_SERVICE_ID_1)
+        advertiser.maybeRestartProbingForConflict(TEST_SERVICE_ID_1)
 
         verify(prober).restartForConflict(mockProbingInfo)
     }
