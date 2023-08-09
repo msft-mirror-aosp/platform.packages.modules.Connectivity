@@ -62,6 +62,7 @@ java_defaults {
         ":framework-connectivity-sources",
         ":net-utils-framework-common-srcs",
         ":framework-connectivity-api-shared-srcs",
+        ":framework-remoteauth-java-sources",
     ],
     aidl: {
         generate_get_transaction_name: true,
@@ -109,8 +110,8 @@ java_library {
         "framework-connectivity-defaults",
     ],
     static_libs: [
-        "cronet_aml_api_java",
-        "cronet_aml_java",
+        "httpclient_api",
+        "httpclient_impl",
     ],
     libs: [
         // This cannot be in the defaults clause above because if it were, it would be used
@@ -125,12 +126,12 @@ java_library {
 
 java_defaults {
     name: "CronetJavaDefaults",
-    srcs: [":cronet_aml_api_sources"],
+    srcs: [":httpclient_api_sources"],
     libs: [
         "androidx.annotation_annotation",
     ],
     impl_only_static_libs: [
-        "cronet_aml_java",
+        "httpclient_impl",
     ],
 }
 
@@ -150,6 +151,7 @@ java_sdk_library {
         "//packages/modules/Connectivity/framework-t",
         "//packages/modules/Connectivity/service",
         "//packages/modules/Connectivity/service-t",
+        "//packages/modules/Connectivity/remoteauth:__subpackages__",
         "//frameworks/base/packages/Connectivity/service",
         "//frameworks/base",
 
