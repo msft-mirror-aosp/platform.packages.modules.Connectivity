@@ -40,8 +40,19 @@ namespace bpf {
 
 using base::Result;
 
+// This explicitly zero-initializes the relevant Stats fields.
+void InitStats(Stats* stats) {
+    stats->rxBytes = 0;
+    stats->rxPackets = 0;
+    stats->txBytes = 0;
+    stats->txPackets = 0;
+    stats->tcpRxPackets = -1;
+    stats->tcpTxPackets = -1;
+}
+
 int bpfGetUidStatsInternal(uid_t uid, Stats* stats,
                            const BpfMap<uint32_t, StatsValue>& appUidStatsMap) {
+    InitStats(stats);
     auto statsEntry = appUidStatsMap.readValue(uid);
     if (statsEntry.ok()) {
         stats->rxPackets = statsEntry.value().rxPackets;
@@ -61,9 +72,8 @@ int bpfGetUidStats(uid_t uid, Stats* stats) {
 int bpfGetIfaceStatsInternal(const char* iface, Stats* stats,
                              const BpfMap<uint32_t, StatsValue>& ifaceStatsMap,
                              const BpfMap<uint32_t, IfaceValue>& ifaceNameMap) {
+    InitStats(stats);
     int64_t unknownIfaceBytesTotal = 0;
-    stats->tcpRxPackets = -1;
-    stats->tcpTxPackets = -1;
     const auto processIfaceStats =
             [iface, stats, &ifaceNameMap, &unknownIfaceBytesTotal](
                     const uint32_t& key,
@@ -93,6 +103,25 @@ int bpfGetIfaceStats(const char* iface, Stats* stats) {
     static BpfMapRO<uint32_t, StatsValue> ifaceStatsMap(IFACE_STATS_MAP_PATH);
     static BpfMapRO<uint32_t, IfaceValue> ifaceIndexNameMap(IFACE_INDEX_NAME_MAP_PATH);
     return bpfGetIfaceStatsInternal(iface, stats, ifaceStatsMap, ifaceIndexNameMap);
+}
+
+int bpfGetIfIndexStatsInternal(uint32_t ifindex, Stats* stats,
+                               const BpfMap<uint32_t, StatsValue>& ifaceStatsMap) {
+    InitStats(stats);
+    auto statsEntry = ifaceStatsMap.readValue(ifindex);
+    if (statsEntry.ok()) {
+        stats->rxPackets = statsEntry.value().rxPackets;
+        stats->txPackets = statsEntry.value().txPackets;
+        stats->rxBytes = statsEntry.value().rxBytes;
+        stats->txBytes = statsEntry.value().txBytes;
+        return 0;
+    }
+    return (statsEntry.error().code() == ENOENT) ? 0 : -statsEntry.error().code();
+}
+
+int bpfGetIfIndexStats(int ifindex, Stats* stats) {
+    static BpfMapRO<uint32_t, StatsValue> ifaceStatsMap(IFACE_STATS_MAP_PATH);
+    return bpfGetIfIndexStatsInternal(ifindex, stats, ifaceStatsMap);
 }
 
 stats_line populateStatsEntry(const StatsKey& statsKey, const StatsValue& statsEntry,
