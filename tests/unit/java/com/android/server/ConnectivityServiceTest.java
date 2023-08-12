@@ -9053,6 +9053,18 @@ public class ConnectivityServiceTest {
         mCm.registerNetworkCallback(vpnNetworkRequest, vpnNetworkCallback);
         vpnNetworkCallback.assertNoCallback();
 
+        // Lingering timer is short and cell might be disconnected if the device is particularly
+        // slow running the test, unless it's requested. Make sure the networks the test needs
+        // are all requested.
+        final NetworkCallback cellCallback = new NetworkCallback() {};
+        final NetworkCallback wifiCallback = new NetworkCallback() {};
+        mCm.requestNetwork(
+                new NetworkRequest.Builder().addTransportType(TRANSPORT_CELLULAR).build(),
+                cellCallback);
+        mCm.requestNetwork(
+                new NetworkRequest.Builder().addTransportType(TRANSPORT_WIFI).build(),
+                wifiCallback);
+
         mMockVpn.establishForMyUid(true /* validated */, false /* hasInternet */,
                 false /* privateDnsProbeSent */);
         assertUidRangesUpdatedForMyUid(true);
@@ -9209,6 +9221,8 @@ public class ConnectivityServiceTest {
         assertDefaultNetworkCapabilities(userId /* no networks */);
 
         mMockVpn.disconnect();
+        mCm.unregisterNetworkCallback(cellCallback);
+        mCm.unregisterNetworkCallback(wifiCallback);
     }
 
     @Test
@@ -18533,12 +18547,7 @@ public class ConnectivityServiceTest {
 
         waitForIdle();
 
-        final Set<Integer> exemptUids = new ArraySet();
-        final UidRange frozenUidRange = new UidRange(TEST_FROZEN_UID, TEST_FROZEN_UID);
-        final Set<UidRange> ranges = Collections.singleton(frozenUidRange);
-
-        verify(mDestroySocketsWrapper).destroyLiveTcpSockets(eq(UidRange.toIntRanges(ranges)),
-                eq(exemptUids));
+        verify(mDestroySocketsWrapper).destroyLiveTcpSocketsByOwnerUids(Set.of(TEST_FROZEN_UID));
     }
 
     @Test
