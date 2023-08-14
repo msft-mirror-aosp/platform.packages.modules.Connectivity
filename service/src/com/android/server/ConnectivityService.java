@@ -1705,8 +1705,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mUserAllContext.registerReceiver(mPackageIntentReceiver, packageIntentFilter,
                 null /* broadcastPermission */, mHandler);
 
-        mNetworkActivityTracker =
-                new LegacyNetworkActivityTracker(mContext, mNetd, mHandler, mDeps.isAtLeastU());
+        mNetworkActivityTracker = new LegacyNetworkActivityTracker(mContext, mNetd, mHandler);
 
         final NetdCallback netdCallback = new NetdCallback();
         try {
@@ -2987,19 +2986,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void handleFrozenUids(int[] uids, int[] frozenStates) {
-        final ArraySet<Range<Integer>> ranges = new ArraySet<>();
+        final ArraySet<Integer> ownerUids = new ArraySet<>();
 
         for (int i = 0; i < uids.length; i++) {
             if (frozenStates[i] == UID_FROZEN_STATE_FROZEN) {
-                Integer uidAsInteger = Integer.valueOf(uids[i]);
-                ranges.add(new Range(uidAsInteger, uidAsInteger));
+                ownerUids.add(uids[i]);
             }
         }
 
-        if (!ranges.isEmpty()) {
-            final Set<Integer> exemptUids = new ArraySet<>();
+        if (!ownerUids.isEmpty()) {
             try {
-                mDeps.destroyLiveTcpSockets(ranges, exemptUids);
+                mDeps.destroyLiveTcpSocketsByOwnerUids(ownerUids);
             } catch (Exception e) {
                 loge("Exception in socket destroy: " + e);
             }
@@ -11144,9 +11141,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 new RemoteCallbackList<>();
         // Indicate the current system default network activity is active or not.
         // This needs to be volatile to allow non handler threads to read this value without lock.
-        private volatile boolean mIsDefaultNetworkActive;
+        // If there is no default network, default network is considered active to keep the existing
+        // behavior. Initial value is used until first connect to the default network.
+        private volatile boolean mIsDefaultNetworkActive = true;
         private final ArrayMap<String, IdleTimerParams> mActiveIdleTimers = new ArrayMap<>();
-        private final boolean mIsAtLeastU;
 
         private static class IdleTimerParams {
             public final int timeout;
@@ -11159,11 +11157,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         LegacyNetworkActivityTracker(@NonNull Context context, @NonNull INetd netd,
-                @NonNull Handler handler, boolean isAtLeastU) {
+                @NonNull Handler handler) {
             mContext = context;
             mNetd = netd;
             mHandler = handler;
-            mIsAtLeastU = isAtLeastU;
         }
 
         private void ensureRunningOnConnectivityServiceThread() {
@@ -11324,13 +11321,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 boolean hasIdleTimer) {
             if (defaultNetwork != null) {
                 mIsDefaultNetworkActive = true;
-                // On T-, callbacks are called only when the network has the idle timer.
-                if (mIsAtLeastU || hasIdleTimer) {
+                // Callbacks are called only when the network has the idle timer.
+                if (hasIdleTimer) {
                     reportNetworkActive();
                 }
             } else {
-                // If there is no default network, default network is considered inactive.
-                mIsDefaultNetworkActive = false;
+                // If there is no default network, default network is considered active to keep the
+                // existing behavior.
+                mIsDefaultNetworkActive = true;
             }
         }
 
