@@ -197,6 +197,8 @@ import com.android.testutils.DeviceConfigRule;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
+import com.android.testutils.SkipMainlinePresubmit;
+import com.android.testutils.SkipPresubmit;
 import com.android.testutils.TestHttpServer;
 import com.android.testutils.TestNetworkTracker;
 import com.android.testutils.TestableNetworkCallback;
@@ -1017,6 +1019,7 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "WRITE_SECURE_SETTINGS permission can't be granted to instant apps")
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testIsPrivateDnsBroken() throws InterruptedException {
         final String invalidPrivateDnsServer = "invalidhostname.example.com";
         final String goodPrivateDnsServer = "dns.google";
@@ -1124,6 +1127,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
+    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testRegisterNetworkCallback_withPendingIntent() {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
@@ -1267,6 +1271,7 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
+    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testRegisterNetworkRequest_identicalPendingIntents() throws Exception {
         runIdenticalPendingIntentsRequestTest(false /* useListen */);
     }
@@ -2129,6 +2134,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "NETWORK_AIRPLANE_MODE permission can't be granted to instant apps")
     @Test
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     public void testSetAirplaneMode() throws Exception{
         // Starting from T, wifi supports airplane mode enhancement which may not disconnect wifi
         // when airplane mode is on. The actual behavior that the device will have could only be
@@ -2560,10 +2566,9 @@ public class ConnectivityManagerTest {
         assertThrows(SecurityException.class, () -> mCm.factoryReset());
     }
 
-    // @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
-    // @Test
-    // Temporarily disable the unreliable test, which is blocked by b/254183718.
-    private void testFactoryReset() throws Exception {
+    @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
+    @Test
+    public void testFactoryReset() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
 
         // Store current settings.
@@ -2592,6 +2597,7 @@ public class ConnectivityManagerTest {
             // prevent the race condition between airplane mode enabled and the followed
             // up wifi tethering enabled.
             tetherEventCallback.expectNoTetheringActive();
+            tetherUtils.expectSoftApDisabled();
 
             // start wifi tethering
             tetherUtils.startWifiTethering(tetherEventCallback);
@@ -2750,17 +2756,19 @@ public class ConnectivityManagerTest {
         final TestableNetworkCallback systemDefaultCallback = new TestableNetworkCallback();
 
         final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
+        final Network testNetwork = tnt.getNetwork();
 
         testAndCleanup(() -> {
             setOemNetworkPreferenceForMyPackage(
                     OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY);
             registerTestOemNetworkPreferenceCallbacks(defaultCallback, systemDefaultCallback);
-            waitForAvailable(defaultCallback, tnt.getNetwork());
+            waitForAvailable(defaultCallback, testNetwork);
             systemDefaultCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
                     NETWORK_CALLBACK_TIMEOUT_MS, cb -> wifiNetwork.equals(cb.getNetwork()));
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
-                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
+                defaultCallback.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
+                        cb -> testNetwork.equals(cb.getNetwork()));
 
                 // This network preference should only ever use the test network therefore available
                 // should not trigger when the test network goes down (e.g. switch to cellular).
@@ -2892,6 +2900,7 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "WRITE_DEVICE_CONFIG permission can't be granted to instant apps")
     @Test
+    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testRejectPartialConnectivity_TearDownNetwork() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
         assumeTrue("testAcceptPartialConnectivity_validatedNetwork cannot execute"

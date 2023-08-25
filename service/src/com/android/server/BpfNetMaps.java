@@ -40,9 +40,9 @@ import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
 import android.app.StatsManager;
 import android.content.Context;
 import android.net.INetd;
+import android.os.Build;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
-import android.provider.DeviceConfig;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.ArraySet;
@@ -50,6 +50,8 @@ import android.util.IndentingPrintWriter;
 import android.util.Log;
 import android.util.Pair;
 import android.util.StatsEvent;
+
+import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.modules.utils.BackgroundThread;
@@ -92,8 +94,8 @@ public class BpfNetMaps {
     private static boolean sInitialized = false;
 
     private static Boolean sEnableJavaBpfMap = null;
-    private static final String BPF_NET_MAPS_ENABLE_JAVA_BPF_MAP =
-            "bpf_net_maps_enable_java_bpf_map";
+    private static final String BPF_NET_MAPS_FORCE_DISABLE_JAVA_BPF_MAP =
+            "bpf_net_maps_force_disable_java_bpf_map";
 
     // Lock for sConfigurationMap entry for UID_RULES_CONFIGURATION_KEY.
     // This entry is not accessed by others.
@@ -280,9 +282,8 @@ public class BpfNetMaps {
         if (sInitialized) return;
         if (sEnableJavaBpfMap == null) {
             sEnableJavaBpfMap = SdkLevel.isAtLeastU() ||
-                    DeviceConfigUtils.isFeatureEnabled(context,
-                            DeviceConfig.NAMESPACE_TETHERING, BPF_NET_MAPS_ENABLE_JAVA_BPF_MAP,
-                            DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultValue */);
+                    DeviceConfigUtils.isTetheringFeatureNotChickenedOut(
+                            BPF_NET_MAPS_FORCE_DISABLE_JAVA_BPF_MAP);
         }
         Log.d(TAG, "BpfNetMaps is initialized with sEnableJavaBpfMap=" + sEnableJavaBpfMap);
 
@@ -1140,19 +1141,48 @@ public class BpfNetMaps {
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static native void native_init(boolean startSkDestroyListener);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_addNaughtyApp(int uid);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_removeNaughtyApp(int uid);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_addNiceApp(int uid);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_removeNiceApp(int uid);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_setChildChain(int childChain, boolean enable);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_replaceUidChain(String name, boolean isAllowlist, int[] uids);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_setUidRule(int childChain, int uid, int firewallRule);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_addUidInterfaceRules(String ifName, int[] uids);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_removeUidInterfaceRules(int[] uids);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_updateUidLockdownRule(int uid, boolean add);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native int native_swapActiveStatsMap();
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private native void native_setPermissionForUids(int permissions, int[] uids);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static native void native_dump(FileDescriptor fd, boolean verbose);
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static native int native_synchronizeKernelRCU();
 }

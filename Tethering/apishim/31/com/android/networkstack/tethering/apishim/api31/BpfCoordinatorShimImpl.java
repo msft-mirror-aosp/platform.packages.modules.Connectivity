@@ -18,7 +18,8 @@ package com.android.networkstack.tethering.apishim.api31;
 
 import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED;
 
-import android.net.MacAddress;
+import static com.android.net.module.util.NetworkStackConstants.RFC7421_PREFIX_LENGTH;
+
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
@@ -36,7 +37,8 @@ import com.android.net.module.util.bpf.Tether4Value;
 import com.android.net.module.util.bpf.TetherStatsKey;
 import com.android.net.module.util.bpf.TetherStatsValue;
 import com.android.networkstack.tethering.BpfCoordinator.Dependencies;
-import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
+import com.android.networkstack.tethering.BpfCoordinator.Ipv6DownstreamRule;
+import com.android.networkstack.tethering.BpfCoordinator.Ipv6UpstreamRule;
 import com.android.networkstack.tethering.BpfUtils;
 import com.android.networkstack.tethering.Tether6Value;
 import com.android.networkstack.tethering.TetherDevKey;
@@ -164,7 +166,40 @@ public class BpfCoordinatorShimImpl
     }
 
     @Override
-    public boolean tetherOffloadRuleAdd(@NonNull final Ipv6ForwardingRule rule) {
+    public boolean addIpv6UpstreamRule(@NonNull final Ipv6UpstreamRule rule) {
+        if (!isInitialized()) return false;
+        // RFC7421_PREFIX_LENGTH = 64 which is the most commonly used IPv6 subnet prefix length.
+        if (rule.sourcePrefix.getPrefixLength() != RFC7421_PREFIX_LENGTH) return false;
+
+        final TetherUpstream6Key key = rule.makeTetherUpstream6Key();
+        final Tether6Value value = rule.makeTether6Value();
+
+        try {
+            mBpfUpstream6Map.insertEntry(key, value);
+        } catch (ErrnoException | IllegalStateException e) {
+            mLog.e("Could not insert upstream IPv6 entry: " + e);
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public boolean removeIpv6UpstreamRule(@NonNull final Ipv6UpstreamRule rule) {
+        if (!isInitialized()) return false;
+        // RFC7421_PREFIX_LENGTH = 64 which is the most commonly used IPv6 subnet prefix length.
+        if (rule.sourcePrefix.getPrefixLength() != RFC7421_PREFIX_LENGTH) return false;
+
+        try {
+            mBpfUpstream6Map.deleteEntry(rule.makeTetherUpstream6Key());
+        } catch (ErrnoException e) {
+            mLog.e("Could not delete upstream IPv6 entry: " + e);
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public boolean addIpv6DownstreamRule(@NonNull final Ipv6DownstreamRule rule) {
         if (!isInitialized()) return false;
 
         final TetherDownstream6Key key = rule.makeTetherDownstream6Key();
@@ -181,7 +216,7 @@ public class BpfCoordinatorShimImpl
     }
 
     @Override
-    public boolean tetherOffloadRuleRemove(@NonNull final Ipv6ForwardingRule rule) {
+    public boolean removeIpv6DownstreamRule(@NonNull final Ipv6DownstreamRule rule) {
         if (!isInitialized()) return false;
 
         try {
@@ -192,39 +227,6 @@ public class BpfCoordinatorShimImpl
                 mLog.e("Could not update entry: ", e);
                 return false;
             }
-        }
-        return true;
-    }
-
-    @Override
-    public boolean startUpstreamIpv6Forwarding(int downstreamIfindex, int upstreamIfindex,
-            @NonNull MacAddress inDstMac, @NonNull MacAddress outSrcMac,
-            @NonNull MacAddress outDstMac, int mtu) {
-        if (!isInitialized()) return false;
-
-        final TetherUpstream6Key key = new TetherUpstream6Key(downstreamIfindex, inDstMac);
-        final Tether6Value value = new Tether6Value(upstreamIfindex, outSrcMac,
-                outDstMac, OsConstants.ETH_P_IPV6, mtu);
-        try {
-            mBpfUpstream6Map.insertEntry(key, value);
-        } catch (ErrnoException | IllegalStateException e) {
-            mLog.e("Could not insert upstream6 entry: " + e);
-            return false;
-        }
-        return true;
-    }
-
-    @Override
-    public boolean stopUpstreamIpv6Forwarding(int downstreamIfindex, int upstreamIfindex,
-            @NonNull MacAddress inDstMac) {
-        if (!isInitialized()) return false;
-
-        final TetherUpstream6Key key = new TetherUpstream6Key(downstreamIfindex, inDstMac);
-        try {
-            mBpfUpstream6Map.deleteEntry(key);
-        } catch (ErrnoException e) {
-            mLog.e("Could not delete upstream IPv6 entry: " + e);
-            return false;
         }
         return true;
     }

@@ -42,6 +42,8 @@ java_defaults {
     srcs: [
         ":framework-connectivity-tiramisu-updatable-sources",
         ":framework-nearby-java-sources",
+        ":framework-thread-sources",
+        ":framework-remoteauth-java-sources",
     ],
     libs: [
         "unsupportedappusage",
@@ -82,6 +84,17 @@ filegroup {
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
+// The filegroup lists files that are necessary for verifying building mdns as a standalone,
+// for use with service-connectivity-mdns-standalone-build-test
+filegroup {
+    name: "framework-connectivity-t-mdns-standalone-build-sources",
+    srcs: [
+        "src/android/net/nsd/OffloadEngine.java",
+        "src/android/net/nsd/OffloadServiceInfo.java",
+    ],
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
+}
+
 java_library {
     name: "framework-connectivity-t-pre-jarjar",
     defaults: ["framework-connectivity-t-defaults"],
@@ -118,8 +131,10 @@ java_sdk_library {
         "android.net",
         "android.net.nsd",
         "android.nearby",
+        "android.remoteauth",
         "com.android.connectivity",
         "com.android.nearby",
+        "com.android.remoteauth",
     ],
 
     hidden_api: {
@@ -141,6 +156,7 @@ java_sdk_library {
         "//packages/modules/Connectivity/service", // For R8 only
         "//packages/modules/Connectivity/service-t",
         "//packages/modules/Connectivity/nearby:__subpackages__",
+        "//packages/modules/Connectivity/remoteauth:__subpackages__",
         "//frameworks/base",
 
         // Tests using hidden APIs
