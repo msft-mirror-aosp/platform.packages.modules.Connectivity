@@ -55,6 +55,8 @@ java_library {
         "framework-wifi",
         "service-connectivity-pre-jarjar",
         "service-nearby-pre-jarjar",
+        "service-thread-pre-jarjar",
+        "service-remoteauth-pre-jarjar",
         "ServiceConnectivityResources",
         "unsupportedappusage",
     ],
