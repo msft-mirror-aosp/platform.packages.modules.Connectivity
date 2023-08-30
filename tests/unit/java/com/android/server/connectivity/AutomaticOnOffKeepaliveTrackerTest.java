@@ -32,7 +32,6 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.longThat;
@@ -78,7 +77,6 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
-import com.android.connectivity.resources.R;
 import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker.AutomaticOnOffKeepalive;
 import com.android.server.connectivity.KeepaliveTracker.KeepaliveInfo;
 import com.android.testutils.DevSdkIgnoreRule;
@@ -96,6 +94,7 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.io.FileDescriptor;
+import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
@@ -128,7 +127,7 @@ public class AutomaticOnOffKeepaliveTrackerTest {
     @Mock AlarmManager mAlarmManager;
     @Mock NetworkAgentInfo mNai;
     @Mock SubscriptionManager mSubscriptionManager;
-
+    @Mock KeepaliveTracker.Dependencies mKeepaliveTrackerDeps;
     KeepaliveStatsTracker mKeepaliveStatsTracker;
     TestKeepaliveTracker mKeepaliveTracker;
     AOOTestHandler mTestHandler;
@@ -267,7 +266,7 @@ public class AutomaticOnOffKeepaliveTrackerTest {
 
         TestKeepaliveTracker(@NonNull final Context context, @NonNull final Handler handler,
                 @NonNull final TcpKeepaliveController tcpController) {
-            super(context, handler, tcpController, new Dependencies());
+            super(context, handler, tcpController, mKeepaliveTrackerDeps);
         }
 
         public void setReturnedKeepaliveInfo(@NonNull final KeepaliveInfo ki) {
@@ -336,8 +335,6 @@ public class AutomaticOnOffKeepaliveTrackerTest {
                 anyInt() /* pid */, anyInt() /* uid */);
         ConnectivityResources.setResourcesContextForTest(mCtx);
         final Resources mockResources = mock(Resources.class);
-        doReturn(new String[] { "0,3", "3,3" }).when(mockResources)
-                .getStringArray(R.array.config_networkSupportedKeepaliveCount);
         doReturn(mockResources).when(mCtx).getResources();
         doReturn(mNetd).when(mDependencies).getNetd();
         doReturn(mAlarmManager).when(mDependencies).getAlarmManager(any());
@@ -345,6 +342,10 @@ public class AutomaticOnOffKeepaliveTrackerTest {
                 .getFwmarkForNetwork(TEST_NETID);
 
         doNothing().when(mDependencies).sendRequest(any(), any());
+        doReturn(true).when(mKeepaliveTrackerDeps).isAddressTranslationEnabled(mCtx);
+        doReturn(new ConnectivityResources(mCtx)).when(mKeepaliveTrackerDeps)
+                .createConnectivityResources(mCtx);
+        doReturn(new int[] {3, 0, 0, 3}).when(mKeepaliveTrackerDeps).getSupportedKeepalives(mCtx);
 
         mHandlerThread = new HandlerThread("KeepaliveTrackerTest");
         mHandlerThread.start();
@@ -357,7 +358,7 @@ public class AutomaticOnOffKeepaliveTrackerTest {
                 .when(mDependencies)
                 .newKeepaliveStatsTracker(mCtx, mTestHandler);
 
-        doReturn(true).when(mDependencies).isFeatureEnabled(any(), anyBoolean());
+        doReturn(true).when(mDependencies).isTetheringFeatureNotChickenedOut(any());
         doReturn(0L).when(mDependencies).getElapsedRealtime();
         mAOOKeepaliveTracker =
                 new AutomaticOnOffKeepaliveTracker(mCtx, mTestHandler, mDependencies);
@@ -366,6 +367,10 @@ public class AutomaticOnOffKeepaliveTrackerTest {
     @After
     public void teardown() throws Exception {
         TestKeepaliveInfo.closeAllSockets();
+        if (mHandlerThread != null) {
+            mHandlerThread.quitSafely();
+            mHandlerThread.join();
+        }
     }
 
     private final class AOOTestHandler extends Handler {
@@ -656,6 +661,25 @@ public class AutomaticOnOffKeepaliveTrackerTest {
         final TcpKeepalivePacketData tpd = tpdCaptor.getValue();
         // Verify the addresses still be the same address when clat is started.
         assertEquals(srcAddr, tpd.getSrcAddress());
+    }
+
+    @Test
+    public void testStartNattKeepalive_addressTranslationOnClatNotSupported() throws Exception {
+        // Disable address translation feature and verify the behavior
+        doReturn(false).when(mKeepaliveTrackerDeps).isAddressTranslationEnabled(mCtx);
+
+        setupTestNaiForClat(InetAddresses.parseNumericAddress("2001:db8::1"),
+                InetAddresses.parseNumericAddress("2001:db8::2"));
+
+        doStartNattKeepalive();
+        final ArgumentCaptor<NattKeepalivePacketData> kpdCaptor =
+                ArgumentCaptor.forClass(NattKeepalivePacketData.class);
+        verify(mNai).onStartNattSocketKeepalive(
+                eq(TEST_SLOT), eq(TEST_KEEPALIVE_INTERVAL_SEC), kpdCaptor.capture());
+        // Verify that address translation is not triggered so the addresses are still v4.
+        final NattKeepalivePacketData kpd = kpdCaptor.getValue();
+        assertTrue(kpd.getSrcAddress() instanceof Inet4Address);
+        assertTrue(kpd.getDstAddress() instanceof Inet4Address);
     }
 
     @Test
