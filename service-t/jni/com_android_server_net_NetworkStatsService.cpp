@@ -47,11 +47,9 @@ enum StatsType {
     RX_PACKETS = 1,
     TX_BYTES = 2,
     TX_PACKETS = 3,
-    TCP_RX_PACKETS = 4,
-    TCP_TX_PACKETS = 5
 };
 
-static uint64_t getStatsType(Stats* stats, StatsType type) {
+static uint64_t getStatsType(StatsValue* stats, StatsType type) {
     switch (type) {
         case RX_BYTES:
             return stats->rxBytes;
@@ -61,17 +59,13 @@ static uint64_t getStatsType(Stats* stats, StatsType type) {
             return stats->txBytes;
         case TX_PACKETS:
             return stats->txPackets;
-        case TCP_RX_PACKETS:
-            return stats->tcpRxPackets;
-        case TCP_TX_PACKETS:
-            return stats->tcpTxPackets;
         default:
             return UNKNOWN;
     }
 }
 
 static jlong nativeGetTotalStat(JNIEnv* env, jclass clazz, jint type) {
-    Stats stats = {};
+    StatsValue stats = {};
 
     if (bpfGetIfaceStats(NULL, &stats) == 0) {
         return getStatsType(&stats, (StatsType) type);
@@ -86,7 +80,7 @@ static jlong nativeGetIfaceStat(JNIEnv* env, jclass clazz, jstring iface, jint t
         return UNKNOWN;
     }
 
-    Stats stats = {};
+    StatsValue stats = {};
 
     if (bpfGetIfaceStats(iface8.c_str(), &stats) == 0) {
         return getStatsType(&stats, (StatsType) type);
@@ -96,7 +90,7 @@ static jlong nativeGetIfaceStat(JNIEnv* env, jclass clazz, jstring iface, jint t
 }
 
 static jlong nativeGetIfIndexStat(JNIEnv* env, jclass clazz, jint ifindex, jint type) {
-    Stats stats = {};
+    StatsValue stats = {};
     if (bpfGetIfIndexStats(ifindex, &stats) == 0) {
         return getStatsType(&stats, (StatsType) type);
     } else {
@@ -105,7 +99,7 @@ static jlong nativeGetIfIndexStat(JNIEnv* env, jclass clazz, jint ifindex, jint 
 }
 
 static jlong nativeGetUidStat(JNIEnv* env, jclass clazz, jint uid, jint type) {
-    Stats stats = {};
+    StatsValue stats = {};
 
     if (bpfGetUidStats(uid, &stats) == 0) {
         return getStatsType(&stats, (StatsType) type);

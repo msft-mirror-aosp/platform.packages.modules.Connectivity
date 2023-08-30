@@ -62,7 +62,6 @@ java_defaults {
         ":framework-connectivity-sources",
         ":net-utils-framework-common-srcs",
         ":framework-connectivity-api-shared-srcs",
-        ":framework-remoteauth-java-sources",
     ],
     aidl: {
         generate_get_transaction_name: true,
@@ -83,7 +82,6 @@ java_defaults {
         // framework-connectivity and framework-tethering are in the same APEX.
         "framework-tethering.impl",
         "framework-wifi.stubs.module_lib",
-        "net-utils-device-common",
     ],
     static_libs: [
         "mdns_aidl_interface-lateststable-java",
@@ -91,6 +89,9 @@ java_defaults {
         "modules-utils-build",
         "modules-utils-preconditions",
         "framework-connectivity-javastream-protos",
+    ],
+    impl_only_static_libs: [
+        "net-utils-device-common-struct",
     ],
     libs: [
         "androidx.annotation_annotation",
@@ -112,6 +113,14 @@ java_library {
     static_libs: [
         "httpclient_api",
         "httpclient_impl",
+        "http_client_logging",
+        // Framework-connectivity-pre-jarjar is identical to framework-connectivity
+        // implementation, but without the jarjar rules. However, framework-connectivity
+        // is not based on framework-connectivity-pre-jarjar, it's rebuilt from source
+        // to generate the SDK stubs.
+        // Even if the library is included in "impl_only_static_libs" of defaults. This is still
+        // needed because java_library which doesn't understand "impl_only_static_libs".
+        "net-utils-device-common-struct",
     ],
     libs: [
         // This cannot be in the defaults clause above because if it were, it would be used
@@ -132,6 +141,7 @@ java_defaults {
     ],
     impl_only_static_libs: [
         "httpclient_impl",
+        "http_client_logging",
     ],
 }
 
@@ -151,7 +161,6 @@ java_sdk_library {
         "//packages/modules/Connectivity/framework-t",
         "//packages/modules/Connectivity/service",
         "//packages/modules/Connectivity/service-t",
-        "//packages/modules/Connectivity/remoteauth:__subpackages__",
         "//frameworks/base/packages/Connectivity/service",
         "//frameworks/base",
 
