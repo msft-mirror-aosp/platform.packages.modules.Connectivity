@@ -424,7 +424,6 @@ import com.android.testutils.FunctionalUtils.ThrowingConsumer;
 import com.android.testutils.FunctionalUtils.ThrowingRunnable;
 import com.android.testutils.HandlerUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
-import com.android.testutils.SkipPresubmit;
 import com.android.testutils.TestableNetworkCallback;
 import com.android.testutils.TestableNetworkOfferCallback;
 
@@ -2301,7 +2300,7 @@ public class ConnectivityServiceTest {
         }
 
         @Override
-        public boolean isFeatureEnabled(@NonNull final String name, final boolean defaultEnabled) {
+        public boolean isTetheringFeatureNotChickenedOut(@NonNull final String name) {
             // Tests for enabling the feature are verified in AutomaticOnOffKeepaliveTrackerTest.
             // Assuming enabled here to focus on ConnectivityService tests.
             return true;
@@ -7430,7 +7429,6 @@ public class ConnectivityServiceTest {
         assertPinnedToWifiWithCellDefault();
     }
 
-    @SkipPresubmit(reason = "Out of SLO flakiness")
     @Test
     public void testNetworkCallbackMaximum() throws Exception {
         final int MAX_REQUESTS = 100;
@@ -7549,6 +7547,19 @@ public class ConnectivityServiceTest {
             NetworkCallback networkCallback = new NetworkCallback();
             mCm.requestNetwork(networkRequest, networkCallback);
             mCm.unregisterNetworkCallback(networkCallback);
+            // While requestNetwork increases the count synchronously, unregister decreases it
+            // asynchronously on a handler, so unregistering doesn't immediately free up
+            // a slot : calling unregister-register when max requests are registered throws.
+            // Potential fix : ConnectivityService catches TooManyRequestsException once when
+            // creating NetworkRequestInfo and waits for handler thread (see
+            // https://r.android.com/2707373 for impl). However, this complexity is not equal to
+            // the issue ; the purpose of having "max requests" is only to help apps detect leaks.
+            // Apps relying on exact enforcement or rapid request registration should reconsider.
+            //
+            // In this test, test thread registering all before handler thread decrements can cause
+            // flakes. A single waitForIdle at (e.g.) MAX_REQUESTS / 2 processes decrements up to
+            // that point, fixing the flake.
+            if (MAX_REQUESTS / 2 == i) waitForIdle();
         }
         waitForIdle();
 
@@ -7556,6 +7567,8 @@ public class ConnectivityServiceTest {
             NetworkCallback networkCallback = new NetworkCallback();
             mCm.registerNetworkCallback(networkRequest, networkCallback);
             mCm.unregisterNetworkCallback(networkCallback);
+            // See comment above for the reasons for this wait.
+            if (MAX_REQUESTS / 2 == i) waitForIdle();
         }
         waitForIdle();
 
@@ -7563,6 +7576,8 @@ public class ConnectivityServiceTest {
             NetworkCallback networkCallback = new NetworkCallback();
             mCm.registerDefaultNetworkCallback(networkCallback);
             mCm.unregisterNetworkCallback(networkCallback);
+            // See comment above for the reasons for this wait.
+            if (MAX_REQUESTS / 2 == i) waitForIdle();
         }
         waitForIdle();
 
@@ -7570,6 +7585,8 @@ public class ConnectivityServiceTest {
             NetworkCallback networkCallback = new NetworkCallback();
             mCm.registerDefaultNetworkCallback(networkCallback);
             mCm.unregisterNetworkCallback(networkCallback);
+            // See comment above for the reasons for this wait.
+            if (MAX_REQUESTS / 2 == i) waitForIdle();
         }
         waitForIdle();
 
@@ -7579,6 +7596,8 @@ public class ConnectivityServiceTest {
                 mCm.registerDefaultNetworkCallbackForUid(1000000 + i, networkCallback,
                         new Handler(ConnectivityThread.getInstanceLooper()));
                 mCm.unregisterNetworkCallback(networkCallback);
+                // See comment above for the reasons for this wait.
+                if (MAX_REQUESTS / 2 == i) waitForIdle();
             }
         });
         waitForIdle();
@@ -7588,6 +7607,8 @@ public class ConnectivityServiceTest {
                     mContext, 0 /* requestCode */, new Intent("e" + i), FLAG_IMMUTABLE);
             mCm.requestNetwork(networkRequest, pendingIntent);
             mCm.unregisterNetworkCallback(pendingIntent);
+            // See comment above for the reasons for this wait.
+            if (MAX_REQUESTS / 2 == i) waitForIdle();
         }
         waitForIdle();
 
@@ -7596,6 +7617,8 @@ public class ConnectivityServiceTest {
                     mContext, 0 /* requestCode */, new Intent("f" + i), FLAG_IMMUTABLE);
             mCm.registerNetworkCallback(networkRequest, pendingIntent);
             mCm.unregisterNetworkCallback(pendingIntent);
+            // See comment above for the reasons for this wait.
+            if (MAX_REQUESTS / 2 == i) waitForIdle();
         }
     }
 
@@ -16390,6 +16413,15 @@ public class ConnectivityServiceTest {
         // Other callbacks will be unregistered by tearDown()
     }
 
+    private NetworkCallback requestForEnterpriseId(@NetworkCapabilities.EnterpriseId final int id) {
+        final NetworkCapabilities nc = new NetworkCapabilities.Builder()
+                .addCapability(NET_CAPABILITY_ENTERPRISE).addEnterpriseId(id).build();
+        final NetworkRequest req = new NetworkRequest.Builder().setCapabilities(nc).build();
+        final NetworkCallback cb = new TestableNetworkCallback();
+        mCm.requestNetwork(req, cb);
+        return cb;
+    }
+
     /**
      * Make sure per profile network preferences behave as expected when multiple slices with
      * multiple different apps within same user profile is configured.
@@ -16397,8 +16429,6 @@ public class ConnectivityServiceTest {
     @Test
     public void testSetPreferenceWithMultiplePreferences()
             throws Exception {
-        final InOrder inOrder = inOrder(mMockNetd);
-
         final UserHandle testHandle = setupEnterpriseNetwork();
         mServiceContext.setWorkProfile(testHandle, true);
         registerDefaultNetworkCallbacks();
@@ -16435,6 +16465,12 @@ public class ConnectivityServiceTest {
         final TestNetworkAgentWrapper workAgent3 = makeEnterpriseNetworkAgent(NET_ENTERPRISE_ID_3);
         final TestNetworkAgentWrapper workAgent4 = makeEnterpriseNetworkAgent(NET_ENTERPRISE_ID_4);
         final TestNetworkAgentWrapper workAgent5 = makeEnterpriseNetworkAgent(NET_ENTERPRISE_ID_5);
+
+        final NetworkCallback keepupCb1 = requestForEnterpriseId(NET_ENTERPRISE_ID_1);
+        final NetworkCallback keepupCb2 = requestForEnterpriseId(NET_ENTERPRISE_ID_2);
+        final NetworkCallback keepupCb3 = requestForEnterpriseId(NET_ENTERPRISE_ID_3);
+        final NetworkCallback keepupCb4 = requestForEnterpriseId(NET_ENTERPRISE_ID_4);
+        final NetworkCallback keepupCb5 = requestForEnterpriseId(NET_ENTERPRISE_ID_5);
 
         workAgent1.connect(true);
         workAgent2.connect(true);
@@ -16593,6 +16629,12 @@ public class ConnectivityServiceTest {
         appCb2.expectAvailableCallbacksValidated(mCellAgent);
         appCb4.expectAvailableCallbacksValidated(mCellAgent);
         mCellAgent.disconnect();
+
+        mCm.unregisterNetworkCallback(keepupCb1);
+        mCm.unregisterNetworkCallback(keepupCb2);
+        mCm.unregisterNetworkCallback(keepupCb3);
+        mCm.unregisterNetworkCallback(keepupCb4);
+        mCm.unregisterNetworkCallback(keepupCb5);
 
         mCm.unregisterNetworkCallback(appCb1);
         mCm.unregisterNetworkCallback(appCb2);
@@ -18547,12 +18589,7 @@ public class ConnectivityServiceTest {
 
         waitForIdle();
 
-        final Set<Integer> exemptUids = new ArraySet();
-        final UidRange frozenUidRange = new UidRange(TEST_FROZEN_UID, TEST_FROZEN_UID);
-        final Set<UidRange> ranges = Collections.singleton(frozenUidRange);
-
-        verify(mDestroySocketsWrapper).destroyLiveTcpSockets(eq(UidRange.toIntRanges(ranges)),
-                eq(exemptUids));
+        verify(mDestroySocketsWrapper).destroyLiveTcpSocketsByOwnerUids(Set.of(TEST_FROZEN_UID));
     }
 
     @Test
