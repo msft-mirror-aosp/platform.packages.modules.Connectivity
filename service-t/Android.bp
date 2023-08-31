@@ -55,6 +55,8 @@ java_library {
         "framework-wifi",
         "service-connectivity-pre-jarjar",
         "service-nearby-pre-jarjar",
+        "service-thread-pre-jarjar",
+        "service-remoteauth-pre-jarjar",
         "ServiceConnectivityResources",
         "unsupportedappusage",
     ],
@@ -88,8 +90,9 @@ java_library {
     name: "service-connectivity-mdns-standalone-build-test",
     sdk_version: "core_platform",
     srcs: [
-        ":service-mdns-droidstubs",
         "src/com/android/server/connectivity/mdns/**/*.java",
+        ":framework-connectivity-t-mdns-standalone-build-sources",
+        ":service-mdns-droidstubs"
     ],
     exclude_srcs: [
         "src/com/android/server/connectivity/mdns/internal/SocketNetlinkMonitor.java",
