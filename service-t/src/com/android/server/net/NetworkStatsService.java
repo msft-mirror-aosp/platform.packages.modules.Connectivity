@@ -63,6 +63,7 @@ import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
 import static android.text.format.DateUtils.SECOND_IN_MILLIS;
 
+import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIVATE;
 import static com.android.net.module.util.NetworkCapabilitiesUtils.getDisplayTransport;
 import static com.android.net.module.util.NetworkStatsUtils.LIMIT_GLOBAL_ALERT;
 
@@ -3248,7 +3249,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      * Default external settings that read from
      * {@link android.provider.Settings.Global}.
      */
-    private static class DefaultNetworkStatsSettings implements NetworkStatsSettings {
+    @VisibleForTesting(visibility = PRIVATE)
+    static class DefaultNetworkStatsSettings implements NetworkStatsSettings {
         DefaultNetworkStatsSettings() {}
 
         @Override
@@ -3303,6 +3305,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     private static native long nativeGetTotalStat(int type);
     private static native long nativeGetIfaceStat(String iface, int type);
+    private static native long nativeGetIfIndexStat(int ifindex, int type);
     private static native long nativeGetUidStat(int uid, int type);
 
     /** Initializes and registers the Perfetto Network Trace data source */
