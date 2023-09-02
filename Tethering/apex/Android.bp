@@ -110,7 +110,6 @@ apex {
     ],
     apps: [
         "ServiceConnectivityResources",
-        "HalfSheetUX",
     ],
     prebuilts: ["current_sdkinfo"],
     manifest: "manifest.json",
@@ -203,6 +202,8 @@ bootclasspath_fragment {
         // result in a build failure due to inconsistent flags.
         package_prefixes: [
             "android.nearby.aidl",
+            "android.remoteauth.aidl",
+            "android.remoteauth",
             "android.net.apf",
             "android.net.connectivity",
             "android.net.http.apihelpers",
