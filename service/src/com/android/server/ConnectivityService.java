@@ -319,7 +319,6 @@ import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.PrintWriter;
 import java.io.Writer;
-import java.lang.IllegalArgumentException;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -1414,10 +1413,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
-         * @see DeviceConfigUtils#isFeatureEnabled
+         * @see DeviceConfigUtils#isTetheringFeatureEnabled
          */
         public boolean isFeatureEnabled(Context context, String name) {
-            return DeviceConfigUtils.isFeatureEnabled(context, NAMESPACE_TETHERING, name,
+            return DeviceConfigUtils.isTetheringFeatureEnabled(context, NAMESPACE_TETHERING, name,
                     TETHERING_MODULE_NAME, false /* defaultValue */);
         }
 
@@ -2986,19 +2985,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void handleFrozenUids(int[] uids, int[] frozenStates) {
-        final ArraySet<Range<Integer>> ranges = new ArraySet<>();
+        final ArraySet<Integer> ownerUids = new ArraySet<>();
 
         for (int i = 0; i < uids.length; i++) {
             if (frozenStates[i] == UID_FROZEN_STATE_FROZEN) {
-                Integer uidAsInteger = Integer.valueOf(uids[i]);
-                ranges.add(new Range(uidAsInteger, uidAsInteger));
+                ownerUids.add(uids[i]);
             }
         }
 
-        if (!ranges.isEmpty()) {
-            final Set<Integer> exemptUids = new ArraySet<>();
+        if (!ownerUids.isEmpty()) {
             try {
-                mDeps.destroyLiveTcpSockets(ranges, exemptUids);
+                mDeps.destroyLiveTcpSocketsByOwnerUids(ownerUids);
             } catch (Exception e) {
                 loge("Exception in socket destroy: " + e);
             }
@@ -11115,16 +11112,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         @Override
         public void onInterfaceLinkStateChanged(@NonNull String iface, boolean up) {
-            for (NetworkAgentInfo nai : mNetworkAgentInfos) {
-                nai.clatd.interfaceLinkStateChanged(iface, up);
-            }
+            mHandler.post(() -> {
+                for (NetworkAgentInfo nai : mNetworkAgentInfos) {
+                    nai.clatd.interfaceLinkStateChanged(iface, up);
+                }
+            });
         }
 
         @Override
         public void onInterfaceRemoved(@NonNull String iface) {
-            for (NetworkAgentInfo nai : mNetworkAgentInfos) {
-                nai.clatd.interfaceRemoved(iface);
-            }
+            mHandler.post(() -> {
+                for (NetworkAgentInfo nai : mNetworkAgentInfos) {
+                    nai.clatd.interfaceRemoved(iface);
+                }
+            });
         }
     }
 
