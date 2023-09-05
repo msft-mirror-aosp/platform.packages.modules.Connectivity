@@ -46,16 +46,17 @@ abstract class HostsideNetworkTestCase extends BaseHostJUnit4Test {
     protected static final String TEST_APP2_APK = "CtsHostsideNetworkTestsApp2.apk";
 
     @BeforeClassWithInfo
-    public static void setUpOnce(TestInformation testInfo) throws Exception {
+    public static void setUpOnceBase(TestInformation testInfo) throws Exception {
         DeviceSdkLevel deviceSdkLevel = new DeviceSdkLevel(testInfo.getDevice());
-        String testApk = deviceSdkLevel.isDeviceAtLeastT() ? TEST_APK_NEXT : TEST_APK;
+        String testApk = deviceSdkLevel.isDeviceAtLeastV() ? TEST_APK_NEXT : TEST_APK;
 
         uninstallPackage(testInfo, TEST_PKG, false);
         installPackage(testInfo, testApk);
     }
 
     @AfterClassWithInfo
-    public static void tearDownOnce(TestInformation testInfo) throws DeviceNotAvailableException {
+    public static void tearDownOnceBase(TestInformation testInfo)
+            throws DeviceNotAvailableException {
         uninstallPackage(testInfo, TEST_PKG, true);
     }
 

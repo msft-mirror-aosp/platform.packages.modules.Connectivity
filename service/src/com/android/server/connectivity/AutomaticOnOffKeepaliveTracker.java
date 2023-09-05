@@ -20,7 +20,6 @@ import static android.net.SocketKeepalive.ERROR_INVALID_SOCKET;
 import static android.net.SocketKeepalive.MIN_INTERVAL_SEC;
 import static android.net.SocketKeepalive.SUCCESS;
 import static android.net.SocketKeepalive.SUCCESS_PAUSED;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 import static android.system.OsConstants.AF_INET;
 import static android.system.OsConstants.AF_INET6;
 import static android.system.OsConstants.SOL_SOCKET;
@@ -92,8 +91,8 @@ public class AutomaticOnOffKeepaliveTracker {
     private static final int[] ADDRESS_FAMILIES = new int[] {AF_INET6, AF_INET};
     private static final long LOW_TCP_POLLING_INTERVAL_MS = 1_000L;
     private static final int ADJUST_TCP_POLLING_DELAY_MS = 2000;
-    private static final String AUTOMATIC_ON_OFF_KEEPALIVE_VERSION =
-            "automatic_on_off_keepalive_version";
+    private static final String AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG =
+            "automatic_on_off_keepalive_disable_flag";
     public static final long METRICS_COLLECTION_DURATION_MS = 24 * 60 * 60 * 1_000L;
 
     // ConnectivityService parses message constants from itself and AutomaticOnOffKeepaliveTracker
@@ -219,30 +218,35 @@ public class AutomaticOnOffKeepaliveTracker {
             // Reading DeviceConfig will check if the calling uid and calling package name are the
             // same. Clear calling identity to align the calling uid and package
             final boolean enabled = BinderUtils.withCleanCallingIdentity(
-                    () -> mDependencies.isFeatureEnabled(AUTOMATIC_ON_OFF_KEEPALIVE_VERSION,
-                            true /* defaultEnabled */));
+                    () -> mDependencies.isTetheringFeatureNotChickenedOut(
+                            AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG));
             if (autoOnOff && enabled) {
                 mAutomaticOnOffState = STATE_ENABLED;
                 if (null == ki.mFd) {
                     throw new IllegalArgumentException("fd can't be null with automatic "
                             + "on/off keepalives");
                 }
-                try {
-                    mFd = Os.dup(ki.mFd);
-                } catch (ErrnoException e) {
-                    Log.e(TAG, "Cannot dup fd: ", e);
-                    throw new InvalidSocketException(ERROR_INVALID_SOCKET, e);
-                }
                 mAlarmListener = () -> mConnectivityServiceHandler.obtainMessage(
                         CMD_MONITOR_AUTOMATIC_KEEPALIVE, mCallback.asBinder())
                         .sendToTarget();
             } else {
                 mAutomaticOnOffState = STATE_ALWAYS_ON;
-                // A null fd is acceptable in KeepaliveInfo for backward compatibility of
-                // PacketKeepalive API, but it must never happen with automatic keepalives.
-                // TODO : remove mFd from KeepaliveInfo or from this class.
-                mFd = ki.mFd;
                 mAlarmListener = null;
+            }
+
+            // A null fd is acceptable in KeepaliveInfo for backward compatibility of
+            // PacketKeepalive API, but it must never happen with automatic keepalives.
+            // TODO : remove mFd from KeepaliveInfo.
+            mFd = dupFd(ki.mFd);
+        }
+
+        private FileDescriptor dupFd(FileDescriptor fd) throws InvalidSocketException {
+            try {
+                if (fd == null) return null;
+                return Os.dup(fd);
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Cannot dup fd: ", e);
+                throw new InvalidSocketException(ERROR_INVALID_SOCKET, e);
             }
         }
 
@@ -332,12 +336,18 @@ public class AutomaticOnOffKeepaliveTracker {
 
         final long time = mDependencies.getElapsedRealtime();
         mMetricsWriteTimeBase = time % METRICS_COLLECTION_DURATION_MS;
-        final long triggerAtMillis = mMetricsWriteTimeBase + METRICS_COLLECTION_DURATION_MS;
-        mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtMillis, TAG,
-                this::writeMetricsAndRescheduleAlarm, handler);
+        if (mKeepaliveStatsTracker.isEnabled()) {
+            final long triggerAtMillis = mMetricsWriteTimeBase + METRICS_COLLECTION_DURATION_MS;
+            mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtMillis, TAG,
+                    this::writeMetricsAndRescheduleAlarm, handler);
+        }
     }
 
     private void writeMetricsAndRescheduleAlarm() {
+        // If the metrics is disabled, skip writing and scheduling the next alarm.
+        if (!mKeepaliveStatsTracker.isEnabled()) {
+            return;
+        }
         mKeepaliveStatsTracker.writeAndResetMetrics();
 
         final long time = mDependencies.getElapsedRealtime();
@@ -495,11 +505,7 @@ public class AutomaticOnOffKeepaliveTracker {
         final AutomaticOnOffKeepalive autoKi;
         try {
             autoKi = target.withKeepaliveInfo(res.second);
-            // Only automatic keepalives duplicate the fd.
-            if (target.mAutomaticOnOffState != STATE_ALWAYS_ON) {
-                // Close the duplicated fd.
-                target.close();
-            }
+            target.close();
         } catch (InvalidSocketException e) {
             Log.wtf(TAG, "Fail to create AutomaticOnOffKeepalive", e);
             return;
@@ -693,8 +699,8 @@ public class AutomaticOnOffKeepaliveTracker {
         // Clear calling identity to align the calling uid and package so that it won't fail if cts
         // would like to call dump()
         final boolean featureEnabled = BinderUtils.withCleanCallingIdentity(
-                () -> mDependencies.isFeatureEnabled(AUTOMATIC_ON_OFF_KEEPALIVE_VERSION,
-                        true /* defaultEnabled */));
+                () -> mDependencies.isTetheringFeatureNotChickenedOut(
+                        AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG));
         pw.println("AutomaticOnOff enabled: " + featureEnabled);
         pw.increaseIndent();
         for (AutomaticOnOffKeepalive autoKi : mAutomaticOnOffKeepalives) {
@@ -962,16 +968,13 @@ public class AutomaticOnOffKeepaliveTracker {
         }
 
         /**
-         * Find out if a feature is enabled from DeviceConfig.
+         * Find out if a feature is not disabled from DeviceConfig.
          *
          * @param name The name of the property to look up.
-         * @param defaultEnabled whether to consider the feature enabled in the absence of
-         *                       the flag. This MUST be a statically-known constant.
          * @return whether the feature is enabled
          */
-        public boolean isFeatureEnabled(@NonNull final String name, final boolean defaultEnabled) {
-            return DeviceConfigUtils.isFeatureEnabled(mContext, NAMESPACE_TETHERING, name,
-                    DeviceConfigUtils.TETHERING_MODULE_NAME, defaultEnabled);
+        public boolean isTetheringFeatureNotChickenedOut(@NonNull final String name) {
+            return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(name);
         }
 
         /**
