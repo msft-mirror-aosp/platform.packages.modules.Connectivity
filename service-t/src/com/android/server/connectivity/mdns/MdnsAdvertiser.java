@@ -16,6 +16,7 @@
 
 package com.android.server.connectivity.mdns;
 
+import static com.android.server.connectivity.mdns.MdnsConstants.NO_PACKET;
 import static com.android.server.connectivity.mdns.MdnsRecord.MAX_LABEL_LENGTH;
 
 import android.annotation.NonNull;
@@ -146,9 +147,12 @@ public class MdnsAdvertiser {
                             interfaceName, k -> new ArrayList<>());
             // Remove existing offload services from cache for update.
             existingOffloadServiceInfoWrappers.removeIf(item -> item.mServiceId == serviceId);
+
+            byte[] rawOffloadPacket = advertiser.getRawOffloadPayload(serviceId);
             final OffloadServiceInfoWrapper newOffloadServiceInfoWrapper = createOffloadService(
                     serviceId,
-                    registration);
+                    registration,
+                    rawOffloadPacket);
             existingOffloadServiceInfoWrappers.add(newOffloadServiceInfoWrapper);
             mCb.onOffloadStartOrUpdate(interfaceName,
                     newOffloadServiceInfoWrapper.mOffloadServiceInfo);
@@ -177,6 +181,7 @@ public class MdnsAdvertiser {
                 // (with the old, conflicting, actually not used name as argument... The new
                 // implementation will send callbacks with the new name).
                 registration.mNotifiedRegistrationSuccess = false;
+                registration.mConflictAfterProbingCount++;
 
                 // The service was done probing, just reset it to probing state (RFC6762 9.)
                 forAllAdvertisers(a -> {
@@ -192,6 +197,7 @@ public class MdnsAdvertiser {
             registration.updateForConflict(
                     registration.makeNewServiceInfoForConflict(1 /* renameCount */),
                     1 /* renameCount */);
+            registration.mConflictDuringProbingCount++;
 
             // Keep renaming if the new name conflicts in local registrations
             updateRegistrationUntilNoConflict((net, adv) -> adv.hasRegistration(registration),
@@ -357,6 +363,22 @@ public class MdnsAdvertiser {
             }
         }
 
+        int getServiceRepliedRequestsCount(int id) {
+            int repliedRequestsCount = NO_PACKET;
+            for (int i = 0; i < mAdvertisers.size(); i++) {
+                repliedRequestsCount += mAdvertisers.valueAt(i).getServiceRepliedRequestsCount(id);
+            }
+            return repliedRequestsCount;
+        }
+
+        int getSentPacketCount(int id) {
+            int sentPacketCount = NO_PACKET;
+            for (int i = 0; i < mAdvertisers.size(); i++) {
+                sentPacketCount += mAdvertisers.valueAt(i).getSentPacketCount(id);
+            }
+            return sentPacketCount;
+        }
+
         @Override
         public void onSocketCreated(@NonNull SocketKey socketKey,
                 @NonNull MdnsInterfaceSocket socket,
@@ -393,7 +415,29 @@ public class MdnsAdvertiser {
         public void onAddressesChanged(@NonNull SocketKey socketKey,
                 @NonNull MdnsInterfaceSocket socket, @NonNull List<LinkAddress> addresses) {
             final MdnsInterfaceAdvertiser advertiser = mAdvertisers.get(socket);
-            if (advertiser != null) advertiser.updateAddresses(addresses);
+            if (advertiser == null)  {
+                return;
+            }
+            advertiser.updateAddresses(addresses);
+            // Update address should trigger offload packet update.
+            final String interfaceName = advertiser.getSocketInterfaceName();
+            final List<OffloadServiceInfoWrapper> existingOffloadServiceInfoWrappers =
+                    mInterfaceOffloadServices.get(interfaceName);
+            if (existingOffloadServiceInfoWrappers == null) {
+                return;
+            }
+            final List<OffloadServiceInfoWrapper> updatedOffloadServiceInfoWrappers =
+                    new ArrayList<>(existingOffloadServiceInfoWrappers.size());
+            for (OffloadServiceInfoWrapper oldWrapper : existingOffloadServiceInfoWrappers) {
+                OffloadServiceInfoWrapper newWrapper = new OffloadServiceInfoWrapper(
+                        oldWrapper.mServiceId,
+                        oldWrapper.mOffloadServiceInfo.withOffloadPayload(
+                                advertiser.getRawOffloadPayload(oldWrapper.mServiceId))
+                );
+                updatedOffloadServiceInfoWrappers.add(newWrapper);
+                mCb.onOffloadStartOrUpdate(interfaceName, newWrapper.mOffloadServiceInfo);
+            }
+            mInterfaceOffloadServices.put(interfaceName, updatedOffloadServiceInfoWrappers);
         }
     }
 
@@ -419,6 +463,8 @@ public class MdnsAdvertiser {
         private NsdServiceInfo mServiceInfo;
         @Nullable
         private final String mSubtype;
+        int mConflictDuringProbingCount;
+        int mConflictAfterProbingCount;
 
         private Registration(@NonNull NsdServiceInfo serviceInfo, @Nullable String subtype) {
             this.mOriginalName = serviceInfo.getServiceName();
@@ -530,6 +576,24 @@ public class MdnsAdvertiser {
                 @NonNull OffloadServiceInfo offloadServiceInfo);
     }
 
+    /**
+     * Data class of avdverting metrics.
+     */
+    public static class AdvertiserMetrics {
+        public final int mRepliedRequestsCount;
+        public final int mSentPacketCount;
+        public final int mConflictDuringProbingCount;
+        public final int mConflictAfterProbingCount;
+
+        public AdvertiserMetrics(int repliedRequestsCount, int sentPacketCount,
+                int conflictDuringProbingCount, int conflictAfterProbingCount) {
+            mRepliedRequestsCount = repliedRequestsCount;
+            mSentPacketCount = sentPacketCount;
+            mConflictDuringProbingCount = conflictDuringProbingCount;
+            mConflictAfterProbingCount = conflictAfterProbingCount;
+        }
+    }
+
     public MdnsAdvertiser(@NonNull Looper looper, @NonNull MdnsSocketProvider socketProvider,
             @NonNull AdvertiserCallback cb, @NonNull SharedLog sharedLog) {
         this(looper, socketProvider, cb, new Dependencies(), sharedLog);
@@ -612,6 +676,34 @@ public class MdnsAdvertiser {
         }
     }
 
+    /**
+     * Get advertising metrics.
+     *
+     * @param id ID used when registering.
+     * @return The advertising metrics includes replied requests count, send packet count, conflict
+     *         count during/after probing.
+     */
+    public AdvertiserMetrics getAdvertiserMetrics(int id) {
+        checkThread();
+        final Registration registration = mRegistrations.get(id);
+        if (registration == null) {
+            return new AdvertiserMetrics(
+                    NO_PACKET /* repliedRequestsCount */,
+                    NO_PACKET /* sentPacketCount */,
+                    0 /* conflictDuringProbingCount */,
+                    0 /* conflictAfterProbingCount */);
+        }
+        int repliedRequestsCount = NO_PACKET;
+        int sentPacketCount = NO_PACKET;
+        for (int i = 0; i < mAdvertiserRequests.size(); i++) {
+            repliedRequestsCount +=
+                    mAdvertiserRequests.valueAt(i).getServiceRepliedRequestsCount(id);
+            sentPacketCount += mAdvertiserRequests.valueAt(i).getSentPacketCount(id);
+        }
+        return new AdvertiserMetrics(repliedRequestsCount, sentPacketCount,
+                registration.mConflictDuringProbingCount, registration.mConflictAfterProbingCount);
+    }
+
     private static <K, V> boolean any(@NonNull ArrayMap<K, V> map,
             @NonNull BiPredicate<K, V> predicate) {
         for (int i = 0; i < map.size(); i++) {
@@ -630,9 +722,9 @@ public class MdnsAdvertiser {
     }
 
     private OffloadServiceInfoWrapper createOffloadService(int serviceId,
-            @NonNull Registration registration) {
+            @NonNull Registration registration, byte[] rawOffloadPacket) {
         final NsdServiceInfo nsdServiceInfo = registration.getServiceInfo();
-        List<String> subTypes = new ArrayList<>();
+        final List<String> subTypes = new ArrayList<>();
         String subType = registration.getSubtype();
         if (subType != null) {
             subTypes.add(subType);
@@ -642,7 +734,7 @@ public class MdnsAdvertiser {
                         nsdServiceInfo.getServiceType()),
                 subTypes,
                 String.join(".", mDeviceHostName),
-                null /* rawOffloadPacket */,
+                rawOffloadPacket,
                 // TODO: define overlayable resources in
                 // ServiceConnectivityResources that set the priority based on
                 // service type.
@@ -651,5 +743,4 @@ public class MdnsAdvertiser {
                 OffloadEngine.OFFLOAD_TYPE_REPLY);
         return new OffloadServiceInfoWrapper(serviceId, offloadServiceInfo);
     }
-
 }
