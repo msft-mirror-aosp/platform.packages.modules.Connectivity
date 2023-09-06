@@ -19,6 +19,14 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+framework_remoteauth_srcs = [":framework-remoteauth-java-sources-udc-compat"]
+framework_remoteauth_api_srcs = [":framework-remoteauth-java-sources"]
+
+java_defaults {
+    name: "enable-remoteauth-targets",
+    enabled: false,
+}
+
 // Include build rules from Sources.bp
 build = ["Sources.bp"]
 
@@ -42,7 +50,8 @@ java_defaults {
     srcs: [
         ":framework-connectivity-tiramisu-updatable-sources",
         ":framework-nearby-java-sources",
-    ],
+        ":framework-thread-sources",
+    ] + framework_remoteauth_srcs,
     libs: [
         "unsupportedappusage",
         "app-compat-annotations",
@@ -113,6 +122,7 @@ java_sdk_library {
         "framework-connectivity-t-defaults",
         "enable-framework-connectivity-t-targets",
     ],
+    api_srcs: framework_remoteauth_api_srcs,
     // Do not add static_libs to this library: put them in framework-connectivity instead.
     // The jarjar rules are only so that references to jarjared utils in
     // framework-connectivity-pre-jarjar match at runtime.
@@ -129,8 +139,10 @@ java_sdk_library {
         "android.net",
         "android.net.nsd",
         "android.nearby",
+        "android.remoteauth",
         "com.android.connectivity",
         "com.android.nearby",
+        "com.android.remoteauth",
     ],
 
     hidden_api: {
@@ -152,6 +164,7 @@ java_sdk_library {
         "//packages/modules/Connectivity/service", // For R8 only
         "//packages/modules/Connectivity/service-t",
         "//packages/modules/Connectivity/nearby:__subpackages__",
+        "//packages/modules/Connectivity/remoteauth:__subpackages__",
         "//frameworks/base",
 
         // Tests using hidden APIs
