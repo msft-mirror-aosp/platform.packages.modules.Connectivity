@@ -143,6 +143,7 @@ class MdnsAdvertiserTest {
     private val mockInterfaceAdvertiser1 = mock(MdnsInterfaceAdvertiser::class.java)
     private val mockInterfaceAdvertiser2 = mock(MdnsInterfaceAdvertiser::class.java)
     private val mockDeps = mock(MdnsAdvertiser.Dependencies::class.java)
+    private val flags = MdnsFeatureFlags.newBuilder().setIsMdnsOffloadFeatureEnabled(true).build()
 
     @Before
     fun setUp() {
@@ -180,7 +181,8 @@ class MdnsAdvertiserTest {
 
     @Test
     fun testAddService_OneNetwork() {
-        val advertiser = MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog)
+        val advertiser =
+            MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
         postSync { advertiser.addService(SERVICE_ID_1, SERVICE_1, null /* subtype */) }
 
         val socketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
@@ -227,7 +229,8 @@ class MdnsAdvertiserTest {
 
     @Test
     fun testAddService_AllNetworks() {
-        val advertiser = MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog)
+        val advertiser =
+            MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
         postSync { advertiser.addService(SERVICE_ID_1, ALL_NETWORKS_SERVICE, TEST_SUBTYPE) }
 
         val socketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
@@ -281,7 +284,8 @@ class MdnsAdvertiserTest {
 
     @Test
     fun testAddService_Conflicts() {
-        val advertiser = MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog)
+        val advertiser =
+            MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
         postSync { advertiser.addService(SERVICE_ID_1, SERVICE_1, null /* subtype */) }
 
         val oneNetSocketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
@@ -365,7 +369,8 @@ class MdnsAdvertiserTest {
 
     @Test
     fun testRemoveService_whenAllServiceRemoved_thenUpdateHostName() {
-        val advertiser = MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog)
+        val advertiser =
+            MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
         verify(mockDeps, times(1)).generateHostname()
         postSync { advertiser.addService(SERVICE_ID_1, SERVICE_1, null /* subtype */) }
         postSync { advertiser.removeService(SERVICE_ID_1) }
