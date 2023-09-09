@@ -16,29 +16,33 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.NETWORK_SETTINGS;
+import static android.Manifest.permission.NETWORK_STACK;
 import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED;
 import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND;
 import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_GONE;
 import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
+import static android.content.pm.PackageManager.PERMISSION_DENIED;
+import static android.content.pm.PackageManager.PERMISSION_GRANTED;
+import static android.content.pm.PermissionInfo.PROTECTION_SIGNATURE;
 import static android.net.InetAddresses.parseNumericAddress;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
+import static android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK;
 import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_PLATFORM_MDNS_BACKEND;
 import static android.net.connectivity.ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER;
 import static android.net.nsd.NsdManager.FAILURE_BAD_PARAMETERS;
 import static android.net.nsd.NsdManager.FAILURE_INTERNAL_ERROR;
 import static android.net.nsd.NsdManager.FAILURE_OPERATION_NOT_RUNNING;
-
+import static com.android.networkstack.apishim.api33.ConstantsShim.REGISTER_NSD_OFFLOAD_ENGINE;
 import static com.android.server.NsdService.DEFAULT_RUNNING_APP_ACTIVE_IMPORTANCE_CUTOFF;
 import static com.android.server.NsdService.MdnsListener;
 import static com.android.server.NsdService.NO_TRANSACTION;
 import static com.android.server.NsdService.parseTypeAndSubtype;
 import static com.android.testutils.ContextUtils.mockService;
-
 import static libcore.junit.util.compat.CoreCompatChangeRule.DisableCompatChanges;
 import static libcore.junit.util.compat.CoreCompatChangeRule.EnableCompatChanges;
-
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
@@ -68,6 +72,8 @@ import android.app.ActivityManager.OnUidImportanceListener;
 import android.compat.testing.PlatformCompatChangeRule;
 import android.content.ContentResolver;
 import android.content.Context;
+import android.content.pm.PackageManager;
+import android.content.pm.PermissionInfo;
 import android.net.INetd;
 import android.net.Network;
 import android.net.mdns.aidl.DiscoveryInfo;
@@ -84,6 +90,7 @@ import android.net.nsd.NsdManager.RegistrationListener;
 import android.net.nsd.NsdManager.ResolveListener;
 import android.net.nsd.NsdManager.ServiceInfoCallback;
 import android.net.nsd.NsdServiceInfo;
+import android.net.nsd.OffloadEngine;
 import android.net.wifi.WifiManager;
 import android.os.Binder;
 import android.os.Build;
@@ -161,6 +168,7 @@ public class NsdServiceTest {
     @Rule
     public TestRule compatChangeRule = new PlatformCompatChangeRule();
     @Mock Context mContext;
+    @Mock PackageManager mPackageManager;
     @Mock ContentResolver mResolver;
     @Mock MDnsManager mMockMDnsM;
     @Mock Dependencies mDeps;
@@ -198,6 +206,7 @@ public class NsdServiceTest {
         mockService(mContext, MDnsManager.class, MDnsManager.MDNS_SERVICE, mMockMDnsM);
         mockService(mContext, WifiManager.class, Context.WIFI_SERVICE, mWifiManager);
         mockService(mContext, ActivityManager.class, Context.ACTIVITY_SERVICE, mActivityManager);
+        doReturn(mPackageManager).when(mContext).getPackageManager();
         if (mContext.getSystemService(MDnsManager.class) == null) {
             // Test is using mockito-extended
             doCallRealMethod().when(mContext).getSystemService(MDnsManager.class);
@@ -217,7 +226,7 @@ public class NsdServiceTest {
         doReturn(mSocketProvider).when(mDeps).makeMdnsSocketProvider(any(), any(), any(), any());
         doReturn(DEFAULT_RUNNING_APP_ACTIVE_IMPORTANCE_CUTOFF).when(mDeps).getDeviceConfigInt(
                 eq(NsdService.MDNS_CONFIG_RUNNING_APP_ACTIVE_IMPORTANCE_CUTOFF), anyInt());
-        doReturn(mAdvertiser).when(mDeps).makeMdnsAdvertiser(any(), any(), any(), any());
+        doReturn(mAdvertiser).when(mDeps).makeMdnsAdvertiser(any(), any(), any(), any(), any());
         doReturn(mMetrics).when(mDeps).makeNetworkNsdReportedMetrics(anyBoolean(), anyInt());
         doReturn(mClock).when(mDeps).makeClock();
         doReturn(TEST_TIME_MS).when(mClock).elapsedRealtime();
@@ -1210,6 +1219,8 @@ public class NsdServiceTest {
         verify(mMockMDnsM).stopOperation(legacyIdCaptor.getValue());
         verify(mAdvertiser, never()).removeService(anyInt());
 
+        doReturn(mock(MdnsAdvertiser.AdvertiserMetrics.class))
+                .when(mAdvertiser).getAdvertiserMetrics(anyInt());
         client.unregisterService(regListenerWithFeature);
         waitForIdle();
         verify(mAdvertiser).removeService(serviceIdCaptor.getValue());
@@ -1275,7 +1286,7 @@ public class NsdServiceTest {
         // final String serviceTypeWithLocalDomain = SERVICE_TYPE + ".local";
         final ArgumentCaptor<MdnsAdvertiser.AdvertiserCallback> cbCaptor =
                 ArgumentCaptor.forClass(MdnsAdvertiser.AdvertiserCallback.class);
-        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any());
+        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any(), any());
 
         final NsdServiceInfo regInfo = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
         regInfo.setHost(parseNumericAddress("192.0.2.123"));
@@ -1300,14 +1311,20 @@ public class NsdServiceTest {
                 new NsdServiceInfo(regInfo.getServiceName(), null))));
         verify(mMetrics).reportServiceRegistrationSucceeded(regId, 10L /* durationMs */);
 
+        final MdnsAdvertiser.AdvertiserMetrics metrics = new MdnsAdvertiser.AdvertiserMetrics(
+                50 /* repliedRequestCount */, 100 /* sentPacketCount */,
+                3 /* conflictDuringProbingCount */, 2 /* conflictAfterProbingCount */);
         doReturn(TEST_TIME_MS + 100L).when(mClock).elapsedRealtime();
+        doReturn(metrics).when(mAdvertiser).getAdvertiserMetrics(regId);
         client.unregisterService(regListener);
         waitForIdle();
         verify(mAdvertiser).removeService(idCaptor.getValue());
         verify(regListener, timeout(TIMEOUT_MS)).onServiceUnregistered(
                 argThat(info -> matches(info, regInfo)));
         verify(mSocketProvider, timeout(TIMEOUT_MS)).requestStopWhenInactive();
-        verify(mMetrics).reportServiceUnregistration(regId, 100L /* durationMs */);
+        verify(mMetrics).reportServiceUnregistration(regId, 100L /* durationMs */,
+                50 /* repliedRequestCount */, 100 /* sentPacketCount */,
+                3 /* conflictDuringProbingCount */, 2 /* conflictAfterProbingCount */);
     }
 
     @Test
@@ -1319,7 +1336,7 @@ public class NsdServiceTest {
         // final String serviceTypeWithLocalDomain = SERVICE_TYPE + ".local";
         final ArgumentCaptor<MdnsAdvertiser.AdvertiserCallback> cbCaptor =
                 ArgumentCaptor.forClass(MdnsAdvertiser.AdvertiserCallback.class);
-        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any());
+        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any(), any());
 
         final NsdServiceInfo regInfo = new NsdServiceInfo(SERVICE_NAME, "invalid_type");
         regInfo.setHost(parseNumericAddress("192.0.2.123"));
@@ -1345,7 +1362,7 @@ public class NsdServiceTest {
         // final String serviceTypeWithLocalDomain = SERVICE_TYPE + ".local";
         final ArgumentCaptor<MdnsAdvertiser.AdvertiserCallback> cbCaptor =
                 ArgumentCaptor.forClass(MdnsAdvertiser.AdvertiserCallback.class);
-        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any());
+        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any(), any());
 
         final NsdServiceInfo regInfo = new NsdServiceInfo("a".repeat(70), SERVICE_TYPE);
         regInfo.setHost(parseNumericAddress("192.0.2.123"));
@@ -1663,6 +1680,33 @@ public class NsdServiceTest {
 
         assertThrows(IllegalArgumentException.class, () -> new NsdManager(mContext, service));
     }
+
+    @Test
+    @EnableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    public void testRegisterOffloadEngine_checkPermission()
+            throws PackageManager.NameNotFoundException {
+        final NsdManager client = connectClient(mService);
+        final OffloadEngine offloadEngine = mock(OffloadEngine.class);
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(NETWORK_STACK);
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(
+                PERMISSION_MAINLINE_NETWORK_STACK);
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(NETWORK_SETTINGS);
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(
+                REGISTER_NSD_OFFLOAD_ENGINE);
+
+        PermissionInfo permissionInfo = new PermissionInfo("");
+        permissionInfo.packageName = "android";
+        permissionInfo.protectionLevel = PROTECTION_SIGNATURE;
+        doReturn(permissionInfo).when(mPackageManager).getPermissionInfo(
+                REGISTER_NSD_OFFLOAD_ENGINE, 0);
+        client.registerOffloadEngine("iface1", OffloadEngine.OFFLOAD_TYPE_REPLY,
+                OffloadEngine.OFFLOAD_CAPABILITY_BYPASS_MULTICAST_LOCK,
+                Runnable::run, offloadEngine);
+        client.unregisterOffloadEngine(offloadEngine);
+
+        // TODO: add checks to test the packageName other than android
+    }
+
 
     private void waitForIdle() {
         HandlerUtils.waitForIdle(mHandler, TIMEOUT_MS);
