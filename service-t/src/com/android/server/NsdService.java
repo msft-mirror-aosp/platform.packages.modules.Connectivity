@@ -17,15 +17,19 @@
 package com.android.server;
 
 import static android.Manifest.permission.NETWORK_SETTINGS;
+import static android.Manifest.permission.NETWORK_STACK;
 import static android.net.ConnectivityManager.NETID_UNSET;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
+import static android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK;
 import static android.net.nsd.NsdManager.MDNS_DISCOVERY_MANAGER_EVENT;
 import static android.net.nsd.NsdManager.MDNS_SERVICE_EVENT;
 import static android.net.nsd.NsdManager.RESOLVE_SERVICE_SUCCEEDED;
 import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
-
 import static com.android.modules.utils.build.SdkLevel.isAtLeastU;
+import static com.android.networkstack.apishim.ConstantsShim.REGISTER_NSD_OFFLOAD_ENGINE;
+import static com.android.server.connectivity.mdns.MdnsAdvertiser.AdvertiserMetrics;
+import static com.android.server.connectivity.mdns.MdnsConstants.NO_PACKET;
 import static com.android.server.connectivity.mdns.MdnsRecord.MAX_LABEL_LENGTH;
 import static com.android.server.connectivity.mdns.util.MdnsUtils.Clock;
 
@@ -75,6 +79,7 @@ import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.State;
 import com.android.internal.util.StateMachine;
 import com.android.metrics.NetworkNsdReportedMetrics;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.InetAddressUtils;
@@ -83,6 +88,7 @@ import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.ExecutorProvider;
 import com.android.server.connectivity.mdns.MdnsAdvertiser;
 import com.android.server.connectivity.mdns.MdnsDiscoveryManager;
+import com.android.server.connectivity.mdns.MdnsFeatureFlags;
 import com.android.server.connectivity.mdns.MdnsInterfaceSocket;
 import com.android.server.connectivity.mdns.MdnsMultinetworkSocketClient;
 import com.android.server.connectivity.mdns.MdnsSearchOptions;
@@ -988,14 +994,20 @@ public class NsdService extends INsdManager.Stub {
                         // instead of looking at the flag value.
                         final long stopTimeMs = mClock.elapsedRealtime();
                         if (request instanceof AdvertiserClientRequest) {
+                            final AdvertiserMetrics metrics =
+                                    mAdvertiser.getAdvertiserMetrics(transactionId);
                             mAdvertiser.removeService(transactionId);
                             clientInfo.onUnregisterServiceSucceeded(clientRequestId, transactionId,
-                                    request.calculateRequestDurationMs(stopTimeMs));
+                                    request.calculateRequestDurationMs(stopTimeMs), metrics);
                         } else {
                             if (unregisterService(transactionId)) {
                                 clientInfo.onUnregisterServiceSucceeded(clientRequestId,
                                         transactionId,
-                                        request.calculateRequestDurationMs(stopTimeMs));
+                                        request.calculateRequestDurationMs(stopTimeMs),
+                                        new AdvertiserMetrics(NO_PACKET /* repliedRequestsCount */,
+                                                NO_PACKET /* sentPacketCount */,
+                                                0 /* conflictDuringProbingCount */,
+                                                0 /* conflictAfterProbingCount */));
                             } else {
                                 clientInfo.onUnregisterServiceFailed(
                                         clientRequestId, NsdManager.FAILURE_INTERNAL_ERROR);
@@ -1191,7 +1203,7 @@ public class NsdService extends INsdManager.Stub {
                         // TODO: Limits the number of registrations created by a given class.
                         mOffloadEngines.register(offloadEngineInfo.mOffloadEngine,
                                 offloadEngineInfo);
-                        // TODO: Sends all the existing OffloadServiceInfos back.
+                        sendAllOffloadServiceInfos(offloadEngineInfo);
                         break;
                     case NsdManager.UNREGISTER_OFFLOAD_ENGINE:
                         mOffloadEngines.unregister((IOffloadEngine) msg.obj);
@@ -1683,8 +1695,11 @@ public class NsdService extends INsdManager.Stub {
         mMdnsDiscoveryManager = deps.makeMdnsDiscoveryManager(new ExecutorProvider(),
                 mMdnsSocketClient, LOGGER.forSubComponent("MdnsDiscoveryManager"));
         handler.post(() -> mMdnsSocketClient.setCallback(mMdnsDiscoveryManager));
+        MdnsFeatureFlags flags = new MdnsFeatureFlags.Builder().setIsMdnsOffloadFeatureEnabled(
+                mDeps.isTetheringFeatureNotChickenedOut(
+                        MdnsFeatureFlags.NSD_FORCE_DISABLE_MDNS_OFFLOAD)).build();
         mAdvertiser = deps.makeMdnsAdvertiser(handler.getLooper(), mMdnsSocketProvider,
-                new AdvertiserCallback(), LOGGER.forSubComponent("MdnsAdvertiser"));
+                new AdvertiserCallback(), LOGGER.forSubComponent("MdnsAdvertiser"), flags);
         mClock = deps.makeClock();
     }
 
@@ -1701,8 +1716,7 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isMdnsDiscoveryManagerEnabled(Context context) {
             return isAtLeastU() || DeviceConfigUtils.isTetheringFeatureEnabled(context,
-                    NAMESPACE_TETHERING, MDNS_DISCOVERY_MANAGER_VERSION,
-                    DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultEnabled */);
+                    MDNS_DISCOVERY_MANAGER_VERSION);
         }
 
         /**
@@ -1713,8 +1727,7 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isMdnsAdvertiserEnabled(Context context) {
             return isAtLeastU() || DeviceConfigUtils.isTetheringFeatureEnabled(context,
-                    NAMESPACE_TETHERING, MDNS_ADVERTISER_VERSION,
-                    DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultEnabled */);
+                    MDNS_ADVERTISER_VERSION);
         }
 
         /**
@@ -1731,8 +1744,14 @@ public class NsdService extends INsdManager.Stub {
          * @see DeviceConfigUtils#isTetheringFeatureEnabled
          */
         public boolean isFeatureEnabled(Context context, String feature) {
-            return DeviceConfigUtils.isTetheringFeatureEnabled(context, NAMESPACE_TETHERING,
-                    feature, DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultEnabled */);
+            return DeviceConfigUtils.isTetheringFeatureEnabled(context, feature);
+        }
+
+        /**
+         * @see DeviceConfigUtils#isTetheringFeatureNotChickenedOut
+         */
+        public boolean isTetheringFeatureNotChickenedOut(String feature) {
+            return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(feature);
         }
 
         /**
@@ -1749,8 +1768,9 @@ public class NsdService extends INsdManager.Stub {
          */
         public MdnsAdvertiser makeMdnsAdvertiser(
                 @NonNull Looper looper, @NonNull MdnsSocketProvider socketProvider,
-                @NonNull MdnsAdvertiser.AdvertiserCallback cb, @NonNull SharedLog sharedLog) {
-            return new MdnsAdvertiser(looper, socketProvider, cb, sharedLog);
+                @NonNull MdnsAdvertiser.AdvertiserCallback cb, @NonNull SharedLog sharedLog,
+                MdnsFeatureFlags featureFlags) {
+            return new MdnsAdvertiser(looper, socketProvider, cb, sharedLog, featureFlags);
         }
 
         /**
@@ -1877,6 +1897,21 @@ public class NsdService extends INsdManager.Stub {
         }
     }
 
+    private void sendAllOffloadServiceInfos(@NonNull OffloadEngineInfo offloadEngineInfo) {
+        final String targetInterface = offloadEngineInfo.mInterfaceName;
+        final IOffloadEngine offloadEngine = offloadEngineInfo.mOffloadEngine;
+        final List<MdnsAdvertiser.OffloadServiceInfoWrapper> offloadWrappers =
+                mAdvertiser.getAllInterfaceOffloadServiceInfos(targetInterface);
+        for (MdnsAdvertiser.OffloadServiceInfoWrapper wrapper : offloadWrappers) {
+            try {
+                offloadEngine.onOffloadServiceUpdated(wrapper.mOffloadServiceInfo);
+            } catch (RemoteException e) {
+                // Can happen in regular cases, do not log a stacktrace
+                Log.i(TAG, "Failed to send offload callback, remote died: " + e.getMessage());
+            }
+        }
+    }
+
     private void sendOffloadServiceInfosUpdate(@NonNull String targetInterfaceName,
             @NonNull OffloadServiceInfo offloadServiceInfo, boolean isRemove) {
         final int count = mOffloadEngines.beginBroadcast();
@@ -1900,7 +1935,7 @@ public class NsdService extends INsdManager.Stub {
                     }
                 } catch (RemoteException e) {
                     // Can happen in regular cases, do not log a stacktrace
-                    Log.i(TAG, "Failed to send offload callback, remote died", e);
+                    Log.i(TAG, "Failed to send offload callback, remote died: " + e.getMessage());
                 }
             }
         } finally {
@@ -2083,9 +2118,7 @@ public class NsdService extends INsdManager.Stub {
         public void registerOffloadEngine(String ifaceName, IOffloadEngine cb,
                 @OffloadEngine.OffloadCapability long offloadCapabilities,
                 @OffloadEngine.OffloadType long offloadTypes) {
-            // TODO: Relax the permission because NETWORK_SETTINGS is a signature permission, and
-            //  it may not be possible for all the callers of this API to have it.
-            PermissionUtils.enforceNetworkStackPermissionOr(mContext, NETWORK_SETTINGS);
+            checkOffloadEnginePermission(mContext);
             Objects.requireNonNull(ifaceName);
             Objects.requireNonNull(cb);
             mNsdStateMachine.sendMessage(
@@ -2096,12 +2129,30 @@ public class NsdService extends INsdManager.Stub {
 
         @Override
         public void unregisterOffloadEngine(IOffloadEngine cb) {
-            // TODO: Relax the permission because NETWORK_SETTINGS is a signature permission, and
-            //  it may not be possible for all the callers of this API to have it.
-            PermissionUtils.enforceNetworkStackPermissionOr(mContext, NETWORK_SETTINGS);
+            checkOffloadEnginePermission(mContext);
             Objects.requireNonNull(cb);
             mNsdStateMachine.sendMessage(
                     mNsdStateMachine.obtainMessage(NsdManager.UNREGISTER_OFFLOAD_ENGINE, cb));
+        }
+
+        private static void checkOffloadEnginePermission(Context context) {
+            if (!SdkLevel.isAtLeastT()) {
+                throw new SecurityException("API is not available in before API level 33");
+            }
+            // REGISTER_NSD_OFFLOAD_ENGINE was only added to the SDK in V, but may
+            // be back ported to older builds: accept it as long as it's signature-protected
+            if (PermissionUtils.checkAnyPermissionOf(context, REGISTER_NSD_OFFLOAD_ENGINE)
+                    && (SdkLevel.isAtLeastV() || PermissionUtils.isSystemSignaturePermission(
+                    context, REGISTER_NSD_OFFLOAD_ENGINE))) {
+                return;
+            }
+            if (PermissionUtils.checkAnyPermissionOf(context, NETWORK_STACK,
+                    PERMISSION_MAINLINE_NETWORK_STACK, NETWORK_SETTINGS)) {
+                return;
+            }
+            throw new SecurityException("Requires one of the following permissions: "
+                    + String.join(", ", List.of(REGISTER_NSD_OFFLOAD_ENGINE, NETWORK_STACK,
+                    PERMISSION_MAINLINE_NETWORK_STACK, NETWORK_SETTINGS)) + ".");
         }
     }
 
@@ -2461,9 +2512,14 @@ public class NsdService extends INsdManager.Stub {
                 }
 
                 if (request instanceof AdvertiserClientRequest) {
+                    final AdvertiserMetrics metrics =
+                            mAdvertiser.getAdvertiserMetrics(transactionId);
                     mAdvertiser.removeService(transactionId);
                     mMetrics.reportServiceUnregistration(transactionId,
-                            request.calculateRequestDurationMs(mClock.elapsedRealtime()));
+                            request.calculateRequestDurationMs(mClock.elapsedRealtime()),
+                            metrics.mRepliedRequestsCount, metrics.mSentPacketCount,
+                            metrics.mConflictDuringProbingCount,
+                            metrics.mConflictAfterProbingCount);
                     continue;
                 }
 
@@ -2489,7 +2545,11 @@ public class NsdService extends INsdManager.Stub {
                     case NsdManager.REGISTER_SERVICE:
                         unregisterService(transactionId);
                         mMetrics.reportServiceUnregistration(transactionId,
-                                request.calculateRequestDurationMs(mClock.elapsedRealtime()));
+                                request.calculateRequestDurationMs(mClock.elapsedRealtime()),
+                                NO_PACKET /* repliedRequestsCount */,
+                                NO_PACKET /* sentPacketCount */,
+                                0 /* conflictDuringProbingCount */,
+                                0 /* conflictAfterProbingCount */);
                         break;
                     default:
                         break;
@@ -2628,8 +2688,11 @@ public class NsdService extends INsdManager.Stub {
             }
         }
 
-        void onUnregisterServiceSucceeded(int listenerKey, int transactionId, long durationMs) {
-            mMetrics.reportServiceUnregistration(transactionId, durationMs);
+        void onUnregisterServiceSucceeded(int listenerKey, int transactionId, long durationMs,
+                AdvertiserMetrics metrics) {
+            mMetrics.reportServiceUnregistration(transactionId, durationMs,
+                    metrics.mRepliedRequestsCount, metrics.mSentPacketCount,
+                    metrics.mConflictDuringProbingCount, metrics.mConflictAfterProbingCount);
             try {
                 mCb.onUnregisterServiceSucceeded(listenerKey);
             } catch (RemoteException e) {
