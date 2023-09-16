@@ -19,6 +19,15 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// In the branch which does not support FlaggedAPI, use this default to ignore the annotated APIs.
+java_defaults {
+    name: "FlaggedApiDefaults",
+}
+
+// The above variables may have different values
+// depending on the branch, and this comment helps
+// separate them from the rest of the file to avoid merge conflicts
+
 filegroup {
     name: "framework-connectivity-internal-sources",
     srcs: [
@@ -152,6 +161,7 @@ java_sdk_library {
     defaults: [
         "framework-connectivity-defaults",
         "CronetJavaDefaults",
+        "FlaggedApiDefaults",
     ],
     installable: true,
     jarjar_rules: ":framework-connectivity-jarjar-rules",
@@ -175,11 +185,11 @@ java_sdk_library {
         "//frameworks/base/core/tests/benchmarks",
         "//frameworks/base/core/tests/utillib",
         "//frameworks/base/tests/vcn",
-        "//frameworks/libs/net/common/testutils",
-        "//frameworks/libs/net/common/tests:__subpackages__",
         "//frameworks/opt/net/ethernet/tests:__subpackages__",
         "//frameworks/opt/telephony/tests/telephonytests",
         "//packages/modules/CaptivePortalLogin/tests",
+        "//packages/modules/Connectivity/staticlibs/testutils",
+        "//packages/modules/Connectivity/staticlibs/tests:__subpackages__",
         "//packages/modules/Connectivity/Cronet/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
