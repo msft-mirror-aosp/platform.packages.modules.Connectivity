@@ -197,6 +197,8 @@ import com.android.testutils.DeviceConfigRule;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
+import com.android.testutils.SkipMainlinePresubmit;
+import com.android.testutils.SkipPresubmit;
 import com.android.testutils.TestHttpServer;
 import com.android.testutils.TestNetworkTracker;
 import com.android.testutils.TestableNetworkCallback;
@@ -1017,16 +1019,19 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "WRITE_SECURE_SETTINGS permission can't be granted to instant apps")
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testIsPrivateDnsBroken() throws InterruptedException {
         final String invalidPrivateDnsServer = "invalidhostname.example.com";
         final String goodPrivateDnsServer = "dns.google";
         mCtsNetUtils.storePrivateDnsSetting();
         final TestableNetworkCallback cb = new TestableNetworkCallback();
-        registerNetworkCallback(makeWifiNetworkRequest(), cb);
+        final NetworkRequest networkRequest = new NetworkRequest.Builder()
+                .addCapability(NET_CAPABILITY_INTERNET).build();
+        registerNetworkCallback(networkRequest, cb);
+        final Network networkForPrivateDns = mCm.getActiveNetwork();
         try {
             // Verifying the good private DNS sever
             mCtsNetUtils.setPrivateDnsStrictMode(goodPrivateDnsServer);
-            final Network networkForPrivateDns =  mCtsNetUtils.ensureWifiConnected();
             cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED, NETWORK_CALLBACK_TIMEOUT_MS,
                     entry -> hasPrivateDnsValidated(entry, networkForPrivateDns));
 
@@ -1037,8 +1042,11 @@ public class ConnectivityManagerTest {
                     .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         } finally {
             mCtsNetUtils.restorePrivateDnsSetting();
-            // Toggle wifi to make sure it is re-validated
-            reconnectWifi();
+            // Toggle network to make sure it is re-validated
+            mCm.reportNetworkConnectivity(networkForPrivateDns, true);
+            cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED, NETWORK_CALLBACK_TIMEOUT_MS,
+                    entry -> !(((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                    .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         }
     }
 
@@ -1301,9 +1309,12 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testRequestNetworkCallback_onUnavailable() {
-        final boolean previousWifiEnabledState = mWifiManager.isWifiEnabled();
-        if (previousWifiEnabledState) {
-            mCtsNetUtils.ensureWifiDisconnected(null);
+        boolean previousWifiEnabledState = false;
+        if (mPackageManager.hasSystemFeature(FEATURE_WIFI)) {
+            previousWifiEnabledState = mWifiManager.isWifiEnabled();
+            if (previousWifiEnabledState) {
+                mCtsNetUtils.ensureWifiDisconnected(null);
+            }
         }
 
         final TestNetworkCallback callback = new TestNetworkCallback();
@@ -1339,6 +1350,8 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testToggleWifiConnectivityAction() throws Exception {
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
+
         // toggleWifi calls connectToWifi and disconnectFromWifi, which both wait for
         // CONNECTIVITY_ACTION broadcasts.
         mCtsNetUtils.toggleWifi();
@@ -2129,6 +2142,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "NETWORK_AIRPLANE_MODE permission can't be granted to instant apps")
     @Test
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     public void testSetAirplaneMode() throws Exception{
         // Starting from T, wifi supports airplane mode enhancement which may not disconnect wifi
         // when airplane mode is on. The actual behavior that the device will have could only be
@@ -2709,7 +2723,8 @@ public class ConnectivityManagerTest {
             // the network with the TEST transport. Also wait for validation here, in case there
             // is a bug that's only visible when the network is validated.
             setWifiMeteredStatusAndWait(ssid, true /* isMetered */, true /* waitForValidation */);
-            defaultCallback.expect(CallbackEntry.LOST, wifiNetwork, NETWORK_CALLBACK_TIMEOUT_MS);
+            defaultCallback.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
+                    l -> l.getNetwork().equals(wifiNetwork));
             waitForAvailable(defaultCallback, tnt.getNetwork());
             // Depending on if this device has cellular connectivity or not, multiple available
             // callbacks may be received. Eventually, metered Wi-Fi should be the final available
@@ -2750,17 +2765,19 @@ public class ConnectivityManagerTest {
         final TestableNetworkCallback systemDefaultCallback = new TestableNetworkCallback();
 
         final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
+        final Network testNetwork = tnt.getNetwork();
 
         testAndCleanup(() -> {
             setOemNetworkPreferenceForMyPackage(
                     OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY);
             registerTestOemNetworkPreferenceCallbacks(defaultCallback, systemDefaultCallback);
-            waitForAvailable(defaultCallback, tnt.getNetwork());
+            waitForAvailable(defaultCallback, testNetwork);
             systemDefaultCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
                     NETWORK_CALLBACK_TIMEOUT_MS, cb -> wifiNetwork.equals(cb.getNetwork()));
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
-                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
+                defaultCallback.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
+                        cb -> testNetwork.equals(cb.getNetwork()));
 
                 // This network preference should only ever use the test network therefore available
                 // should not trigger when the test network goes down (e.g. switch to cellular).

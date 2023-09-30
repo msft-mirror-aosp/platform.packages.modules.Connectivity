@@ -19,11 +19,11 @@ package com.android.server.connectivity.mdns;
 import static com.android.server.connectivity.mdns.MdnsServiceTypeClient.INVALID_TRANSACTION_ID;
 
 import android.annotation.NonNull;
+import android.os.Build;
 import android.text.TextUtils;
-import android.util.Log;
 import android.util.Pair;
 
-import com.android.server.connectivity.mdns.util.MdnsLogger;
+import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
@@ -44,7 +44,6 @@ import java.util.concurrent.Callable;
 public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<String>>> {
 
     private static final String TAG = "MdnsQueryCallable";
-    private static final MdnsLogger LOGGER = new MdnsLogger(TAG);
     private static final List<Integer> castShellEmulatorMdnsPorts;
 
     static {
@@ -77,6 +76,8 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
     private final List<MdnsResponse> servicesToResolve;
     @NonNull
     private final MdnsUtils.Clock clock;
+    @NonNull
+    private final SharedLog sharedLog;
     private final boolean onlyUseIpv6OnIpv6OnlyNetworks;
 
     EnqueueMdnsQueryCallable(
@@ -90,7 +91,8 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
             boolean onlyUseIpv6OnIpv6OnlyNetworks,
             boolean sendDiscoveryQueries,
             @NonNull Collection<MdnsResponse> servicesToResolve,
-            @NonNull MdnsUtils.Clock clock) {
+            @NonNull MdnsUtils.Clock clock,
+            @NonNull SharedLog sharedLog) {
         weakRequestSender = new WeakReference<>(requestSender);
         this.packetWriter = packetWriter;
         serviceTypeLabels = TextUtils.split(serviceType, "\\.");
@@ -102,6 +104,7 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
         this.sendDiscoveryQueries = sendDiscoveryQueries;
         this.servicesToResolve = new ArrayList<>(servicesToResolve);
         this.clock = clock;
+        this.sharedLog = sharedLog;
     }
 
     /**
@@ -200,7 +203,7 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
             }
             return Pair.create(transactionId, subtypes);
         } catch (IOException e) {
-            LOGGER.e(String.format("Failed to create mDNS packet for subtype: %s.",
+            sharedLog.e(String.format("Failed to create mDNS packet for subtype: %s.",
                     TextUtils.join(",", subtypes)), e);
             return Pair.create(INVALID_TRANSACTION_ID, new ArrayList<>());
         }
@@ -218,7 +221,9 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
             throws IOException {
         DatagramPacket packet = packetWriter.getPacket(address);
         if (expectUnicastResponse) {
-            if (requestSender instanceof MdnsMultinetworkSocketClient) {
+            // MdnsMultinetworkSocketClient is only available on T+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && requestSender instanceof MdnsMultinetworkSocketClient) {
                 ((MdnsMultinetworkSocketClient) requestSender).sendPacketRequestingUnicastResponse(
                         packet, socketKey, onlyUseIpv6OnIpv6OnlyNetworks);
             } else {
@@ -226,7 +231,8 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
                         packet, onlyUseIpv6OnIpv6OnlyNetworks);
             }
         } else {
-            if (requestSender instanceof MdnsMultinetworkSocketClient) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                    && requestSender instanceof MdnsMultinetworkSocketClient) {
                 ((MdnsMultinetworkSocketClient) requestSender)
                         .sendPacketRequestingMulticastResponse(
                                 packet, socketKey, onlyUseIpv6OnIpv6OnlyNetworks);
@@ -242,13 +248,13 @@ public class EnqueueMdnsQueryCallable implements Callable<Pair<Integer, List<Str
             sendPacket(requestSender,
                     new InetSocketAddress(MdnsConstants.getMdnsIPv4Address(), port));
         } catch (IOException e) {
-            Log.i(TAG, "Can't send packet to IPv4", e);
+            sharedLog.e("Can't send packet to IPv4", e);
         }
         try {
             sendPacket(requestSender,
                     new InetSocketAddress(MdnsConstants.getMdnsIPv6Address(), port));
         } catch (IOException e) {
-            Log.i(TAG, "Can't send packet to IPv6", e);
+            sharedLog.e("Can't send packet to IPv6", e);
         }
     }
 }
