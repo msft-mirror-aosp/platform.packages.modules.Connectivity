@@ -1723,8 +1723,7 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isMdnsDiscoveryManagerEnabled(Context context) {
             return isAtLeastU() || DeviceConfigUtils.isTetheringFeatureEnabled(context,
-                    NAMESPACE_TETHERING, MDNS_DISCOVERY_MANAGER_VERSION,
-                    DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultEnabled */);
+                    MDNS_DISCOVERY_MANAGER_VERSION);
         }
 
         /**
@@ -1735,8 +1734,7 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isMdnsAdvertiserEnabled(Context context) {
             return isAtLeastU() || DeviceConfigUtils.isTetheringFeatureEnabled(context,
-                    NAMESPACE_TETHERING, MDNS_ADVERTISER_VERSION,
-                    DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultEnabled */);
+                    MDNS_ADVERTISER_VERSION);
         }
 
         /**
@@ -1753,8 +1751,7 @@ public class NsdService extends INsdManager.Stub {
          * @see DeviceConfigUtils#isTetheringFeatureEnabled
          */
         public boolean isFeatureEnabled(Context context, String feature) {
-            return DeviceConfigUtils.isTetheringFeatureEnabled(context, NAMESPACE_TETHERING,
-                    feature, DeviceConfigUtils.TETHERING_MODULE_NAME, false /* defaultEnabled */);
+            return DeviceConfigUtils.isTetheringFeatureEnabled(context, feature);
         }
 
         /**
