@@ -71,6 +71,10 @@ import java.util.Arrays;
 public class DeviceConfigUtilsTest {
     private static final String TEST_NAME_SPACE = "connectivity";
     private static final String TEST_EXPERIMENT_FLAG = "experiment_flag";
+    private static final String CORE_NETWORKING_TRUNK_STABLE_NAMESPACE = "android_core_networking";
+    private static final String TEST_TRUNK_STABLE_FLAG = "trunk_stable_feature";
+    private static final String TEST_CORE_NETWORKING_TRUNK_STABLE_FLAG_PROPERTY =
+            "com.android.net.flags.trunk_stable_feature";
     private static final int TEST_FLAG_VALUE = 28;
     private static final String TEST_FLAG_VALUE_STRING = "28";
     private static final int TEST_DEFAULT_FLAG_VALUE = 0;
@@ -301,15 +305,12 @@ public class DeviceConfigUtilsTest {
         assertFalse(DeviceConfigUtils.isNetworkStackFeatureEnabled(mContext, TEST_EXPERIMENT_FLAG));
         assertFalse(DeviceConfigUtils.isTetheringFeatureEnabled(mContext, TEST_EXPERIMENT_FLAG));
 
-        // Follow defaultEnabled if the flag is not set
+        // If the flag is not set feature is disabled
         doReturn(null).when(() -> DeviceConfig.getProperty(NAMESPACE_CONNECTIVITY,
                 TEST_EXPERIMENT_FLAG));
         doReturn(null).when(() -> DeviceConfig.getProperty(NAMESPACE_TETHERING,
                 TEST_EXPERIMENT_FLAG));
-        assertFalse(DeviceConfigUtils.isNetworkStackFeatureEnabled(mContext, TEST_EXPERIMENT_FLAG,
-                false /* defaultEnabled */));
-        assertTrue(DeviceConfigUtils.isNetworkStackFeatureEnabled(mContext, TEST_EXPERIMENT_FLAG,
-                true /* defaultEnabled */));
+        assertFalse(DeviceConfigUtils.isNetworkStackFeatureEnabled(mContext, TEST_EXPERIMENT_FLAG));
         assertFalse(DeviceConfigUtils.isTetheringFeatureEnabled(mContext, TEST_EXPERIMENT_FLAG));
     }
 
@@ -505,5 +506,26 @@ public class DeviceConfigUtilsTest {
         verify(mContext, never()).getPackageManager();
         verify(mContext, never()).getPackageName();
         verify(mPm, never()).getPackageInfo(anyString(), anyInt());
+    }
+
+    @Test
+    public void testIsCoreNetworkingTrunkStableFeatureEnabled() {
+        doReturn(null).when(() -> DeviceConfig.getProperty(
+                CORE_NETWORKING_TRUNK_STABLE_NAMESPACE,
+                TEST_CORE_NETWORKING_TRUNK_STABLE_FLAG_PROPERTY));
+        assertFalse(DeviceConfigUtils.isTrunkStableFeatureEnabled(
+                TEST_TRUNK_STABLE_FLAG));
+
+        doReturn("false").when(() -> DeviceConfig.getProperty(
+                CORE_NETWORKING_TRUNK_STABLE_NAMESPACE,
+                TEST_CORE_NETWORKING_TRUNK_STABLE_FLAG_PROPERTY));
+        assertFalse(DeviceConfigUtils.isTrunkStableFeatureEnabled(
+                TEST_TRUNK_STABLE_FLAG));
+
+        doReturn("true").when(() -> DeviceConfig.getProperty(
+                CORE_NETWORKING_TRUNK_STABLE_NAMESPACE,
+                TEST_CORE_NETWORKING_TRUNK_STABLE_FLAG_PROPERTY));
+        assertTrue(DeviceConfigUtils.isTrunkStableFeatureEnabled(
+                TEST_TRUNK_STABLE_FLAG));
     }
 }
