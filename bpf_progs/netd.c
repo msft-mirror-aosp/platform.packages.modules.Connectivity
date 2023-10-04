@@ -56,19 +56,21 @@ static const bool TRACE_OFF = false;
 // see include/uapi/linux/tcp.h
 #define TCP_FLAG32_OFF 12
 
+#define TCP_FLAG8_OFF (TCP_FLAG32_OFF + 1)
+
 // For maps netd does not need to access
-#define DEFINE_BPF_MAP_NO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries)      \
-    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries,              \
-                       AID_ROOT, AID_NET_BW_ACCT, 0060, "fs_bpf_net_shared", "", false, \
-                       BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, LOAD_ON_ENG,       \
-                       LOAD_ON_USER, LOAD_ON_USERDEBUG)
+#define DEFINE_BPF_MAP_NO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
+    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries,         \
+                       AID_ROOT, AID_NET_BW_ACCT, 0060, "fs_bpf_net_shared", "",   \
+                       PRIVATE, BPFLOADER_MIN_VER, BPFLOADER_MAX_VER,              \
+                       LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 // For maps netd only needs read only access to
-#define DEFINE_BPF_MAP_RO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries)         \
-    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries,                 \
-                       AID_ROOT, AID_NET_BW_ACCT, 0460, "fs_bpf_netd_readonly", "", false, \
-                       BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, LOAD_ON_ENG,       \
-                       LOAD_ON_USER, LOAD_ON_USERDEBUG)
+#define DEFINE_BPF_MAP_RO_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries)  \
+    DEFINE_BPF_MAP_EXT(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries,          \
+                       AID_ROOT, AID_NET_BW_ACCT, 0460, "fs_bpf_netd_readonly", "", \
+                       PRIVATE, BPFLOADER_MIN_VER, BPFLOADER_MAX_VER,               \
+                       LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 // For maps netd needs to be able to read and write
 #define DEFINE_BPF_MAP_RW_NETD(the_map, TYPE, TypeOfKey, TypeOfValue, num_entries) \
@@ -87,27 +89,28 @@ DEFINE_BPF_MAP_RO_NETD(configuration_map, ARRAY, uint32_t, uint32_t, CONFIGURATI
 DEFINE_BPF_MAP_RW_NETD(cookie_tag_map, HASH, uint64_t, UidTagValue, COOKIE_UID_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(uid_counterset_map, HASH, uint32_t, uint8_t, UID_COUNTERSET_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(app_uid_stats_map, HASH, uint32_t, StatsValue, APP_STATS_MAP_SIZE)
-DEFINE_BPF_MAP_RW_NETD(stats_map_A, HASH, StatsKey, StatsValue, STATS_MAP_SIZE)
+DEFINE_BPF_MAP_RO_NETD(stats_map_A, HASH, StatsKey, StatsValue, STATS_MAP_SIZE)
 DEFINE_BPF_MAP_RO_NETD(stats_map_B, HASH, StatsKey, StatsValue, STATS_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(iface_stats_map, HASH, uint32_t, StatsValue, IFACE_STATS_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(uid_owner_map, HASH, uint32_t, UidOwnerValue, UID_OWNER_MAP_SIZE)
-DEFINE_BPF_MAP_RW_NETD(uid_permission_map, HASH, uint32_t, uint8_t, UID_OWNER_MAP_SIZE)
+DEFINE_BPF_MAP_RO_NETD(uid_permission_map, HASH, uint32_t, uint8_t, UID_OWNER_MAP_SIZE)
+DEFINE_BPF_MAP_NO_NETD(ingress_discard_map, HASH, IngressDiscardKey, IngressDiscardValue,
+                       INGRESS_DISCARD_MAP_SIZE)
 
 /* never actually used from ebpf */
 DEFINE_BPF_MAP_NO_NETD(iface_index_name_map, HASH, uint32_t, IfaceValue, IFACE_INDEX_NAME_MAP_SIZE)
 
 // A single-element configuration array, packet tracing is enabled when 'true'.
 DEFINE_BPF_MAP_EXT(packet_trace_enabled_map, ARRAY, uint32_t, bool, 1,
-                   AID_ROOT, AID_SYSTEM, 0060, "fs_bpf_net_shared", "", false,
+                   AID_ROOT, AID_SYSTEM, 0060, "fs_bpf_net_shared", "", PRIVATE,
                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, LOAD_ON_ENG,
-                   IGNORE_ON_USER, LOAD_ON_USERDEBUG)
+                   LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
-// A ring buffer on which packet information is pushed. This map will only be loaded
-// on eng and userdebug devices. User devices won't load this to save memory.
+// A ring buffer on which packet information is pushed.
 DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
-                       AID_ROOT, AID_SYSTEM, 0060, "fs_bpf_net_shared", "", false,
+                       AID_ROOT, AID_SYSTEM, 0060, "fs_bpf_net_shared", "", PRIVATE,
                        BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, LOAD_ON_ENG,
-                       IGNORE_ON_USER, LOAD_ON_USERDEBUG);
+                       LOAD_ON_USER, LOAD_ON_USERDEBUG);
 
 // iptables xt_bpf programs need to be usable by both netd and netutils_wrappers
 // selinux contexts, because even non-xt_bpf iptables mutations are implemented as
@@ -124,8 +127,8 @@ DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
 // which is loaded into netd and thus runs as netd uid/gid/selinux context)
 #define DEFINE_NETD_BPF_PROG_KVER_RANGE(SECTION_NAME, prog_uid, prog_gid, the_prog, minKV, maxKV) \
     DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog,                               \
-                        minKV, maxKV, BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, false,                \
-                        "fs_bpf_netd_readonly", "", false, false, false)
+                        minKV, maxKV, BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, MANDATORY,            \
+                        "fs_bpf_netd_readonly", "", LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 #define DEFINE_NETD_BPF_PROG_KVER(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv) \
     DEFINE_NETD_BPF_PROG_KVER_RANGE(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, KVER_INF)
@@ -136,8 +139,8 @@ DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
 // programs that only need to be usable by the system server
 #define DEFINE_SYS_BPF_PROG(SECTION_NAME, prog_uid, prog_gid, the_prog) \
     DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, KVER_NONE, KVER_INF,  \
-                        BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, false, "fs_bpf_net_shared", \
-                        "", false, false, false)
+                        BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, MANDATORY, \
+                        "fs_bpf_net_shared", "", LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 static __always_inline int is_system_uid(uint32_t uid) {
     // MIN_SYSTEM_UID is AID_ROOT == 0, so uint32_t is *always* >= 0
@@ -268,17 +271,41 @@ static __always_inline inline void do_packet_tracing(
         (void)bpf_skb_load_bytes_net(skb, IP6_OFFSET(nexthdr), &proto, sizeof(proto), kver);
         L4_off = sizeof(struct ipv6hdr);
         ipVersion = 6;
+        // skip over a *single* HOPOPTS or DSTOPTS extension header (if present)
+        if (proto == IPPROTO_HOPOPTS || proto == IPPROTO_DSTOPTS) {
+            struct {
+                uint8_t proto, len;
+            } ext_hdr;
+            if (!bpf_skb_load_bytes_net(skb, L4_off, &ext_hdr, sizeof(ext_hdr), kver)) {
+                proto = ext_hdr.proto;
+                L4_off += (ext_hdr.len + 1) * 8;
+            }
+        }
     }
 
     uint8_t flags = 0;
     __be16 sport = 0, dport = 0;
-    if (proto == IPPROTO_TCP && L4_off >= 20) {
-        (void)bpf_skb_load_bytes_net(skb, L4_off + TCP_FLAG32_OFF + 1, &flags, sizeof(flags), kver);
-        (void)bpf_skb_load_bytes_net(skb, L4_off + TCP_OFFSET(source), &sport, sizeof(sport), kver);
-        (void)bpf_skb_load_bytes_net(skb, L4_off + TCP_OFFSET(dest), &dport, sizeof(dport), kver);
-    } else if (proto == IPPROTO_UDP && L4_off >= 20) {
-        (void)bpf_skb_load_bytes_net(skb, L4_off + UDP_OFFSET(source), &sport, sizeof(sport), kver);
-        (void)bpf_skb_load_bytes_net(skb, L4_off + UDP_OFFSET(dest), &dport, sizeof(dport), kver);
+    if (L4_off >= 20) {
+      switch (proto) {
+        case IPPROTO_TCP:
+          (void)bpf_skb_load_bytes_net(skb, L4_off + TCP_FLAG8_OFF, &flags, sizeof(flags), kver);
+          // fallthrough
+        case IPPROTO_DCCP:
+        case IPPROTO_UDP:
+        case IPPROTO_UDPLITE:
+        case IPPROTO_SCTP:
+          // all of these L4 protocols start with be16 src & dst port
+          (void)bpf_skb_load_bytes_net(skb, L4_off + 0, &sport, sizeof(sport), kver);
+          (void)bpf_skb_load_bytes_net(skb, L4_off + 2, &dport, sizeof(dport), kver);
+          break;
+        case IPPROTO_ICMP:
+        case IPPROTO_ICMPV6:
+          // Both IPv4 and IPv6 icmp start with u8 type & code, which we store in the bottom
+          // (ie. second) byte of sport/dport (which are be16s), the top byte is already zero.
+          (void)bpf_skb_load_bytes_net(skb, L4_off + 0, (char *)&sport + 1, 1, kver); //type
+          (void)bpf_skb_load_bytes_net(skb, L4_off + 1, (char *)&dport + 1, 1, kver); //code
+          break;
+      }
     }
 
     pkt->timestampNs = bpf_ktime_get_boot_ns();
@@ -291,6 +318,7 @@ static __always_inline inline void do_packet_tracing(
     pkt->dport = dport;
 
     pkt->egress = egress;
+    pkt->wakeup = !egress && (skb->mark & 0x80000000);  // Fwmark.ingress_cpu_wakeup
     pkt->ipProto = proto;
     pkt->tcpFlags = flags;
     pkt->ipVersion = ipVersion;
@@ -343,10 +371,34 @@ static __always_inline inline BpfConfig getConfig(uint32_t configKey) {
     return *config;
 }
 
-// DROP_IF_SET is set of rules that DROP if rule is globally enabled, and per-uid bit is set
-#define DROP_IF_SET (STANDBY_MATCH | OEM_DENY_1_MATCH | OEM_DENY_2_MATCH | OEM_DENY_3_MATCH)
-// DROP_IF_UNSET is set of rules that should DROP if globally enabled, and per-uid bit is NOT set
-#define DROP_IF_UNSET (DOZABLE_MATCH | POWERSAVE_MATCH | RESTRICTED_MATCH | LOW_POWER_STANDBY_MATCH)
+static __always_inline inline bool ingress_should_discard(struct __sk_buff* skb,
+                                                          const unsigned kver) {
+    // Require 4.19, since earlier kernels don't have bpf_skb_load_bytes_relative() which
+    // provides relative to L3 header reads.  Without that we could fetch the wrong bytes.
+    // Additionally earlier bpf verifiers are much harder to please.
+    if (kver < KVER(4, 19, 0)) return false;
+
+    IngressDiscardKey k = {};
+    if (skb->protocol == htons(ETH_P_IP)) {
+        k.daddr.s6_addr32[2] = htonl(0xFFFF);
+        (void)bpf_skb_load_bytes_net(skb, IP4_OFFSET(daddr), &k.daddr.s6_addr32[3], 4, kver);
+    } else if (skb->protocol == htons(ETH_P_IPV6)) {
+        (void)bpf_skb_load_bytes_net(skb, IP6_OFFSET(daddr), &k.daddr, sizeof(k.daddr), kver);
+    } else {
+        return false; // non IPv4/IPv6, so no IP to match on
+    }
+
+    // we didn't check for load success, because destination bytes will be zeroed if
+    // bpf_skb_load_bytes_net() fails, instead we rely on daddr of '::' and '::ffff:0.0.0.0'
+    // never being present in the map itself
+
+    IngressDiscardValue* v = bpf_ingress_discard_map_lookup_elem(&k);
+    if (!v) return false;  // lookup failure -> no protection in place -> allow
+    // if (skb->ifindex == 1) return false;  // allow 'lo', but can't happen - see callsite
+    if (skb->ifindex == v->iif[0]) return false;  // allowed interface
+    if (skb->ifindex == v->iif[1]) return false;  // allowed interface
+    return true;  // disallowed interface
+}
 
 static __always_inline inline int bpf_owner_match(struct __sk_buff* skb, uint32_t uid,
                                                   bool egress, const unsigned kver) {
@@ -360,14 +412,10 @@ static __always_inline inline int bpf_owner_match(struct __sk_buff* skb, uint32_
     uint32_t uidRules = uidEntry ? uidEntry->rule : 0;
     uint32_t allowed_iif = uidEntry ? uidEntry->iif : 0;
 
-    // Warning: funky bit-wise arithmetic: in parallel, for all DROP_IF_SET/UNSET rules
-    // check whether the rules are globally enabled, and if so whether the rules are
-    // set/unset for the specific uid.  DROP if that is the case for ANY of the rules.
-    // We achieve this by masking out only the bits/rules we're interested in checking,
-    // and negating (via bit-wise xor) the bits/rules that should drop if unset.
-    if (enabledRules & (DROP_IF_SET | DROP_IF_UNSET) & (uidRules ^ DROP_IF_UNSET)) return DROP;
+    if (isBlockedByUidRules(enabledRules, uidRules)) return DROP;
 
     if (!egress && skb->ifindex != 1) {
+        if (ingress_should_discard(skb, kver)) return DROP;
         if (uidRules & IIF_MATCH) {
             if (allowed_iif && skb->ifindex != allowed_iif) {
                 // Drops packets not coming from lo nor the allowed interface
@@ -413,7 +461,8 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, boo
     // Always allow and never count clat traffic. Only the IPv4 traffic on the stacked
     // interface is accounted for and subject to usage restrictions.
     // CLAT IPv6 TX sockets are *always* tagged with CLAT uid, see tagSocketAsClat()
-    if (uid == AID_CLAT) return PASS;
+    // CLAT daemon receives via an untagged AF_PACKET socket.
+    if (egress && uid == AID_CLAT) return PASS;
 
     int match = bpf_owner_match(skb, sock_uid, egress, kver);
 
@@ -454,10 +503,22 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb, boo
     return match;
 }
 
+// This program is optional, and enables tracing on Android U+, 5.8+ on user builds.
+DEFINE_BPF_PROG_EXT("cgroupskb/ingress/stats$trace_user", AID_ROOT, AID_SYSTEM,
+                    bpf_cgroup_ingress_trace_user, KVER(5, 8, 0), KVER_INF,
+                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, OPTIONAL,
+                    "fs_bpf_netd_readonly", "",
+                    IGNORE_ON_ENG, LOAD_ON_USER, IGNORE_ON_USERDEBUG)
+(struct __sk_buff* skb) {
+    return bpf_traffic_account(skb, INGRESS, TRACE_ON, KVER(5, 8, 0));
+}
+
+// This program is required, and enables tracing on Android U+, 5.8+, userdebug/eng.
 DEFINE_BPF_PROG_EXT("cgroupskb/ingress/stats$trace", AID_ROOT, AID_SYSTEM,
                     bpf_cgroup_ingress_trace, KVER(5, 8, 0), KVER_INF,
-                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, false,
-                    "fs_bpf_netd_readonly", "", false, true, false)
+                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, MANDATORY,
+                    "fs_bpf_netd_readonly", "",
+                    LOAD_ON_ENG, IGNORE_ON_USER, LOAD_ON_USERDEBUG)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, INGRESS, TRACE_ON, KVER(5, 8, 0));
 }
@@ -474,10 +535,22 @@ DEFINE_NETD_BPF_PROG_KVER_RANGE("cgroupskb/ingress/stats$4_14", AID_ROOT, AID_SY
     return bpf_traffic_account(skb, INGRESS, TRACE_OFF, KVER_NONE);
 }
 
+// This program is optional, and enables tracing on Android U+, 5.8+ on user builds.
+DEFINE_BPF_PROG_EXT("cgroupskb/egress/stats$trace_user", AID_ROOT, AID_SYSTEM,
+                    bpf_cgroup_egress_trace_user, KVER(5, 8, 0), KVER_INF,
+                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, OPTIONAL,
+                    "fs_bpf_netd_readonly", "",
+                    LOAD_ON_ENG, IGNORE_ON_USER, LOAD_ON_USERDEBUG)
+(struct __sk_buff* skb) {
+    return bpf_traffic_account(skb, EGRESS, TRACE_ON, KVER(5, 8, 0));
+}
+
+// This program is required, and enables tracing on Android U+, 5.8+, userdebug/eng.
 DEFINE_BPF_PROG_EXT("cgroupskb/egress/stats$trace", AID_ROOT, AID_SYSTEM,
                     bpf_cgroup_egress_trace, KVER(5, 8, 0), KVER_INF,
-                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, false,
-                    "fs_bpf_netd_readonly", "", false, true, false)
+                    BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, MANDATORY,
+                    "fs_bpf_netd_readonly", "",
+                    LOAD_ON_ENG, IGNORE_ON_USER, LOAD_ON_USERDEBUG)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, EGRESS, TRACE_ON, KVER(5, 8, 0));
 }

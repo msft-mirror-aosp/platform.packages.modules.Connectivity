@@ -16,18 +16,13 @@
 
 package com.android.server.connectivity.mdns;
 
-import static com.android.internal.annotations.VisibleForTesting.Visibility.PACKAGE;
-
 import static java.nio.charset.StandardCharsets.UTF_8;
-
-import com.android.internal.annotations.VisibleForTesting;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.nio.charset.Charset;
 
 /** mDNS-related constants. */
-@VisibleForTesting(visibility = PACKAGE)
 public final class MdnsConstants {
     public static final int MDNS_PORT = 5353;
     // Flags word format is:
@@ -42,6 +37,7 @@ public final class MdnsConstants {
     public static final int FLAG_TRUNCATED = 0x0200;
     public static final int QCLASS_INTERNET = 0x0001;
     public static final int QCLASS_UNICAST = 0x8000;
+    public static final int NO_PACKET = 0;
     public static final String SUBTYPE_LABEL = "_sub";
     public static final String SUBTYPE_PREFIX = "_";
     private static final String MDNS_IPV4_HOST_ADDRESS = "224.0.0.251";

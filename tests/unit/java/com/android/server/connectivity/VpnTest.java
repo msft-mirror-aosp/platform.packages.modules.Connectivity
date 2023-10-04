@@ -57,6 +57,7 @@ import static com.android.server.connectivity.Vpn.PREFERRED_IKE_PROTOCOL_IPV4_UD
 import static com.android.server.connectivity.Vpn.PREFERRED_IKE_PROTOCOL_IPV6_ESP;
 import static com.android.server.connectivity.Vpn.PREFERRED_IKE_PROTOCOL_IPV6_UDP;
 import static com.android.testutils.Cleanup.testAndCleanup;
+import static com.android.testutils.HandlerUtils.waitForIdleSerialExecutor;
 import static com.android.testutils.MiscAsserts.assertThrows;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -1345,7 +1346,8 @@ public class VpnTest extends VpnTestBase {
         final ArgumentCaptor<Intent> intentArgumentCaptor = ArgumentCaptor.forClass(Intent.class);
 
         final int verifyTimes = profileState.length;
-        verify(userContext, times(verifyTimes)).startService(intentArgumentCaptor.capture());
+        verify(userContext, timeout(TEST_TIMEOUT_MS).times(verifyTimes))
+                .startService(intentArgumentCaptor.capture());
 
         for (int i = 0; i < verifyTimes; i++) {
             final Intent intent = intentArgumentCaptor.getAllValues().get(i);
@@ -1657,7 +1659,7 @@ public class VpnTest extends VpnTestBase {
             verify(mExecutor, atLeastOnce()).schedule(any(Runnable.class), anyLong(), any());
         } else {
             final IkeSessionCallback ikeCb = captor.getValue();
-            ikeCb.onClosedWithException(exception);
+            mExecutor.execute(() -> ikeCb.onClosedWithException(exception));
         }
 
         verifyPowerSaveTempWhitelistApp(TEST_VPN_PKG);
@@ -1676,7 +1678,7 @@ public class VpnTest extends VpnTestBase {
             int retryIndex = 0;
             final IkeSessionCallback ikeCb2 = verifyRetryAndGetNewIkeCb(retryIndex++);
 
-            ikeCb2.onClosedWithException(exception);
+            mExecutor.execute(() -> ikeCb2.onClosedWithException(exception));
             verifyRetryAndGetNewIkeCb(retryIndex++);
         }
     }
@@ -1687,11 +1689,8 @@ public class VpnTest extends VpnTestBase {
 
         // Verify retry is scheduled
         final long expectedDelayMs = mTestDeps.getNextRetryDelayMs(retryIndex);
-        final ArgumentCaptor<Long> delayCaptor = ArgumentCaptor.forClass(Long.class);
-        verify(mExecutor, atLeastOnce()).schedule(any(Runnable.class), delayCaptor.capture(),
-                eq(TimeUnit.MILLISECONDS));
-        final List<Long> delays = delayCaptor.getAllValues();
-        assertEquals(expectedDelayMs, (long) delays.get(delays.size() - 1));
+        verify(mExecutor, timeout(TEST_TIMEOUT_MS)).schedule(any(Runnable.class),
+                eq(expectedDelayMs), eq(TimeUnit.MILLISECONDS));
 
         verify(mIkev2SessionCreator, timeout(TEST_TIMEOUT_MS + expectedDelayMs))
                 .createIkeSession(any(), any(), any(), any(), ikeCbCaptor.capture(), any());
@@ -1965,7 +1964,16 @@ public class VpnTest extends VpnTestBase {
 
         vpn.startVpnProfile(TEST_VPN_PKG);
         final NetworkCallback nwCb = triggerOnAvailableAndGetCallback(underlyingNetworkCaps);
-        verify(mExecutor, atLeastOnce()).schedule(any(Runnable.class), anyLong(), any());
+        // There are 4 interactions with the executor.
+        // - Network available
+        // - LP change
+        // - NC change
+        // - schedule() calls in scheduleStartIkeSession()
+        // The first 3 calls are triggered from Executor.execute(). The execute() will also call to
+        // schedule() with 0 delay. Verify the exact interaction here so that it won't cause flakes
+        // in the follow-up flow.
+        verify(mExecutor, timeout(TEST_TIMEOUT_MS).times(4))
+                .schedule(any(Runnable.class), anyLong(), any());
         reset(mExecutor);
 
         // Mock the setup procedure by firing callbacks
@@ -2033,6 +2041,8 @@ public class VpnTest extends VpnTestBase {
 
         // Check if allowBypass is set or not.
         assertTrue(nacCaptor.getValue().isBypassableVpn());
+        // Check if extra info for VPN is set.
+        assertTrue(nacCaptor.getValue().getLegacyExtraInfo().contains(TEST_VPN_PKG));
         final VpnTransportInfo info = (VpnTransportInfo) ncCaptor.getValue().getTransportInfo();
         assertTrue(info.isBypassable());
         assertEquals(areLongLivedTcpConnectionsExpensive,
@@ -2458,7 +2468,8 @@ public class VpnTest extends VpnTestBase {
         if (expectedReadFromCarrierConfig) {
             final ArgumentCaptor<NetworkCapabilities> ncCaptor =
                     ArgumentCaptor.forClass(NetworkCapabilities.class);
-            verify(mMockNetworkAgent).doSendNetworkCapabilities(ncCaptor.capture());
+            verify(mMockNetworkAgent, timeout(TEST_TIMEOUT_MS))
+                    .doSendNetworkCapabilities(ncCaptor.capture());
 
             final VpnTransportInfo info =
                     (VpnTransportInfo) ncCaptor.getValue().getTransportInfo();
@@ -2492,6 +2503,40 @@ public class VpnTest extends VpnTestBase {
     }
 
     @Test
+    public void testStartPlatformVpn_underlyingNetworkNotChange() throws Exception {
+        final PlatformVpnSnapshot vpnSnapShot = verifySetupPlatformVpn(
+                createIkeConfig(createIkeConnectInfo(), true /* isMobikeEnabled */));
+        // Trigger update on the same network should not cause underlying network change in NC of
+        // the VPN network
+        vpnSnapShot.nwCb.onAvailable(TEST_NETWORK);
+        vpnSnapShot.nwCb.onCapabilitiesChanged(TEST_NETWORK,
+                new NetworkCapabilities.Builder()
+                        .setSubscriptionIds(Set.of(TEST_SUB_ID))
+                        .build());
+        // Verify setNetwork() called but no underlying network update
+        verify(mIkeSessionWrapper, timeout(TEST_TIMEOUT_MS)).setNetwork(eq(TEST_NETWORK),
+                eq(ESP_IP_VERSION_AUTO) /* ipVersion */,
+                eq(ESP_ENCAP_TYPE_AUTO) /* encapType */,
+                eq(DEFAULT_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT) /* keepaliveDelay */);
+        verify(mMockNetworkAgent, never())
+                .doSetUnderlyingNetworks(any());
+
+        vpnSnapShot.nwCb.onAvailable(TEST_NETWORK_2);
+        vpnSnapShot.nwCb.onCapabilitiesChanged(TEST_NETWORK_2,
+                new NetworkCapabilities.Builder().build());
+
+        // A new network should trigger both setNetwork() and a underlying network update.
+        verify(mIkeSessionWrapper, timeout(TEST_TIMEOUT_MS)).setNetwork(eq(TEST_NETWORK_2),
+                eq(ESP_IP_VERSION_AUTO) /* ipVersion */,
+                eq(ESP_ENCAP_TYPE_AUTO) /* encapType */,
+                eq(DEFAULT_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT) /* keepaliveDelay */);
+        verify(mMockNetworkAgent).doSetUnderlyingNetworks(
+                Collections.singletonList(TEST_NETWORK_2));
+
+        vpnSnapShot.vpn.mVpnRunner.exitVpnRunner();
+    }
+
+    @Test
     public void testStartPlatformVpnMobility_mobikeEnabled() throws Exception {
         final PlatformVpnSnapshot vpnSnapShot = verifySetupPlatformVpn(
                 createIkeConfig(createIkeConnectInfo(), true /* isMobikeEnabled */));
@@ -2515,6 +2560,12 @@ public class VpnTest extends VpnTestBase {
                 eq(ESP_IP_VERSION_AUTO) /* ipVersion */,
                 eq(ESP_ENCAP_TYPE_AUTO) /* encapType */,
                 eq(DEFAULT_UDP_PORT_4500_NAT_TIMEOUT_SEC_INT) /* keepaliveDelay */);
+        // Verify mNetworkCapabilities is updated
+        assertEquals(
+                Collections.singletonList(TEST_NETWORK_2),
+                vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks());
+        verify(mMockNetworkAgent)
+                .doSetUnderlyingNetworks(Collections.singletonList(TEST_NETWORK_2));
 
         // Mock the MOBIKE procedure
         vpnSnapShot.ikeCb.onIkeSessionConnectionInfoChanged(createIkeConnectInfo_2());
@@ -2527,15 +2578,11 @@ public class VpnTest extends VpnTestBase {
         // Expect 2 times: one for initial setup and one for MOBIKE
         verifyApplyTunnelModeTransforms(2);
 
-        // Verify mNetworkCapabilities and mNetworkAgent are updated
-        assertEquals(
-                Collections.singletonList(TEST_NETWORK_2),
-                vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks());
-        verify(mMockNetworkAgent)
-                .doSetUnderlyingNetworks(Collections.singletonList(TEST_NETWORK_2));
+        // Verify mNetworkAgent is updated
         verify(mMockNetworkAgent).doSendLinkProperties(argThat(lp -> lp.getMtu() == newMtu));
         verify(mMockNetworkAgent, never()).unregister();
-
+        // No further doSetUnderlyingNetworks interaction. The interaction count should stay one.
+        verify(mMockNetworkAgent, times(1)).doSetUnderlyingNetworks(any());
         vpnSnapShot.vpn.mVpnRunner.exitVpnRunner();
     }
 
@@ -2551,6 +2598,15 @@ public class VpnTest extends VpnTestBase {
 
         // Mock new network available & MOBIKE procedures
         vpnSnapShot.nwCb.onAvailable(TEST_NETWORK_2);
+        vpnSnapShot.nwCb.onCapabilitiesChanged(TEST_NETWORK_2,
+                new NetworkCapabilities.Builder().build());
+        // Verify mNetworkCapabilities is updated
+        verify(mMockNetworkAgent, timeout(TEST_TIMEOUT_MS))
+                .doSetUnderlyingNetworks(Collections.singletonList(TEST_NETWORK_2));
+        assertEquals(
+                Collections.singletonList(TEST_NETWORK_2),
+                vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks());
+
         vpnSnapShot.ikeCb.onIkeSessionConnectionInfoChanged(createIkeConnectInfo_2());
         vpnSnapShot.childCb.onIpSecTransformsMigrated(
                 createIpSecTransform(), createIpSecTransform());
@@ -2809,15 +2865,34 @@ public class VpnTest extends VpnTestBase {
         // Verify MOBIKE is triggered
         verifyMobikeTriggered(vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks(),
                 0 /* retryIndex */);
+        // Validation failure on VPN network should trigger a re-evaluation request for the
+        // underlying network.
+        verify(mConnectivityManager).reportNetworkConnectivity(TEST_NETWORK, false);
 
         reset(mIkev2SessionCreator);
+        reset(mExecutor);
 
         // Send validation status update.
         // Recovered and get network validated. It should not trigger the ike session reset.
         ((Vpn.IkeV2VpnRunner) vpnSnapShot.vpn.mVpnRunner).onValidationStatus(
                 NetworkAgent.VALIDATION_STATUS_VALID);
+        // Verify that the retry count is reset. The mValidationFailRetryCount will not be reset
+        // until the executor finishes the execute() call, so wait until the all tasks are executed.
+        waitForIdleSerialExecutor(mExecutor, TEST_TIMEOUT_MS);
+        assertEquals(0,
+                ((Vpn.IkeV2VpnRunner) vpnSnapShot.vpn.mVpnRunner).mValidationFailRetryCount);
         verify(mIkev2SessionCreator, never()).createIkeSession(
                 any(), any(), any(), any(), any(), any());
+
+        reset(mIkeSessionWrapper);
+        reset(mExecutor);
+
+        // Another validation fail should trigger another reportNetworkConnectivity
+        ((Vpn.IkeV2VpnRunner) vpnSnapShot.vpn.mVpnRunner).onValidationStatus(
+                NetworkAgent.VALIDATION_STATUS_NOT_VALID);
+        verifyMobikeTriggered(vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks(),
+                0 /* retryIndex */);
+        verify(mConnectivityManager, times(2)).reportNetworkConnectivity(TEST_NETWORK, false);
     }
 
     @Test
@@ -2831,7 +2906,9 @@ public class VpnTest extends VpnTestBase {
                 NetworkAgent.VALIDATION_STATUS_NOT_VALID);
         verifyMobikeTriggered(vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks(),
                 retry++);
-
+        // Validation failure on VPN network should trigger a re-evaluation request for the
+        // underlying network.
+        verify(mConnectivityManager).reportNetworkConnectivity(TEST_NETWORK, false);
         reset(mIkev2SessionCreator);
 
         // Second validation status update.
@@ -2839,6 +2916,8 @@ public class VpnTest extends VpnTestBase {
                 NetworkAgent.VALIDATION_STATUS_NOT_VALID);
         verifyMobikeTriggered(vpnSnapShot.vpn.mNetworkCapabilities.getUnderlyingNetworks(),
                 retry++);
+        // Call to reportNetworkConnectivity should only happen once. No further interaction.
+        verify(mConnectivityManager, times(1)).reportNetworkConnectivity(TEST_NETWORK, false);
 
         // Use real delay to verify reset session will not be performed if there is an existing
         // recovery for resetting the session.
@@ -2855,6 +2934,8 @@ public class VpnTest extends VpnTestBase {
                 eq(TimeUnit.MILLISECONDS));
         final List<Long> delays = delayCaptor.getAllValues();
         assertEquals(expectedDelay, (long) delays.get(delays.size() - 1));
+        // Call to reportNetworkConnectivity should only happen once. No further interaction.
+        verify(mConnectivityManager, times(1)).reportNetworkConnectivity(TEST_NETWORK, false);
 
         // Another invalid status reported should not trigger other scheduled recovery.
         expectedDelay = mTestDeps.getValidationFailRecoveryMs(retry++);
@@ -2866,6 +2947,8 @@ public class VpnTest extends VpnTestBase {
         // Verify that session being reset
         verify(mIkev2SessionCreator, timeout(TEST_TIMEOUT_MS + expectedDelay))
                 .createIkeSession(any(), any(), any(), any(), any(), any());
+        // Call to reportNetworkConnectivity should only happen once. No further interaction.
+        verify(mConnectivityManager, times(1)).reportNetworkConnectivity(TEST_NETWORK, false);
     }
 
     @Test

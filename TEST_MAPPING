@@ -1,11 +1,21 @@
 {
   "presubmit": [
     {
-      "name": "ConnectivityCoverageTests"
+      "name": "ConnectivityCoverageTests",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.NetworkStackModuleTest"
+        }
+      ]
     },
     {
       // In addition to ConnectivityCoverageTests, runs non-connectivity-module tests
-      "name": "FrameworksNetTests"
+      "name": "FrameworksNetTests",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        }
+      ]
     },
     // Run in addition to mainline-presubmit as mainline-presubmit is not
     // supported in every branch.
@@ -100,6 +110,9 @@
       "name": "NetHttpCoverageTests",
       "options": [
         {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
           // These sometimes take longer than 1 min which is the presubmit timeout
           "exclude-annotation": "androidx.test.filters.LargeTest"
         }
@@ -120,6 +133,21 @@
     },
     {
       "name": "FrameworksNetDeflakeTest"
+    },
+    // Postsubmit on virtual devices to monitor flakiness of @SkipPresubmit methods
+    {
+      "name": "CtsNetTestCases",
+      "options": [
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        }
+      ]
+    },
+    {
+      "name": "FrameworksNetTests"
+    },
+    {
+      "name": "NetHttpCoverageTests"
     }
   ],
   "mainline-presubmit": [
@@ -128,6 +156,9 @@
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "com.android.testutils.SkipMainlinePresubmit"
         },
         {
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
@@ -141,6 +172,9 @@
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
         },
         {
+          "exclude-annotation": "com.android.testutils.SkipMainlinePresubmit"
+        },
+        {
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
         }
       ]
@@ -152,6 +186,9 @@
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
         },
         {
+          "exclude-annotation": "com.android.testutils.SkipMainlinePresubmit"
+        },
+        {
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
         }
       ]
@@ -161,6 +198,9 @@
       "options": [
         {
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
+        {
+          "exclude-annotation": "com.android.testutils.SkipMainlinePresubmit"
         },
         {
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
@@ -176,10 +216,16 @@
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
         },
         {
+          "exclude-annotation": "com.android.testutils.SkipMainlinePresubmit"
+        },
+        {
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
         },
         {
           "exclude-annotation": "com.android.testutils.ConnectivityModuleTest"
+        },
+        {
+          "exclude-annotation": "com.android.testutils.DnsResolverModuleTest"
         }
       ]
     },
@@ -194,7 +240,13 @@
           "exclude-annotation": "com.android.testutils.SkipPresubmit"
         },
         {
+          "exclude-annotation": "com.android.testutils.SkipMainlinePresubmit"
+        },
+        {
           "exclude-annotation": "androidx.test.filters.RequiresDevice"
+        },
+        {
+          "exclude-annotation": "com.android.testutils.DnsResolverModuleTest"
         }
       ]
     },
@@ -219,6 +271,9 @@
     {
       "name": "NetHttpCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
       "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        },
         {
           // These sometimes take longer than 1 min which is the presubmit timeout
           "exclude-annotation": "androidx.test.filters.LargeTest"
@@ -246,6 +301,15 @@
       "options": [
         {
           "exclude-annotation": "com.android.testutils.NetworkStackModuleTest"
+        }
+      ]
+    },
+    // Postsubmit on virtual devices to monitor flakiness of @SkipMainlinePresubmit methods
+    {
+      "name": "CtsNetTestCasesLatestSdk[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "androidx.test.filters.RequiresDevice"
         }
       ]
     }

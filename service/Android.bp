@@ -19,6 +19,12 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+service_remoteauth_pre_jarjar_lib = "service-remoteauth-pre-jarjar"
+
+// The above variables may have different values
+// depending on the branch, and this comment helps
+// separate them from the rest of the file to avoid merge conflicts
+
 aidl_interface {
     name: "connectivity_native_aidl_interface",
     local_include_dir: "binder",
@@ -236,6 +242,8 @@ java_defaults {
         "service-connectivity-pre-jarjar",
         "service-connectivity-tiramisu-pre-jarjar",
         "service-nearby-pre-jarjar",
+        service_remoteauth_pre_jarjar_lib,
+        "service-thread-pre-jarjar",
     ],
     // The below libraries are not actually needed to build since no source is compiled
     // (only combining prebuilt static_libs), but they are necessary so that R8 has the right
@@ -303,6 +311,8 @@ genrule {
         ":framework-connectivity-jarjar-rules",
         ":service-connectivity-jarjar-gen",
         ":service-nearby-jarjar-gen",
+        ":service-remoteauth-jarjar-gen",
+        ":service-thread-jarjar-gen",
     ],
     out: ["connectivity-jarjar-rules.txt"],
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
@@ -349,6 +359,42 @@ java_genrule {
     cmd: "$(location jarjar-rules-generator) " +
         "$(location :service-nearby-pre-jarjar{.jar}) " +
         "--prefix com.android.server.nearby " +
+        "--excludes $(location jarjar-excludes.txt) " +
+        "--output $(out)",
+    visibility: ["//visibility:private"],
+}
+
+java_genrule {
+    name: "service-remoteauth-jarjar-gen",
+    tool_files: [
+        ":" + service_remoteauth_pre_jarjar_lib + "{.jar}",
+        "jarjar-excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["service_remoteauth_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "$(location :" + service_remoteauth_pre_jarjar_lib + "{.jar}) " +
+        "--prefix com.android.server.remoteauth " +
+        "--excludes $(location jarjar-excludes.txt) " +
+        "--output $(out)",
+    visibility: ["//visibility:private"],
+}
+
+java_genrule {
+    name: "service-thread-jarjar-gen",
+    tool_files: [
+        ":service-thread-pre-jarjar{.jar}",
+        "jarjar-excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["service_thread_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "$(location :service-thread-pre-jarjar{.jar}) " +
+        "--prefix com.android.server.thread " +
         "--excludes $(location jarjar-excludes.txt) " +
         "--output $(out)",
     visibility: ["//visibility:private"],
