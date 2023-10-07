@@ -22,9 +22,15 @@
 // Reject the packet
 #define BPF_REJECT BPF_STMT(BPF_RET | BPF_K, 0)
 
+// Note arguments to BPF_JUMP(opcode, operand, true_offset, false_offset)
+
+// If not equal, jump over count instructions
+#define BPF_JUMP_IF_NOT_EQUAL(v, count) \
+	BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (v), 0, (count))
+
 // *TWO* instructions: compare and if not equal jump over the accept statement
 #define BPF2_ACCEPT_IF_EQUAL(v) \
-	BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (v), 0, 1), \
+	BPF_JUMP_IF_NOT_EQUAL((v), 1), \
 	BPF_ACCEPT
 
 // *TWO* instructions: compare and if equal jump over the reject statement
@@ -32,8 +38,24 @@
 	BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (v), 1, 0), \
 	BPF_REJECT
 
+// *TWO* instructions: compare and if greater or equal jump over the reject statement
+#define BPF2_REJECT_IF_LESS_THAN(v) \
+	BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, (v), 1, 0), \
+	BPF_REJECT
+
+// *TWO* instructions: compare and if *NOT* greater jump over the reject statement
+#define BPF2_REJECT_IF_GREATER_THAN(v) \
+	BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, (v), 0, 1), \
+	BPF_REJECT
+
+// *THREE* instructions: compare and if *NOT* in range [lo, hi], jump over the reject statement
+#define BPF3_REJECT_IF_NOT_IN_RANGE(lo, hi) \
+	BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, (lo), 0, 1), \
+	BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, (hi), 0, 1), \
+	BPF_REJECT
+
 // *TWO* instructions: compare and if none of the bits are set jump over the reject statement
-#define BPF2_REJECT_IF_ANY_BITS_SET(v) \
+#define BPF2_REJECT_IF_ANY_MASKED_BITS_SET(v) \
 	BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, (v), 0, 1), \
 	BPF_REJECT
 
@@ -108,3 +130,55 @@
 	  _Static_assert(field_sizeof(struct ipv6hdr, field) == 4, "field of wrong size"); \
 	  offsetof(ipv6hdr, field); \
 	}))
+
+// Load the length of the IPv4 header into X index register.
+// ie. X := 4 * IPv4.IHL, where IPv4.IHL is the bottom nibble
+// of the first byte of the IPv4 (aka network layer) header.
+#define BPF_LOADX_NET_RELATIVE_IPV4_HLEN \
+    BPF_STMT(BPF_LDX | BPF_B | BPF_MSH, (__u32)SKF_NET_OFF)
+
+// Blindly assumes no IPv6 extension headers, just does X := 40
+// You may later adjust this as you parse through IPv6 ext hdrs.
+#define BPF_LOADX_CONSTANT_IPV6_HLEN \
+    BPF_STMT(BPF_LDX | BPF_W | BPF_IMM, sizeof(struct ipv6hdr))
+
+// NOTE: all the following require X to be setup correctly (v4: 20+, v6: 40+)
+
+// 8-bit load from L4 (TCP/UDP/...) header
+#define BPF_LOAD_NETX_RELATIVE_L4_U8(ofs) \
+    BPF_STMT(BPF_LD | BPF_B | BPF_IND, (__u32)SKF_NET_OFF + (ofs))
+
+// Big/Network Endian 16-bit load from L4 (TCP/UDP/...) header
+#define BPF_LOAD_NETX_RELATIVE_L4_BE16(ofs) \
+    BPF_STMT(BPF_LD | BPF_H | BPF_IND, (__u32)SKF_NET_OFF + (ofs))
+
+// Big/Network Endian 32-bit load from L4 (TCP/UDP/...) header
+#define BPF_LOAD_NETX_RELATIVE_L4_BE32(ofs) \
+    BPF_STMT(BPF_LD | BPF_W | BPF_IND, (__u32)SKF_NET_OFF + (ofs))
+
+// Both ICMPv4 and ICMPv6 start with u8 type, u8 code
+#define BPF_LOAD_NETX_RELATIVE_ICMP_TYPE BPF_LOAD_NETX_RELATIVE_L4_U8(0)
+#define BPF_LOAD_NETX_RELATIVE_ICMP_CODE BPF_LOAD_NETX_RELATIVE_L4_U8(1)
+
+// IPv6 extension headers (HOPOPTS, DSTOPS, FRAG) begin with a u8 nexthdr
+#define BPF_LOAD_NETX_RELATIVE_V6EXTHDR_NEXTHDR BPF_LOAD_NETX_RELATIVE_L4_U8(0)
+
+// IPv6 fragment header is always exactly 8 bytes long
+#define BPF_LOAD_CONSTANT_V6FRAGHDR_LEN \
+    BPF_STMT(BPF_LD | BPF_IMM, 8)
+
+// HOPOPTS/DSTOPS follow up with 'u8 len', counting 8 byte units, (0->8, 1->16)
+// *THREE* instructions
+#define BPF3_LOAD_NETX_RELATIVE_V6EXTHDR_LEN \
+    BPF_LOAD_NETX_RELATIVE_L4_U8(1), \
+    BPF_STMT(BPF_ALU | BPF_ADD | BPF_K, 1), \
+    BPF_STMT(BPF_ALU | BPF_LSH | BPF_K, 3)
+
+// *TWO* instructions: A += X; X := A
+#define BPF2_ADD_A_TO_X \
+    BPF_STMT(BPF_ALU | BPF_ADD | BPF_X, 0), \
+    BPF_STMT(BPF_MISC | BPF_TAX, 0)
+
+// UDP/UDPLITE/TCP/SCTP/DCCP all start with be16 srcport, dstport
+#define BPF_LOAD_NETX_RELATIVE_SRC_PORT BPF_LOAD_NETX_RELATIVE_L4_BE16(0)
+#define BPF_LOAD_NETX_RELATIVE_DST_PORT BPF_LOAD_NETX_RELATIVE_L4_BE16(2)
