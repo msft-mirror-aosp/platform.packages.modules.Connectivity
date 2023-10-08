@@ -22,14 +22,36 @@
 // Reject the packet
 #define BPF_REJECT BPF_STMT(BPF_RET | BPF_K, 0)
 
+// Note arguments to BPF_JUMP(opcode, operand, true_offset, false_offset)
+
+// If not equal, jump over count instructions
+#define BPF_JUMP_IF_NOT_EQUAL(v, count) \
+	BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (v), 0, (count))
+
 // *TWO* instructions: compare and if not equal jump over the accept statement
 #define BPF2_ACCEPT_IF_EQUAL(v) \
-	BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (v), 0, 1), \
+	BPF_JUMP_IF_NOT_EQUAL((v), 1), \
 	BPF_ACCEPT
 
 // *TWO* instructions: compare and if equal jump over the reject statement
 #define BPF2_REJECT_IF_NOT_EQUAL(v) \
 	BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, (v), 1, 0), \
+	BPF_REJECT
+
+// *TWO* instructions: compare and if greater or equal jump over the reject statement
+#define BPF2_REJECT_IF_LESS_THAN(v) \
+	BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, (v), 1, 0), \
+	BPF_REJECT
+
+// *TWO* instructions: compare and if *NOT* greater jump over the reject statement
+#define BPF2_REJECT_IF_GREATER_THAN(v) \
+	BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, (v), 0, 1), \
+	BPF_REJECT
+
+// *THREE* instructions: compare and if *NOT* in range [lo, hi], jump over the reject statement
+#define BPF3_REJECT_IF_NOT_IN_RANGE(lo, hi) \
+	BPF_JUMP(BPF_JMP | BPF_JGE | BPF_K, (lo), 0, 1), \
+	BPF_JUMP(BPF_JMP | BPF_JGT | BPF_K, (hi), 0, 1), \
 	BPF_REJECT
 
 // *TWO* instructions: compare and if none of the bits are set jump over the reject statement
@@ -148,13 +170,13 @@
 // HOPOPTS/DSTOPS follow up with 'u8 len', counting 8 byte units, (0->8, 1->16)
 // *THREE* instructions
 #define BPF3_LOAD_NETX_RELATIVE_V6EXTHDR_LEN \
-    BPF_LOAD_NETX_RELATIVE_L4_U8(1) \
-    BPF_STMT(BPF_ALU | BPF_ADD | BPF_K, 1) \
+    BPF_LOAD_NETX_RELATIVE_L4_U8(1), \
+    BPF_STMT(BPF_ALU | BPF_ADD | BPF_K, 1), \
     BPF_STMT(BPF_ALU | BPF_LSH | BPF_K, 3)
 
 // *TWO* instructions: A += X; X := A
 #define BPF2_ADD_A_TO_X \
-    BPF_STMT(BPF_ALU | BPF_ADD | BPF_X, 0) \
+    BPF_STMT(BPF_ALU | BPF_ADD | BPF_X, 0), \
     BPF_STMT(BPF_MISC | BPF_TAX, 0)
 
 // UDP/UDPLITE/TCP/SCTP/DCCP all start with be16 srcport, dstport
