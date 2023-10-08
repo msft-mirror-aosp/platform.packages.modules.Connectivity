@@ -188,10 +188,12 @@ static void (*bpf_ringbuf_submit_unsafe)(const void* data, __u64 flags) = (void*
         __attribute__ ((section(".maps." #name), used)) \
                 ____btf_map_##name = { }
 
-#define BPF_ASSERT_LOADER_VERSION(min_loader, ignore_eng, ignore_user, ignore_userdebug)  \
-    _Static_assert(                                                                       \
-        (min_loader) >= BPFLOADER_IGNORED_ON_VERSION ||                                   \
-            !((ignore_eng) || (ignore_user) || (ignore_userdebug)),                       \
+#define BPF_ASSERT_LOADER_VERSION(min_loader, ignore_eng, ignore_user, ignore_userdebug) \
+    _Static_assert(                                                                      \
+        (min_loader) >= BPFLOADER_IGNORED_ON_VERSION ||                                  \
+            !((ignore_eng).ignore_on_eng ||                                              \
+              (ignore_user).ignore_on_user ||                                            \
+              (ignore_userdebug).ignore_on_userdebug),                                   \
         "bpfloader min version must be >= 0.33 in order to use ignored_on");
 
 #define DEFINE_BPF_MAP_BASE(the_map, TYPE, keysize, valuesize, num_entries, \
@@ -213,10 +215,10 @@ static void (*bpf_ringbuf_submit_unsafe)(const void* data, __u64 flags) = (void*
         .max_kver = (maxkver),                                              \
         .selinux_context = (selinux),                                       \
         .pin_subdir = (pindir),                                             \
-        .shared = (share),                                                  \
-        .ignore_on_eng = (ignore_eng),                                      \
-        .ignore_on_user = (ignore_user),                                    \
-        .ignore_on_userdebug = (ignore_userdebug),                          \
+        .shared = (share).shared,                                           \
+        .ignore_on_eng = (ignore_eng).ignore_on_eng,                        \
+        .ignore_on_user = (ignore_user).ignore_on_user,                     \
+        .ignore_on_userdebug = (ignore_userdebug).ignore_on_userdebug,      \
     };                                                                      \
     BPF_ASSERT_LOADER_VERSION(minloader, ignore_eng, ignore_user, ignore_userdebug);
 
@@ -312,11 +314,11 @@ static void (*bpf_ringbuf_submit_unsafe)(const void* data, __u64 flags) = (void*
 #error "Bpf Map UID must be left at default of AID_ROOT for BpfLoader prior to v0.28"
 #endif
 
-#define DEFINE_BPF_MAP_UGM(the_map, TYPE, KeyType, ValueType, num_entries, usr, grp, md)   \
-    DEFINE_BPF_MAP_EXT(the_map, TYPE, KeyType, ValueType, num_entries, usr, grp, md,       \
-                       DEFAULT_BPF_MAP_SELINUX_CONTEXT, DEFAULT_BPF_MAP_PIN_SUBDIR, false, \
-                       BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, /*ignore_on_eng*/false,       \
-                       /*ignore_on_user*/false, /*ignore_on_userdebug*/false)
+#define DEFINE_BPF_MAP_UGM(the_map, TYPE, KeyType, ValueType, num_entries, usr, grp, md)     \
+    DEFINE_BPF_MAP_EXT(the_map, TYPE, KeyType, ValueType, num_entries, usr, grp, md,         \
+                       DEFAULT_BPF_MAP_SELINUX_CONTEXT, DEFAULT_BPF_MAP_PIN_SUBDIR, PRIVATE, \
+                       BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, LOAD_ON_ENG,                    \
+                       LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 #define DEFINE_BPF_MAP(the_map, TYPE, KeyType, ValueType, num_entries) \
     DEFINE_BPF_MAP_UGM(the_map, TYPE, KeyType, ValueType, num_entries, \
@@ -364,14 +366,14 @@ static long (*bpf_get_current_comm)(void* buf, uint32_t buf_size) = (void*) BPF_
         .gid = (prog_gid),                                                               \
         .min_kver = (min_kv),                                                            \
         .max_kver = (max_kv),                                                            \
-        .optional = (opt),                                                               \
+        .optional = (opt).optional,                                                      \
         .bpfloader_min_ver = (min_loader),                                               \
         .bpfloader_max_ver = (max_loader),                                               \
         .selinux_context = (selinux),                                                    \
         .pin_subdir = (pindir),                                                          \
-        .ignore_on_eng = (ignore_eng),                                                   \
-        .ignore_on_user = (ignore_user),                                                 \
-        .ignore_on_userdebug = (ignore_userdebug),                                       \
+        .ignore_on_eng = (ignore_eng).ignore_on_eng,                                     \
+        .ignore_on_user = (ignore_user).ignore_on_user,                                  \
+        .ignore_on_userdebug = (ignore_userdebug).ignore_on_userdebug,                   \
     };                                                                                   \
     SECTION(SECTION_NAME)                                                                \
     int the_prog
@@ -389,7 +391,7 @@ static long (*bpf_get_current_comm)(void* buf, uint32_t buf_size) = (void*) BPF_
     DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv,                \
                         BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, opt,                                 \
                         DEFAULT_BPF_PROG_SELINUX_CONTEXT, DEFAULT_BPF_PROG_PIN_SUBDIR,             \
-                        false, false, false)
+                        LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 // Programs (here used in the sense of functions/sections) marked optional are allowed to fail
 // to load (for example due to missing kernel patches).
@@ -405,21 +407,24 @@ static long (*bpf_get_current_comm)(void* buf, uint32_t buf_size) = (void*) BPF_
 // programs requiring a kernel version >= min_kv && < max_kv
 #define DEFINE_BPF_PROG_KVER_RANGE(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv) \
     DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv, \
-                                   false)
+                                   MANDATORY)
 #define DEFINE_OPTIONAL_BPF_PROG_KVER_RANGE(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, \
                                             max_kv)                                             \
-    DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv, true)
+    DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv, \
+                                   OPTIONAL)
 
 // programs requiring a kernel version >= min_kv
 #define DEFINE_BPF_PROG_KVER(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv)                 \
     DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, KVER_INF, \
-                                   false)
+                                   MANDATORY)
 #define DEFINE_OPTIONAL_BPF_PROG_KVER(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv)        \
     DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, KVER_INF, \
-                                   true)
+                                   OPTIONAL)
 
 // programs with no kernel version requirements
 #define DEFINE_BPF_PROG(SECTION_NAME, prog_uid, prog_gid, the_prog) \
-    DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, 0, KVER_INF, false)
+    DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, 0, KVER_INF, \
+                                   MANDATORY)
 #define DEFINE_OPTIONAL_BPF_PROG(SECTION_NAME, prog_uid, prog_gid, the_prog) \
-    DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, 0, KVER_INF, true)
+    DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, 0, KVER_INF, \
+                                   OPTIONAL)
