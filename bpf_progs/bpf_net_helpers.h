@@ -87,36 +87,18 @@ static inline __always_inline void try_make_writable(struct __sk_buff* skb, int 
     if (skb->data_end - skb->data < len) bpf_skb_pull_data(skb, len);
 }
 
-// constants for passing in to 'bool shared' (for maps)
-static const bool PRIVATE = false;
-static const bool SHARED = true;
+struct egress_bool { bool egress; };
+#define INGRESS ((struct egress_bool){ .egress = false })
+#define EGRESS ((struct egress_bool){ .egress = true })
 
-// constants for passing in to 'bool optional' (for programs)
-static const bool MANDATORY = false;
-static const bool OPTIONAL = true;
+struct stream_bool { bool down; };
+#define UPSTREAM ((struct stream_bool){ .down = false })
+#define DOWNSTREAM ((struct stream_bool){ .down = true })
 
-// constants for passing in to 'bool egress'
-static const bool INGRESS = false;
-static const bool EGRESS = true;
+struct rawip_bool { bool rawip; };
+#define ETHER ((struct rawip_bool){ .rawip = false })
+#define RAWIP ((struct rawip_bool){ .rawip = true })
 
-// constants for passing in to 'bool downstream'
-static const bool UPSTREAM = false;
-static const bool DOWNSTREAM = true;
-
-// constants for passing in to 'bool is_ethernet'
-static const bool RAWIP = false;
-static const bool ETHER = true;
-
-// constants for passing in to 'bool updatetime'
-static const bool NO_UPDATETIME = false;
-static const bool UPDATETIME = true;
-
-// constants for passing in to ignore_on_eng / ignore_on_user / ignore_on_userdebug
-static const bool LOAD_ON_ENG = false;
-static const bool LOAD_ON_USER = false;
-static const bool LOAD_ON_USERDEBUG = false;
-static const bool IGNORE_ON_ENG = true;
-static const bool IGNORE_ON_USER = true;
-static const bool IGNORE_ON_USERDEBUG = true;
-
-#define KVER_4_14 KVER(4, 14, 0)
+struct updatetime_bool { bool updatetime; };
+#define NO_UPDATETIME ((struct updatetime_bool){ .updatetime = false })
+#define UPDATETIME ((struct updatetime_bool){ .updatetime = true })
