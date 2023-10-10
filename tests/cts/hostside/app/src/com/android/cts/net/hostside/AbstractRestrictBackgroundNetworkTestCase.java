@@ -137,7 +137,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     private static final int BATTERY_STATE_TIMEOUT_MS = 5000;
     private static final int BATTERY_STATE_CHECK_INTERVAL_MS = 500;
 
-    private static final int ACTIVITY_NETWORK_STATE_TIMEOUT_MS = 6_000;
+    private static final int ACTIVITY_NETWORK_STATE_TIMEOUT_MS = 10_000;
     private static final int JOB_NETWORK_STATE_TIMEOUT_MS = 10_000;
     private static final int LAUNCH_ACTIVITY_TIMEOUT_MS = 10_000;
 
@@ -199,7 +199,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     protected void tearDown() throws Exception {
         executeShellCommand("cmd netpolicy stop-watching");
         mServiceClient.unbind();
-        if (mLock.isHeld()) mLock.release();
+        final PowerManager.WakeLock lock = mLock;
+        if (null != lock && lock.isHeld()) lock.release();
     }
 
     protected int getUid(String packageName) throws Exception {

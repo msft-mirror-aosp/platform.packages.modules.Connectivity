@@ -20,8 +20,10 @@ import static com.android.server.connectivity.mdns.MdnsConstants.NO_PACKET;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresApi;
 import android.net.LinkAddress;
 import android.net.nsd.NsdServiceInfo;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 
@@ -39,6 +41,7 @@ import java.util.List;
 /**
  * A class that handles advertising services on a {@link MdnsInterfaceSocket} tied to an interface.
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHandler {
     private static final boolean DBG = MdnsAdvertiser.DBG;
     @VisibleForTesting
@@ -158,7 +161,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
                 @NonNull SharedLog sharedLog) {
             return new MdnsReplySender(looper, socket, packetCreationBuffer,
                     sharedLog.forSubComponent(
-                            MdnsReplySender.class.getSimpleName() + "/" + interfaceTag));
+                            MdnsReplySender.class.getSimpleName() + "/" + interfaceTag), DBG);
         }
 
         /** @see MdnsAnnouncer */
@@ -367,7 +370,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         // happen when the incoming packet has answer records (not a question), so there will be no
         // answer. One exception is simultaneous probe tiebreaking (rfc6762 8.2), in which case the
         // conflicting service is still probing and won't reply either.
-        final MdnsRecordRepository.ReplyInfo answers = mRecordRepository.getReply(packet, src);
+        final MdnsReplyInfo answers = mRecordRepository.getReply(packet, src);
 
         if (answers == null) return;
         mReplySender.queueReply(answers);

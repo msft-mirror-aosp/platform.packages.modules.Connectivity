@@ -85,8 +85,24 @@ static Status initPrograms(const char* cg2_path) {
     // U bumps the kernel requirement up to 4.14
     if (modules::sdklevel::IsAtLeastU() && !bpf::isAtLeastKernelVersion(4, 14, 0)) abort();
 
-    // V bumps the kernel requirement up to 4.19
-    if (modules::sdklevel::IsAtLeastV() && !bpf::isAtLeastKernelVersion(4, 19, 0)) abort();
+    if (modules::sdklevel::IsAtLeastV()) {
+        // V bumps the kernel requirement up to 4.19
+        // see also: //system/netd/tests/kernel_test.cpp TestKernel419
+        if (!bpf::isAtLeastKernelVersion(4, 19, 0)) abort();
+
+        // Technically already required by U, but only enforce on V+
+        // see also: //system/netd/tests/kernel_test.cpp TestKernel64Bit
+        if (bpf::isKernel32Bit() && bpf::isAtLeastKernelVersion(5, 16, 0)) abort();
+    }
+
+    // Linux 6.1 is highest version supported by U, starting with V new kernels,
+    // ie. 6.2+ we are dropping various kernel/system userspace 32-on-64 hacks
+    // (for example "ANDROID: xfrm: remove in_compat_syscall() checks").
+    // Note: this check/enforcement only applies to *system* userspace code,
+    // it does not affect unprivileged apps, the 32-on-64 compatibility
+    // problems are AFAIK limited to various CAP_NET_ADMIN protected interfaces.
+    // see also: //system/bpf/bpfloader/BpfLoader.cpp main()
+    if (bpf::isUserspace32bit() && bpf::isAtLeastKernelVersion(6, 2, 0)) abort();
 
     // U mandates this mount point (though it should also be the case on T)
     if (modules::sdklevel::IsAtLeastU() && !!strcmp(cg2_path, "/sys/fs/cgroup")) abort();
@@ -113,6 +129,24 @@ static Status initPrograms(const char* cg2_path) {
         RETURN_IF_NOT_OK(
                 attachProgramToCgroup(CGROUP_SOCKET_PROG_PATH, cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
     }
+
+    if (bpf::isAtLeastKernelVersion(4, 19, 0)) {
+        RETURN_IF_NOT_OK(attachProgramToCgroup(
+                "/sys/fs/bpf/netd_readonly/prog_block_bind4_block_port",
+                cg_fd, BPF_CGROUP_INET4_BIND));
+        RETURN_IF_NOT_OK(attachProgramToCgroup(
+                "/sys/fs/bpf/netd_readonly/prog_block_bind6_block_port",
+                cg_fd, BPF_CGROUP_INET6_BIND));
+
+        // This should trivially pass, since we just attached up above,
+        // but BPF_PROG_QUERY is only implemented on 4.19+ kernels.
+        if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_EGRESS) <= 0) abort();
+        if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_INGRESS) <= 0) abort();
+        if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_CREATE) <= 0) abort();
+        if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET4_BIND) <= 0) abort();
+        if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET6_BIND) <= 0) abort();
+    }
+
     return netdutils::status::ok;
 }
 
@@ -214,7 +248,7 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
     // which might toggle the live stats map and clean it.
     const auto countUidStatsEntries = [chargeUid, &totalEntryCount, &perUidEntryCount](
                                               const StatsKey& key,
-                                              const BpfMap<StatsKey, StatsValue>&) {
+                                              const BpfMapRO<StatsKey, StatsValue>&) {
         if (key.uid == chargeUid) {
             perUidEntryCount++;
         }
@@ -232,9 +266,8 @@ int BpfHandler::tagSocket(int sockFd, uint32_t tag, uid_t chargeUid, uid_t realU
         return -EINVAL;
     }
 
-    BpfMap<StatsKey, StatsValue>& currentMap =
+    BpfMapRO<StatsKey, StatsValue>& currentMap =
             (configuration.value() == SELECT_MAP_A) ? mStatsMapA : mStatsMapB;
-    // HACK: mStatsMapB becomes RW BpfMap here, but countUidStatsEntries doesn't modify so it works
     base::Result<void> res = currentMap.iterate(countUidStatsEntries);
     if (!res.ok()) {
         ALOGE("Failed to count the stats entry in map: %s",
