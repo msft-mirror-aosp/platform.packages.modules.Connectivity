@@ -66,7 +66,7 @@ class NetworkTemplateTest {
         }
 
         // Verify hidden match rules cannot construct templates.
-        listOf(MATCH_WIFI_WILDCARD, MATCH_MOBILE_WILDCARD, MATCH_PROXY).forEach {
+        listOf(MATCH_WIFI_WILDCARD, MATCH_MOBILE_WILDCARD).forEach {
             assertFailsWith<IllegalArgumentException> {
                 NetworkTemplate.Builder(it).build()
             }
