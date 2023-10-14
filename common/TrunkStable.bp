@@ -1,4 +1,5 @@
-// Copyright (C) 2022 The Android Open Source Project
+//
+// Copyright (C) 2023 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,27 +12,15 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
+aconfig_declarations {
+    name: "com.android.net.flags-aconfig",
+    package: "com.android.net.flags",
+    srcs: ["flags.aconfig"],
 }
 
-android_test {
-    name: "NearbyIntegrationUntrustedTests",
-    defaults: ["mts-target-sdk-version-current"],
-    sdk_version: "test_current",
-
-    srcs: [
-        "src/**/*.java",
-        "src/**/*.kt",
-    ],
-    static_libs: [
-        "androidx.test.ext.junit",
-        "androidx.test.rules",
-        "androidx.test.uiautomator_uiautomator",
-        "junit",
-        "kotlin-test",
-        "truth",
-    ],
-    test_suites: ["device-tests"],
+java_aconfig_library {
+    name: "connectivity_flags_aconfig_lib",
+    aconfig_declarations: "com.android.net.flags-aconfig",
 }
