@@ -1,7 +1,12 @@
 {
   "presubmit": [
     {
-      "name": "ConnectivityCoverageTests"
+      "name": "ConnectivityCoverageTests",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.NetworkStackModuleTest"
+        }
+      ]
     },
     {
       // In addition to ConnectivityCoverageTests, runs non-connectivity-module tests
@@ -140,6 +145,9 @@
     },
     {
       "name": "FrameworksNetTests"
+    },
+    {
+      "name": "NetHttpCoverageTests"
     }
   ],
   "mainline-presubmit": [

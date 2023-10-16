@@ -47,6 +47,7 @@ import static android.net.ConnectivityManager.FIREWALL_CHAIN_POWERSAVE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_RESTRICTED;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DEFAULT;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE;
 import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
@@ -1025,11 +1026,13 @@ public class ConnectivityManagerTest {
         final String goodPrivateDnsServer = "dns.google";
         mCtsNetUtils.storePrivateDnsSetting();
         final TestableNetworkCallback cb = new TestableNetworkCallback();
-        registerNetworkCallback(makeWifiNetworkRequest(), cb);
+        final NetworkRequest networkRequest = new NetworkRequest.Builder()
+                .addCapability(NET_CAPABILITY_INTERNET).build();
+        registerNetworkCallback(networkRequest, cb);
+        final Network networkForPrivateDns = mCm.getActiveNetwork();
         try {
             // Verifying the good private DNS sever
             mCtsNetUtils.setPrivateDnsStrictMode(goodPrivateDnsServer);
-            final Network networkForPrivateDns =  mCtsNetUtils.ensureWifiConnected();
             cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED, NETWORK_CALLBACK_TIMEOUT_MS,
                     entry -> hasPrivateDnsValidated(entry, networkForPrivateDns));
 
@@ -1040,8 +1043,11 @@ public class ConnectivityManagerTest {
                     .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         } finally {
             mCtsNetUtils.restorePrivateDnsSetting();
-            // Toggle wifi to make sure it is re-validated
-            reconnectWifi();
+            // Toggle network to make sure it is re-validated
+            mCm.reportNetworkConnectivity(networkForPrivateDns, true);
+            cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED, NETWORK_CALLBACK_TIMEOUT_MS,
+                    entry -> !(((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                    .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         }
     }
 
@@ -1127,7 +1133,6 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
-    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testRegisterNetworkCallback_withPendingIntent() {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
@@ -1271,7 +1276,6 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
-    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testRegisterNetworkRequest_identicalPendingIntents() throws Exception {
         runIdenticalPendingIntentsRequestTest(false /* useListen */);
     }
@@ -1306,9 +1310,12 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testRequestNetworkCallback_onUnavailable() {
-        final boolean previousWifiEnabledState = mWifiManager.isWifiEnabled();
-        if (previousWifiEnabledState) {
-            mCtsNetUtils.ensureWifiDisconnected(null);
+        boolean previousWifiEnabledState = false;
+        if (mPackageManager.hasSystemFeature(FEATURE_WIFI)) {
+            previousWifiEnabledState = mWifiManager.isWifiEnabled();
+            if (previousWifiEnabledState) {
+                mCtsNetUtils.ensureWifiDisconnected(null);
+            }
         }
 
         final TestNetworkCallback callback = new TestNetworkCallback();
@@ -1344,6 +1351,8 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testToggleWifiConnectivityAction() throws Exception {
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
+
         // toggleWifi calls connectToWifi and disconnectFromWifi, which both wait for
         // CONNECTIVITY_ACTION broadcasts.
         mCtsNetUtils.toggleWifi();
@@ -2715,7 +2724,8 @@ public class ConnectivityManagerTest {
             // the network with the TEST transport. Also wait for validation here, in case there
             // is a bug that's only visible when the network is validated.
             setWifiMeteredStatusAndWait(ssid, true /* isMetered */, true /* waitForValidation */);
-            defaultCallback.expect(CallbackEntry.LOST, wifiNetwork, NETWORK_CALLBACK_TIMEOUT_MS);
+            defaultCallback.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
+                    l -> l.getNetwork().equals(wifiNetwork));
             waitForAvailable(defaultCallback, tnt.getNetwork());
             // Depending on if this device has cellular connectivity or not, multiple available
             // callbacks may be received. Eventually, metered Wi-Fi should be the final available
@@ -2744,7 +2754,6 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "Instant apps cannot create test networks")
     @Test
-    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testSetOemNetworkPreferenceForTestOnlyPref() throws Exception {
         // Cannot use @IgnoreUpTo(Build.VERSION_CODES.R) because this test also requires API 31
         // shims, and @IgnoreUpTo does not check that.
@@ -2901,7 +2910,6 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "WRITE_DEVICE_CONFIG permission can't be granted to instant apps")
     @Test
-    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testRejectPartialConnectivity_TearDownNetwork() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
         assumeTrue("testAcceptPartialConnectivity_validatedNetwork cannot execute"
@@ -3207,7 +3215,6 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
-    @SkipPresubmit(reason = "Out of SLO flakiness")
     public void testMobileDataPreferredUids() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
         final boolean canRunTest = mPackageManager.hasSystemFeature(FEATURE_WIFI)
@@ -3585,6 +3592,15 @@ public class ConnectivityManagerTest {
         }
     }
 
+    private void setUidFirewallRule(final int chain, final int uid, final int rule) {
+        try {
+            mCm.setUidFirewallRule(chain, uid, rule);
+        } catch (IllegalStateException ignored) {
+            // Removing match causes an exception when the rule entry for the uid does
+            // not exist. But this is fine and can be ignored.
+        }
+    }
+
     private static final boolean EXPECT_OPEN = false;
     private static final boolean EXPECT_CLOSE = true;
 
@@ -3593,6 +3609,8 @@ public class ConnectivityManagerTest {
         runWithShellPermissionIdentity(() -> {
             // Firewall chain status will be restored after the test.
             final boolean wasChainEnabled = mCm.getFirewallChainEnabled(chain);
+            final int myUid = Process.myUid();
+            final int previousMyUidFirewallRule = mCm.getUidFirewallRule(chain, myUid);
             final int previousUidFirewallRule = mCm.getUidFirewallRule(chain, targetUid);
             final Socket socket = new Socket(TEST_HOST, HTTP_PORT);
             socket.setSoTimeout(NETWORK_REQUEST_TIMEOUT_MS);
@@ -3600,12 +3618,12 @@ public class ConnectivityManagerTest {
                 mCm.setFirewallChainEnabled(chain, false /* enable */);
                 assertSocketOpen(socket);
 
-                try {
-                    mCm.setUidFirewallRule(chain, targetUid, rule);
-                } catch (IllegalStateException ignored) {
-                    // Removing match causes an exception when the rule entry for the uid does
-                    // not exist. But this is fine and can be ignored.
+                setUidFirewallRule(chain, targetUid, rule);
+                if (targetUid != myUid) {
+                    // If this test does not set rule on myUid, remove existing rule on myUid
+                    setUidFirewallRule(chain, myUid, FIREWALL_RULE_DEFAULT);
                 }
+
                 mCm.setFirewallChainEnabled(chain, true /* enable */);
 
                 if (expectClose) {
@@ -3618,11 +3636,9 @@ public class ConnectivityManagerTest {
                     mCm.setFirewallChainEnabled(chain, wasChainEnabled);
                 }, /* cleanup */ () -> {
                     // Restore the uid firewall rule status
-                    try {
-                        mCm.setUidFirewallRule(chain, targetUid, previousUidFirewallRule);
-                    } catch (IllegalStateException ignored) {
-                        // Removing match causes an exception when the rule entry for the uid does
-                        // not exist. But this is fine and can be ignored.
+                    setUidFirewallRule(chain, targetUid, previousUidFirewallRule);
+                    if (targetUid != myUid) {
+                        setUidFirewallRule(chain, myUid, previousMyUidFirewallRule);
                     }
                 }, /* cleanup */ () -> {
                     socket.close();

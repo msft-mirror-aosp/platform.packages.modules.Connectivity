@@ -453,6 +453,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * apply to the allowedUids field.
      * They also should not mutate immutable capabilities, although for backward-compatibility
      * this is not enforced and limited to just a log.
+     * Forbidden capabilities also make no sense for networks, so they are disallowed and
+     * will be ignored with a warning.
      *
      * @param carrierPrivilegeAuthenticator the authenticator, to check access UIDs.
      */
@@ -461,6 +463,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         final NetworkCapabilities nc = new NetworkCapabilities(mDeclaredCapabilitiesUnsanitized);
         if (nc.hasConnectivityManagedCapability()) {
             Log.wtf(TAG, "BUG: " + this + " has CS-managed capability.");
+            nc.removeAllForbiddenCapabilities();
         }
         if (networkCapabilities.getOwnerUid() != nc.getOwnerUid()) {
             Log.e(TAG, toShortString() + ": ignoring attempt to change owner from "
@@ -1105,6 +1108,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      *         already present.
      */
     public boolean addRequest(NetworkRequest networkRequest) {
+        if (mHandler.getLooper().getThread() != Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "Not running on ConnectivityService thread: "
+                            + Thread.currentThread().getName());
+        }
         NetworkRequest existing = mNetworkRequests.get(networkRequest.requestId);
         if (existing == networkRequest) return false;
         if (existing != null) {
@@ -1123,6 +1131,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * Remove the specified request from this network.
      */
     public void removeRequest(int requestId) {
+        if (mHandler.getLooper().getThread() != Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "Not running on ConnectivityService thread: "
+                            + Thread.currentThread().getName());
+        }
         NetworkRequest existing = mNetworkRequests.get(requestId);
         if (existing == null) return;
         updateRequestCounts(REMOVE, existing);
@@ -1144,6 +1157,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * network.
      */
     public NetworkRequest requestAt(int index) {
+        if (mHandler.getLooper().getThread() != Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "Not running on ConnectivityService thread: "
+                            + Thread.currentThread().getName());
+        }
         return mNetworkRequests.valueAt(index);
     }
 
@@ -1174,6 +1192,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * Returns the number of requests of any type currently satisfied by this network.
      */
     public int numNetworkRequests() {
+        if (mHandler.getLooper().getThread() != Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "Not running on ConnectivityService thread: "
+                            + Thread.currentThread().getName());
+        }
         return mNetworkRequests.size();
     }
 

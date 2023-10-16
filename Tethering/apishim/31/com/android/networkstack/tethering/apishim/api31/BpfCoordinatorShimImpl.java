@@ -20,8 +20,6 @@ import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED
 
 import static com.android.net.module.util.NetworkStackConstants.RFC7421_PREFIX_LENGTH;
 
-import android.net.IpPrefix;
-import android.net.MacAddress;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.OsConstants;
@@ -39,7 +37,8 @@ import com.android.net.module.util.bpf.Tether4Value;
 import com.android.net.module.util.bpf.TetherStatsKey;
 import com.android.net.module.util.bpf.TetherStatsValue;
 import com.android.networkstack.tethering.BpfCoordinator.Dependencies;
-import com.android.networkstack.tethering.BpfCoordinator.Ipv6ForwardingRule;
+import com.android.networkstack.tethering.BpfCoordinator.Ipv6DownstreamRule;
+import com.android.networkstack.tethering.BpfCoordinator.Ipv6UpstreamRule;
 import com.android.networkstack.tethering.BpfUtils;
 import com.android.networkstack.tethering.Tether6Value;
 import com.android.networkstack.tethering.TetherDevKey;
@@ -51,9 +50,6 @@ import com.android.networkstack.tethering.TetherUpstream6Key;
 
 import java.io.FileDescriptor;
 import java.io.IOException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
-import java.util.Arrays;
 
 /**
  * Bpf coordinator class for API shims.
@@ -170,9 +166,38 @@ public class BpfCoordinatorShimImpl
     }
 
     @Override
-    public boolean tetherOffloadRuleAdd(@NonNull final Ipv6ForwardingRule rule) {
-        if (!isInitialized()) return false;
+    public boolean addIpv6UpstreamRule(@NonNull final Ipv6UpstreamRule rule) {
+        // RFC7421_PREFIX_LENGTH = 64 which is the most commonly used IPv6 subnet prefix length.
+        if (rule.sourcePrefix.getPrefixLength() != RFC7421_PREFIX_LENGTH) return false;
 
+        final TetherUpstream6Key key = rule.makeTetherUpstream6Key();
+        final Tether6Value value = rule.makeTether6Value();
+
+        try {
+            mBpfUpstream6Map.insertEntry(key, value);
+        } catch (ErrnoException | IllegalStateException e) {
+            mLog.e("Could not insert upstream IPv6 entry: " + e);
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public boolean removeIpv6UpstreamRule(@NonNull final Ipv6UpstreamRule rule) {
+        // RFC7421_PREFIX_LENGTH = 64 which is the most commonly used IPv6 subnet prefix length.
+        if (rule.sourcePrefix.getPrefixLength() != RFC7421_PREFIX_LENGTH) return false;
+
+        try {
+            mBpfUpstream6Map.deleteEntry(rule.makeTetherUpstream6Key());
+        } catch (ErrnoException e) {
+            mLog.e("Could not delete upstream IPv6 entry: " + e);
+            return false;
+        }
+        return true;
+    }
+
+    @Override
+    public boolean addIpv6DownstreamRule(@NonNull final Ipv6DownstreamRule rule) {
         final TetherDownstream6Key key = rule.makeTetherDownstream6Key();
         final Tether6Value value = rule.makeTether6Value();
 
@@ -187,9 +212,7 @@ public class BpfCoordinatorShimImpl
     }
 
     @Override
-    public boolean tetherOffloadRuleRemove(@NonNull final Ipv6ForwardingRule rule) {
-        if (!isInitialized()) return false;
-
+    public boolean removeIpv6DownstreamRule(@NonNull final Ipv6DownstreamRule rule) {
         try {
             mBpfDownstream6Map.deleteEntry(rule.makeTetherDownstream6Key());
         } catch (ErrnoException e) {
@@ -202,56 +225,9 @@ public class BpfCoordinatorShimImpl
         return true;
     }
 
-    @NonNull
-    private TetherUpstream6Key makeUpstream6Key(int downstreamIfindex, @NonNull MacAddress inDstMac,
-            @NonNull IpPrefix sourcePrefix) {
-        byte[] prefixBytes = Arrays.copyOf(sourcePrefix.getRawAddress(), 8);
-        long prefix64 = ByteBuffer.wrap(prefixBytes).order(ByteOrder.BIG_ENDIAN).getLong();
-        return new TetherUpstream6Key(downstreamIfindex, inDstMac, prefix64);
-    }
-
-    @Override
-    public boolean startUpstreamIpv6Forwarding(int downstreamIfindex, int upstreamIfindex,
-            @NonNull IpPrefix sourcePrefix, @NonNull MacAddress inDstMac,
-            @NonNull MacAddress outSrcMac, @NonNull MacAddress outDstMac, int mtu) {
-        if (!isInitialized()) return false;
-        // RFC7421_PREFIX_LENGTH = 64 which is the most commonly used IPv6 subnet prefix length.
-        if (sourcePrefix.getPrefixLength() != RFC7421_PREFIX_LENGTH) return false;
-
-        final TetherUpstream6Key key = makeUpstream6Key(downstreamIfindex, inDstMac, sourcePrefix);
-        final Tether6Value value = new Tether6Value(upstreamIfindex, outSrcMac,
-                outDstMac, OsConstants.ETH_P_IPV6, mtu);
-        try {
-            mBpfUpstream6Map.insertEntry(key, value);
-        } catch (ErrnoException | IllegalStateException e) {
-            mLog.e("Could not insert upstream6 entry: " + e);
-            return false;
-        }
-        return true;
-    }
-
-    @Override
-    public boolean stopUpstreamIpv6Forwarding(int downstreamIfindex, int upstreamIfindex,
-            @NonNull IpPrefix sourcePrefix, @NonNull MacAddress inDstMac) {
-        if (!isInitialized()) return false;
-        // RFC7421_PREFIX_LENGTH = 64 which is the most commonly used IPv6 subnet prefix length.
-        if (sourcePrefix.getPrefixLength() != RFC7421_PREFIX_LENGTH) return false;
-
-        final TetherUpstream6Key key = makeUpstream6Key(downstreamIfindex, inDstMac, sourcePrefix);
-        try {
-            mBpfUpstream6Map.deleteEntry(key);
-        } catch (ErrnoException e) {
-            mLog.e("Could not delete upstream IPv6 entry: " + e);
-            return false;
-        }
-        return true;
-    }
-
     @Override
     @Nullable
     public SparseArray<TetherStatsValue> tetherOffloadGetStats() {
-        if (!isInitialized()) return null;
-
         final SparseArray<TetherStatsValue> tetherStatsList = new SparseArray<TetherStatsValue>();
         try {
             // The reported tether stats are total data usage for all currently-active upstream
@@ -266,8 +242,6 @@ public class BpfCoordinatorShimImpl
 
     @Override
     public boolean tetherOffloadSetInterfaceQuota(int ifIndex, long quotaBytes) {
-        if (!isInitialized()) return false;
-
         // The common case is an update, where the stats already exist,
         // hence we read first, even though writing with BPF_NOEXIST
         // first would make the code simpler.
@@ -323,8 +297,6 @@ public class BpfCoordinatorShimImpl
     @Override
     @Nullable
     public TetherStatsValue tetherOffloadGetAndClearStats(int ifIndex) {
-        if (!isInitialized()) return null;
-
         // getAndClearTetherOffloadStats is called after all offload rules have already been
         // deleted for the given upstream interface. Before starting to do cleanup stuff in this
         // function, use synchronizeKernelRCU to make sure that all the current running eBPF
@@ -370,8 +342,6 @@ public class BpfCoordinatorShimImpl
     @Override
     public boolean tetherOffloadRuleAdd(boolean downstream, @NonNull Tether4Key key,
             @NonNull Tether4Value value) {
-        if (!isInitialized()) return false;
-
         try {
             if (downstream) {
                 mBpfDownstream4Map.insertEntry(key, value);
@@ -395,8 +365,6 @@ public class BpfCoordinatorShimImpl
 
     @Override
     public boolean tetherOffloadRuleRemove(boolean downstream, @NonNull Tether4Key key) {
-        if (!isInitialized()) return false;
-
         try {
             if (downstream) {
                 if (!mBpfDownstream4Map.deleteEntry(key)) return false;  // Rule did not exist
@@ -429,8 +397,6 @@ public class BpfCoordinatorShimImpl
     @Override
     public void tetherOffloadRuleForEach(boolean downstream,
             @NonNull ThrowingBiConsumer<Tether4Key, Tether4Value> action) {
-        if (!isInitialized()) return;
-
         try {
             if (downstream) {
                 mBpfDownstream4Map.forEach(action);
@@ -444,8 +410,6 @@ public class BpfCoordinatorShimImpl
 
     @Override
     public boolean attachProgram(String iface, boolean downstream, boolean ipv4) {
-        if (!isInitialized()) return false;
-
         try {
             BpfUtils.attachProgram(iface, downstream, ipv4);
         } catch (IOException e) {
@@ -457,8 +421,6 @@ public class BpfCoordinatorShimImpl
 
     @Override
     public boolean detachProgram(String iface, boolean ipv4) {
-        if (!isInitialized()) return false;
-
         try {
             BpfUtils.detachProgram(iface, ipv4);
         } catch (IOException e) {
@@ -476,8 +438,6 @@ public class BpfCoordinatorShimImpl
 
     @Override
     public boolean addDevMap(int ifIndex) {
-        if (!isInitialized()) return false;
-
         try {
             mBpfDevMap.updateEntry(new TetherDevKey(ifIndex), new TetherDevValue(ifIndex));
         } catch (ErrnoException e) {
@@ -489,8 +449,6 @@ public class BpfCoordinatorShimImpl
 
     @Override
     public boolean removeDevMap(int ifIndex) {
-        if (!isInitialized()) return false;
-
         try {
             mBpfDevMap.deleteEntry(new TetherDevKey(ifIndex));
         } catch (ErrnoException e) {

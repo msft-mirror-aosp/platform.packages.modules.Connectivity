@@ -17,6 +17,8 @@
 package com.android.server.connectivity.mdns;
 
 import android.annotation.NonNull;
+import android.annotation.RequiresApi;
+import android.os.Build;
 import android.os.Looper;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -33,13 +35,13 @@ import java.util.List;
  *
  * TODO: implement receiving replies and handling conflicts.
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class MdnsProber extends MdnsPacketRepeater<MdnsProber.ProbingInfo> {
     private static final long CONFLICT_RETRY_DELAY_MS = 5_000L;
 
     public MdnsProber(@NonNull Looper looper, @NonNull MdnsReplySender replySender,
-            @NonNull PacketRepeaterCallback<ProbingInfo> cb,
-            @NonNull SharedLog sharedLog) {
-        super(looper, replySender, cb, sharedLog);
+            @NonNull PacketRepeaterCallback<ProbingInfo> cb, @NonNull SharedLog sharedLog) {
+        super(looper, replySender, cb, sharedLog, MdnsAdvertiser.DBG);
     }
 
     /** Probing request to send with {@link MdnsProber}. */

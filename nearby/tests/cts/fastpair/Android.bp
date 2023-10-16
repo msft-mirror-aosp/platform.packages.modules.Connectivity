@@ -26,7 +26,7 @@ android_test {
         "bluetooth-test-util-lib",
         "compatibility-device-util-axt",
         "ctstestrunner-axt",
-        "truth-prebuilt",
+        "truth",
     ],
     libs: [
         "android.test.base",
@@ -41,7 +41,6 @@ android_test {
         "mts-tethering",
     ],
     certificate: "platform",
-    platform_apis: true,
     sdk_version: "module_current",
     min_sdk_version: "30",
     target_sdk_version: "32",

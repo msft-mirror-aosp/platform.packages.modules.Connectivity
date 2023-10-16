@@ -32,7 +32,7 @@ class MdnsPacketTest {
         // Probe packet with 1 question for Android.local, and 4 additionalRecords with 4 addresses
         // for Android.local (similar to legacy mdnsresponder probes, although it used to put 4
         // identical questions(!!) for Android.local when there were 4 addresses).
-        val packetHex = "00000000000100000004000007416e64726f6964056c6f63616c0000ff0001c00c000100" +
+        val packetHex = "007b0000000100000004000007416e64726f6964056c6f63616c0000ff0001c00c000100" +
                 "01000000780004c000027bc00c001c000100000078001020010db8000000000000000000000123c0" +
                 "0c001c000100000078001020010db8000000000000000000000456c00c001c000100000078001020" +
                 "010db8000000000000000000000789"
@@ -41,6 +41,7 @@ class MdnsPacketTest {
         val reader = MdnsPacketReader(bytes, bytes.size)
         val packet = MdnsPacket.parse(reader)
 
+        assertEquals(123, packet.transactionId)
         assertEquals(1, packet.questions.size)
         assertEquals(0, packet.answers.size)
         assertEquals(4, packet.authorityRecords.size)
@@ -59,12 +60,12 @@ class MdnsPacketTest {
         }
 
         assertEquals(InetAddresses.parseNumericAddress("192.0.2.123"),
-                (packet.authorityRecords[0] as MdnsInetAddressRecord).inet4Address)
+                (packet.authorityRecords[0] as MdnsInetAddressRecord).inet4Address!!)
         assertEquals(InetAddresses.parseNumericAddress("2001:db8::123"),
-                (packet.authorityRecords[1] as MdnsInetAddressRecord).inet6Address)
+                (packet.authorityRecords[1] as MdnsInetAddressRecord).inet6Address!!)
         assertEquals(InetAddresses.parseNumericAddress("2001:db8::456"),
-                (packet.authorityRecords[2] as MdnsInetAddressRecord).inet6Address)
+                (packet.authorityRecords[2] as MdnsInetAddressRecord).inet6Address!!)
         assertEquals(InetAddresses.parseNumericAddress("2001:db8::789"),
-                (packet.authorityRecords[3] as MdnsInetAddressRecord).inet6Address)
+                (packet.authorityRecords[3] as MdnsInetAddressRecord).inet6Address!!)
     }
 }
