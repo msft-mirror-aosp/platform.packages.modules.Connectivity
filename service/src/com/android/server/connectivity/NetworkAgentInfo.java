@@ -64,7 +64,6 @@ import android.util.SparseArray;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.WakeupMessage;
-import com.android.modules.utils.build.SdkLevel;
 import com.android.server.ConnectivityService;
 
 import java.io.PrintWriter;
@@ -453,6 +452,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * apply to the allowedUids field.
      * They also should not mutate immutable capabilities, although for backward-compatibility
      * this is not enforced and limited to just a log.
+     * Forbidden capabilities also make no sense for networks, so they are disallowed and
+     * will be ignored with a warning.
      *
      * @param carrierPrivilegeAuthenticator the authenticator, to check access UIDs.
      */
@@ -461,14 +462,15 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         final NetworkCapabilities nc = new NetworkCapabilities(mDeclaredCapabilitiesUnsanitized);
         if (nc.hasConnectivityManagedCapability()) {
             Log.wtf(TAG, "BUG: " + this + " has CS-managed capability.");
+            nc.removeAllForbiddenCapabilities();
         }
         if (networkCapabilities.getOwnerUid() != nc.getOwnerUid()) {
             Log.e(TAG, toShortString() + ": ignoring attempt to change owner from "
                     + networkCapabilities.getOwnerUid() + " to " + nc.getOwnerUid());
             nc.setOwnerUid(networkCapabilities.getOwnerUid());
         }
-        restrictCapabilitiesFromNetworkAgent(
-                nc, creatorUid, mHasAutomotiveFeature, carrierPrivilegeAuthenticator);
+        restrictCapabilitiesFromNetworkAgent(nc, creatorUid, mHasAutomotiveFeature,
+                mConnServiceDeps, carrierPrivilegeAuthenticator);
         return nc;
     }
 
@@ -598,6 +600,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
     private static final String TAG = ConnectivityService.class.getSimpleName();
     private static final boolean VDBG = false;
     private final ConnectivityService mConnService;
+    private final ConnectivityService.Dependencies mConnServiceDeps;
     private final Context mContext;
     private final Handler mHandler;
     private final QosCallbackTracker mQosCallbackTracker;
@@ -625,6 +628,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         networkCapabilities = nc;
         networkAgentConfig = config;
         mConnService = connService;
+        mConnServiceDeps = deps;
         setScore(score); // uses members connService, networkCapabilities and networkAgentConfig
         clatd = new Nat464Xlat(this, netd, dnsResolver, deps);
         mContext = context;
@@ -1515,23 +1519,26 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      */
     public static void restrictCapabilitiesFromNetworkAgent(@NonNull final NetworkCapabilities nc,
             final int creatorUid, final boolean hasAutomotiveFeature,
+            @NonNull final ConnectivityService.Dependencies deps,
             @Nullable final CarrierPrivilegeAuthenticator authenticator) {
         if (nc.hasTransport(TRANSPORT_TEST)) {
             nc.restrictCapabilitiesForTestNetwork(creatorUid);
         }
-        if (!areAllowedUidsAcceptableFromNetworkAgent(nc, hasAutomotiveFeature, authenticator)) {
+        if (!areAllowedUidsAcceptableFromNetworkAgent(
+                nc, hasAutomotiveFeature, deps, authenticator)) {
             nc.setAllowedUids(new ArraySet<>());
         }
     }
 
     private static boolean areAllowedUidsAcceptableFromNetworkAgent(
             @NonNull final NetworkCapabilities nc, final boolean hasAutomotiveFeature,
+            @NonNull final ConnectivityService.Dependencies deps,
             @Nullable final CarrierPrivilegeAuthenticator carrierPrivilegeAuthenticator) {
         // NCs without access UIDs are fine.
         if (!nc.hasAllowedUids()) return true;
         // S and below must never accept access UIDs, even if an agent sends them, because netd
         // didn't support the required feature in S.
-        if (!SdkLevel.isAtLeastT()) return false;
+        if (!deps.isAtLeastT()) return false;
 
         // On a non-restricted network, access UIDs make no sense
         if (nc.hasCapability(NET_CAPABILITY_NOT_RESTRICTED)) return false;
