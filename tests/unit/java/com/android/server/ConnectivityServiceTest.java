@@ -1720,6 +1720,14 @@ public class ConnectivityServiceTest {
                 UnderlyingNetworkInfo underlyingNetworkInfo) {
             mUnderlyingNetworkInfo = underlyingNetworkInfo;
         }
+
+        @Override
+        public synchronized boolean setUnderlyingNetworks(@Nullable Network[] networks) {
+            if (!mAgentRegistered) return false;
+            mMockNetworkAgent.setUnderlyingNetworks(
+                    (networks == null) ? null : Arrays.asList(networks));
+            return true;
+        }
     }
 
     private UidRangeParcel[] toUidRangeStableParcels(final @NonNull Set<UidRange> ranges) {
@@ -2265,6 +2273,11 @@ public class ConnectivityServiceTest {
             mRateLimitHistory.add(new Pair<>(iface, -1L));
             assertNotEquals(-1L, (long) mActiveRateLimit.getOrDefault(iface, -1L));
             mActiveRateLimit.put(iface, -1L);
+        }
+
+        @Override
+        public int getBpfProgramId(final int attachType, @NonNull final String cgroupPath) {
+            return 0;
         }
 
         @Override
@@ -10249,7 +10262,8 @@ public class ConnectivityServiceTest {
         // Init lockdown state to simulate LockdownVpnTracker behavior.
         mCm.setLegacyLockdownVpnEnabled(true);
         mMockVpn.setEnableTeardown(false);
-        mMockVpn.setLockdown(true);
+        final Set<Range<Integer>> ranges = UidRange.toIntRanges(Set.of(PRIMARY_UIDRANGE));
+        mCm.setRequireVpnForUids(true /* requireVpn */, ranges);
 
         // Bring up a network.
         final LinkProperties cellLp = new LinkProperties();
@@ -12819,7 +12833,8 @@ public class ConnectivityServiceTest {
 
     private NetworkAgentInfo fakeNai(NetworkCapabilities nc, NetworkInfo networkInfo) {
         return new NetworkAgentInfo(null, new Network(NET_ID), networkInfo, new LinkProperties(),
-                nc, new NetworkScore.Builder().setLegacyInt(0).build(),
+                nc, null /* localNetworkConfig */,
+                new NetworkScore.Builder().setLegacyInt(0).build(),
                 mServiceContext, null, new NetworkAgentConfig(), mService, null, null, 0,
                 INVALID_UID, TEST_LINGER_DELAY_MS, mQosCallbackTracker,
                 new ConnectivityService.Dependencies());
