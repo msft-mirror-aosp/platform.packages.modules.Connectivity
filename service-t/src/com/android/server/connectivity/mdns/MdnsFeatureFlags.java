@@ -20,18 +20,39 @@ package com.android.server.connectivity.mdns;
  */
 public class MdnsFeatureFlags {
     /**
-     * The feature flag for control whether the  mDNS offload is enabled or not.
+     * A feature flag to control whether the mDNS offload is enabled or not.
      */
     public static final String NSD_FORCE_DISABLE_MDNS_OFFLOAD = "nsd_force_disable_mdns_offload";
+
+    /**
+     * A feature flag to control whether the probing question should include
+     * InetAddressRecords or not.
+     */
+    public static final String INCLUDE_INET_ADDRESS_RECORDS_IN_PROBING =
+            "include_inet_address_records_in_probing";
+    /**
+     * A feature flag to control whether expired services removal should be enabled.
+     */
+    public static final String NSD_EXPIRED_SERVICES_REMOVAL =
+            "nsd_expired_services_removal";
 
     // Flag for offload feature
     public final boolean mIsMdnsOffloadFeatureEnabled;
 
+    // Flag for including InetAddressRecords in probing questions.
+    public final boolean mIncludeInetAddressRecordsInProbing;
+
+    // Flag for expired services removal
+    public final boolean mIsExpiredServicesRemovalEnabled;
+
     /**
      * The constructor for {@link MdnsFeatureFlags}.
      */
-    public MdnsFeatureFlags(boolean isOffloadFeatureEnabled) {
+    public MdnsFeatureFlags(boolean isOffloadFeatureEnabled,
+            boolean includeInetAddressRecordsInProbing, boolean isExpiredServicesRemovalEnabled) {
         mIsMdnsOffloadFeatureEnabled = isOffloadFeatureEnabled;
+        mIncludeInetAddressRecordsInProbing = includeInetAddressRecordsInProbing;
+        mIsExpiredServicesRemovalEnabled = isExpiredServicesRemovalEnabled;
     }
 
 
@@ -44,16 +65,22 @@ public class MdnsFeatureFlags {
     public static final class Builder {
 
         private boolean mIsMdnsOffloadFeatureEnabled;
+        private boolean mIncludeInetAddressRecordsInProbing;
+        private boolean mIsExpiredServicesRemovalEnabled;
 
         /**
          * The constructor for {@link Builder}.
          */
         public Builder() {
             mIsMdnsOffloadFeatureEnabled = false;
+            mIncludeInetAddressRecordsInProbing = false;
+            mIsExpiredServicesRemovalEnabled = true; // Default enabled.
         }
 
         /**
-         * Set if the mDNS offload  feature is enabled.
+         * Set whether the mDNS offload feature is enabled.
+         *
+         * @see #NSD_FORCE_DISABLE_MDNS_OFFLOAD
          */
         public Builder setIsMdnsOffloadFeatureEnabled(boolean isMdnsOffloadFeatureEnabled) {
             mIsMdnsOffloadFeatureEnabled = isMdnsOffloadFeatureEnabled;
@@ -61,11 +88,32 @@ public class MdnsFeatureFlags {
         }
 
         /**
+         * Set whether the probing question should include InetAddressRecords.
+         *
+         * @see #INCLUDE_INET_ADDRESS_RECORDS_IN_PROBING
+         */
+        public Builder setIncludeInetAddressRecordsInProbing(
+                boolean includeInetAddressRecordsInProbing) {
+            mIncludeInetAddressRecordsInProbing = includeInetAddressRecordsInProbing;
+            return this;
+        }
+
+        /**
+         * Set whether the expired services removal is enabled.
+         *
+         * @see #NSD_EXPIRED_SERVICES_REMOVAL
+         */
+        public Builder setIsExpiredServicesRemovalEnabled(boolean isExpiredServicesRemovalEnabled) {
+            mIsExpiredServicesRemovalEnabled = isExpiredServicesRemovalEnabled;
+            return this;
+        }
+
+        /**
          * Builds a {@link MdnsFeatureFlags} with the arguments supplied to this builder.
          */
         public MdnsFeatureFlags build() {
-            return new MdnsFeatureFlags(mIsMdnsOffloadFeatureEnabled);
+            return new MdnsFeatureFlags(mIsMdnsOffloadFeatureEnabled,
+                    mIncludeInetAddressRecordsInProbing, mIsExpiredServicesRemovalEnabled);
         }
-
     }
 }
