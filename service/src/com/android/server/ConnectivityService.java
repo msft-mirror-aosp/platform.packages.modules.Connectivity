@@ -100,6 +100,11 @@ import static android.system.OsConstants.ETH_P_ALL;
 import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET4_BIND;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET6_BIND;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_EGRESS;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_INGRESS;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_SOCK_CREATE;
 import static com.android.net.module.util.NetworkMonitorUtils.isPrivateDnsValidationRequired;
 import static com.android.net.module.util.PermissionUtils.checkAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
@@ -161,6 +166,7 @@ import android.net.InetAddresses;
 import android.net.IpMemoryStore;
 import android.net.IpPrefix;
 import android.net.LinkProperties;
+import android.net.LocalNetworkConfig;
 import android.net.MatchAllNetworkSpecifier;
 import android.net.NativeNetworkConfig;
 import android.net.NativeNetworkType;
@@ -279,6 +285,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.BinderUtils;
 import com.android.net.module.util.BitUtils;
+import com.android.net.module.util.BpfUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.InterfaceParams;
@@ -1528,6 +1535,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
+         * Get BPF program Id from CGROUP. See {@link BpfUtils#getProgramId}.
+         */
+        public int getBpfProgramId(final int attachType, @NonNull final String cgroupPath)
+                throws IOException {
+            return BpfUtils.getProgramId(attachType, cgroupPath);
+        }
+
+        /**
          * Wraps {@link BroadcastOptionsShimImpl#newInstance(BroadcastOptions)}
          */
         // TODO: when available in all active branches:
@@ -1784,7 +1799,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mNoServiceNetwork = new NetworkAgentInfo(null,
                 new Network(INetd.UNREACHABLE_NET_ID),
                 new NetworkInfo(TYPE_NONE, 0, "", ""),
-                new LinkProperties(), new NetworkCapabilities(),
+                new LinkProperties(), new NetworkCapabilities(), null /* localNetworkConfig */,
                 new NetworkScore.Builder().setLegacyInt(0).build(), mContext, null,
                 new NetworkAgentConfig(), this, null, null, 0, INVALID_UID,
                 mLingerDelayMs, mQosCallbackTracker, mDeps);
@@ -3251,6 +3266,26 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.decreaseIndent();
     }
 
+    private void dumpBpfProgramStatus(IndentingPrintWriter pw) {
+        pw.println("Bpf Program Status:");
+        pw.increaseIndent();
+        try {
+            pw.print("CGROUP_INET_INGRESS: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET_INGRESS, BpfUtils.CGROUP_PATH));
+            pw.print("CGROUP_INET_EGRESS: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET_EGRESS, BpfUtils.CGROUP_PATH));
+            pw.print("CGROUP_INET_SOCK_CREATE: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET_SOCK_CREATE, BpfUtils.CGROUP_PATH));
+            pw.print("CGROUP_INET4_BIND: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET4_BIND, BpfUtils.CGROUP_PATH));
+            pw.print("CGROUP_INET6_BIND: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET6_BIND, BpfUtils.CGROUP_PATH));
+        } catch (IOException e) {
+            pw.println("  IOException");
+        }
+        pw.decreaseIndent();
+    }
+
     @VisibleForTesting
     static final String KEY_DESTROY_FROZEN_SOCKETS_VERSION = "destroy_frozen_sockets_version";
     @VisibleForTesting
@@ -3865,6 +3900,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         dumpCloseFrozenAppSockets(pw);
 
         pw.println();
+        dumpBpfProgramStatus(pw);
+
+        pw.println();
 
         if (!CollectionUtils.contains(args, SHORT_ARG)) {
             pw.println();
@@ -4130,6 +4168,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 case NetworkAgent.EVENT_NETWORK_INFO_CHANGED: {
                     NetworkInfo info = (NetworkInfo) arg.second;
                     updateNetworkInfo(nai, info);
+                    break;
+                }
+                case NetworkAgent.EVENT_LOCAL_NETWORK_CONFIG_CHANGED: {
+                    final LocalNetworkConfig config = (LocalNetworkConfig) arg.second;
+                    updateLocalNetworkConfig(nai, config);
                     break;
                 }
                 case NetworkAgent.EVENT_NETWORK_SCORE_CHANGED: {
@@ -8093,13 +8136,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * @param networkCapabilities the initial capabilites of this network. They can be updated
      *         later : see {@link #updateCapabilities}.
      * @param initialScore the initial score of the network. See {@link NetworkAgentInfo#getScore}.
+     * @param localNetworkConfig config about this local network, or null if not a local network
      * @param networkAgentConfig metadata about the network. This is never updated.
      * @param providerId the ID of the provider owning this NetworkAgent.
      * @return the network created for this agent.
      */
-    public Network registerNetworkAgent(INetworkAgent na, NetworkInfo networkInfo,
-            LinkProperties linkProperties, NetworkCapabilities networkCapabilities,
-            @NonNull NetworkScore initialScore, NetworkAgentConfig networkAgentConfig,
+    public Network registerNetworkAgent(INetworkAgent na,
+            NetworkInfo networkInfo,
+            LinkProperties linkProperties,
+            NetworkCapabilities networkCapabilities,
+            @NonNull NetworkScore initialScore,
+            @Nullable LocalNetworkConfig localNetworkConfig,
+            NetworkAgentConfig networkAgentConfig,
             int providerId) {
         Objects.requireNonNull(networkInfo, "networkInfo must not be null");
         Objects.requireNonNull(linkProperties, "linkProperties must not be null");
@@ -8117,12 +8165,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // Before U, netd doesn't support PHYSICAL_LOCAL networks so this can't work.
             throw new IllegalArgumentException("Local agents are not supported in this version");
         }
+        final boolean hasLocalNetworkConfig = null != localNetworkConfig;
+        if (hasLocalCap != hasLocalNetworkConfig) {
+            throw new IllegalArgumentException(null != localNetworkConfig
+                    ? "Only local network agents can have a LocalNetworkConfig"
+                    : "Local network agents must have a LocalNetworkConfig"
+            );
+        }
 
         final int uid = mDeps.getCallingUid();
         final long token = Binder.clearCallingIdentity();
         try {
             return registerNetworkAgentInternal(na, networkInfo, linkProperties,
-                    networkCapabilities, initialScore, networkAgentConfig, providerId, uid);
+                    networkCapabilities, initialScore, networkAgentConfig, localNetworkConfig,
+                    providerId, uid);
         } finally {
             Binder.restoreCallingIdentity(token);
         }
@@ -8130,7 +8186,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private Network registerNetworkAgentInternal(INetworkAgent na, NetworkInfo networkInfo,
             LinkProperties linkProperties, NetworkCapabilities networkCapabilities,
-            NetworkScore currentScore, NetworkAgentConfig networkAgentConfig, int providerId,
+            NetworkScore currentScore, NetworkAgentConfig networkAgentConfig,
+            @Nullable LocalNetworkConfig localNetworkConfig, int providerId,
             int uid) {
 
         // Make a copy of the passed NI, LP, NC as the caller may hold a reference to them
@@ -8138,6 +8195,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final NetworkInfo niCopy = new NetworkInfo(networkInfo);
         final NetworkCapabilities ncCopy = new NetworkCapabilities(networkCapabilities);
         final LinkProperties lpCopy = new LinkProperties(linkProperties);
+        // No need to copy |localNetworkConfiguration| as it is immutable.
 
         // At this point the capabilities/properties are untrusted and unverified, e.g. checks that
         // the capabilities' access UIDs comply with security limitations. They will be sanitized
@@ -8145,9 +8203,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // because some of the checks must happen on the handler thread.
         final NetworkAgentInfo nai = new NetworkAgentInfo(na,
                 new Network(mNetIdManager.reserveNetId()), niCopy, lpCopy, ncCopy,
-                currentScore, mContext, mTrackerHandler, new NetworkAgentConfig(networkAgentConfig),
-                this, mNetd, mDnsResolver, providerId, uid, mLingerDelayMs,
-                mQosCallbackTracker, mDeps);
+                localNetworkConfig, currentScore, mContext, mTrackerHandler,
+                new NetworkAgentConfig(networkAgentConfig), this, mNetd, mDnsResolver, providerId,
+                uid, mLingerDelayMs, mQosCallbackTracker, mDeps);
 
         final String extraInfo = niCopy.getExtraInfo();
         final String name = TextUtils.isEmpty(extraInfo)
@@ -8880,6 +8938,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     /** Convenience method to update the capabilities for a given network. */
     private void updateCapabilitiesForNetwork(NetworkAgentInfo nai) {
         updateCapabilities(nai.getScore(), nai, nai.networkCapabilities);
+    }
+
+    private void updateLocalNetworkConfig(@NonNull final NetworkAgentInfo nai,
+            @NonNull final LocalNetworkConfig config) {
+        if (!nai.networkCapabilities.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)) {
+            Log.wtf(TAG, "Ignoring update of a local network info on non-local network " + nai);
+            return;
+        }
+        // TODO : actually apply the diff.
+        nai.localNetworkConfig = config;
     }
 
     /**
@@ -10770,6 +10838,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         Log.d(TAG, "Reevaluating network " + nai.network);
                         reportNetworkConnectivity(nai.network, !nai.isValidated());
                         return 0;
+                    case "bpf-get-cgroup-program-id": {
+                        // Usage : adb shell cmd connectivity bpf-get-cgroup-program-id <type>
+                        // Get cgroup bpf program Id for the given type. See BpfUtils#getProgramId
+                        // for more detail.
+                        // If type can't be parsed, this throws NumberFormatException, which
+                        // is passed back to adb who prints it.
+                        final int type = Integer.parseInt(getNextArg());
+                        final int ret = BpfUtils.getProgramId(type, BpfUtils.CGROUP_PATH);
+                        pw.println(ret);
+                        return 0;
+                    }
                     default:
                         return handleDefaultCommands(cmd);
                 }
