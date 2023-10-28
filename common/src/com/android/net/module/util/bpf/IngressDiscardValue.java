@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022 The Android Open Source Project
+ * Copyright (C) 2023 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,22 +14,21 @@
  * limitations under the License.
  */
 
-package com.android.server;
+package com.android.net.module.util.bpf;
 
 import com.android.net.module.util.Struct;
 
-/** Value type for per uid traffic control configuration map  */
-public class UidOwnerValue extends Struct {
-    // Allowed interface index. Only applicable if IIF_MATCH is set in the rule bitmask below.
+/** Value type for ingress discard map */
+public class IngressDiscardValue extends Struct {
+    // Allowed interface indexes.
+    // Use the same value for iif1 and iif2 if there is only a single allowed interface index.
     @Field(order = 0, type = Type.S32)
-    public final int iif;
+    public final int iif1;
+    @Field(order = 1, type = Type.S32)
+    public final int iif2;
 
-    // A bitmask of match type.
-    @Field(order = 1, type = Type.U32)
-    public final long rule;
-
-    public UidOwnerValue(final int iif, final long rule) {
-        this.iif = iif;
-        this.rule = rule;
+    public IngressDiscardValue(final int iif1, final int iif2) {
+        this.iif1 = iif1;
+        this.iif2 = iif2;
     }
 }

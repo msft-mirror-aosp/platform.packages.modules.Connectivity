@@ -90,6 +90,7 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkInfo;
+import android.net.RoutingCoordinatorManager;
 import android.net.TetherStatesParcel;
 import android.net.TetheredClient;
 import android.net.TetheringCallbackStartedParcel;
@@ -136,6 +137,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.NetdUtils;
+import com.android.net.module.util.SdkUtil.LateSdk;
 import com.android.net.module.util.SharedLog;
 import com.android.networkstack.apishim.common.BluetoothPanShim;
 import com.android.networkstack.apishim.common.BluetoothPanShim.TetheredInterfaceCallbackShim;
@@ -250,6 +252,10 @@ public class Tethering {
     private final Handler mHandler;
     private final INetd mNetd;
     private final NetdCallback mNetdCallback;
+    // Contains null if the connectivity module is unsupported, as the routing coordinator is not
+    // available. Must use LateSdk because MessageUtils enumerates fields in this class, so it
+    // must be able to find all classes at runtime.
+    @NonNull private final LateSdk<RoutingCoordinatorManager> mRoutingCoordinator;
     private final UserRestrictionActionListener mTetheringRestriction;
     private final ActiveDataSubIdListener mActiveDataSubIdListener;
     private final ConnectedClientsTracker mConnectedClientsTracker;
@@ -296,6 +302,7 @@ public class Tethering {
         mDeps = deps;
         mContext = mDeps.getContext();
         mNetd = mDeps.getINetd(mContext);
+        mRoutingCoordinator = mDeps.getRoutingCoordinator(mContext);
         mLooper = mDeps.getTetheringLooper();
         mNotificationUpdater = mDeps.getNotificationUpdater(mContext, mLooper);
         mTetheringMetrics = mDeps.getTetheringMetrics();
@@ -1680,6 +1687,8 @@ public class Tethering {
         static final int EVENT_IFACE_UPDATE_LINKPROPERTIES      = BASE_MAIN_SM + 7;
         // Events from EntitlementManager to choose upstream again.
         static final int EVENT_UPSTREAM_PERMISSION_CHANGED      = BASE_MAIN_SM + 8;
+        // Internal request from IpServer to enable or disable downstream.
+        static final int EVENT_REQUEST_CHANGE_DOWNSTREAM        = BASE_MAIN_SM + 9;
         private final State mInitialState;
         private final State mTetherModeAliveState;
 
@@ -2177,6 +2186,12 @@ public class Tethering {
                         if (mUpstreamWanted) {
                             handleUpstreamNetworkMonitorCallback(message.arg1, message.obj);
                         }
+                        break;
+                    }
+                    case EVENT_REQUEST_CHANGE_DOWNSTREAM: {
+                        final int tetheringType = message.arg1;
+                        final Boolean enabled = (Boolean) message.obj;
+                        enableTetheringInternal(tetheringType, enabled, null);
                         break;
                     }
                     default:
@@ -2736,7 +2751,8 @@ public class Tethering {
 
             @Override
             public void requestEnableTethering(int tetheringType, boolean enabled) {
-                enableTetheringInternal(tetheringType, enabled, null);
+                mTetherMainSM.sendMessage(TetherMainSM.EVENT_REQUEST_CHANGE_DOWNSTREAM,
+                        tetheringType, 0, enabled ? Boolean.TRUE : Boolean.FALSE);
             }
         };
     }
@@ -2834,9 +2850,10 @@ public class Tethering {
 
         mLog.i("adding IpServer for: " + iface);
         final TetherState tetherState = new TetherState(
-                new IpServer(iface, mLooper, interfaceType, mLog, mNetd, mBpfCoordinator,
-                             makeControlCallback(), mConfig, mPrivateAddressCoordinator,
-                             mTetheringMetrics, mDeps.getIpServerDependencies()), isNcm);
+                new IpServer(iface, mHandler, interfaceType, mLog, mNetd, mBpfCoordinator,
+                        mRoutingCoordinator, makeControlCallback(), mConfig,
+                        mPrivateAddressCoordinator, mTetheringMetrics,
+                        mDeps.getIpServerDependencies()), isNcm);
         mTetherStates.put(iface, tetherState);
         tetherState.ipServer.start();
     }
