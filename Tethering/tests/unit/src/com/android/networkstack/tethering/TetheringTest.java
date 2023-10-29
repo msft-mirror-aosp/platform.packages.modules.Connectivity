@@ -142,6 +142,7 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
 import android.net.RouteInfo;
+import android.net.RoutingCoordinatorManager;
 import android.net.TetherStatesParcel;
 import android.net.TetheredClient;
 import android.net.TetheredClient.AddressInfo;
@@ -191,6 +192,7 @@ import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.internal.util.test.FakeSettingsProvider;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.InterfaceParams;
+import com.android.net.module.util.SdkUtil.LateSdk;
 import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.ip.IpNeighborMonitor;
 import com.android.networkstack.apishim.common.BluetoothPanShim;
@@ -480,6 +482,12 @@ public class TetheringTest {
                 Runnable callback) {
             mEntitleMgr = spy(super.getEntitlementManager(ctx, h, log, callback));
             return mEntitleMgr;
+        }
+
+        @Nullable
+        @Override
+        public LateSdk<RoutingCoordinatorManager> getRoutingCoordinator(final Context context) {
+            return new LateSdk<>(null);
         }
 
         @Override
@@ -2872,24 +2880,33 @@ public class TetheringTest {
         final Network wifiNetwork = new Network(200);
         final Network[] allNetworks = { wifiNetwork };
         doReturn(allNetworks).when(mCm).getAllNetworks();
+        InOrder inOrder = inOrder(mUsbManager, mNetd);
         runUsbTethering(null);
+
+        inOrder.verify(mNetd).tetherInterfaceAdd(TEST_RNDIS_IFNAME);
+
         final ArgumentCaptor<InterfaceConfigurationParcel> ifaceConfigCaptor =
                 ArgumentCaptor.forClass(InterfaceConfigurationParcel.class);
         verify(mNetd).interfaceSetCfg(ifaceConfigCaptor.capture());
         final String ipv4Address = ifaceConfigCaptor.getValue().ipv4Addr;
         verify(mDhcpServer, timeout(DHCPSERVER_START_TIMEOUT_MS).times(1)).startWithCallbacks(
                 any(), any());
-        reset(mUsbManager);
 
         // Cause a prefix conflict by assigning a /30 out of the downstream's /24 to the upstream.
         updateV4Upstream(new LinkAddress(InetAddresses.parseNumericAddress(ipv4Address), 30),
                 wifiNetwork, TEST_WIFI_IFNAME, TRANSPORT_WIFI);
         // verify turn off usb tethering
-        verify(mUsbManager).setCurrentFunctions(UsbManager.FUNCTION_NONE);
+        inOrder.verify(mUsbManager).setCurrentFunctions(UsbManager.FUNCTION_NONE);
         sendUsbBroadcast(true, true, -1 /* function */);
         mLooper.dispatchAll();
+        inOrder.verify(mNetd).tetherInterfaceRemove(TEST_RNDIS_IFNAME);
+
         // verify restart usb tethering
-        verify(mUsbManager).setCurrentFunctions(UsbManager.FUNCTION_RNDIS);
+        inOrder.verify(mUsbManager).setCurrentFunctions(UsbManager.FUNCTION_RNDIS);
+
+        sendUsbBroadcast(true, true, TETHER_USB_RNDIS_FUNCTION);
+        mLooper.dispatchAll();
+        inOrder.verify(mNetd).tetherInterfaceAdd(TEST_RNDIS_IFNAME);
     }
 
     @Test

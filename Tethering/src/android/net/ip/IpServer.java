@@ -33,6 +33,7 @@ import static android.system.OsConstants.RT_SCOPE_UNIVERSE;
 
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
 import static com.android.net.module.util.NetworkStackConstants.RFC7421_PREFIX_LENGTH;
+import static com.android.networkstack.tethering.TetheringConfiguration.USE_SYNC_SM;
 import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
 import static com.android.networkstack.tethering.util.PrefixUtils.asIpPrefix;
 import static com.android.networkstack.tethering.util.TetheringMessageBase.BASE_IPSERVER;
@@ -44,6 +45,7 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.MacAddress;
 import android.net.RouteInfo;
+import android.net.RoutingCoordinatorManager;
 import android.net.TetheredClient;
 import android.net.TetheringManager;
 import android.net.TetheringRequestParcel;
@@ -55,7 +57,6 @@ import android.net.dhcp.IDhcpEventCallbacks;
 import android.net.dhcp.IDhcpServer;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
 import android.os.Handler;
-import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
@@ -65,12 +66,13 @@ import android.util.SparseArray;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
-import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetdUtils;
+import com.android.net.module.util.SdkUtil.LateSdk;
 import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.ip.InterfaceController;
 import com.android.net.module.util.ip.IpNeighborMonitor;
@@ -83,12 +85,15 @@ import com.android.networkstack.tethering.TetheringConfiguration;
 import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
+import com.android.networkstack.tethering.util.StateMachineShim;
+import com.android.networkstack.tethering.util.SyncStateMachine.StateInfo;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -102,7 +107,7 @@ import java.util.Set;
  *
  * @hide
  */
-public class IpServer extends StateMachine {
+public class IpServer extends StateMachineShim {
     public static final int STATE_UNAVAILABLE = 0;
     public static final int STATE_AVAILABLE   = 1;
     public static final int STATE_TETHERED    = 2;
@@ -245,6 +250,11 @@ public class IpServer extends StateMachine {
     private final INetd mNetd;
     @NonNull
     private final BpfCoordinator mBpfCoordinator;
+    // Contains null if the connectivity module is unsupported, as the routing coordinator is not
+    // available. Must use LateSdk because MessageUtils enumerates fields in this class, so it
+    // must be able to find all classes at runtime.
+    @NonNull
+    private final LateSdk<RoutingCoordinatorManager> mRoutingCoordinator;
     private final Callback mCallback;
     private final InterfaceController mInterfaceCtrl;
     private final PrivateAddressCoordinator mPrivateAddressCoordinator;
@@ -290,6 +300,8 @@ public class IpServer extends StateMachine {
 
     private int mLastIPv6UpstreamIfindex = 0;
     private boolean mUpstreamSupportsBpf = false;
+    @NonNull
+    private Set<IpPrefix> mLastIPv6UpstreamPrefixes = Collections.emptySet();
 
     private class MyNeighborEventConsumer implements IpNeighborMonitor.NeighborEventConsumer {
         public void accept(NeighborEvent e) {
@@ -302,18 +314,22 @@ public class IpServer extends StateMachine {
     private LinkAddress mIpv4Address;
 
     private final TetheringMetrics mTetheringMetrics;
+    private final Handler mHandler;
 
     // TODO: Add a dependency object to pass the data members or variables from the tethering
     // object. It helps to reduce the arguments of the constructor.
     public IpServer(
-            String ifaceName, Looper looper, int interfaceType, SharedLog log,
-            INetd netd, @NonNull BpfCoordinator coordinator, Callback callback,
+            String ifaceName, Handler handler, int interfaceType, SharedLog log,
+            INetd netd, @NonNull BpfCoordinator bpfCoordinator,
+            @Nullable LateSdk<RoutingCoordinatorManager> routingCoordinator, Callback callback,
             TetheringConfiguration config, PrivateAddressCoordinator addressCoordinator,
             TetheringMetrics tetheringMetrics, Dependencies deps) {
-        super(ifaceName, looper);
+        super(ifaceName, USE_SYNC_SM ? null : handler.getLooper());
+        mHandler = handler;
         mLog = log.forSubComponent(ifaceName);
         mNetd = netd;
-        mBpfCoordinator = coordinator;
+        mBpfCoordinator = bpfCoordinator;
+        mRoutingCoordinator = routingCoordinator;
         mCallback = callback;
         mInterfaceCtrl = new InterfaceController(ifaceName, mNetd, mLog);
         mIfaceName = ifaceName;
@@ -342,13 +358,22 @@ public class IpServer extends StateMachine {
         mTetheredState = new TetheredState();
         mUnavailableState = new UnavailableState();
         mWaitingForRestartState = new WaitingForRestartState();
-        addState(mInitialState);
-        addState(mLocalHotspotState);
-        addState(mTetheredState);
-        addState(mWaitingForRestartState, mTetheredState);
-        addState(mUnavailableState);
+        final ArrayList allStates = new ArrayList<StateInfo>();
+        allStates.add(new StateInfo(mInitialState, null));
+        allStates.add(new StateInfo(mLocalHotspotState, null));
+        allStates.add(new StateInfo(mTetheredState, null));
+        allStates.add(new StateInfo(mWaitingForRestartState, mTetheredState));
+        allStates.add(new StateInfo(mUnavailableState, null));
+        addAllStates(allStates);
+    }
 
-        setInitialState(mInitialState);
+    private Handler getHandler() {
+        return mHandler;
+    }
+
+    /** Start IpServer state machine. */
+    public void start() {
+        start(mInitialState);
     }
 
     /** Interface name which IpServer served.*/
@@ -761,13 +786,8 @@ public class IpServer extends StateMachine {
 
             if (params.hasDefaultRoute) params.hopLimit = getHopLimit(upstreamIface, ttlAdjustment);
 
-            for (LinkAddress linkAddr : v6only.getLinkAddresses()) {
-                if (linkAddr.getPrefixLength() != RFC7421_PREFIX_LENGTH) continue;
-
-                final IpPrefix prefix = new IpPrefix(
-                        linkAddr.getAddress(), linkAddr.getPrefixLength());
-                params.prefixes.add(prefix);
-
+            params.prefixes = getTetherableIpv6Prefixes(v6only);
+            for (IpPrefix prefix : params.prefixes) {
                 final Inet6Address dnsServer = getLocalDnsIpFor(prefix);
                 if (dnsServer != null) {
                     params.dnses.add(dnsServer);
@@ -787,9 +807,12 @@ public class IpServer extends StateMachine {
 
         // Not support BPF on virtual upstream interface
         final boolean upstreamSupportsBpf = upstreamIface != null && !isVcnInterface(upstreamIface);
-        updateIpv6ForwardingRules(mLastIPv6UpstreamIfindex, upstreamIfIndex, upstreamSupportsBpf);
+        final Set<IpPrefix> upstreamPrefixes = params != null ? params.prefixes : Set.of();
+        updateIpv6ForwardingRules(mLastIPv6UpstreamIfindex, mLastIPv6UpstreamPrefixes,
+                upstreamIfIndex, upstreamPrefixes, upstreamSupportsBpf);
         mLastIPv6LinkProperties = v6only;
         mLastIPv6UpstreamIfindex = upstreamIfIndex;
+        mLastIPv6UpstreamPrefixes = upstreamPrefixes;
         mUpstreamSupportsBpf = upstreamSupportsBpf;
         if (mDadProxy != null) {
             mDadProxy.setUpstreamIface(upstreamIfaceParams);
@@ -807,21 +830,31 @@ public class IpServer extends StateMachine {
         for (RouteInfo route : toBeRemoved) mLinkProperties.removeRoute(route);
     }
 
-    private void addRoutesToLocalNetwork(@NonNull final List<RouteInfo> toBeAdded) {
+    private void addInterfaceToNetwork(final int netId, @NonNull final String ifaceName) {
         try {
-            // It's safe to call networkAddInterface() even if
-            // the interface is already in the local_network.
-            mNetd.networkAddInterface(INetd.LOCAL_NET_ID, mIfaceName);
-            try {
-                // Add routes from local network. Note that adding routes that
-                // already exist does not cause an error (EEXIST is silently ignored).
-                NetdUtils.addRoutesToLocalNetwork(mNetd, mIfaceName, toBeAdded);
-            } catch (IllegalStateException e) {
-                mLog.e("Failed to add IPv4/v6 routes to local table: " + e);
-                return;
+            if (null != mRoutingCoordinator.value) {
+                // TODO : remove this call in favor of using the LocalNetworkConfiguration
+                // correctly, which will let ConnectivityService do it automatically.
+                mRoutingCoordinator.value.addInterfaceToNetwork(netId, ifaceName);
+            } else {
+                mNetd.networkAddInterface(netId, ifaceName);
             }
         } catch (ServiceSpecificException | RemoteException e) {
             mLog.e("Failed to add " + mIfaceName + " to local table: ", e);
+            return;
+        }
+    }
+
+    private void addRoutesToLocalNetwork(@NonNull final List<RouteInfo> toBeAdded) {
+        // It's safe to call addInterfaceToNetwork() even if
+        // the interface is already in the local_network.
+        addInterfaceToNetwork(INetd.LOCAL_NET_ID, mIfaceName);
+        try {
+            // Add routes from local network. Note that adding routes that
+            // already exist does not cause an error (EEXIST is silently ignored).
+            NetdUtils.addRoutesToLocalNetwork(mNetd, mIfaceName, toBeAdded);
+        } catch (IllegalStateException e) {
+            mLog.e("Failed to add IPv4/v6 routes to local table: " + e);
             return;
         }
 
@@ -897,14 +930,17 @@ public class IpServer extends StateMachine {
         return supportsBpf ? ifindex : NO_UPSTREAM;
     }
 
-    // Handles updates to IPv6 forwarding rules if the upstream changes.
-    private void updateIpv6ForwardingRules(int prevUpstreamIfindex, int upstreamIfindex,
-            boolean upstreamSupportsBpf) {
+    // Handles updates to IPv6 forwarding rules if the upstream or its prefixes change.
+    private void updateIpv6ForwardingRules(int prevUpstreamIfindex,
+            @NonNull Set<IpPrefix> prevUpstreamPrefixes, int upstreamIfindex,
+            @NonNull Set<IpPrefix> upstreamPrefixes, boolean upstreamSupportsBpf) {
         // If the upstream interface has changed, remove all rules and re-add them with the new
         // upstream interface. If upstream is a virtual network, treated as no upstream.
-        if (prevUpstreamIfindex != upstreamIfindex) {
+        if (prevUpstreamIfindex != upstreamIfindex
+                || !prevUpstreamPrefixes.equals(upstreamPrefixes)) {
             mBpfCoordinator.updateAllIpv6Rules(this, this.mInterfaceParams,
-                    getInterfaceIndexForRule(upstreamIfindex, upstreamSupportsBpf));
+                    getInterfaceIndexForRule(upstreamIfindex, upstreamSupportsBpf),
+                    upstreamPrefixes);
         }
     }
 
@@ -1309,7 +1345,7 @@ public class IpServer extends StateMachine {
             for (String ifname : mUpstreamIfaceSet.ifnames) cleanupUpstreamInterface(ifname);
             mUpstreamIfaceSet = null;
             mBpfCoordinator.updateAllIpv6Rules(
-                    IpServer.this, IpServer.this.mInterfaceParams, NO_UPSTREAM);
+                    IpServer.this, IpServer.this.mInterfaceParams, NO_UPSTREAM, Set.of());
         }
 
         private void cleanupUpstreamInterface(String upstreamIface) {
@@ -1495,5 +1531,22 @@ public class IpServer extends StateMachine {
             if (random == value) return dflt;
         }
         return random;
+    }
+
+    /** Get IPv6 prefixes from LinkProperties */
+    @NonNull
+    @VisibleForTesting
+    static HashSet<IpPrefix> getTetherableIpv6Prefixes(@NonNull Collection<LinkAddress> addrs) {
+        final HashSet<IpPrefix> prefixes = new HashSet<>();
+        for (LinkAddress linkAddr : addrs) {
+            if (linkAddr.getPrefixLength() != RFC7421_PREFIX_LENGTH) continue;
+            prefixes.add(new IpPrefix(linkAddr.getAddress(), RFC7421_PREFIX_LENGTH));
+        }
+        return prefixes;
+    }
+
+    @NonNull
+    private HashSet<IpPrefix> getTetherableIpv6Prefixes(@NonNull LinkProperties lp) {
+        return getTetherableIpv6Prefixes(lp.getLinkAddresses());
     }
 }

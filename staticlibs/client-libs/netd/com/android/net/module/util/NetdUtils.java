@@ -28,6 +28,7 @@ import android.net.INetd;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpPrefix;
 import android.net.RouteInfo;
+import android.net.RouteInfoParcel;
 import android.net.TetherConfigParcel;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
@@ -159,9 +160,11 @@ public class NetdUtils {
             throws RemoteException, ServiceSpecificException {
         netd.tetherInterfaceAdd(iface);
         networkAddInterface(netd, iface, maxAttempts, pollingIntervalMs);
-        List<RouteInfo> routes = new ArrayList<>();
-        routes.add(new RouteInfo(dest, null, iface, RTN_UNICAST));
-        addRoutesToLocalNetwork(netd, iface, routes);
+        // Activate a route to dest and IPv6 link local.
+        modifyRoute(netd, ModifyOperation.ADD, INetd.LOCAL_NET_ID,
+                new RouteInfo(dest, null, iface, RTN_UNICAST));
+        modifyRoute(netd, ModifyOperation.ADD, INetd.LOCAL_NET_ID,
+                new RouteInfo(new IpPrefix("fe80::/64"), null, iface, RTN_UNICAST));
     }
 
     /**
@@ -275,5 +278,39 @@ public class NetdUtils {
         } catch (RemoteException | ServiceSpecificException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    /**
+     * Convert a RouteInfo into a RouteInfoParcel.
+     */
+    public static RouteInfoParcel toRouteInfoParcel(RouteInfo route) {
+        final String nextHop;
+
+        switch (route.getType()) {
+            case RouteInfo.RTN_UNICAST:
+                if (route.hasGateway()) {
+                    nextHop = route.getGateway().getHostAddress();
+                } else {
+                    nextHop = INetd.NEXTHOP_NONE;
+                }
+                break;
+            case RouteInfo.RTN_UNREACHABLE:
+                nextHop = INetd.NEXTHOP_UNREACHABLE;
+                break;
+            case RouteInfo.RTN_THROW:
+                nextHop = INetd.NEXTHOP_THROW;
+                break;
+            default:
+                nextHop = INetd.NEXTHOP_NONE;
+                break;
+        }
+
+        final RouteInfoParcel rip = new RouteInfoParcel();
+        rip.ifName = route.getInterface();
+        rip.destination = route.getDestination().toString();
+        rip.nextHop = nextHop;
+        rip.mtu = route.getMtu();
+
+        return rip;
     }
 }
