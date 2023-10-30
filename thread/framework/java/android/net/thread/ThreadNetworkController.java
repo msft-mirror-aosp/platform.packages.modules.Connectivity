@@ -18,6 +18,7 @@ package android.net.thread;
 
 import static java.util.Objects.requireNonNull;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
@@ -30,9 +31,10 @@ import java.lang.annotation.RetentionPolicy;
  * Provides the primary API for controlling all aspects of a Thread network.
  *
  * @hide
- */
+*/
+@FlaggedApi(ThreadNetworkFlags.FLAG_THREAD_ENABLED)
 @SystemApi
-public class ThreadNetworkController {
+public final class ThreadNetworkController {
 
     /** Thread standard version 1.3. */
     public static final int THREAD_VERSION_1_3 = 4;
