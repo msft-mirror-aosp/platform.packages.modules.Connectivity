@@ -112,6 +112,9 @@ DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
                        BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, LOAD_ON_ENG,
                        LOAD_ON_USER, LOAD_ON_USERDEBUG);
 
+DEFINE_BPF_MAP_RO_NETD(data_saver_enabled_map, ARRAY, uint32_t, bool,
+                       DATA_SAVER_ENABLED_MAP_SIZE)
+
 // iptables xt_bpf programs need to be usable by both netd and netutils_wrappers
 // selinux contexts, because even non-xt_bpf iptables mutations are implemented as
 // a full table dump, followed by an update in userspace, and then a reload into the kernel,
@@ -141,12 +144,6 @@ DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
     DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, KVER_NONE, KVER_INF,  \
                         BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, MANDATORY, \
                         "fs_bpf_net_shared", "", LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
-
-static __always_inline int is_system_uid(uint32_t uid) {
-    // MIN_SYSTEM_UID is AID_ROOT == 0, so uint32_t is *always* >= 0
-    // MAX_SYSTEM_UID is AID_NOBODY == 9999, while AID_APP_START == 10000
-    return (uid < AID_APP_START);
-}
 
 /*
  * Note: this blindly assumes an MTU of 1500, and that packets > MTU are always TCP,

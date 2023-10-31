@@ -33,6 +33,7 @@ import static android.system.OsConstants.RT_SCOPE_UNIVERSE;
 
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
 import static com.android.net.module.util.NetworkStackConstants.RFC7421_PREFIX_LENGTH;
+import static com.android.networkstack.tethering.TetheringConfiguration.USE_SYNC_SM;
 import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
 import static com.android.networkstack.tethering.util.PrefixUtils.asIpPrefix;
 import static com.android.networkstack.tethering.util.TetheringMessageBase.BASE_IPSERVER;
@@ -56,7 +57,6 @@ import android.net.dhcp.IDhcpEventCallbacks;
 import android.net.dhcp.IDhcpServer;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
 import android.os.Handler;
-import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
@@ -66,9 +66,9 @@ import android.util.SparseArray;
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
-import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetdUtils;
@@ -85,12 +85,15 @@ import com.android.networkstack.tethering.TetheringConfiguration;
 import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
+import com.android.networkstack.tethering.util.StateMachineShim;
+import com.android.networkstack.tethering.util.SyncStateMachine.StateInfo;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -104,7 +107,7 @@ import java.util.Set;
  *
  * @hide
  */
-public class IpServer extends StateMachine {
+public class IpServer extends StateMachineShim {
     public static final int STATE_UNAVAILABLE = 0;
     public static final int STATE_AVAILABLE   = 1;
     public static final int STATE_TETHERED    = 2;
@@ -236,6 +239,7 @@ public class IpServer extends StateMachine {
     public static final int CMD_NEW_PREFIX_REQUEST          = BASE_IPSERVER + 12;
     // request from PrivateAddressCoordinator to restart tethering.
     public static final int CMD_NOTIFY_PREFIX_CONFLICT      = BASE_IPSERVER + 13;
+    public static final int CMD_SERVICE_FAILED_TO_START     = BASE_IPSERVER + 14;
 
     private final State mInitialState;
     private final State mLocalHotspotState;
@@ -297,6 +301,8 @@ public class IpServer extends StateMachine {
 
     private int mLastIPv6UpstreamIfindex = 0;
     private boolean mUpstreamSupportsBpf = false;
+    @NonNull
+    private Set<IpPrefix> mLastIPv6UpstreamPrefixes = Collections.emptySet();
 
     private class MyNeighborEventConsumer implements IpNeighborMonitor.NeighborEventConsumer {
         public void accept(NeighborEvent e) {
@@ -309,16 +315,18 @@ public class IpServer extends StateMachine {
     private LinkAddress mIpv4Address;
 
     private final TetheringMetrics mTetheringMetrics;
+    private final Handler mHandler;
 
     // TODO: Add a dependency object to pass the data members or variables from the tethering
     // object. It helps to reduce the arguments of the constructor.
     public IpServer(
-            String ifaceName, Looper looper, int interfaceType, SharedLog log,
+            String ifaceName, Handler handler, int interfaceType, SharedLog log,
             INetd netd, @NonNull BpfCoordinator bpfCoordinator,
             @Nullable LateSdk<RoutingCoordinatorManager> routingCoordinator, Callback callback,
             TetheringConfiguration config, PrivateAddressCoordinator addressCoordinator,
             TetheringMetrics tetheringMetrics, Dependencies deps) {
-        super(ifaceName, looper);
+        super(ifaceName, USE_SYNC_SM ? null : handler.getLooper());
+        mHandler = handler;
         mLog = log.forSubComponent(ifaceName);
         mNetd = netd;
         mBpfCoordinator = bpfCoordinator;
@@ -351,13 +359,22 @@ public class IpServer extends StateMachine {
         mTetheredState = new TetheredState();
         mUnavailableState = new UnavailableState();
         mWaitingForRestartState = new WaitingForRestartState();
-        addState(mInitialState);
-        addState(mLocalHotspotState);
-        addState(mTetheredState);
-        addState(mWaitingForRestartState, mTetheredState);
-        addState(mUnavailableState);
+        final ArrayList allStates = new ArrayList<StateInfo>();
+        allStates.add(new StateInfo(mInitialState, null));
+        allStates.add(new StateInfo(mLocalHotspotState, null));
+        allStates.add(new StateInfo(mTetheredState, null));
+        allStates.add(new StateInfo(mWaitingForRestartState, mTetheredState));
+        allStates.add(new StateInfo(mUnavailableState, null));
+        addAllStates(allStates);
+    }
 
-        setInitialState(mInitialState);
+    private Handler getHandler() {
+        return mHandler;
+    }
+
+    /** Start IpServer state machine. */
+    public void start() {
+        start(mInitialState);
     }
 
     /** Interface name which IpServer served.*/
@@ -498,7 +515,12 @@ public class IpServer extends StateMachine {
 
         private void handleError() {
             mLastError = TETHER_ERROR_DHCPSERVER_ERROR;
-            transitionTo(mInitialState);
+            if (USE_SYNC_SM) {
+                sendMessage(CMD_SERVICE_FAILED_TO_START, TETHER_ERROR_DHCPSERVER_ERROR);
+            } else {
+                sendMessageAtFrontOfQueueToAsyncSM(CMD_SERVICE_FAILED_TO_START,
+                        TETHER_ERROR_DHCPSERVER_ERROR);
+            }
         }
     }
 
@@ -770,13 +792,8 @@ public class IpServer extends StateMachine {
 
             if (params.hasDefaultRoute) params.hopLimit = getHopLimit(upstreamIface, ttlAdjustment);
 
-            for (LinkAddress linkAddr : v6only.getLinkAddresses()) {
-                if (linkAddr.getPrefixLength() != RFC7421_PREFIX_LENGTH) continue;
-
-                final IpPrefix prefix = new IpPrefix(
-                        linkAddr.getAddress(), linkAddr.getPrefixLength());
-                params.prefixes.add(prefix);
-
+            params.prefixes = getTetherableIpv6Prefixes(v6only);
+            for (IpPrefix prefix : params.prefixes) {
                 final Inet6Address dnsServer = getLocalDnsIpFor(prefix);
                 if (dnsServer != null) {
                     params.dnses.add(dnsServer);
@@ -796,9 +813,12 @@ public class IpServer extends StateMachine {
 
         // Not support BPF on virtual upstream interface
         final boolean upstreamSupportsBpf = upstreamIface != null && !isVcnInterface(upstreamIface);
-        updateIpv6ForwardingRules(mLastIPv6UpstreamIfindex, upstreamIfIndex, upstreamSupportsBpf);
+        final Set<IpPrefix> upstreamPrefixes = params != null ? params.prefixes : Set.of();
+        updateIpv6ForwardingRules(mLastIPv6UpstreamIfindex, mLastIPv6UpstreamPrefixes,
+                upstreamIfIndex, upstreamPrefixes, upstreamSupportsBpf);
         mLastIPv6LinkProperties = v6only;
         mLastIPv6UpstreamIfindex = upstreamIfIndex;
+        mLastIPv6UpstreamPrefixes = upstreamPrefixes;
         mUpstreamSupportsBpf = upstreamSupportsBpf;
         if (mDadProxy != null) {
             mDadProxy.setUpstreamIface(upstreamIfaceParams);
@@ -916,14 +936,17 @@ public class IpServer extends StateMachine {
         return supportsBpf ? ifindex : NO_UPSTREAM;
     }
 
-    // Handles updates to IPv6 forwarding rules if the upstream changes.
-    private void updateIpv6ForwardingRules(int prevUpstreamIfindex, int upstreamIfindex,
-            boolean upstreamSupportsBpf) {
+    // Handles updates to IPv6 forwarding rules if the upstream or its prefixes change.
+    private void updateIpv6ForwardingRules(int prevUpstreamIfindex,
+            @NonNull Set<IpPrefix> prevUpstreamPrefixes, int upstreamIfindex,
+            @NonNull Set<IpPrefix> upstreamPrefixes, boolean upstreamSupportsBpf) {
         // If the upstream interface has changed, remove all rules and re-add them with the new
         // upstream interface. If upstream is a virtual network, treated as no upstream.
-        if (prevUpstreamIfindex != upstreamIfindex) {
+        if (prevUpstreamIfindex != upstreamIfindex
+                || !prevUpstreamPrefixes.equals(upstreamPrefixes)) {
             mBpfCoordinator.updateAllIpv6Rules(this, this.mInterfaceParams,
-                    getInterfaceIndexForRule(upstreamIfindex, upstreamSupportsBpf));
+                    getInterfaceIndexForRule(upstreamIfindex, upstreamSupportsBpf),
+                    upstreamPrefixes);
         }
     }
 
@@ -1108,7 +1131,19 @@ public class IpServer extends StateMachine {
             startServingInterface();
 
             if (mLastError != TETHER_ERROR_NO_ERROR) {
-                transitionTo(mInitialState);
+                // This will transition to InitialState right away, regardless of whether any
+                // message is already waiting in the StateMachine queue (including maybe some
+                // message to go to InitialState). InitialState will then process any pending
+                // message (and generally ignores them). It is difficult to know for sure whether
+                // this is correct in all cases, but this is equivalent to what IpServer was doing
+                // in previous versions of the mainline module.
+                // TODO : remove sendMessageAtFrontOfQueueToAsyncSM after migrating to the Sync
+                // StateMachine.
+                if (USE_SYNC_SM) {
+                    sendSelfMessageToSyncSM(CMD_SERVICE_FAILED_TO_START, mLastError);
+                } else {
+                    sendMessageAtFrontOfQueueToAsyncSM(CMD_SERVICE_FAILED_TO_START, mLastError);
+                }
             }
 
             if (DBG) Log.d(TAG, getStateString(mDesiredInterfaceState) + " serve " + mIfaceName);
@@ -1198,6 +1233,9 @@ public class IpServer extends StateMachine {
                     mCallback.requestEnableTethering(mInterfaceType, false /* enabled */);
                     transitionTo(mWaitingForRestartState);
                     break;
+                case CMD_SERVICE_FAILED_TO_START:
+                    mLog.e("start serving fail, error: " + message.arg1);
+                    transitionTo(mInitialState);
                 default:
                     return false;
             }
@@ -1328,7 +1366,7 @@ public class IpServer extends StateMachine {
             for (String ifname : mUpstreamIfaceSet.ifnames) cleanupUpstreamInterface(ifname);
             mUpstreamIfaceSet = null;
             mBpfCoordinator.updateAllIpv6Rules(
-                    IpServer.this, IpServer.this.mInterfaceParams, NO_UPSTREAM);
+                    IpServer.this, IpServer.this.mInterfaceParams, NO_UPSTREAM, Set.of());
         }
 
         private void cleanupUpstreamInterface(String upstreamIface) {
@@ -1514,5 +1552,22 @@ public class IpServer extends StateMachine {
             if (random == value) return dflt;
         }
         return random;
+    }
+
+    /** Get IPv6 prefixes from LinkProperties */
+    @NonNull
+    @VisibleForTesting
+    static HashSet<IpPrefix> getTetherableIpv6Prefixes(@NonNull Collection<LinkAddress> addrs) {
+        final HashSet<IpPrefix> prefixes = new HashSet<>();
+        for (LinkAddress linkAddr : addrs) {
+            if (linkAddr.getPrefixLength() != RFC7421_PREFIX_LENGTH) continue;
+            prefixes.add(new IpPrefix(linkAddr.getAddress(), RFC7421_PREFIX_LENGTH));
+        }
+        return prefixes;
+    }
+
+    @NonNull
+    private HashSet<IpPrefix> getTetherableIpv6Prefixes(@NonNull LinkProperties lp) {
+        return getTetherableIpv6Prefixes(lp.getLinkAddresses());
     }
 }
