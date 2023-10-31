@@ -19,12 +19,13 @@ package com.android.server.connectivity.mdns;
 import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
 
 import android.annotation.NonNull;
+import android.annotation.RequiresApi;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 
 import com.android.net.module.util.SharedLog;
-import com.android.server.connectivity.mdns.MdnsRecordRepository.ReplyInfo;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
@@ -41,8 +42,8 @@ import java.util.Collections;
  *
  * TODO: implement sending after a delay, combining queued replies and duplicate answer suppression
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class MdnsReplySender {
-    private static final boolean DBG = MdnsAdvertiser.DBG;
     private static final int MSG_SEND = 1;
     private static final int PACKET_NOT_SENT = 0;
     private static final int PACKET_SENT = 1;
@@ -55,24 +56,27 @@ public class MdnsReplySender {
     private final byte[] mPacketCreationBuffer;
     @NonNull
     private final SharedLog mSharedLog;
+    private final boolean mEnableDebugLog;
 
     public MdnsReplySender(@NonNull Looper looper, @NonNull MdnsInterfaceSocket socket,
-            @NonNull byte[] packetCreationBuffer, @NonNull SharedLog sharedLog) {
+            @NonNull byte[] packetCreationBuffer, @NonNull SharedLog sharedLog,
+            boolean enableDebugLog) {
         mHandler = new SendHandler(looper);
         mSocket = socket;
         mPacketCreationBuffer = packetCreationBuffer;
         mSharedLog = sharedLog;
+        mEnableDebugLog = enableDebugLog;
     }
 
     /**
      * Queue a reply to be sent when its send delay expires.
      */
-    public void queueReply(@NonNull ReplyInfo reply) {
+    public void queueReply(@NonNull MdnsReplyInfo reply) {
         ensureRunningOnHandlerThread(mHandler);
         // TODO: implement response aggregation (RFC 6762 6.4)
         mHandler.sendMessageDelayed(mHandler.obtainMessage(MSG_SEND, reply), reply.sendDelayMs);
 
-        if (DBG) {
+        if (mEnableDebugLog) {
             mSharedLog.v("Scheduling " + reply);
         }
     }
@@ -95,11 +99,6 @@ public class MdnsReplySender {
         return PACKET_SENT;
     }
 
-    /** Get the packetCreationBuffer */
-    public byte[] getPacketCreationBuffer() {
-        return mPacketCreationBuffer;
-    }
-
     /**
      * Cancel all pending sends.
      */
@@ -115,8 +114,8 @@ public class MdnsReplySender {
 
         @Override
         public void handleMessage(@NonNull Message msg) {
-            final ReplyInfo replyInfo = (ReplyInfo) msg.obj;
-            if (DBG) mSharedLog.v("Sending " + replyInfo);
+            final MdnsReplyInfo replyInfo = (MdnsReplyInfo) msg.obj;
+            if (mEnableDebugLog) mSharedLog.v("Sending " + replyInfo);
 
             final int flags = 0x8400; // Response, authoritative (rfc6762 18.4)
             final MdnsPacket packet = new MdnsPacket(flags,

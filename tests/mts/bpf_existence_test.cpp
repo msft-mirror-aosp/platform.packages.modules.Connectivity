@@ -40,6 +40,7 @@ using android::modules::sdklevel::IsAtLeastV;
 #define TETHERING "/sys/fs/bpf/tethering/"
 #define PRIVATE "/sys/fs/bpf/net_private/"
 #define SHARED "/sys/fs/bpf/net_shared/"
+#define NETD_RO "/sys/fs/bpf/netd_readonly/"
 #define NETD "/sys/fs/bpf/netd_shared/"
 
 class BpfExistenceTest : public ::testing::Test {
@@ -93,6 +94,7 @@ static const set<string> MAINLINE_FOR_T_PLUS = {
     NETD "map_netd_app_uid_stats_map",
     NETD "map_netd_configuration_map",
     NETD "map_netd_cookie_tag_map",
+    NETD "map_netd_data_saver_enabled_map",
     NETD "map_netd_iface_index_name_map",
     NETD "map_netd_iface_stats_map",
     NETD "map_netd_ingress_discard_map",
@@ -119,14 +121,24 @@ static const set<string> MAINLINE_FOR_T_4_14_PLUS = {
 };
 
 // Provided by *current* mainline module for T+ devices with 5.4+ kernels
-static const set<string> MAINLINE_FOR_T_5_4_PLUS = {
-    SHARED "prog_block_bind4_block_port",
-    SHARED "prog_block_bind6_block_port",
+static const set<string> MAINLINE_FOR_T_4_19_PLUS = {
+    NETD_RO "prog_block_bind4_block_port",
+    NETD_RO "prog_block_bind6_block_port",
 };
 
 // Provided by *current* mainline module for T+ devices with 5.15+ kernels
 static const set<string> MAINLINE_FOR_T_5_15_PLUS = {
     SHARED "prog_dscpPolicy_schedcls_set_dscp_ether",
+};
+
+// Provided by *current* mainline module for U+ devices
+static const set<string> MAINLINE_FOR_U_PLUS = {
+    NETD "map_netd_packet_trace_enabled_map",
+};
+
+// Provided by *current* mainline module for U+ devices with 5.10+ kernels
+static const set<string> MAINLINE_FOR_U_5_10_PLUS = {
+    NETD "map_netd_packet_trace_ringbuf",
 };
 
 static void addAll(set<string>& a, const set<string>& b) {
@@ -166,11 +178,13 @@ TEST_F(BpfExistenceTest, TestPrograms) {
     // T still only requires Linux Kernel 4.9+.
     DO_EXPECT(IsAtLeastT(), MAINLINE_FOR_T_PLUS);
     DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(4, 14, 0), MAINLINE_FOR_T_4_14_PLUS);
-    DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(5, 4, 0), MAINLINE_FOR_T_5_4_PLUS);
+    DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(4, 19, 0), MAINLINE_FOR_T_4_19_PLUS);
     DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(5, 15, 0), MAINLINE_FOR_T_5_15_PLUS);
 
     // U requires Linux Kernel 4.14+, but nothing (as yet) added or removed in U.
     if (IsAtLeastU()) ASSERT_TRUE(isAtLeastKernelVersion(4, 14, 0));
+    DO_EXPECT(IsAtLeastU(), MAINLINE_FOR_U_PLUS);
+    DO_EXPECT(IsAtLeastU() && isAtLeastKernelVersion(5, 10, 0), MAINLINE_FOR_U_5_10_PLUS);
 
     // V requires Linux Kernel 4.19+, but nothing (as yet) added or removed in V.
     if (IsAtLeastV()) ASSERT_TRUE(isAtLeastKernelVersion(4, 19, 0));

@@ -96,6 +96,9 @@ apex {
     },
     binaries: [
         "clatd",
+        "ethtool",
+        "netbpfload",
+        "ot-daemon",
     ],
     canned_fs_config: "canned_fs_config",
     bpfs: [
@@ -111,7 +114,10 @@ apex {
     apps: [
         "ServiceConnectivityResources",
     ],
-    prebuilts: ["current_sdkinfo"],
+    prebuilts: [
+        "ot-daemon.init.34rc",
+        "current_sdkinfo",
+    ],
     manifest: "manifest.json",
     key: "com.android.tethering.key",
     // Indicates that pre-installed version of this apex can be compressed.
@@ -209,6 +215,7 @@ bootclasspath_fragment {
             "android.net.http.apihelpers",
             "android.net.netstats.provider",
             "android.net.nsd",
+            "android.net.thread",
             "android.net.wear",
         ],
     },
