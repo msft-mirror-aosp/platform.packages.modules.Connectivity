@@ -38,6 +38,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <android/api-level.h>
 #include <android-base/logging.h>
 #include <android-base/macros.h>
 #include <android-base/properties.h>
@@ -65,46 +66,34 @@ bool exists(const char* const path) {
     abort();  // can only hit this if permissions (likely selinux) are screwed up
 }
 
-constexpr unsigned long long kTetheringApexDomainBitmask =
-        domainToBitmask(domain::tethering) |
-        domainToBitmask(domain::net_private) |
-        domainToBitmask(domain::net_shared) |
-        domainToBitmask(domain::netd_readonly) |
-        domainToBitmask(domain::netd_shared);
-
 
 const android::bpf::Location locations[] = {
         // S+ Tethering mainline module (network_stack): tether offload
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/",
                 .prefix = "tethering/",
-                .allowedDomainBitmask = kTetheringApexDomainBitmask,
         },
         // T+ Tethering mainline module (shared with netd & system server)
         // netutils_wrapper (for iptables xt_bpf) has access to programs
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/netd_shared/",
                 .prefix = "netd_shared/",
-                .allowedDomainBitmask = kTetheringApexDomainBitmask,
         },
         // T+ Tethering mainline module (shared with netd & system server)
         // netutils_wrapper has no access, netd has read only access
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/netd_readonly/",
                 .prefix = "netd_readonly/",
-                .allowedDomainBitmask = kTetheringApexDomainBitmask,
         },
         // T+ Tethering mainline module (shared with system server)
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/net_shared/",
                 .prefix = "net_shared/",
-                .allowedDomainBitmask = kTetheringApexDomainBitmask,
         },
         // T+ Tethering mainline module (not shared, just network_stack)
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/net_private/",
                 .prefix = "net_private/",
-                .allowedDomainBitmask = kTetheringApexDomainBitmask,
         },
 };
 
@@ -180,9 +169,12 @@ int writeProcSysFile(const char *filename, const char *value) {
     return 0;
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv, char * const envp[]) {
     (void)argc;
     android::base::InitLogging(argv, &android::base::KernelLogger);
+
+    const int device_api_level = android_get_device_api_level();
+    const bool isAtLeastU = (device_api_level >= __ANDROID_API_U__);
 
     if (!android::bpf::isAtLeastKernelVersion(4, 19, 0)) {
         ALOGE("Android U QPR2 requires kernel 4.19.");
@@ -220,24 +212,27 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Linux 5.16-rc1 changed the default to 2 (disabled but changeable), but we need 0 (enabled)
-    // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on pre-5.13,
-    // on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
-    if (writeProcSysFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
-        android::bpf::isAtLeastKernelVersion(5, 13, 0)) return 1;
+    if (isAtLeastU) {
+        // Linux 5.16-rc1 changed the default to 2 (disabled but changeable),
+        // but we need 0 (enabled)
+        // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on
+        // pre-5.13, on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
+        if (writeProcSysFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
+            android::bpf::isAtLeastKernelVersion(5, 13, 0)) return 1;
 
-    // Enable the eBPF JIT -- but do note that on 64-bit kernels it is likely
-    // already force enabled by the kernel config option BPF_JIT_ALWAYS_ON.
-    // (Note: this (open) will fail with ENOENT 'No such file or directory' if
-    //  kernel does not have CONFIG_BPF_JIT=y)
-    // BPF_JIT is required by R VINTF (which means 4.14/4.19/5.4 kernels),
-    // but 4.14/4.19 were released with P & Q, and only 5.4 is new in R+.
-    if (writeProcSysFile("/proc/sys/net/core/bpf_jit_enable", "1\n")) return 1;
+        // Enable the eBPF JIT -- but do note that on 64-bit kernels it is likely
+        // already force enabled by the kernel config option BPF_JIT_ALWAYS_ON.
+        // (Note: this (open) will fail with ENOENT 'No such file or directory' if
+        //  kernel does not have CONFIG_BPF_JIT=y)
+        // BPF_JIT is required by R VINTF (which means 4.14/4.19/5.4 kernels),
+        // but 4.14/4.19 were released with P & Q, and only 5.4 is new in R+.
+        if (writeProcSysFile("/proc/sys/net/core/bpf_jit_enable", "1\n")) return 1;
 
-    // Enable JIT kallsyms export for privileged users only
-    // (Note: this (open) will fail with ENOENT 'No such file or directory' if
-    //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
-    if (writeProcSysFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n")) return 1;
+        // Enable JIT kallsyms export for privileged users only
+        // (Note: this (open) will fail with ENOENT 'No such file or directory' if
+        //  kernel does not have CONFIG_HAVE_EBPF_JIT=y)
+        if (writeProcSysFile("/proc/sys/net/core/bpf_jit_kallsyms", "1\n")) return 1;
+    }
 
     // Create all the pin subdirectories
     // (this must be done first to allow selinux_context and pin_subdir functionality,
@@ -246,13 +241,6 @@ int main(int argc, char** argv) {
     for (const auto& location : locations) {
         if (createSysFsBpfSubDir(location.prefix)) return 1;
     }
-
-    // Note: there's no actual src dir for fs_bpf_loader .o's,
-    // so it is not listed in 'locations[].prefix'.
-    // This is because this is primarily meant for triggering genfscon rules,
-    // and as such this will likely always be the case.
-    // Thus we need to manually create the /sys/fs/bpf/loader subdirectory.
-    if (createSysFsBpfSubDir("loader")) return 1;
 
     // Load all ELF objects, create programs and maps, and pin them
     for (const auto& location : locations) {
@@ -276,10 +264,12 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    if (android::base::SetProperty("bpf.progs_loaded", "1") == false) {
-        ALOGE("Failed to set bpf.progs_loaded property");
-        return 1;
+    ALOGI("done, transferring control to platform bpfloader.");
+
+    const char * args[] = { "/system/bin/bpfloader", NULL, };
+    if (execve(args[0], (char**)args, envp)) {
+        ALOGE("FATAL: execve('/system/bin/bpfloader'): %d[%s]", errno, strerror(errno));
     }
 
-    return 0;
+    return 1;
 }

@@ -146,6 +146,14 @@ public class Struct {
         int arraysize() default 0;
     }
 
+    /**
+     * Indicates that this field contains a computed value and is ignored for the purposes of Struct
+     * parsing.
+     */
+    @Retention(RetentionPolicy.RUNTIME)
+    @Target(ElementType.FIELD)
+    public @interface Computed {}
+
     private static class FieldInfo {
         @NonNull
         public final Field annotation;
@@ -414,7 +422,14 @@ public class Struct {
                 final byte[] address = new byte[isIpv6 ? 16 : 4];
                 buf.get(address);
                 try {
-                    value = InetAddress.getByAddress(address);
+                    if (isIpv6) {
+                        // Using Inet6Address.getByAddress since InetAddress.getByAddress converts
+                        // v4-mapped v6 address to v4 address internally and returns Inet4Address.
+                        value = Inet6Address.getByAddress(
+                                null /* host */, address, -1 /* scope_id */);
+                    } else {
+                        value = InetAddress.getByAddress(address);
+                    }
                 } catch (UnknownHostException e) {
                     throw new IllegalArgumentException("illegal length of IP address", e);
                 }
@@ -533,6 +548,7 @@ public class Struct {
         final FieldInfo[] annotationFields = new FieldInfo[getAnnotationFieldCount(clazz)];
         for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
             if (Modifier.isStatic(field.getModifiers())) continue;
+            if (field.getAnnotation(Computed.class) != null) continue;
 
             final Field annotation = field.getAnnotation(Field.class);
             if (annotation == null) {
