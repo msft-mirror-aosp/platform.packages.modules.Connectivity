@@ -136,6 +136,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.XmlResourceParser;
 import android.database.ContentObserver;
+import android.net.BpfNetMapsUtils;
 import android.net.CaptivePortal;
 import android.net.CaptivePortalData;
 import android.net.ConnectionInfo;
@@ -5074,8 +5075,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             mNetd.networkCreate(config);
             mDnsResolver.createNetworkCache(nai.network.getNetId());
-            mDnsManager.updateTransportsForNetwork(nai.network.getNetId(),
-                    nai.networkCapabilities.getTransportTypes());
+            mDnsManager.updateCapabilitiesForNetwork(nai.network.getNetId(),
+                    nai.networkCapabilities);
             return true;
         } catch (RemoteException | ServiceSpecificException e) {
             loge("Error creating network " + nai.toShortString() + ": " + e.getMessage());
@@ -5273,7 +5274,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private boolean isNetworkPotentialSatisfier(
             @NonNull final NetworkAgentInfo candidate, @NonNull final NetworkRequestInfo nri) {
-        // listen requests won't keep up a network satisfying it. If this is not a multilayer
+        // While destroyed network sometimes satisfy requests (including occasionally newly
+        // satisfying requests), *potential* satisfiers are networks that might beat a current
+        // champion if they validate. As such, a destroyed network is never a potential satisfier,
+        // because it's never a good idea to keep a destroyed network in case it validates.
+        // For example, declaring it a potential satisfier would keep an unvalidated destroyed
+        // candidate after it's been replaced by another unvalidated network.
+        if (candidate.isDestroyed()) return false;
+        // Listen requests won't keep up a network satisfying it. If this is not a multilayer
         // request, return immediately. For multilayer requests, check to see if any of the
         // multilayer requests may have a potential satisfier.
         if (!nri.isMultilayerRequest() && (nri.mRequests.get(0).isListen()
@@ -5291,8 +5299,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (req.isListen() || req.isListenForBest()) {
                 continue;
             }
-            // If this Network is already the best Network for a request, or if
-            // there is hope for it to become one if it validated, then it is needed.
+            // If there is hope for this network might validate and subsequently become the best
+            // network for that request, then it is needed. Note that this network can't already
+            // be the best for this request, or it would be the current satisfier, and therefore
+            // there would be no need to call this method to find out if it is a *potential*
+            // satisfier ("unneeded", the only caller, only calls this if this network currently
+            // satisfies no request).
             if (candidate.satisfies(req)) {
                 // As soon as a network is found that satisfies a request, return. Specifically for
                 // multilayer requests, returning as soon as a NetworkAgentInfo satisfies a request
@@ -8898,9 +8910,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // This network might have been underlying another network. Propagate its capabilities.
         propagateUnderlyingNetworkCapabilities(nai.network);
 
-        if (!newNc.equalsTransportTypes(prevNc)) {
-            mDnsManager.updateTransportsForNetwork(
-                    nai.network.getNetId(), newNc.getTransportTypes());
+        if (meteredChanged || !newNc.equalsTransportTypes(prevNc)) {
+            mDnsManager.updateCapabilitiesForNetwork(nai.network.getNetId(), newNc);
         }
 
         maybeSendProxyBroadcast(nai, prevNc, newNc);
@@ -12557,6 +12568,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    @TargetApi(Build.VERSION_CODES.TIRAMISU)
     @Override
     public void setDataSaverEnabled(final boolean enable) {
         enforceNetworkStackOrSettingsPermission();
@@ -12568,6 +12580,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } catch (RemoteException e) {
             // Lack of permission or binder errors.
             throw new IllegalStateException(e);
+        }
+
+        try {
+            mBpfNetMaps.setDataSaverEnabled(enable);
+        } catch (ServiceSpecificException | UnsupportedOperationException e) {
+            Log.e(TAG, "Failed to set data saver " + enable + " : " + e);
         }
     }
 
@@ -12672,7 +12690,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void closeSocketsForFirewallChainLocked(final int chain)
             throws ErrnoException, SocketException, InterruptedIOException {
-        if (mBpfNetMaps.isFirewallAllowList(chain)) {
+        if (BpfNetMapsUtils.isFirewallAllowList(chain)) {
             // Allowlist means the firewall denies all by default, uids must be explicitly allowed
             // So, close all non-system socket owned by uids that are not explicitly allowed
             Set<Range<Integer>> ranges = new ArraySet<>();
