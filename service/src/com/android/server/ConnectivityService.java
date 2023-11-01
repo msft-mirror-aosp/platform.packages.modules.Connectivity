@@ -100,6 +100,11 @@ import static android.system.OsConstants.ETH_P_ALL;
 import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET4_BIND;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET6_BIND;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_EGRESS;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_INGRESS;
+import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_SOCK_CREATE;
 import static com.android.net.module.util.NetworkMonitorUtils.isPrivateDnsValidationRequired;
 import static com.android.net.module.util.PermissionUtils.checkAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
@@ -131,6 +136,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.XmlResourceParser;
 import android.database.ContentObserver;
+import android.net.BpfNetMapsUtils;
 import android.net.CaptivePortal;
 import android.net.CaptivePortalData;
 import android.net.ConnectionInfo;
@@ -194,7 +200,6 @@ import android.net.QosFilter;
 import android.net.QosSocketFilter;
 import android.net.QosSocketInfo;
 import android.net.RouteInfo;
-import android.net.RouteInfoParcel;
 import android.net.SocketKeepalive;
 import android.net.TetheringManager;
 import android.net.TransportInfo;
@@ -280,6 +285,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.BinderUtils;
 import com.android.net.module.util.BitUtils;
+import com.android.net.module.util.BpfUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.InterfaceParams;
@@ -306,6 +312,7 @@ import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
 import com.android.server.connectivity.DscpPolicyTracker;
 import com.android.server.connectivity.FullScore;
+import com.android.server.connectivity.HandlerUtils;
 import com.android.server.connectivity.InvalidTagException;
 import com.android.server.connectivity.KeepaliveResourceUtil;
 import com.android.server.connectivity.KeepaliveTracker;
@@ -323,6 +330,7 @@ import com.android.server.connectivity.PermissionMonitor;
 import com.android.server.connectivity.ProfileNetworkPreferenceInfo;
 import com.android.server.connectivity.ProxyTracker;
 import com.android.server.connectivity.QosCallbackTracker;
+import com.android.server.connectivity.RoutingCoordinatorService;
 import com.android.server.connectivity.UidRangeUtils;
 import com.android.server.connectivity.VpnNetworkPreferenceInfo;
 import com.android.server.connectivity.wear.CompanionDeviceManagerProxyService;
@@ -486,6 +494,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @GuardedBy("mTNSLock")
     private TestNetworkService mTNS;
     private final CompanionDeviceManagerProxyService mCdmps;
+    private final RoutingCoordinatorService mRoutingCoordinatorService;
 
     private final Object mTNSLock = new Object();
 
@@ -1258,16 +1267,24 @@ public class ConnectivityService extends IConnectivityManager.Stub
         private static final String PRIORITY_ARG = "--dump-priority";
         private static final String PRIORITY_ARG_HIGH = "HIGH";
         private static final String PRIORITY_ARG_NORMAL = "NORMAL";
+        private static final int DUMPSYS_DEFAULT_TIMEOUT_MS = 10_000;
 
         LocalPriorityDump() {}
 
         private void dumpHigh(FileDescriptor fd, PrintWriter pw) {
-            doDump(fd, pw, new String[] {DIAG_ARG});
-            doDump(fd, pw, new String[] {SHORT_ARG});
+            if (!HandlerUtils.runWithScissors(mHandler, () -> {
+                doDump(fd, pw, new String[]{DIAG_ARG});
+                doDump(fd, pw, new String[]{SHORT_ARG});
+            }, DUMPSYS_DEFAULT_TIMEOUT_MS)) {
+                pw.println("dumpHigh timeout");
+            }
         }
 
         private void dumpNormal(FileDescriptor fd, PrintWriter pw, String[] args) {
-            doDump(fd, pw, args);
+            if (!HandlerUtils.runWithScissors(mHandler, () -> doDump(fd, pw, args),
+                    DUMPSYS_DEFAULT_TIMEOUT_MS)) {
+                pw.println("dumpNormal timeout");
+            }
         }
 
         public void dump(FileDescriptor fd, PrintWriter pw, String[] args) {
@@ -1517,6 +1534,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 loge("TcUtils.tcFilterDelDev(ifaceIndex=" + params.index
                         + ", ingress=true, PRIO_POLICE, ETH_P_ALL) failure: ", e);
             }
+        }
+
+        /**
+         * Get BPF program Id from CGROUP. See {@link BpfUtils#getProgramId}.
+         */
+        public int getBpfProgramId(final int attachType)
+                throws IOException {
+            return BpfUtils.getProgramId(attachType);
         }
 
         /**
@@ -1802,6 +1827,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         } else {
             mCdmps = null;
         }
+
+        mRoutingCoordinatorService = new RoutingCoordinatorService(netd);
 
         mDestroyFrozenSockets = mDeps.isAtLeastU()
                 && mDeps.isFeatureEnabled(context, KEY_DESTROY_FROZEN_SOCKETS_VERSION);
@@ -3243,6 +3270,26 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.decreaseIndent();
     }
 
+    private void dumpBpfProgramStatus(IndentingPrintWriter pw) {
+        pw.println("Bpf Program Status:");
+        pw.increaseIndent();
+        try {
+            pw.print("CGROUP_INET_INGRESS: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET_INGRESS));
+            pw.print("CGROUP_INET_EGRESS: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET_EGRESS));
+            pw.print("CGROUP_INET_SOCK_CREATE: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET_SOCK_CREATE));
+            pw.print("CGROUP_INET4_BIND: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET4_BIND));
+            pw.print("CGROUP_INET6_BIND: ");
+            pw.println(mDeps.getBpfProgramId(BPF_CGROUP_INET6_BIND));
+        } catch (IOException e) {
+            pw.println("  IOException");
+        }
+        pw.decreaseIndent();
+    }
+
     @VisibleForTesting
     static final String KEY_DESTROY_FROZEN_SOCKETS_VERSION = "destroy_frozen_sockets_version";
     @VisibleForTesting
@@ -3855,6 +3902,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         pw.println();
         dumpCloseFrozenAppSockets(pw);
+
+        pw.println();
+        dumpBpfProgramStatus(pw);
 
         pw.println();
 
@@ -5025,8 +5075,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             mNetd.networkCreate(config);
             mDnsResolver.createNetworkCache(nai.network.getNetId());
-            mDnsManager.updateTransportsForNetwork(nai.network.getNetId(),
-                    nai.networkCapabilities.getTransportTypes());
+            mDnsManager.updateCapabilitiesForNetwork(nai.network.getNetId(),
+                    nai.networkCapabilities);
             return true;
         } catch (RemoteException | ServiceSpecificException e) {
             loge("Error creating network " + nai.toShortString() + ": " + e.getMessage());
@@ -5224,7 +5274,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private boolean isNetworkPotentialSatisfier(
             @NonNull final NetworkAgentInfo candidate, @NonNull final NetworkRequestInfo nri) {
-        // listen requests won't keep up a network satisfying it. If this is not a multilayer
+        // While destroyed network sometimes satisfy requests (including occasionally newly
+        // satisfying requests), *potential* satisfiers are networks that might beat a current
+        // champion if they validate. As such, a destroyed network is never a potential satisfier,
+        // because it's never a good idea to keep a destroyed network in case it validates.
+        // For example, declaring it a potential satisfier would keep an unvalidated destroyed
+        // candidate after it's been replaced by another unvalidated network.
+        if (candidate.isDestroyed()) return false;
+        // Listen requests won't keep up a network satisfying it. If this is not a multilayer
         // request, return immediately. For multilayer requests, check to see if any of the
         // multilayer requests may have a potential satisfier.
         if (!nri.isMultilayerRequest() && (nri.mRequests.get(0).isListen()
@@ -5242,8 +5299,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (req.isListen() || req.isListenForBest()) {
                 continue;
             }
-            // If this Network is already the best Network for a request, or if
-            // there is hope for it to become one if it validated, then it is needed.
+            // If there is hope for this network might validate and subsequently become the best
+            // network for that request, then it is needed. Note that this network can't already
+            // be the best for this request, or it would be the current satisfier, and therefore
+            // there would be no need to call this method to find out if it is a *potential*
+            // satisfier ("unneeded", the only caller, only calls this if this network currently
+            // satisfies no request).
             if (candidate.satisfies(req)) {
                 // As soon as a network is found that satisfies a request, return. Specifically for
                 // multilayer requests, returning as soon as a NetworkAgentInfo satisfies a request
@@ -8469,7 +8530,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             for (final String iface : interfaceDiff.added) {
                 try {
                     if (DBG) log("Adding iface " + iface + " to network " + netId);
-                    mNetd.networkAddInterface(netId, iface);
+                    mRoutingCoordinatorService.addInterfaceToNetwork(netId, iface);
                     wakeupModifyInterface(iface, nai, true);
                     mDeps.reportNetworkInterfaceForTransports(mContext, iface,
                             nai.networkCapabilities.getTransportTypes());
@@ -8482,43 +8543,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
             try {
                 if (DBG) log("Removing iface " + iface + " from network " + netId);
                 wakeupModifyInterface(iface, nai, false);
-                mNetd.networkRemoveInterface(netId, iface);
+                mRoutingCoordinatorService.removeInterfaceFromNetwork(netId, iface);
             } catch (Exception e) {
                 loge("Exception removing interface: " + e);
             }
         }
-    }
-
-    // TODO: move to frameworks/libs/net.
-    private RouteInfoParcel convertRouteInfo(RouteInfo route) {
-        final String nextHop;
-
-        switch (route.getType()) {
-            case RouteInfo.RTN_UNICAST:
-                if (route.hasGateway()) {
-                    nextHop = route.getGateway().getHostAddress();
-                } else {
-                    nextHop = INetd.NEXTHOP_NONE;
-                }
-                break;
-            case RouteInfo.RTN_UNREACHABLE:
-                nextHop = INetd.NEXTHOP_UNREACHABLE;
-                break;
-            case RouteInfo.RTN_THROW:
-                nextHop = INetd.NEXTHOP_THROW;
-                break;
-            default:
-                nextHop = INetd.NEXTHOP_NONE;
-                break;
-        }
-
-        final RouteInfoParcel rip = new RouteInfoParcel();
-        rip.ifName = route.getInterface();
-        rip.destination = route.getDestination().toString();
-        rip.nextHop = nextHop;
-        rip.mtu = route.getMtu();
-
-        return rip;
     }
 
     /**
@@ -8541,10 +8570,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (route.hasGateway()) continue;
             if (VDBG || DDBG) log("Adding Route [" + route + "] to network " + netId);
             try {
-                mNetd.networkAddRouteParcel(netId, convertRouteInfo(route));
+                mRoutingCoordinatorService.addRoute(netId, route);
             } catch (Exception e) {
                 if ((route.getDestination().getAddress() instanceof Inet4Address) || VDBG) {
-                    loge("Exception in networkAddRouteParcel for non-gateway: " + e);
+                    loge("Exception in addRoute for non-gateway: " + e);
                 }
             }
         }
@@ -8552,10 +8581,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (!route.hasGateway()) continue;
             if (VDBG || DDBG) log("Adding Route [" + route + "] to network " + netId);
             try {
-                mNetd.networkAddRouteParcel(netId, convertRouteInfo(route));
+                mRoutingCoordinatorService.addRoute(netId, route);
             } catch (Exception e) {
                 if ((route.getGateway() instanceof Inet4Address) || VDBG) {
-                    loge("Exception in networkAddRouteParcel for gateway: " + e);
+                    loge("Exception in addRoute for gateway: " + e);
                 }
             }
         }
@@ -8563,18 +8592,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         for (RouteInfo route : routeDiff.removed) {
             if (VDBG || DDBG) log("Removing Route [" + route + "] from network " + netId);
             try {
-                mNetd.networkRemoveRouteParcel(netId, convertRouteInfo(route));
+                mRoutingCoordinatorService.removeRoute(netId, route);
             } catch (Exception e) {
-                loge("Exception in networkRemoveRouteParcel: " + e);
+                loge("Exception in removeRoute: " + e);
             }
         }
 
         for (RouteInfo route : routeDiff.updated) {
             if (VDBG || DDBG) log("Updating Route [" + route + "] from network " + netId);
             try {
-                mNetd.networkUpdateRouteParcel(netId, convertRouteInfo(route));
+                mRoutingCoordinatorService.updateRoute(netId, route);
             } catch (Exception e) {
-                loge("Exception in networkUpdateRouteParcel: " + e);
+                loge("Exception in updateRoute: " + e);
             }
         }
         return !routeDiff.added.isEmpty() || !routeDiff.removed.isEmpty()
@@ -8881,9 +8910,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // This network might have been underlying another network. Propagate its capabilities.
         propagateUnderlyingNetworkCapabilities(nai.network);
 
-        if (!newNc.equalsTransportTypes(prevNc)) {
-            mDnsManager.updateTransportsForNetwork(
-                    nai.network.getNetId(), newNc.getTransportTypes());
+        if (meteredChanged || !newNc.equalsTransportTypes(prevNc)) {
+            mDnsManager.updateCapabilitiesForNetwork(nai.network.getNetId(), newNc);
         }
 
         maybeSendProxyBroadcast(nai, prevNc, newNc);
@@ -10215,7 +10243,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // If a rate limit has been configured and is applicable to this network (network
             // provides internet connectivity), apply it. The tc police filter cannot be attached
             // before the clsact qdisc is added which happens as part of updateLinkProperties ->
-            // updateInterfaces -> INetd#networkAddInterface.
+            // updateInterfaces -> RoutingCoordinatorManager#addInterfaceToNetwork
             // Note: in case of a system server crash, the NetworkController constructor in netd
             // (called when netd starts up) deletes the clsact qdisc of all interfaces.
             if (canNetworkBeRateLimited(networkAgent) && mIngressRateLimit >= 0) {
@@ -10792,6 +10820,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         Log.d(TAG, "Reevaluating network " + nai.network);
                         reportNetworkConnectivity(nai.network, !nai.isValidated());
                         return 0;
+                    case "bpf-get-cgroup-program-id": {
+                        // Usage : adb shell cmd connectivity bpf-get-cgroup-program-id <type>
+                        // Get cgroup bpf program Id for the given type. See BpfUtils#getProgramId
+                        // for more detail.
+                        // If type can't be parsed, this throws NumberFormatException, which
+                        // is passed back to adb who prints it.
+                        final int type = Integer.parseInt(getNextArg());
+                        final int ret = BpfUtils.getProgramId(type);
+                        pw.println(ret);
+                        return 0;
+                    }
                     default:
                         return handleDefaultCommands(cmd);
                 }
@@ -12529,6 +12568,27 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    @TargetApi(Build.VERSION_CODES.TIRAMISU)
+    @Override
+    public void setDataSaverEnabled(final boolean enable) {
+        enforceNetworkStackOrSettingsPermission();
+        try {
+            final boolean ret = mNetd.bandwidthEnableDataSaver(enable);
+            if (!ret) {
+                throw new IllegalStateException("Error when changing iptables: " + enable);
+            }
+        } catch (RemoteException e) {
+            // Lack of permission or binder errors.
+            throw new IllegalStateException(e);
+        }
+
+        try {
+            mBpfNetMaps.setDataSaverEnabled(enable);
+        } catch (ServiceSpecificException | UnsupportedOperationException e) {
+            Log.e(TAG, "Failed to set data saver " + enable + " : " + e);
+        }
+    }
+
     @Override
     public void updateMeteredNetworkAllowList(final int uid, final boolean add) {
         enforceNetworkStackOrSettingsPermission();
@@ -12630,7 +12690,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void closeSocketsForFirewallChainLocked(final int chain)
             throws ErrnoException, SocketException, InterruptedIOException {
-        if (mBpfNetMaps.isFirewallAllowList(chain)) {
+        if (BpfNetMapsUtils.isFirewallAllowList(chain)) {
             // Allowlist means the firewall denies all by default, uids must be explicitly allowed
             // So, close all non-system socket owned by uids that are not explicitly allowed
             Set<Range<Integer>> ranges = new ArraySet<>();
@@ -12682,5 +12742,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public IBinder getCompanionDeviceManagerProxyService() {
         enforceNetworkStackPermission(mContext);
         return mCdmps;
+    }
+
+    @Override
+    public IBinder getRoutingCoordinatorService() {
+        enforceNetworkStackPermission(mContext);
+        return mRoutingCoordinatorService;
     }
 }

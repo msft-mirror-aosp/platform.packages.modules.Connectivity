@@ -68,6 +68,8 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
 
     @NonNull
     private final SharedLog mSharedLog;
+    @NonNull
+    private final byte[] mPacketCreationBuffer;
 
     /**
      * Callbacks called by {@link MdnsInterfaceAdvertiser} to report status updates.
@@ -150,8 +152,8 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         /** @see MdnsRecordRepository */
         @NonNull
         public MdnsRecordRepository makeRecordRepository(@NonNull Looper looper,
-                @NonNull String[] deviceHostName) {
-            return new MdnsRecordRepository(looper, deviceHostName);
+                @NonNull String[] deviceHostName, @NonNull MdnsFeatureFlags mdnsFeatureFlags) {
+            return new MdnsRecordRepository(looper, deviceHostName, mdnsFeatureFlags);
         }
 
         /** @see MdnsReplySender */
@@ -187,22 +189,25 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
     public MdnsInterfaceAdvertiser(@NonNull MdnsInterfaceSocket socket,
             @NonNull List<LinkAddress> initialAddresses, @NonNull Looper looper,
             @NonNull byte[] packetCreationBuffer, @NonNull Callback cb,
-            @NonNull String[] deviceHostName, @NonNull SharedLog sharedLog) {
+            @NonNull String[] deviceHostName, @NonNull SharedLog sharedLog,
+            @NonNull MdnsFeatureFlags mdnsFeatureFlags) {
         this(socket, initialAddresses, looper, packetCreationBuffer, cb,
-                new Dependencies(), deviceHostName, sharedLog);
+                new Dependencies(), deviceHostName, sharedLog, mdnsFeatureFlags);
     }
 
     public MdnsInterfaceAdvertiser(@NonNull MdnsInterfaceSocket socket,
             @NonNull List<LinkAddress> initialAddresses, @NonNull Looper looper,
             @NonNull byte[] packetCreationBuffer, @NonNull Callback cb, @NonNull Dependencies deps,
-            @NonNull String[] deviceHostName, @NonNull SharedLog sharedLog) {
-        mRecordRepository = deps.makeRecordRepository(looper, deviceHostName);
+            @NonNull String[] deviceHostName, @NonNull SharedLog sharedLog,
+            @NonNull MdnsFeatureFlags mdnsFeatureFlags) {
+        mRecordRepository = deps.makeRecordRepository(looper, deviceHostName, mdnsFeatureFlags);
         mRecordRepository.updateAddresses(initialAddresses);
         mSocket = socket;
         mCb = cb;
         mCbHandler = new Handler(looper);
         mReplySender = deps.makeReplySender(sharedLog.getTag(), looper, socket,
                 packetCreationBuffer, sharedLog);
+        mPacketCreationBuffer = packetCreationBuffer;
         mAnnouncer = deps.makeMdnsAnnouncer(sharedLog.getTag(), looper, mReplySender,
                 mAnnouncingCallback, sharedLog);
         mProber = deps.makeMdnsProber(sharedLog.getTag(), looper, mReplySender, mProbingCallback,
@@ -388,12 +393,13 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
      * @param serviceId The serviceId.
      * @return the raw offload payload
      */
+    @NonNull
     public byte[] getRawOffloadPayload(int serviceId) {
         try {
-            return MdnsUtils.createRawDnsPacket(mReplySender.getPacketCreationBuffer(),
+            return MdnsUtils.createRawDnsPacket(mPacketCreationBuffer,
                     mRecordRepository.getOffloadPacket(serviceId));
         } catch (IOException | IllegalArgumentException e) {
-            mSharedLog.wtf("Cannot create rawOffloadPacket: " + e.getMessage());
+            mSharedLog.wtf("Cannot create rawOffloadPacket: ", e);
             return new byte[0];
         }
     }
