@@ -16,7 +16,12 @@
 
 package com.android.server;
 
+import static android.net.BpfNetMapsConstants.ALLOW_CHAINS;
 import static android.net.BpfNetMapsConstants.CURRENT_STATS_MAP_CONFIGURATION_KEY;
+import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED_KEY;
+import static android.net.BpfNetMapsConstants.DATA_SAVER_DISABLED;
+import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED;
+import static android.net.BpfNetMapsConstants.DENY_CHAINS;
 import static android.net.BpfNetMapsConstants.DOZABLE_MATCH;
 import static android.net.BpfNetMapsConstants.HAPPY_BOX_MATCH;
 import static android.net.BpfNetMapsConstants.IIF_MATCH;
@@ -116,19 +121,15 @@ public final class BpfNetMapsTest {
     private static final int NO_IIF = 0;
     private static final int NULL_IIF = 0;
     private static final String CHAINNAME = "fw_dozable";
-    private static final List<Integer> FIREWALL_CHAINS = List.of(
-            FIREWALL_CHAIN_DOZABLE,
-            FIREWALL_CHAIN_STANDBY,
-            FIREWALL_CHAIN_POWERSAVE,
-            FIREWALL_CHAIN_RESTRICTED,
-            FIREWALL_CHAIN_LOW_POWER_STANDBY,
-            FIREWALL_CHAIN_OEM_DENY_1,
-            FIREWALL_CHAIN_OEM_DENY_2,
-            FIREWALL_CHAIN_OEM_DENY_3
-    );
 
     private static final long STATS_SELECT_MAP_A = 0;
     private static final long STATS_SELECT_MAP_B = 1;
+
+    private static final List<Integer> FIREWALL_CHAINS = new ArrayList<>();
+    static {
+        FIREWALL_CHAINS.addAll(ALLOW_CHAINS);
+        FIREWALL_CHAINS.addAll(DENY_CHAINS);
+    }
 
     private BpfNetMaps mBpfNetMaps;
 
@@ -141,6 +142,7 @@ public final class BpfNetMapsTest {
     private final IBpfMap<S32, U8> mUidPermissionMap = new TestBpfMap<>(S32.class, U8.class);
     private final IBpfMap<CookieTagMapKey, CookieTagMapValue> mCookieTagMap =
             spy(new TestBpfMap<>(CookieTagMapKey.class, CookieTagMapValue.class));
+    private final IBpfMap<S32, U8> mDataSaverEnabledMap = new TestBpfMap<>(S32.class, U8.class);
 
     @Before
     public void setUp() throws Exception {
@@ -155,6 +157,8 @@ public final class BpfNetMapsTest {
         BpfNetMaps.setUidOwnerMapForTest(mUidOwnerMap);
         BpfNetMaps.setUidPermissionMapForTest(mUidPermissionMap);
         BpfNetMaps.setCookieTagMapForTest(mCookieTagMap);
+        BpfNetMaps.setDataSaverEnabledMapForTest(mDataSaverEnabledMap);
+        mDataSaverEnabledMap.updateEntry(DATA_SAVER_ENABLED_KEY, new U8(DATA_SAVER_DISABLED));
         mBpfNetMaps = new BpfNetMaps(mContext, mNetd, mDeps);
     }
 
@@ -611,7 +615,7 @@ public final class BpfNetMapsTest {
         mUidOwnerMap.updateEntry(new S32(TEST_UID), new UidOwnerValue(TEST_IF_INDEX, IIF_MATCH));
 
         for (final int chain: testChains) {
-            final int ruleToAddMatch = mBpfNetMaps.isFirewallAllowList(chain)
+            final int ruleToAddMatch = BpfNetMapsUtils.isFirewallAllowList(chain)
                     ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DENY;
             mBpfNetMaps.setUidRule(chain, TEST_UID, ruleToAddMatch);
         }
@@ -619,7 +623,7 @@ public final class BpfNetMapsTest {
         checkUidOwnerValue(TEST_UID, TEST_IF_INDEX, IIF_MATCH | getMatch(testChains));
 
         for (final int chain: testChains) {
-            final int ruleToRemoveMatch = mBpfNetMaps.isFirewallAllowList(chain)
+            final int ruleToRemoveMatch = BpfNetMapsUtils.isFirewallAllowList(chain)
                     ? FIREWALL_RULE_DENY : FIREWALL_RULE_ALLOW;
             mBpfNetMaps.setUidRule(chain, TEST_UID, ruleToRemoveMatch);
         }
@@ -699,11 +703,11 @@ public final class BpfNetMapsTest {
         for (final int chain: FIREWALL_CHAINS) {
             final String testCase = "EnabledChains: " + enableChains + " CheckedChain: " + chain;
             if (enableChains.contains(chain)) {
-                final int expectedRule = mBpfNetMaps.isFirewallAllowList(chain)
+                final int expectedRule = BpfNetMapsUtils.isFirewallAllowList(chain)
                         ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DENY;
                 assertEquals(testCase, expectedRule, mBpfNetMaps.getUidRule(chain, TEST_UID));
             } else {
-                final int expectedRule = mBpfNetMaps.isFirewallAllowList(chain)
+                final int expectedRule = BpfNetMapsUtils.isFirewallAllowList(chain)
                         ? FIREWALL_RULE_DENY : FIREWALL_RULE_ALLOW;
                 assertEquals(testCase, expectedRule, mBpfNetMaps.getUidRule(chain, TEST_UID));
             }
@@ -746,7 +750,7 @@ public final class BpfNetMapsTest {
     public void testGetUidRuleNoEntry() throws Exception {
         mUidOwnerMap.clear();
         for (final int chain: FIREWALL_CHAINS) {
-            final int expectedRule = mBpfNetMaps.isFirewallAllowList(chain)
+            final int expectedRule = BpfNetMapsUtils.isFirewallAllowList(chain)
                     ? FIREWALL_RULE_DENY : FIREWALL_RULE_ALLOW;
             assertEquals(expectedRule, mBpfNetMaps.getUidRule(chain, TEST_UID));
         }
@@ -1155,6 +1159,21 @@ public final class BpfNetMapsTest {
         assertDumpContains(getDump(), "cookie=123 tag=0x789 uid=456");
     }
 
+    private void doTestDumpDataSaverConfig(final short value, final boolean expected)
+            throws Exception {
+        mDataSaverEnabledMap.updateEntry(DATA_SAVER_ENABLED_KEY, new U8(value));
+        assertDumpContains(getDump(),
+                "sDataSaverEnabledMap: " + expected);
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDumpDataSaverConfig() throws Exception {
+        doTestDumpDataSaverConfig(DATA_SAVER_DISABLED, false);
+        doTestDumpDataSaverConfig(DATA_SAVER_ENABLED, true);
+        doTestDumpDataSaverConfig((short) 2, true);
+    }
+
     @Test
     public void testGetUids() throws ErrnoException {
         final int uid0 = TEST_UIDS[0];
@@ -1182,5 +1201,24 @@ public final class BpfNetMapsTest {
                 () -> mBpfNetMaps.getUidsWithDenyRuleOnDenyListChain(FIREWALL_CHAIN_DOZABLE));
         assertThrows(expected,
                 () -> mBpfNetMaps.getUidsWithAllowRuleOnAllowListChain(FIREWALL_CHAIN_OEM_DENY_1));
+    }
+
+    @Test
+    @IgnoreAfter(Build.VERSION_CODES.S_V2)
+    public void testSetDataSaverEnabledBeforeT() {
+        for (boolean enable : new boolean[] {true, false}) {
+            assertThrows(UnsupportedOperationException.class,
+                    () -> mBpfNetMaps.setDataSaverEnabled(enable));
+        }
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testSetDataSaverEnabled() throws Exception {
+        for (boolean enable : new boolean[] {true, false}) {
+            mBpfNetMaps.setDataSaverEnabled(enable);
+            assertEquals(enable ? DATA_SAVER_ENABLED : DATA_SAVER_DISABLED,
+                         mDataSaverEnabledMap.getValue(DATA_SAVER_ENABLED_KEY).val);
+        }
     }
 }

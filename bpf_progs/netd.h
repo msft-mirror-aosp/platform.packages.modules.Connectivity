@@ -126,6 +126,7 @@ static const int CONFIGURATION_MAP_SIZE = 2;
 static const int UID_OWNER_MAP_SIZE = 4000;
 static const int INGRESS_DISCARD_MAP_SIZE = 100;
 static const int PACKET_TRACE_BUF_SIZE = 32 * 1024;
+static const int DATA_SAVER_ENABLED_MAP_SIZE = 1;
 
 #ifdef __cplusplus
 
@@ -172,6 +173,7 @@ ASSERT_STRING_EQUAL(XT_BPF_DENYLIST_PROG_PATH,  BPF_NETD_PATH "prog_netd_skfilte
 #define INGRESS_DISCARD_MAP_PATH BPF_NETD_PATH "map_netd_ingress_discard_map"
 #define PACKET_TRACE_RINGBUF_PATH BPF_NETD_PATH "map_netd_packet_trace_ringbuf"
 #define PACKET_TRACE_ENABLED_MAP_PATH BPF_NETD_PATH "map_netd_packet_trace_enabled_map"
+#define DATA_SAVER_ENABLED_MAP_PATH BPF_NETD_PATH "map_netd_data_saver_enabled_map"
 
 #endif // __cplusplus
 
@@ -234,6 +236,8 @@ STRUCT_SIZE(IngressDiscardValue, 2 * 4);  // 8
 #define UID_RULES_CONFIGURATION_KEY 0
 // Entry in the configuration map that stores which stats map is currently in use.
 #define CURRENT_STATS_MAP_CONFIGURATION_KEY 1
+// Entry in the data saver enabled map that stores whether data saver is enabled or not.
+#define DATA_SAVER_ENABLED_KEY 0
 
 #undef STRUCT_SIZE
 
