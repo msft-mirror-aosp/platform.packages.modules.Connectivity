@@ -16,6 +16,8 @@
 package android.net;
 
 import static android.annotation.SystemApi.Client.MODULE_LIBRARIES;
+import static android.content.pm.ApplicationInfo.FLAG_PERSISTENT;
+import static android.content.pm.ApplicationInfo.FLAG_SYSTEM;
 import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_1;
 import static android.net.NetworkRequest.Type.BACKGROUND_REQUEST;
 import static android.net.NetworkRequest.Type.LISTEN;
@@ -25,22 +27,30 @@ import static android.net.NetworkRequest.Type.TRACK_DEFAULT;
 import static android.net.NetworkRequest.Type.TRACK_SYSTEM_DEFAULT;
 import static android.net.QosCallback.QosCallbackRegistrationException;
 
+import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIVATE;
+
 import android.annotation.CallbackExecutor;
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresApi;
 import android.annotation.RequiresPermission;
 import android.annotation.SdkConstant;
 import android.annotation.SdkConstant.SdkConstantType;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
+import android.annotation.TargetApi;
+import android.app.Application;
 import android.app.PendingIntent;
 import android.app.admin.DevicePolicyManager;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.ConnectivityDiagnosticsManager.DataStallReport.DetectionMethod;
 import android.net.IpSecManager.UdpEncapsulationSocket;
 import android.net.SocketKeepalive.Callback;
@@ -72,6 +82,7 @@ import android.util.Range;
 import android.util.SparseIntArray;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
 
 import libcore.net.event.NetworkEventDispatcher;
 
@@ -93,6 +104,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Class that answers queries about the state of network connectivity. It also
@@ -114,6 +126,14 @@ import java.util.concurrent.RejectedExecutionException;
 public class ConnectivityManager {
     private static final String TAG = "ConnectivityManager";
     private static final boolean DEBUG = Log.isLoggable(TAG, Log.DEBUG);
+
+    // TODO : remove this class when udc-mainline-prod is abandoned and android.net.flags.Flags is
+    // available here
+    /** @hide */
+    public static class Flags {
+        static final String SET_DATA_SAVER_VIA_CM =
+                "com.android.net.flags.set_data_saver_via_cm";
+    }
 
     /**
      * A change in network connectivity has occurred. A default connection has either
@@ -3811,11 +3831,28 @@ public class ConnectivityManager {
     @RequiresPermission(anyOf = {
             NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
             android.Manifest.permission.NETWORK_FACTORY})
-    public Network registerNetworkAgent(INetworkAgent na, NetworkInfo ni, LinkProperties lp,
-            NetworkCapabilities nc, @NonNull NetworkScore score, NetworkAgentConfig config,
-            int providerId) {
+    public Network registerNetworkAgent(@NonNull INetworkAgent na, @NonNull NetworkInfo ni,
+            @NonNull LinkProperties lp, @NonNull NetworkCapabilities nc,
+            @NonNull NetworkScore score, @NonNull NetworkAgentConfig config, int providerId) {
+        return registerNetworkAgent(na, ni, lp, nc, null /* localNetworkConfig */, score, config,
+                providerId);
+    }
+
+    /**
+     * @hide
+     * Register a NetworkAgent with ConnectivityService.
+     * @return Network corresponding to NetworkAgent.
+     */
+    @RequiresPermission(anyOf = {
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
+            android.Manifest.permission.NETWORK_FACTORY})
+    public Network registerNetworkAgent(@NonNull INetworkAgent na, @NonNull NetworkInfo ni,
+            @NonNull LinkProperties lp, @NonNull NetworkCapabilities nc,
+            @Nullable LocalNetworkConfig localNetworkConfig, @NonNull NetworkScore score,
+            @NonNull NetworkAgentConfig config, int providerId) {
         try {
-            return mService.registerNetworkAgent(na, ni, lp, nc, score, config, providerId);
+            return mService.registerNetworkAgent(na, ni, lp, nc, score, localNetworkConfig, config,
+                    providerId);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -5941,6 +5978,28 @@ public class ConnectivityManager {
     }
 
     /**
+     * Sets data saver switch.
+     *
+     * @param enable True if enable.
+     * @throws IllegalStateException if failed.
+     * @hide
+     */
+    @FlaggedApi(Flags.SET_DATA_SAVER_VIA_CM)
+    @SystemApi(client = MODULE_LIBRARIES)
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.NETWORK_SETTINGS,
+            android.Manifest.permission.NETWORK_STACK,
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
+    })
+    public void setDataSaverEnabled(final boolean enable) {
+        try {
+            mService.setDataSaverEnabled(enable);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
      * Adds the specified UID to the list of UIds that are allowed to use data on metered networks
      * even when background data is restricted. The deny list takes precedence over the allow list.
      *
@@ -6149,10 +6208,149 @@ public class ConnectivityManager {
         }
     }
 
+    /**
+     * Helper class to track data saver status.
+     *
+     * The class will fetch current data saver status from {@link NetworkPolicyManager} when
+     * initialized, and listening for status changed intent to cache the latest status.
+     *
+     * @hide
+     */
+    @TargetApi(Build.VERSION_CODES.TIRAMISU) // RECEIVER_NOT_EXPORTED requires T.
+    @VisibleForTesting(visibility = PRIVATE)
+    public static class DataSaverStatusTracker extends BroadcastReceiver {
+        private static final Object sDataSaverStatusTrackerLock = new Object();
+
+        private static volatile DataSaverStatusTracker sInstance;
+
+        /**
+         * Gets a static instance of the class.
+         *
+         * @param context A {@link Context} for initialization. Note that since the data saver
+         *                status is global on a device, passing any context is equivalent.
+         * @return The static instance of a {@link DataSaverStatusTracker}.
+         */
+        public static DataSaverStatusTracker getInstance(@NonNull Context context) {
+            if (sInstance == null) {
+                synchronized (sDataSaverStatusTrackerLock) {
+                    if (sInstance == null) {
+                        sInstance = new DataSaverStatusTracker(context);
+                    }
+                }
+            }
+            return sInstance;
+        }
+
+        private final NetworkPolicyManager mNpm;
+        // The value updates on the caller's binder thread or UI thread.
+        private final AtomicBoolean mIsDataSaverEnabled;
+
+        @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+        public DataSaverStatusTracker(final Context context) {
+            // To avoid leaks, take the application context.
+            final Context appContext;
+            if (context instanceof Application) {
+                appContext = context;
+            } else {
+                appContext = context.getApplicationContext();
+            }
+
+            if ((appContext.getApplicationInfo().flags & FLAG_PERSISTENT) == 0
+                    && (appContext.getApplicationInfo().flags & FLAG_SYSTEM) == 0) {
+                throw new IllegalStateException("Unexpected caller: "
+                        + appContext.getApplicationInfo().packageName);
+            }
+
+            mNpm = appContext.getSystemService(NetworkPolicyManager.class);
+            final IntentFilter filter = new IntentFilter(
+                    ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED);
+            // The receiver should not receive broadcasts from other Apps.
+            appContext.registerReceiver(this, filter, Context.RECEIVER_NOT_EXPORTED);
+            mIsDataSaverEnabled = new AtomicBoolean();
+            updateDataSaverEnabled();
+        }
+
+        // Runs on caller's UI thread.
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent.getAction().equals(ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED)) {
+                updateDataSaverEnabled();
+            } else {
+                throw new IllegalStateException("Unexpected intent " + intent);
+            }
+        }
+
+        public boolean getDataSaverEnabled() {
+            return mIsDataSaverEnabled.get();
+        }
+
+        private void updateDataSaverEnabled() {
+            // Uid doesn't really matter, but use a fixed UID to make things clearer.
+            final int dataSaverForCallerUid = mNpm.getRestrictBackgroundStatus(Process.SYSTEM_UID);
+            mIsDataSaverEnabled.set(dataSaverForCallerUid
+                    != ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED);
+        }
+    }
+
+    /**
+     * Return whether the network is blocked for the given uid and metered condition.
+     *
+     * Similar to {@link NetworkPolicyManager#isUidNetworkingBlocked}, but directly reads the BPF
+     * maps and therefore considerably faster. For use by the NetworkStack process only.
+     *
+     * @param uid The target uid.
+     * @param isNetworkMetered Whether the target network is metered.
+     *
+     * @return True if all networking with the given condition is blocked. Otherwise, false.
+     * @throws IllegalStateException if the map cannot be opened.
+     * @throws ServiceSpecificException if the read fails.
+     * @hide
+     */
+    // This isn't protected by a standard Android permission since it can't
+    // afford to do IPC for performance reasons. Instead, the access control
+    // is provided by linux file group permission AID_NET_BW_ACCT and the
+    // selinux context fs_bpf_net*.
+    // Only the system server process and the network stack have access.
+    // TODO: Expose api when ready.
+    // @SystemApi(client = MODULE_LIBRARIES)
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)  // BPF maps were only mainlined in T
+    @RequiresPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
+    public boolean isUidNetworkingBlocked(int uid, boolean isNetworkMetered) {
+        final BpfNetMapsReader reader = BpfNetMapsReader.getInstance();
+
+        final boolean isDataSaverEnabled;
+        // TODO: For U-QPR3+ devices, get data saver status from bpf configuration map directly.
+        final DataSaverStatusTracker dataSaverStatusTracker =
+                DataSaverStatusTracker.getInstance(mContext);
+        isDataSaverEnabled = dataSaverStatusTracker.getDataSaverEnabled();
+
+        return reader.isUidNetworkingBlocked(uid, isNetworkMetered, isDataSaverEnabled);
+    }
+
     /** @hide */
     public IBinder getCompanionDeviceManagerProxyService() {
         try {
             return mService.getCompanionDeviceManagerProxyService();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    private static final Object sRoutingCoordinatorManagerLock = new Object();
+    @GuardedBy("sRoutingCoordinatorManagerLock")
+    private static RoutingCoordinatorManager sRoutingCoordinatorManager = null;
+    /** @hide */
+    @RequiresApi(Build.VERSION_CODES.S)
+    public RoutingCoordinatorManager getRoutingCoordinatorManager() {
+        try {
+            synchronized (sRoutingCoordinatorManagerLock) {
+                if (null == sRoutingCoordinatorManager) {
+                    sRoutingCoordinatorManager = new RoutingCoordinatorManager(mContext,
+                            IRoutingCoordinator.Stub.asInterface(
+                                    mService.getRoutingCoordinatorService()));
+                }
+                return sRoutingCoordinatorManager;
+            }
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

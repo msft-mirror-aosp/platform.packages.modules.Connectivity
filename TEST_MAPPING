@@ -1,7 +1,15 @@
 {
   "presubmit": [
     {
-      "name": "ConnectivityCoverageTests"
+      "name": "ConnectivityCoverageTests",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.NetworkStackModuleTest"
+        },
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        }
+      ]
     },
     {
       // In addition to ConnectivityCoverageTests, runs non-connectivity-module tests
@@ -121,6 +129,9 @@
     {
       "name": "netd_updatable_unit_test",
       "keywords": ["netd-device-kernel-4.9", "netd-device-kernel-4.14"]
+    },
+    {
+      "name": "dns_helper_unit_test"
     },
     {
       "name": "traffic_controller_unit_test",
@@ -255,7 +266,12 @@
       "name": "netd_updatable_unit_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
     },
     {
-      "name": "ConnectivityCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
+      "name": "ConnectivityCoverageTests[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]",
+      "options": [
+        {
+          "exclude-annotation": "com.android.testutils.SkipPresubmit"
+        }
+      ]
     },
     {
       "name": "traffic_controller_unit_test[CaptivePortalLoginGoogle.apk+NetworkStackGoogle.apk+com.google.android.resolv.apex+com.google.android.tethering.apex]"
