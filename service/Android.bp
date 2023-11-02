@@ -19,7 +19,7 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-service_remoteauth_pre_jarjar_lib = "service-remoteauth-pre-jarjar"
+service_remoteauth_pre_jarjar_lib = "service-remoteauth-pre-jarjar-udc-compat"
 
 // The above variables may have different values
 // depending on the branch, and this comment helps
@@ -185,10 +185,9 @@ java_library {
         "androidx.annotation_annotation",
         "connectivity-net-module-utils-bpf",
         "connectivity_native_aidl_interface-lateststable-java",
-        "dnsresolver_aidl_interface-V11-java",
+        "dnsresolver_aidl_interface-V12-java",
         "modules-utils-shell-command-handler",
         "net-utils-device-common",
-        "net-utils-device-common-bpf",
         "net-utils-device-common-ip",
         "net-utils-device-common-netlink",
         "net-utils-services-common",
