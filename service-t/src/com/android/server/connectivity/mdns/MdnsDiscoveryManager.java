@@ -35,6 +35,7 @@ import com.android.server.connectivity.mdns.util.MdnsUtils;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * This class keeps tracking the set of registered {@link MdnsServiceBrowserListener} instances, and
@@ -52,6 +53,7 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     @NonNull private final Handler handler;
     @Nullable private final HandlerThread handlerThread;
     @NonNull private final MdnsServiceCache serviceCache;
+    @NonNull private final MdnsFeatureFlags mdnsFeatureFlags;
 
     private static class PerSocketServiceTypeClients {
         private final ArrayMap<Pair<String, SocketKey>, MdnsServiceTypeClient> clients =
@@ -102,8 +104,12 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         }
 
         public void remove(@NonNull MdnsServiceTypeClient client) {
-            final int index = clients.indexOfValue(client);
-            clients.removeAt(index);
+            for (int i = 0; i < clients.size(); ++i) {
+                if (Objects.equals(client, clients.valueAt(i))) {
+                    clients.removeAt(i);
+                    break;
+                }
+            }
         }
 
         public boolean isEmpty() {
@@ -112,20 +118,22 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
     }
 
     public MdnsDiscoveryManager(@NonNull ExecutorProvider executorProvider,
-            @NonNull MdnsSocketClientBase socketClient, @NonNull SharedLog sharedLog) {
+            @NonNull MdnsSocketClientBase socketClient, @NonNull SharedLog sharedLog,
+            @NonNull MdnsFeatureFlags mdnsFeatureFlags) {
         this.executorProvider = executorProvider;
         this.socketClient = socketClient;
         this.sharedLog = sharedLog;
         this.perSocketServiceTypeClients = new PerSocketServiceTypeClients();
+        this.mdnsFeatureFlags = mdnsFeatureFlags;
         if (socketClient.getLooper() != null) {
             this.handlerThread = null;
             this.handler = new Handler(socketClient.getLooper());
-            this.serviceCache = new MdnsServiceCache(socketClient.getLooper());
+            this.serviceCache = new MdnsServiceCache(socketClient.getLooper(), mdnsFeatureFlags);
         } else {
             this.handlerThread = new HandlerThread(MdnsDiscoveryManager.class.getSimpleName());
             this.handlerThread.start();
             this.handler = new Handler(handlerThread.getLooper());
-            this.serviceCache = new MdnsServiceCache(handlerThread.getLooper());
+            this.serviceCache = new MdnsServiceCache(handlerThread.getLooper(), mdnsFeatureFlags);
         }
     }
 
