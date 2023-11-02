@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Implementation of JNI platform functionality.
 use crate::jnames::{SEND_REQUEST_MNAME, SEND_REQUEST_MSIG};
 use crate::unique_jvm;
 use anyhow::anyhow;
-use async_trait::async_trait;
 use jni::errors::Error as JNIError;
 use jni::objects::{GlobalRef, JMethodID, JObject, JValue};
 use jni::signature::TypeSignature;
@@ -26,11 +26,7 @@ use log::{debug, error, info};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicI64, Ordering},
-    Arc,
-};
-use tokio::{
-    runtime::Runtime,
-    sync::{mpsc, Mutex},
+    Arc, Mutex,
 };
 
 /// Macro capturing the name of the function calling this macro.
@@ -65,7 +61,7 @@ fn generate_platform_handle() -> i64 {
     HANDLE_RN.fetch_add(1, Ordering::SeqCst)
 }
 
-async fn insert_platform_handle(handle: i64, item: Arc<Mutex<JavaPlatform>>) {
+fn insert_platform_handle(handle: i64, item: Arc<Mutex<JavaPlatform>>) {
     if 0 == handle {
         // Init once
         logger::init(
@@ -75,41 +71,51 @@ async fn insert_platform_handle(handle: i64, item: Arc<Mutex<JavaPlatform>>) {
                 .with_filter("trace,jni=info"),
         );
     }
-    HANDLE_MAPPING.lock().await.insert(handle, Arc::clone(&item));
+    HANDLE_MAPPING.lock().unwrap().insert(handle, Arc::clone(&item));
 }
 
-#[async_trait]
+/// Reports a response from remote device.
+pub trait ResponseCallback {
+    /// Invoked upon successful response
+    fn on_response(&mut self, response: Vec<u8>);
+    /// Invoked upon failure
+    fn on_error(&mut self, error_code: i32);
+}
+
+/// Trait to platform functionality
 pub trait Platform {
     /// Send a binary message to the remote with the given connection id and return the response.
-    async fn send_request(&mut self, connection_id: i32, request: &[u8])
-        -> anyhow::Result<Vec<u8>>;
+    fn send_request(
+        &mut self,
+        connection_id: i32,
+        request: &[u8],
+        callback: Box<dyn ResponseCallback + Send>,
+    ) -> anyhow::Result<()>;
 }
 //////////////////////////////////
 
+/// Implementation of Platform trait
 pub struct JavaPlatform {
     platform_handle: i64,
     vm: &'static Arc<JavaVM>,
     platform_native_obj: GlobalRef,
     send_request_method_id: JMethodID,
-    map_futures: Mutex<HashMap<i64, mpsc::Sender<Vec<u8>>>>,
+    map_futures: Mutex<HashMap<i64, Box<dyn ResponseCallback + Send>>>,
     atomic_handle: AtomicI64,
 }
 
 impl JavaPlatform {
-    // Method to create JavaPlatform
-    pub async fn create<'a>(
-        env: JNIEnv<'a>,
-        java_platform_native: JObject<'a>,
+    /// Creates JavaPlatform and associates with unique handle id
+    pub fn create(
+        java_platform_native: JObject<'_>,
     ) -> Result<Arc<Mutex<impl Platform>>, JNIError> {
-        let jvm = env.get_java_vm()?;
-        let _ = unique_jvm::set_once(jvm);
         let platform_handle = generate_platform_handle();
         let platform = Arc::new(Mutex::new(JavaPlatform::new(
             platform_handle,
             unique_jvm::get_static_ref().ok_or(JNIError::InvalidCtorReturn)?,
             java_platform_native,
         )?));
-        insert_platform_handle(platform_handle, Arc::clone(&platform)).await;
+        insert_platform_handle(platform_handle, Arc::clone(&platform));
         Ok(Arc::clone(&platform))
     }
 
@@ -136,19 +142,18 @@ impl JavaPlatform {
     }
 }
 
-#[async_trait]
 impl Platform for JavaPlatform {
-    async fn send_request(
+    fn send_request(
         &mut self,
         connection_id: i32,
         request: &[u8],
-    ) -> anyhow::Result<Vec<u8>> {
+        callback: Box<dyn ResponseCallback + Send>,
+    ) -> anyhow::Result<()> {
         let type_signature = TypeSignature::from_str(SEND_REQUEST_MSIG)
             .map_err(|e| anyhow!("JNI: Invalid type signature: {:?}", e))?;
 
-        let (tx, mut rx) = mpsc::channel(1);
         let response_handle = self.atomic_handle.fetch_add(1, Ordering::SeqCst);
-        self.map_futures.lock().await.insert(response_handle, tx);
+        self.map_futures.lock().unwrap().insert(response_handle, callback);
         self.vm
             .attach_current_thread()
             .and_then(|env| {
@@ -175,21 +180,20 @@ impl Platform for JavaPlatform {
                 ))
             })
             .map_err(|e| anyhow!("JNI: Failed to attach current thread: {:?}", e))?;
-
-        rx.recv().await.ok_or(anyhow!("{} failed in awaiting for a result", function_name!()))
+        Ok(())
     }
 }
 
 impl JavaPlatform {
-    async fn on_send_request_success(&mut self, response: &[u8], response_handle: i64) {
+    fn on_send_request_success(&mut self, response: &[u8], response_handle: i64) {
         info!(
             "{} completed successfully {}:{}",
             function_name!(),
             self.platform_handle,
             response_handle
         );
-        if let Some(tx) = self.map_futures.lock().await.remove(&response_handle) {
-            let _ = tx.send(response.to_vec()).await;
+        if let Some(mut callback) = self.map_futures.lock().unwrap().remove(&response_handle) {
+            callback.on_response(response.to_vec());
         } else {
             error!(
                 "Failed to find TX for {} and {}:{}",
@@ -200,7 +204,7 @@ impl JavaPlatform {
         }
     }
 
-    async fn on_send_request_error(&self, error_code: i32, response_handle: i64) {
+    fn on_send_request_error(&self, error_code: i32, response_handle: i64) {
         error!(
             "{} completed with error {} {}:{}",
             function_name!(),
@@ -208,12 +212,11 @@ impl JavaPlatform {
             self.platform_handle,
             response_handle
         );
-        if let Some(tx) = self.map_futures.lock().await.remove(&response_handle) {
-            // `rx.recv()` ends with `Err`
-            drop(tx);
+        if let Some(mut callback) = self.map_futures.lock().unwrap().remove(&response_handle) {
+            callback.on_error(error_code);
         } else {
             error!(
-                "Failed to find TX for {} and {}:{}",
+                "Failed to find callback for {} and {}:{}",
                 function_name!(),
                 self.platform_handle,
                 response_handle
@@ -222,6 +225,7 @@ impl JavaPlatform {
     }
 }
 
+/// Returns successful response from remote device
 #[no_mangle]
 pub extern "system" fn Java_com_android_server_remoteauth_jni_NativeRemoteAuthJavaPlatform_native_on_send_request_success(
     env: JNIEnv,
@@ -231,25 +235,20 @@ pub extern "system" fn Java_com_android_server_remoteauth_jni_NativeRemoteAuthJa
     response_handle: jlong,
 ) {
     debug!("{}: enter", function_name!());
-    Runtime::new().unwrap().block_on(native_on_send_request_success(
-        env,
-        app_response,
-        platform_handle,
-        response_handle,
-    ));
+    native_on_send_request_success(env, app_response, platform_handle, response_handle);
 }
 
-async fn native_on_send_request_success(
+fn native_on_send_request_success(
     env: JNIEnv<'_>,
     app_response: jbyteArray,
     platform_handle: jlong,
     response_handle: jlong,
 ) {
-    if let Some(platform) = HANDLE_MAPPING.lock().await.get(&platform_handle) {
+    if let Some(platform) = HANDLE_MAPPING.lock().unwrap().get(&platform_handle) {
         let response =
             env.convert_byte_array(app_response).map_err(|_| JNIError::InvalidCtorReturn).unwrap();
-        let mut platform = (*platform).lock().await;
-        platform.on_send_request_success(&response, response_handle).await;
+        let mut platform = (*platform).lock().unwrap();
+        platform.on_send_request_success(&response, response_handle);
     } else {
         let _ = env.throw_new(
             "com/android/server/remoteauth/jni/BadHandleException",
@@ -258,6 +257,7 @@ async fn native_on_send_request_success(
     }
 }
 
+/// Notifies about failure to receive a response from remote device
 #[no_mangle]
 pub extern "system" fn Java_com_android_server_remoteauth_jni_NativeRemoteAuthJavaPlatform_native_on_send_request_error(
     env: JNIEnv,
@@ -267,23 +267,18 @@ pub extern "system" fn Java_com_android_server_remoteauth_jni_NativeRemoteAuthJa
     response_handle: jlong,
 ) {
     debug!("{}: enter", function_name!());
-    Runtime::new().unwrap().block_on(native_on_send_request_error(
-        env,
-        error_code,
-        platform_handle,
-        response_handle,
-    ));
+    native_on_send_request_error(env, error_code, platform_handle, response_handle);
 }
 
-async fn native_on_send_request_error(
+fn native_on_send_request_error(
     env: JNIEnv<'_>,
     error_code: jint,
     platform_handle: jlong,
     response_handle: jlong,
 ) {
-    if let Some(platform) = HANDLE_MAPPING.lock().await.get(&platform_handle) {
-        let platform = (*platform).lock().await;
-        platform.on_send_request_error(error_code, response_handle).await;
+    if let Some(platform) = HANDLE_MAPPING.lock().unwrap().get(&platform_handle) {
+        let platform = (*platform).lock().unwrap();
+        platform.on_send_request_error(error_code, response_handle);
     } else {
         let _ = env.throw_new(
             "com/android/server/remoteauth/jni/BadHandleException",
