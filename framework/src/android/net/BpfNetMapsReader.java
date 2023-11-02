@@ -17,6 +17,8 @@
 package android.net;
 
 import static android.net.BpfNetMapsConstants.CONFIGURATION_MAP_PATH;
+import static android.net.BpfNetMapsConstants.HAPPY_BOX_MATCH;
+import static android.net.BpfNetMapsConstants.PENALTY_BOX_MATCH;
 import static android.net.BpfNetMapsConstants.UID_OWNER_MAP_PATH;
 import static android.net.BpfNetMapsConstants.UID_RULES_CONFIGURATION_KEY;
 import static android.net.BpfNetMapsUtils.getMatchByFirewallChain;
@@ -57,10 +59,42 @@ public class BpfNetMapsReader {
     private final IBpfMap<S32, UidOwnerValue> mUidOwnerMap;
     private final Dependencies mDeps;
 
-    public BpfNetMapsReader() {
+    // Bitmaps for calculating whether a given uid is blocked by firewall chains.
+    private static final long sMaskDropIfSet;
+    private static final long sMaskDropIfUnset;
+
+    static {
+        long maskDropIfSet = 0L;
+        long maskDropIfUnset = 0L;
+
+        for (int chain : BpfNetMapsConstants.ALLOW_CHAINS) {
+            final long match = getMatchByFirewallChain(chain);
+            maskDropIfUnset |= match;
+        }
+        for (int chain : BpfNetMapsConstants.DENY_CHAINS) {
+            final long match = getMatchByFirewallChain(chain);
+            maskDropIfSet |= match;
+        }
+        sMaskDropIfSet = maskDropIfSet;
+        sMaskDropIfUnset = maskDropIfUnset;
+    }
+
+    private static class SingletonHolder {
+        static final BpfNetMapsReader sInstance = new BpfNetMapsReader();
+    }
+
+    @NonNull
+    public static BpfNetMapsReader getInstance() {
+        return SingletonHolder.sInstance;
+    }
+
+    private BpfNetMapsReader() {
         this(new Dependencies());
     }
 
+    // While the production code uses the singleton to optimize for performance and deal with
+    // concurrent access, the test needs to use a non-static approach for dependency injection and
+    // mocking virtual bpf maps.
     @VisibleForTesting
     public BpfNetMapsReader(@NonNull Dependencies deps) {
         if (!SdkLevel.isAtLeastT()) {
@@ -175,5 +209,44 @@ public class BpfNetMapsReader {
             throw new ServiceSpecificException(e.errno,
                     "Unable to get uid rule status: " + Os.strerror(e.errno));
         }
+    }
+
+    /**
+     * Return whether the network is blocked by firewall chains for the given uid.
+     *
+     * @param uid The target uid.
+     * @param isNetworkMetered Whether the target network is metered.
+     * @param isDataSaverEnabled Whether the data saver is enabled.
+     *
+     * @return True if the network is blocked. Otherwise, false.
+     * @throws ServiceSpecificException if the read fails.
+     *
+     * @hide
+     */
+    public boolean isUidNetworkingBlocked(final int uid, boolean isNetworkMetered,
+            boolean isDataSaverEnabled) {
+        throwIfPreT("isUidBlockedByFirewallChains is not available on pre-T devices");
+
+        final long uidRuleConfig;
+        final long uidMatch;
+        try {
+            uidRuleConfig = mConfigurationMap.getValue(UID_RULES_CONFIGURATION_KEY).val;
+            final UidOwnerValue value = mUidOwnerMap.getValue(new S32(uid));
+            uidMatch = (value != null) ? value.rule : 0L;
+        } catch (ErrnoException e) {
+            throw new ServiceSpecificException(e.errno,
+                    "Unable to get firewall chain status: " + Os.strerror(e.errno));
+        }
+
+        final boolean blockedByAllowChains = 0 != (uidRuleConfig & ~uidMatch & sMaskDropIfUnset);
+        final boolean blockedByDenyChains = 0 != (uidRuleConfig & uidMatch & sMaskDropIfSet);
+        if (blockedByAllowChains || blockedByDenyChains) {
+            return true;
+        }
+
+        if (!isNetworkMetered) return false;
+        if ((uidMatch & PENALTY_BOX_MATCH) != 0) return true;
+        if ((uidMatch & HAPPY_BOX_MATCH) != 0) return false;
+        return isDataSaverEnabled;
     }
 }

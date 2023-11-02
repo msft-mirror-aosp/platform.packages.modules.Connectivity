@@ -136,6 +136,7 @@ import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.res.XmlResourceParser;
 import android.database.ContentObserver;
+import android.net.BpfNetMapsUtils;
 import android.net.CaptivePortal;
 import android.net.CaptivePortalData;
 import android.net.ConnectionInfo;
@@ -4155,7 +4156,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
             switch (msg.what) {
                 case NetworkAgent.EVENT_NETWORK_CAPABILITIES_CHANGED: {
-                    nai.setDeclaredCapabilities((NetworkCapabilities) arg.second);
+                    final NetworkCapabilities proposed = (NetworkCapabilities) arg.second;
+                    if (!nai.respectsNcStructuralConstraints(proposed)) {
+                        Log.wtf(TAG, "Agent " + nai + " violates nc structural constraints : "
+                                + nai.networkCapabilities + " -> " + proposed);
+                        disconnectAndDestroyNetwork(nai);
+                        return;
+                    }
+                    nai.setDeclaredCapabilities(proposed);
                     final NetworkCapabilities sanitized =
                             nai.getDeclaredCapabilitiesSanitized(mCarrierPrivilegeAuthenticator);
                     maybeUpdateWifiRoamTimestamp(nai, sanitized);
@@ -12689,7 +12697,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void closeSocketsForFirewallChainLocked(final int chain)
             throws ErrnoException, SocketException, InterruptedIOException {
-        if (mBpfNetMaps.isFirewallAllowList(chain)) {
+        if (BpfNetMapsUtils.isFirewallAllowList(chain)) {
             // Allowlist means the firewall denies all by default, uids must be explicitly allowed
             // So, close all non-system socket owned by uids that are not explicitly allowed
             Set<Range<Integer>> ranges = new ArraySet<>();
