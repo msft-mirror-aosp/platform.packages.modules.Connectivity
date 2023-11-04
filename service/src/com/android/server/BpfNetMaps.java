@@ -19,6 +19,10 @@ package com.android.server;
 import static android.net.BpfNetMapsConstants.CONFIGURATION_MAP_PATH;
 import static android.net.BpfNetMapsConstants.COOKIE_TAG_MAP_PATH;
 import static android.net.BpfNetMapsConstants.CURRENT_STATS_MAP_CONFIGURATION_KEY;
+import static android.net.BpfNetMapsConstants.DATA_SAVER_DISABLED;
+import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED;
+import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED_KEY;
+import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED_MAP_PATH;
 import static android.net.BpfNetMapsConstants.HAPPY_BOX_MATCH;
 import static android.net.BpfNetMapsConstants.IIF_MATCH;
 import static android.net.BpfNetMapsConstants.LOCKDOWN_VPN_MATCH;
@@ -26,7 +30,9 @@ import static android.net.BpfNetMapsConstants.PENALTY_BOX_MATCH;
 import static android.net.BpfNetMapsConstants.UID_OWNER_MAP_PATH;
 import static android.net.BpfNetMapsConstants.UID_PERMISSION_MAP_PATH;
 import static android.net.BpfNetMapsConstants.UID_RULES_CONFIGURATION_KEY;
+import static android.net.BpfNetMapsUtils.PRE_T;
 import static android.net.BpfNetMapsUtils.getMatchByFirewallChain;
+import static android.net.BpfNetMapsUtils.isFirewallAllowList;
 import static android.net.BpfNetMapsUtils.matchToString;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
@@ -51,7 +57,9 @@ import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
 
 import android.app.StatsManager;
 import android.content.Context;
+import android.net.BpfNetMapsReader;
 import android.net.INetd;
+import android.net.UidOwnerValue;
 import android.os.Build;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
@@ -92,7 +100,6 @@ import java.util.StringJoiner;
  * {@hide}
  */
 public class BpfNetMaps {
-    private static final boolean PRE_T = !SdkLevel.isAtLeastT();
     static {
         if (!PRE_T) {
             System.loadLibrary("service-connectivity");
@@ -128,6 +135,8 @@ public class BpfNetMaps {
     private static IBpfMap<S32, UidOwnerValue> sUidOwnerMap = null;
     private static IBpfMap<S32, U8> sUidPermissionMap = null;
     private static IBpfMap<CookieTagMapKey, CookieTagMapValue> sCookieTagMap = null;
+    // TODO: Add BOOL class and replace U8?
+    private static IBpfMap<S32, U8> sDataSaverEnabledMap = null;
 
     private static final List<Pair<Integer, String>> PERMISSION_LIST = Arrays.asList(
             Pair.create(PERMISSION_INTERNET, "PERMISSION_INTERNET"),
@@ -175,6 +184,14 @@ public class BpfNetMaps {
         sCookieTagMap = cookieTagMap;
     }
 
+    /**
+     * Set dataSaverEnabledMap for test.
+     */
+    @VisibleForTesting
+    public static void setDataSaverEnabledMapForTest(IBpfMap<S32, U8> dataSaverEnabledMap) {
+        sDataSaverEnabledMap = dataSaverEnabledMap;
+    }
+
     private static IBpfMap<S32, U32> getConfigurationMap() {
         try {
             return new BpfMap<>(
@@ -211,6 +228,15 @@ public class BpfNetMaps {
         }
     }
 
+    private static IBpfMap<S32, U8> getDataSaverEnabledMap() {
+        try {
+            return new BpfMap<>(
+                    DATA_SAVER_ENABLED_MAP_PATH, BpfMap.BPF_F_RDWR, S32.class, U8.class);
+        } catch (ErrnoException e) {
+            throw new IllegalStateException("Cannot open data saver enabled map", e);
+        }
+    }
+
     private static void initBpfMaps() {
         if (sConfigurationMap == null) {
             sConfigurationMap = getConfigurationMap();
@@ -244,6 +270,15 @@ public class BpfNetMaps {
         if (sCookieTagMap == null) {
             sCookieTagMap = getCookieTagMap();
         }
+
+        if (sDataSaverEnabledMap == null) {
+            sDataSaverEnabledMap = getDataSaverEnabledMap();
+        }
+        try {
+            sDataSaverEnabledMap.updateEntry(DATA_SAVER_ENABLED_KEY, new U8(DATA_SAVER_DISABLED));
+        } catch (ErrnoException e) {
+            throw new IllegalStateException("Failed to initialize data saver configuration", e);
+        }
     }
 
     /**
@@ -254,7 +289,7 @@ public class BpfNetMaps {
         if (sInitialized) return;
         if (sEnableJavaBpfMap == null) {
             sEnableJavaBpfMap = SdkLevel.isAtLeastU() ||
-                    DeviceConfigUtils.isTetheringFeatureNotChickenedOut(
+                    DeviceConfigUtils.isTetheringFeatureNotChickenedOut(context,
                             BPF_NET_MAPS_FORCE_DISABLE_JAVA_BPF_MAP);
         }
         Log.d(TAG, "BpfNetMaps is initialized with sEnableJavaBpfMap=" + sEnableJavaBpfMap);
@@ -298,6 +333,7 @@ public class BpfNetMaps {
     }
 
     /** Constructor used after T that doesn't need to use netd anymore. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public BpfNetMaps(final Context context) {
         this(context, null);
 
@@ -315,29 +351,6 @@ public class BpfNetMaps {
         }
         mNetd = netd;
         mDeps = deps;
-    }
-
-    /**
-     * Get if the chain is allow list or not.
-     *
-     * ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
-     * DENYLIST means the firewall allows all by default, uids must be explicitly denyed
-     */
-    public boolean isFirewallAllowList(final int chain) {
-        switch (chain) {
-            case FIREWALL_CHAIN_DOZABLE:
-            case FIREWALL_CHAIN_POWERSAVE:
-            case FIREWALL_CHAIN_RESTRICTED:
-            case FIREWALL_CHAIN_LOW_POWER_STANDBY:
-                return true;
-            case FIREWALL_CHAIN_STANDBY:
-            case FIREWALL_CHAIN_OEM_DENY_1:
-            case FIREWALL_CHAIN_OEM_DENY_2:
-            case FIREWALL_CHAIN_OEM_DENY_3:
-                return false;
-            default:
-                throw new ServiceSpecificException(EINVAL, "Invalid firewall chain: " + chain);
-        }
     }
 
     private void maybeThrow(final int err, final String msg) {
@@ -420,6 +433,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void addNaughtyApp(final int uid) {
         throwIfPreT("addNaughtyApp is not available on pre-T devices");
 
@@ -438,6 +452,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void removeNaughtyApp(final int uid) {
         throwIfPreT("removeNaughtyApp is not available on pre-T devices");
 
@@ -456,6 +471,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void addNiceApp(final int uid) {
         throwIfPreT("addNiceApp is not available on pre-T devices");
 
@@ -474,6 +490,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void removeNiceApp(final int uid) {
         throwIfPreT("removeNiceApp is not available on pre-T devices");
 
@@ -494,6 +511,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void setChildChain(final int childChain, final boolean enable) {
         throwIfPreT("setChildChain is not available on pre-T devices");
 
@@ -523,18 +541,14 @@ public class BpfNetMaps {
      * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
+     *
+     * @deprecated Use {@link BpfNetMapsReader#isChainEnabled} instead.
      */
+    // TODO: Migrate the callers to use {@link BpfNetMapsReader#isChainEnabled} instead.
+    @Deprecated
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public boolean isChainEnabled(final int childChain) {
-        throwIfPreT("isChainEnabled is not available on pre-T devices");
-
-        final long match = getMatchByFirewallChain(childChain);
-        try {
-            final U32 config = sConfigurationMap.getValue(UID_RULES_CONFIGURATION_KEY);
-            return (config.val & match) != 0;
-        } catch (ErrnoException e) {
-            throw new ServiceSpecificException(e.errno,
-                    "Unable to get firewall chain status: " + Os.strerror(e.errno));
-        }
+        return BpfNetMapsReader.isChainEnabled(sConfigurationMap, childChain);
     }
 
     private Set<Integer> asSet(final int[] uids) {
@@ -554,6 +568,7 @@ public class BpfNetMaps {
      * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws IllegalArgumentException if {@code chain} is not a valid chain.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void replaceUidChain(final int chain, final int[] uids) {
         throwIfPreT("replaceUidChain is not available on pre-T devices");
 
@@ -638,6 +653,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void setUidRule(final int childChain, final int uid, final int firewallRule) {
         throwIfPreT("setUidRule is not available on pre-T devices");
 
@@ -667,20 +683,12 @@ public class BpfNetMaps {
      * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
+     *
+     * @deprecated use {@link BpfNetMapsReader#getUidRule} instead.
      */
+    // TODO: Migrate the callers to use {@link BpfNetMapsReader#getUidRule} instead.
     public int getUidRule(final int childChain, final int uid) {
-        throwIfPreT("isUidChainEnabled is not available on pre-T devices");
-
-        final long match = getMatchByFirewallChain(childChain);
-        final boolean isAllowList = isFirewallAllowList(childChain);
-        try {
-            final UidOwnerValue uidMatch = sUidOwnerMap.getValue(new S32(uid));
-            final boolean isMatchEnabled = uidMatch != null && (uidMatch.rule & match) != 0;
-            return isMatchEnabled == isAllowList ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DENY;
-        } catch (ErrnoException e) {
-            throw new ServiceSpecificException(e.errno,
-                    "Unable to get uid rule status: " + Os.strerror(e.errno));
-        }
+        return BpfNetMapsReader.getUidRule(sUidOwnerMap, childChain, uid);
     }
 
     private Set<Integer> getUidsMatchEnabled(final int childChain) throws ErrnoException {
@@ -830,6 +838,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void updateUidLockdownRule(final int uid, final boolean add) {
         throwIfPreT("updateUidLockdownRule is not available on pre-T devices");
 
@@ -852,6 +861,7 @@ public class BpfNetMaps {
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void swapActiveStatsMap() {
         throwIfPreT("swapActiveStatsMap is not available on pre-T devices");
 
@@ -926,7 +936,29 @@ public class BpfNetMaps {
         }
     }
 
+    /**
+     * Set Data Saver enabled or disabled
+     *
+     * @param enable     whether Data Saver is enabled or disabled.
+     * @throws UnsupportedOperationException if called on pre-T devices.
+     * @throws ServiceSpecificException in case of failure, with an error code indicating the
+     *                                  cause of the failure.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public void setDataSaverEnabled(boolean enable) {
+        throwIfPreT("setDataSaverEnabled is not available on pre-T devices");
+
+        try {
+            final short config = enable ? DATA_SAVER_ENABLED : DATA_SAVER_DISABLED;
+            sDataSaverEnabledMap.updateEntry(DATA_SAVER_ENABLED_KEY, new U8(config));
+        } catch (ErrnoException e) {
+            throw new ServiceSpecificException(e.errno, "Unable to set data saver: "
+                    + Os.strerror(e.errno));
+        }
+    }
+
     /** Register callback for statsd to pull atom. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void setPullAtomCallback(final Context context) {
         throwIfPreT("setPullAtomCallback is not available on pre-T devices");
 
@@ -1007,6 +1039,15 @@ public class BpfNetMaps {
         }
     }
 
+    private void dumpDataSaverConfig(final IndentingPrintWriter pw) {
+        try {
+            final short config = sDataSaverEnabledMap.getValue(DATA_SAVER_ENABLED_KEY).val;
+            // Any non-zero value converted from short to boolean is true by convention.
+            pw.println("sDataSaverEnabledMap: " + (config != DATA_SAVER_DISABLED));
+        } catch (ErrnoException e) {
+            pw.println("Failed to read data saver configuration: " + e);
+        }
+    }
     /**
      * Dump BPF maps
      *
@@ -1016,6 +1057,7 @@ public class BpfNetMaps {
      * @throws IOException when file descriptor is invalid.
      * @throws ServiceSpecificException when the method is called on an unsupported device.
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public void dump(final IndentingPrintWriter pw, final FileDescriptor fd, boolean verbose)
             throws IOException, ServiceSpecificException {
         if (PRE_T) {
@@ -1056,6 +1098,8 @@ public class BpfNetMaps {
                     });
             BpfDump.dumpMap(sUidPermissionMap, pw, "sUidPermissionMap",
                     (uid, permission) -> uid.val + " " + permissionToString(permission.val));
+
+            dumpDataSaverConfig(pw);
             pw.decreaseIndent();
         }
     }
