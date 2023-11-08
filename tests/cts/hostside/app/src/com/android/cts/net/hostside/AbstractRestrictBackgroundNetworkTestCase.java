@@ -37,6 +37,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import android.annotation.NonNull;
 import android.app.ActivityManager;
 import android.app.Instrumentation;
 import android.app.NotificationManager;
@@ -438,6 +439,42 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     }
 
     /**
+     * Asserts whether the network is blocked by accessing bpf maps if command-line tool supports.
+     */
+    void assertNetworkAccessBlockedByBpf(boolean expectBlocked, int uid, boolean metered) {
+        final String result;
+        try {
+            result = executeShellCommand(
+                    "cmd network_stack is-uid-networking-blocked " + uid + " " + metered);
+        } catch (AssertionError e) {
+            // If NetworkStack is too old to support this command, ignore and continue
+            // this test to verify other parts.
+            if (e.getMessage().contains("No shell command implementation.")) {
+                return;
+            }
+            throw e;
+        }
+
+        // Tethering module is too old.
+        if (result.contains("API is unsupported")) {
+            return;
+        }
+
+        assertEquals(expectBlocked, parseBooleanOrThrow(result.trim()));
+    }
+
+    /**
+     * Similar to {@link Boolean#parseBoolean} but throws when the input
+     * is unexpected instead of returning false.
+     */
+    private static boolean parseBooleanOrThrow(@NonNull String s) {
+        // Don't use Boolean.parseBoolean
+        if ("true".equalsIgnoreCase(s)) return true;
+        if ("false".equalsIgnoreCase(s)) return false;
+        throw new IllegalArgumentException("Unexpected: " + s);
+    }
+
+    /**
      * Checks whether the network is available as expected.
      *
      * @return error message with the mismatch (or empty if assertion passed).
@@ -752,27 +789,24 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         assertDelayedShellCommand("dumpsys deviceidle get deep", enabled ? "IDLE" : "ACTIVE");
     }
 
-    protected void setAppIdle(boolean enabled) throws Exception {
+    protected void setAppIdle(boolean isIdle) throws Exception {
+        setAppIdleNoAssert(isIdle);
+        assertAppIdle(isIdle);
+    }
+
+    protected void setAppIdleNoAssert(boolean isIdle) throws Exception {
         if (!isAppStandbySupported()) {
             return;
         }
-        Log.i(TAG, "Setting app idle to " + enabled);
-        executeSilentShellCommand("am set-inactive " + TEST_APP2_PKG + " " + enabled );
-        assertAppIdle(enabled);
+        Log.i(TAG, "Setting app idle to " + isIdle);
+        final String bucketName = isIdle ? "rare" : "active";
+        executeSilentShellCommand("am set-standby-bucket " + TEST_APP2_PKG + " " + bucketName);
     }
 
-    protected void setAppIdleNoAssert(boolean enabled) throws Exception {
-        if (!isAppStandbySupported()) {
-            return;
-        }
-        Log.i(TAG, "Setting app idle to " + enabled);
-        executeSilentShellCommand("am set-inactive " + TEST_APP2_PKG + " " + enabled );
-    }
-
-    protected void assertAppIdle(boolean enabled) throws Exception {
+    protected void assertAppIdle(boolean isIdle) throws Exception {
         try {
             assertDelayedShellCommand("am get-inactive " + TEST_APP2_PKG,
-                    30 /* maxTries */, 1 /* napTimeSeconds */, "Idle=" + enabled);
+                    30 /* maxTries */, 1 /* napTimeSeconds */, "Idle=" + isIdle);
         } catch (Throwable e) {
             throw e;
         }
