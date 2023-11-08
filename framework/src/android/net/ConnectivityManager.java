@@ -16,6 +16,8 @@
 package android.net;
 
 import static android.annotation.SystemApi.Client.MODULE_LIBRARIES;
+import static android.content.pm.ApplicationInfo.FLAG_PERSISTENT;
+import static android.content.pm.ApplicationInfo.FLAG_SYSTEM;
 import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_1;
 import static android.net.NetworkRequest.Type.BACKGROUND_REQUEST;
 import static android.net.NetworkRequest.Type.LISTEN;
@@ -24,6 +26,8 @@ import static android.net.NetworkRequest.Type.REQUEST;
 import static android.net.NetworkRequest.Type.TRACK_DEFAULT;
 import static android.net.NetworkRequest.Type.TRACK_SYSTEM_DEFAULT;
 import static android.net.QosCallback.QosCallbackRegistrationException;
+
+import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIVATE;
 
 import android.annotation.CallbackExecutor;
 import android.annotation.FlaggedApi;
@@ -37,12 +41,16 @@ import android.annotation.SdkConstant.SdkConstantType;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
+import android.annotation.TargetApi;
+import android.app.Application;
 import android.app.PendingIntent;
 import android.app.admin.DevicePolicyManager;
 import android.compat.annotation.UnsupportedAppUsage;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.net.ConnectivityDiagnosticsManager.DataStallReport.DetectionMethod;
 import android.net.IpSecManager.UdpEncapsulationSocket;
 import android.net.SocketKeepalive.Callback;
@@ -74,6 +82,7 @@ import android.util.Range;
 import android.util.SparseIntArray;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
 
 import libcore.net.event.NetworkEventDispatcher;
 
@@ -95,6 +104,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Class that answers queries about the state of network connectivity. It also
@@ -123,6 +133,10 @@ public class ConnectivityManager {
     public static class Flags {
         static final String SET_DATA_SAVER_VIA_CM =
                 "com.android.net.flags.set_data_saver_via_cm";
+        static final String SUPPORT_IS_UID_NETWORKING_BLOCKED =
+                "com.android.net.flags.support_is_uid_networking_blocked";
+        static final String BASIC_BACKGROUND_RESTRICTIONS_ENABLED =
+                "com.android.net.flags.basic_background_restrictions_enabled";
     }
 
     /**
@@ -896,6 +910,16 @@ public class ConnectivityManager {
     public static final int BLOCKED_REASON_LOW_POWER_STANDBY = 1 << 5;
 
     /**
+     * Flag to indicate that an app is subject to default background restrictions that would
+     * result in its network access being blocked.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.BASIC_BACKGROUND_RESTRICTIONS_ENABLED)
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int BLOCKED_REASON_APP_BACKGROUND = 1 << 6;
+
+    /**
      * Flag to indicate that an app is subject to Data saver restrictions that would
      * result in its metered network access being blocked.
      *
@@ -934,6 +958,7 @@ public class ConnectivityManager {
             BLOCKED_REASON_RESTRICTED_MODE,
             BLOCKED_REASON_LOCKDOWN_VPN,
             BLOCKED_REASON_LOW_POWER_STANDBY,
+            BLOCKED_REASON_APP_BACKGROUND,
             BLOCKED_METERED_REASON_DATA_SAVER,
             BLOCKED_METERED_REASON_USER_RESTRICTED,
             BLOCKED_METERED_REASON_ADMIN_DISABLED,
@@ -951,7 +976,6 @@ public class ConnectivityManager {
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 130143562)
     private final IConnectivityManager mService;
 
-    // LINT.IfChange(firewall_chain)
     /**
      * Firewall chain for device idle (doze mode).
      * Allowlist of apps that have network access in device idle.
@@ -991,6 +1015,16 @@ public class ConnectivityManager {
      */
     @SystemApi(client = MODULE_LIBRARIES)
     public static final int FIREWALL_CHAIN_LOW_POWER_STANDBY = 5;
+
+    /**
+     * Firewall chain used for always-on default background restrictions.
+     * Allowlist of apps that have access because either they are in the foreground or they are
+     * exempted for specific situations while in the background.
+     * @hide
+     */
+    @FlaggedApi(Flags.BASIC_BACKGROUND_RESTRICTIONS_ENABLED)
+    @SystemApi(client = MODULE_LIBRARIES)
+    public static final int FIREWALL_CHAIN_BACKGROUND = 6;
 
     /**
      * Firewall chain used for OEM-specific application restrictions.
@@ -1051,12 +1085,12 @@ public class ConnectivityManager {
         FIREWALL_CHAIN_POWERSAVE,
         FIREWALL_CHAIN_RESTRICTED,
         FIREWALL_CHAIN_LOW_POWER_STANDBY,
+        FIREWALL_CHAIN_BACKGROUND,
         FIREWALL_CHAIN_OEM_DENY_1,
         FIREWALL_CHAIN_OEM_DENY_2,
         FIREWALL_CHAIN_OEM_DENY_3
     })
     public @interface FirewallChain {}
-    // LINT.ThenChange(packages/modules/Connectivity/service/native/include/Common.h)
 
     /**
      * A firewall rule which allows or drops packets depending on existing policy.
@@ -3951,16 +3985,21 @@ public class ConnectivityManager {
          * @param network The {@link Network} of the satisfying network.
          * @param networkCapabilities The {@link NetworkCapabilities} of the satisfying network.
          * @param linkProperties The {@link LinkProperties} of the satisfying network.
+         * @param localInfo The {@link LocalNetworkInfo} of the satisfying network, or null
+         *                  if this network is not a local network.
          * @param blocked Whether access to the {@link Network} is blocked due to system policy.
          * @hide
          */
         public final void onAvailable(@NonNull Network network,
                 @NonNull NetworkCapabilities networkCapabilities,
-                @NonNull LinkProperties linkProperties, @BlockedReason int blocked) {
+                @NonNull LinkProperties linkProperties,
+                @Nullable LocalNetworkInfo localInfo,
+                @BlockedReason int blocked) {
             // Internally only this method is called when a new network is available, and
             // it calls the callback in the same way and order that older versions used
             // to call so as not to change the behavior.
             onAvailable(network, networkCapabilities, linkProperties, blocked != 0);
+            if (null != localInfo) onLocalNetworkInfoChanged(network, localInfo);
             onBlockedStatusChanged(network, blocked);
         }
 
@@ -3977,7 +4016,8 @@ public class ConnectivityManager {
          */
         public void onAvailable(@NonNull Network network,
                 @NonNull NetworkCapabilities networkCapabilities,
-                @NonNull LinkProperties linkProperties, boolean blocked) {
+                @NonNull LinkProperties linkProperties,
+                boolean blocked) {
             onAvailable(network);
             if (!networkCapabilities.hasCapability(
                     NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)) {
@@ -4104,6 +4144,19 @@ public class ConnectivityManager {
                 @NonNull LinkProperties linkProperties) {}
 
         /**
+         * Called when there is a change in the {@link LocalNetworkInfo} for this network.
+         *
+         * This is only called for local networks, that is those with the
+         * NET_CAPABILITY_LOCAL_NETWORK network capability.
+         *
+         * @param network the {@link Network} whose local network info has changed.
+         * @param localNetworkInfo the new {@link LocalNetworkInfo} for this network.
+         * @hide
+         */
+        public void onLocalNetworkInfoChanged(@NonNull Network network,
+                @NonNull LocalNetworkInfo localNetworkInfo) {}
+
+        /**
          * Called when the network the framework connected to for this request suspends data
          * transmission temporarily.
          *
@@ -4197,27 +4250,29 @@ public class ConnectivityManager {
     }
 
     /** @hide */
-    public static final int CALLBACK_PRECHECK            = 1;
+    public static final int CALLBACK_PRECHECK                   = 1;
     /** @hide */
-    public static final int CALLBACK_AVAILABLE           = 2;
+    public static final int CALLBACK_AVAILABLE                  = 2;
     /** @hide arg1 = TTL */
-    public static final int CALLBACK_LOSING              = 3;
+    public static final int CALLBACK_LOSING                     = 3;
     /** @hide */
-    public static final int CALLBACK_LOST                = 4;
+    public static final int CALLBACK_LOST                       = 4;
     /** @hide */
-    public static final int CALLBACK_UNAVAIL             = 5;
+    public static final int CALLBACK_UNAVAIL                    = 5;
     /** @hide */
-    public static final int CALLBACK_CAP_CHANGED         = 6;
+    public static final int CALLBACK_CAP_CHANGED                = 6;
     /** @hide */
-    public static final int CALLBACK_IP_CHANGED          = 7;
+    public static final int CALLBACK_IP_CHANGED                 = 7;
     /** @hide obj = NetworkCapabilities, arg1 = seq number */
-    private static final int EXPIRE_LEGACY_REQUEST       = 8;
+    private static final int EXPIRE_LEGACY_REQUEST              = 8;
     /** @hide */
-    public static final int CALLBACK_SUSPENDED           = 9;
+    public static final int CALLBACK_SUSPENDED                  = 9;
     /** @hide */
-    public static final int CALLBACK_RESUMED             = 10;
+    public static final int CALLBACK_RESUMED                    = 10;
     /** @hide */
-    public static final int CALLBACK_BLK_CHANGED         = 11;
+    public static final int CALLBACK_BLK_CHANGED                = 11;
+    /** @hide */
+    public static final int CALLBACK_LOCAL_NETWORK_INFO_CHANGED = 12;
 
     /** @hide */
     public static String getCallbackName(int whichCallback) {
@@ -4233,6 +4288,7 @@ public class ConnectivityManager {
             case CALLBACK_SUSPENDED:    return "CALLBACK_SUSPENDED";
             case CALLBACK_RESUMED:      return "CALLBACK_RESUMED";
             case CALLBACK_BLK_CHANGED:  return "CALLBACK_BLK_CHANGED";
+            case CALLBACK_LOCAL_NETWORK_INFO_CHANGED: return "CALLBACK_LOCAL_NETWORK_INFO_CHANGED";
             default:
                 return Integer.toString(whichCallback);
         }
@@ -4287,7 +4343,8 @@ public class ConnectivityManager {
                 case CALLBACK_AVAILABLE: {
                     NetworkCapabilities cap = getObject(message, NetworkCapabilities.class);
                     LinkProperties lp = getObject(message, LinkProperties.class);
-                    callback.onAvailable(network, cap, lp, message.arg1);
+                    LocalNetworkInfo lni = getObject(message, LocalNetworkInfo.class);
+                    callback.onAvailable(network, cap, lp, lni, message.arg1);
                     break;
                 }
                 case CALLBACK_LOSING: {
@@ -4310,6 +4367,11 @@ public class ConnectivityManager {
                 case CALLBACK_IP_CHANGED: {
                     LinkProperties lp = getObject(message, LinkProperties.class);
                     callback.onLinkPropertiesChanged(network, lp);
+                    break;
+                }
+                case CALLBACK_LOCAL_NETWORK_INFO_CHANGED: {
+                    final LocalNetworkInfo info = getObject(message, LocalNetworkInfo.class);
+                    callback.onLocalNetworkInfoChanged(network, info);
                     break;
                 }
                 case CALLBACK_SUSPENDED: {
@@ -6199,13 +6261,99 @@ public class ConnectivityManager {
     }
 
     /**
-     * Return whether the network is blocked for the given uid.
+     * Helper class to track data saver status.
+     *
+     * The class will fetch current data saver status from {@link NetworkPolicyManager} when
+     * initialized, and listening for status changed intent to cache the latest status.
+     *
+     * @hide
+     */
+    @TargetApi(Build.VERSION_CODES.TIRAMISU) // RECEIVER_NOT_EXPORTED requires T.
+    @VisibleForTesting(visibility = PRIVATE)
+    public static class DataSaverStatusTracker extends BroadcastReceiver {
+        private static final Object sDataSaverStatusTrackerLock = new Object();
+
+        private static volatile DataSaverStatusTracker sInstance;
+
+        /**
+         * Gets a static instance of the class.
+         *
+         * @param context A {@link Context} for initialization. Note that since the data saver
+         *                status is global on a device, passing any context is equivalent.
+         * @return The static instance of a {@link DataSaverStatusTracker}.
+         */
+        public static DataSaverStatusTracker getInstance(@NonNull Context context) {
+            if (sInstance == null) {
+                synchronized (sDataSaverStatusTrackerLock) {
+                    if (sInstance == null) {
+                        sInstance = new DataSaverStatusTracker(context);
+                    }
+                }
+            }
+            return sInstance;
+        }
+
+        private final NetworkPolicyManager mNpm;
+        // The value updates on the caller's binder thread or UI thread.
+        private final AtomicBoolean mIsDataSaverEnabled;
+
+        @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+        public DataSaverStatusTracker(final Context context) {
+            // To avoid leaks, take the application context.
+            final Context appContext;
+            if (context instanceof Application) {
+                appContext = context;
+            } else {
+                appContext = context.getApplicationContext();
+            }
+
+            if ((appContext.getApplicationInfo().flags & FLAG_PERSISTENT) == 0
+                    && (appContext.getApplicationInfo().flags & FLAG_SYSTEM) == 0) {
+                throw new IllegalStateException("Unexpected caller: "
+                        + appContext.getApplicationInfo().packageName);
+            }
+
+            mNpm = appContext.getSystemService(NetworkPolicyManager.class);
+            final IntentFilter filter = new IntentFilter(
+                    ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED);
+            // The receiver should not receive broadcasts from other Apps.
+            appContext.registerReceiver(this, filter, Context.RECEIVER_NOT_EXPORTED);
+            mIsDataSaverEnabled = new AtomicBoolean();
+            updateDataSaverEnabled();
+        }
+
+        // Runs on caller's UI thread.
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent.getAction().equals(ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED)) {
+                updateDataSaverEnabled();
+            } else {
+                throw new IllegalStateException("Unexpected intent " + intent);
+            }
+        }
+
+        public boolean getDataSaverEnabled() {
+            return mIsDataSaverEnabled.get();
+        }
+
+        private void updateDataSaverEnabled() {
+            // Uid doesn't really matter, but use a fixed UID to make things clearer.
+            final int dataSaverForCallerUid = mNpm.getRestrictBackgroundStatus(Process.SYSTEM_UID);
+            mIsDataSaverEnabled.set(dataSaverForCallerUid
+                    != ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLED);
+        }
+    }
+
+    /**
+     * Return whether the network is blocked for the given uid and metered condition.
      *
      * Similar to {@link NetworkPolicyManager#isUidNetworkingBlocked}, but directly reads the BPF
      * maps and therefore considerably faster. For use by the NetworkStack process only.
      *
      * @param uid The target uid.
-     * @return True if all networking is blocked. Otherwise, false.
+     * @param isNetworkMetered Whether the target network is metered.
+     *
+     * @return True if all networking with the given condition is blocked. Otherwise, false.
      * @throws IllegalStateException if the map cannot be opened.
      * @throws ServiceSpecificException if the read fails.
      * @hide
@@ -6215,17 +6363,20 @@ public class ConnectivityManager {
     // is provided by linux file group permission AID_NET_BW_ACCT and the
     // selinux context fs_bpf_net*.
     // Only the system server process and the network stack have access.
-    // TODO: Expose api when ready.
-    // @SystemApi(client = MODULE_LIBRARIES)
+    @FlaggedApi(Flags.SUPPORT_IS_UID_NETWORKING_BLOCKED)
+    @SystemApi(client = MODULE_LIBRARIES)
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)  // BPF maps were only mainlined in T
     @RequiresPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
-    public boolean isUidNetworkingBlocked(int uid) {
+    public boolean isUidNetworkingBlocked(int uid, boolean isNetworkMetered) {
         final BpfNetMapsReader reader = BpfNetMapsReader.getInstance();
 
-        return reader.isUidBlockedByFirewallChains(uid);
+        final boolean isDataSaverEnabled;
+        // TODO: For U-QPR3+ devices, get data saver status from bpf configuration map directly.
+        final DataSaverStatusTracker dataSaverStatusTracker =
+                DataSaverStatusTracker.getInstance(mContext);
+        isDataSaverEnabled = dataSaverStatusTracker.getDataSaverEnabled();
 
-        // TODO: If isNetworkMetered is true, check the data saver switch, penalty box
-        //  and happy box rules.
+        return reader.isUidNetworkingBlocked(uid, isNetworkMetered, isDataSaverEnabled);
     }
 
     /** @hide */
