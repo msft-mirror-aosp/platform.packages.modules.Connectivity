@@ -27,3 +27,17 @@ flag {
   description: "Set data saver through ConnectivityManager API"
   bug: "297836825"
 }
+
+flag {
+  name: "support_is_uid_networking_blocked"
+  namespace: "android_core_networking"
+  description: "This flag controls whether isUidNetworkingBlocked is supported"
+  bug: "297836825"
+}
+
+flag {
+  name: "basic_background_restrictions_enabled"
+  namespace: "android_core_networking"
+  description: "Block network access for apps in a low importance background state"
+  bug: "304347838"
+}

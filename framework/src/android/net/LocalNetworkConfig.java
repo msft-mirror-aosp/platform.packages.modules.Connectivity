@@ -62,11 +62,19 @@ public final class LocalNetworkConfig implements Parcelable {
         return mUpstreamSelector;
     }
 
-    public @NonNull MulticastRoutingConfig getUpstreamMulticastRoutingConfig() {
+    /**
+     * Get the upstream multicast routing config
+     */
+    @NonNull
+    public MulticastRoutingConfig getUpstreamMulticastRoutingConfig() {
         return mUpstreamMulticastRoutingConfig;
     }
 
-    public @NonNull MulticastRoutingConfig getDownstreamMulticastRoutingConfig() {
+    /**
+     * Get the downstream multicast routing config
+     */
+    @NonNull
+    public MulticastRoutingConfig getDownstreamMulticastRoutingConfig() {
         return mDownstreamMulticastRoutingConfig;
     }
 
@@ -80,6 +88,15 @@ public final class LocalNetworkConfig implements Parcelable {
         dest.writeParcelable(mUpstreamSelector, flags);
         dest.writeParcelable(mUpstreamMulticastRoutingConfig, flags);
         dest.writeParcelable(mDownstreamMulticastRoutingConfig, flags);
+    }
+
+    @Override
+    public String toString() {
+        return "LocalNetworkConfig{"
+                + "UpstreamSelector=" + mUpstreamSelector
+                + ", UpstreamMulticastConfig=" + mUpstreamMulticastRoutingConfig
+                + ", DownstreamMulticastConfig=" + mDownstreamMulticastRoutingConfig
+                + '}';
     }
 
     public static final @NonNull Creator<LocalNetworkConfig> CREATOR = new Creator<>() {
@@ -100,13 +117,13 @@ public final class LocalNetworkConfig implements Parcelable {
 
     public static final class Builder {
         @Nullable
-        NetworkRequest mUpstreamSelector;
+        private NetworkRequest mUpstreamSelector;
 
         @Nullable
-        MulticastRoutingConfig mUpstreamMulticastRoutingConfig;
+        private MulticastRoutingConfig mUpstreamMulticastRoutingConfig;
 
         @Nullable
-        MulticastRoutingConfig mDownstreamMulticastRoutingConfig;
+        private MulticastRoutingConfig mDownstreamMulticastRoutingConfig;
 
         /**
          * Create a Builder
