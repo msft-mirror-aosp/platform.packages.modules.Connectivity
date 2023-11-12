@@ -9006,6 +9006,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return;
         }
 
+        if (VDBG) {
+            Log.v(TAG, "Update local network config " + nai.network.netId + " : " + newConfig);
+        }
         final LocalNetworkConfig.Builder configBuilder = new LocalNetworkConfig.Builder();
         // TODO : apply the diff for multicast routing.
         configBuilder.setUpstreamMulticastRoutingConfig(
@@ -12884,6 +12887,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             case ConnectivityManager.FIREWALL_CHAIN_POWERSAVE:
             case ConnectivityManager.FIREWALL_CHAIN_RESTRICTED:
             case ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY:
+            case ConnectivityManager.FIREWALL_CHAIN_BACKGROUND:
                 defaultRule = FIREWALL_RULE_DENY;
                 break;
             default:
