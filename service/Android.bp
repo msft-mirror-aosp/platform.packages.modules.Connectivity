@@ -110,8 +110,8 @@ cc_library_shared {
     ],
     srcs: [
         ":services.connectivity-netstats-jni-sources",
-        "jni/com_android_server_BpfNetMaps.cpp",
         "jni/com_android_server_connectivity_ClatCoordinator.cpp",
+        "jni/com_android_server_ServiceManagerWrapper.cpp",
         "jni/com_android_server_TestNetworkService.cpp",
         "jni/onload.cpp",
     ],
@@ -124,11 +124,11 @@ cc_library_shared {
         "libmodules-utils-build",
         "libnetjniutils",
         "libnet_utils_device_common_bpfjni",
-        "libtraffic_controller",
         "netd_aidl_interface-lateststable-ndk",
     ],
     shared_libs: [
         "libbase",
+        "libbinder_ndk",
         "libcutils",
         "libnetdutils",
         "liblog",
@@ -185,7 +185,7 @@ java_library {
         "androidx.annotation_annotation",
         "connectivity-net-module-utils-bpf",
         "connectivity_native_aidl_interface-lateststable-java",
-        "dnsresolver_aidl_interface-V11-java",
+        "dnsresolver_aidl_interface-V13-java",
         "modules-utils-shell-command-handler",
         "net-utils-device-common",
         "net-utils-device-common-ip",
@@ -204,6 +204,8 @@ java_library {
     visibility: [
         "//packages/modules/Connectivity/service-t",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/thread/service:__subpackages__",
+        "//packages/modules/Connectivity/thread/tests:__subpackages__",
     ],
 }
 

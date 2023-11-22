@@ -65,9 +65,12 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
     private final MdnsProber mProber;
     @NonNull
     private final MdnsReplySender mReplySender;
-
     @NonNull
     private final SharedLog mSharedLog;
+    @NonNull
+    private final byte[] mPacketCreationBuffer;
+    @NonNull
+    private final MdnsFeatureFlags mMdnsFeatureFlags;
 
     /**
      * Callbacks called by {@link MdnsInterfaceAdvertiser} to report status updates.
@@ -205,11 +208,13 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         mCbHandler = new Handler(looper);
         mReplySender = deps.makeReplySender(sharedLog.getTag(), looper, socket,
                 packetCreationBuffer, sharedLog);
+        mPacketCreationBuffer = packetCreationBuffer;
         mAnnouncer = deps.makeMdnsAnnouncer(sharedLog.getTag(), looper, mReplySender,
                 mAnnouncingCallback, sharedLog);
         mProber = deps.makeMdnsProber(sharedLog.getTag(), looper, mReplySender, mProbingCallback,
                 sharedLog);
         mSharedLog = sharedLog;
+        mMdnsFeatureFlags = mdnsFeatureFlags;
     }
 
     /**
@@ -348,7 +353,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
     public void handlePacket(byte[] recvbuf, int length, InetSocketAddress src) {
         final MdnsPacket packet;
         try {
-            packet = MdnsPacket.parse(new MdnsPacketReader(recvbuf, length));
+            packet = MdnsPacket.parse(new MdnsPacketReader(recvbuf, length, mMdnsFeatureFlags));
         } catch (MdnsPacket.ParseException e) {
             mSharedLog.e("Error parsing mDNS packet", e);
             if (DBG) {
@@ -390,12 +395,13 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
      * @param serviceId The serviceId.
      * @return the raw offload payload
      */
+    @NonNull
     public byte[] getRawOffloadPayload(int serviceId) {
         try {
-            return MdnsUtils.createRawDnsPacket(mReplySender.getPacketCreationBuffer(),
+            return MdnsUtils.createRawDnsPacket(mPacketCreationBuffer,
                     mRecordRepository.getOffloadPacket(serviceId));
         } catch (IOException | IllegalArgumentException e) {
-            mSharedLog.wtf("Cannot create rawOffloadPacket: " + e.getMessage());
+            mSharedLog.wtf("Cannot create rawOffloadPacket: ", e);
             return new byte[0];
         }
     }

@@ -16,6 +16,16 @@
 
 package android.net;
 
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_POWERSAVE;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_RESTRICTED;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_STANDBY;
+
 import android.util.Pair;
 
 import com.android.net.module.util.Struct;
@@ -43,8 +53,16 @@ public class BpfNetMapsConstants {
             "/sys/fs/bpf/netd_shared/map_netd_uid_permission_map";
     public static final String COOKIE_TAG_MAP_PATH =
             "/sys/fs/bpf/netd_shared/map_netd_cookie_tag_map";
+    public static final String DATA_SAVER_ENABLED_MAP_PATH =
+            "/sys/fs/bpf/netd_shared/map_netd_data_saver_enabled_map";
+    public static final String INGRESS_DISCARD_MAP_PATH =
+            "/sys/fs/bpf/netd_shared/map_netd_ingress_discard_map";
     public static final Struct.S32 UID_RULES_CONFIGURATION_KEY = new Struct.S32(0);
     public static final Struct.S32 CURRENT_STATS_MAP_CONFIGURATION_KEY = new Struct.S32(1);
+    public static final Struct.S32 DATA_SAVER_ENABLED_KEY = new Struct.S32(0);
+
+    public static final short DATA_SAVER_DISABLED = 0;
+    public static final short DATA_SAVER_ENABLED = 1;
 
     // LINT.IfChange(match_type)
     public static final long NO_MATCH = 0;
@@ -60,7 +78,7 @@ public class BpfNetMapsConstants {
     public static final long OEM_DENY_1_MATCH = (1 << 9);
     public static final long OEM_DENY_2_MATCH = (1 << 10);
     public static final long OEM_DENY_3_MATCH = (1 << 11);
-    // LINT.ThenChange(../../../../bpf_progs/netd.h)
+    public static final long BACKGROUND_MATCH = (1 << 12);
 
     public static final List<Pair<Long, String>> MATCH_LIST = Arrays.asList(
             Pair.create(HAPPY_BOX_MATCH, "HAPPY_BOX_MATCH"),
@@ -74,6 +92,33 @@ public class BpfNetMapsConstants {
             Pair.create(LOCKDOWN_VPN_MATCH, "LOCKDOWN_VPN_MATCH"),
             Pair.create(OEM_DENY_1_MATCH, "OEM_DENY_1_MATCH"),
             Pair.create(OEM_DENY_2_MATCH, "OEM_DENY_2_MATCH"),
-            Pair.create(OEM_DENY_3_MATCH, "OEM_DENY_3_MATCH")
+            Pair.create(OEM_DENY_3_MATCH, "OEM_DENY_3_MATCH"),
+            Pair.create(BACKGROUND_MATCH, "BACKGROUND_MATCH")
     );
+
+    /**
+     * List of all firewall allow chains.
+     *
+     * Allow chains mean the firewall denies all uids by default, uids must be explicitly allowed.
+     */
+    public static final List<Integer> ALLOW_CHAINS = List.of(
+            FIREWALL_CHAIN_DOZABLE,
+            FIREWALL_CHAIN_POWERSAVE,
+            FIREWALL_CHAIN_RESTRICTED,
+            FIREWALL_CHAIN_LOW_POWER_STANDBY,
+            FIREWALL_CHAIN_BACKGROUND
+    );
+
+    /**
+     * List of all firewall deny chains.
+     *
+     * Deny chains mean the firewall allows all uids by default, uids must be explicitly denied.
+     */
+    public static final List<Integer> DENY_CHAINS = List.of(
+            FIREWALL_CHAIN_STANDBY,
+            FIREWALL_CHAIN_OEM_DENY_1,
+            FIREWALL_CHAIN_OEM_DENY_2,
+            FIREWALL_CHAIN_OEM_DENY_3
+    );
+    // LINT.ThenChange(../../../../bpf_progs/netd.h)
 }

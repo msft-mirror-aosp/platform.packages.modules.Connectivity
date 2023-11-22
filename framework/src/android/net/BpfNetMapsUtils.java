@@ -16,6 +16,9 @@
 
 package android.net;
 
+import static android.net.BpfNetMapsConstants.ALLOW_CHAINS;
+import static android.net.BpfNetMapsConstants.BACKGROUND_MATCH;
+import static android.net.BpfNetMapsConstants.DENY_CHAINS;
 import static android.net.BpfNetMapsConstants.DOZABLE_MATCH;
 import static android.net.BpfNetMapsConstants.LOW_POWER_STANDBY_MATCH;
 import static android.net.BpfNetMapsConstants.MATCH_LIST;
@@ -26,6 +29,7 @@ import static android.net.BpfNetMapsConstants.OEM_DENY_3_MATCH;
 import static android.net.BpfNetMapsConstants.POWERSAVE_MATCH;
 import static android.net.BpfNetMapsConstants.RESTRICTED_MATCH;
 import static android.net.BpfNetMapsConstants.STANDBY_MATCH;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
@@ -68,6 +72,8 @@ public class BpfNetMapsUtils {
                 return POWERSAVE_MATCH;
             case FIREWALL_CHAIN_RESTRICTED:
                 return RESTRICTED_MATCH;
+            case FIREWALL_CHAIN_BACKGROUND:
+                return BACKGROUND_MATCH;
             case FIREWALL_CHAIN_LOW_POWER_STANDBY:
                 return LOW_POWER_STANDBY_MATCH;
             case FIREWALL_CHAIN_OEM_DENY_1:
@@ -82,26 +88,18 @@ public class BpfNetMapsUtils {
     }
 
     /**
-     * Get if the chain is allow list or not.
+     * Get whether the chain is an allow-list or a deny-list.
      *
      * ALLOWLIST means the firewall denies all by default, uids must be explicitly allowed
-     * DENYLIST means the firewall allows all by default, uids must be explicitly denyed
+     * DENYLIST means the firewall allows all by default, uids must be explicitly denied
      */
     public static boolean isFirewallAllowList(final int chain) {
-        switch (chain) {
-            case FIREWALL_CHAIN_DOZABLE:
-            case FIREWALL_CHAIN_POWERSAVE:
-            case FIREWALL_CHAIN_RESTRICTED:
-            case FIREWALL_CHAIN_LOW_POWER_STANDBY:
-                return true;
-            case FIREWALL_CHAIN_STANDBY:
-            case FIREWALL_CHAIN_OEM_DENY_1:
-            case FIREWALL_CHAIN_OEM_DENY_2:
-            case FIREWALL_CHAIN_OEM_DENY_3:
-                return false;
-            default:
-                throw new ServiceSpecificException(EINVAL, "Invalid firewall chain: " + chain);
+        if (ALLOW_CHAINS.contains(chain)) {
+            return true;
+        } else if (DENY_CHAINS.contains(chain)) {
+            return false;
         }
+        throw new ServiceSpecificException(EINVAL, "Invalid firewall chain: " + chain);
     }
 
     /**
