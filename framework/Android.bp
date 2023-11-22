@@ -94,7 +94,9 @@ java_defaults {
         "framework-wifi.stubs.module_lib",
     ],
     static_libs: [
-        "mdns_aidl_interface-lateststable-java",
+        // Not using the latest stable version because all functions in the latest version of
+        // mdns_aidl_interface are deprecated.
+        "mdns_aidl_interface-V1-java",
         "modules-utils-backgroundthread",
         "modules-utils-build",
         "modules-utils-preconditions",
@@ -301,6 +303,10 @@ droidstubs {
     ],
     flags: [
         "--show-annotation android.annotation.FlaggedApi",
+        "--show-for-stub-purposes-annotation android.annotation.SystemApi" +
+        "\\(client=android.annotation.SystemApi.Client.PRIVILEGED_APPS\\)",
+        "--show-for-stub-purposes-annotation android.annotation.SystemApi" +
+        "\\(client=android.annotation.SystemApi.Client.MODULE_LIBRARIES\\)",
     ],
     aidl: {
         include_dirs: [

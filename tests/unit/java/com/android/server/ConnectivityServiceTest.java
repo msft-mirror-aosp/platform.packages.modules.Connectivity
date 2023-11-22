@@ -79,7 +79,6 @@ import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPR
 import static android.net.ConnectivityManager.TYPE_ETHERNET;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.ConnectivityManager.TYPE_MOBILE_SUPL;
-import static android.net.ConnectivityManager.TYPE_NONE;
 import static android.net.ConnectivityManager.TYPE_VPN;
 import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.net.ConnectivitySettingsManager.PRIVATE_DNS_MODE_OFF;
@@ -1659,8 +1658,7 @@ public class ConnectivityServiceTest {
             waitForIdle();
         }
 
-        public void startLegacyVpnPrivileged(VpnProfile profile,
-                @Nullable Network underlying, @NonNull LinkProperties egress) {
+        public void startLegacyVpnPrivileged(VpnProfile profile) {
             switch (profile.type) {
                 case VpnProfile.TYPE_IKEV2_IPSEC_RSA:
                 case VpnProfile.TYPE_IKEV2_IPSEC_USER_PASS:
@@ -1992,7 +1990,7 @@ public class ConnectivityServiceTest {
         }
 
         @Override
-        public HandlerThread makeHandlerThread() {
+        public HandlerThread makeHandlerThread(@NonNull final String tag) {
             return mCsHandlerThread;
         }
 
@@ -10252,7 +10250,7 @@ public class ConnectivityServiceTest {
         b.expectBroadcast();
         // Simulate LockdownVpnTracker attempting to start the VPN since it received the
         // systemDefault callback.
-        mMockVpn.startLegacyVpnPrivileged(profile, mCellAgent.getNetwork(), cellLp);
+        mMockVpn.startLegacyVpnPrivileged(profile);
         if (expectSetVpnDefaultForUids) {
             // setVpnDefaultForUids() releases the original network request and creates a VPN
             // request so LOST callback is received.
@@ -10323,7 +10321,7 @@ public class ConnectivityServiceTest {
         // callback with different network.
         final ExpectedBroadcast b6 = expectConnectivityAction(TYPE_VPN, DetailedState.DISCONNECTED);
         mMockVpn.stopVpnRunnerPrivileged();
-        mMockVpn.startLegacyVpnPrivileged(profile, mWiFiAgent.getNetwork(), wifiLp);
+        mMockVpn.startLegacyVpnPrivileged(profile);
         // VPN network is disconnected (to restart)
         callback.expect(LOST, mMockVpn);
         defaultCallback.expect(LOST, mMockVpn);
@@ -17386,6 +17384,7 @@ public class ConnectivityServiceTest {
         mCm.requestNetwork(new NetworkRequest.Builder()
                         .clearCapabilities()
                         .addTransportType(TRANSPORT_TEST)
+                        .addTransportType(TRANSPORT_CELLULAR)
                         .build(),
                 cb);
 
@@ -17531,7 +17530,7 @@ public class ConnectivityServiceTest {
 
         // In this test TEST_PACKAGE_UID will be the UID of the carrier service UID.
         doReturn(true).when(mCarrierPrivilegeAuthenticator)
-                .hasCarrierPrivilegeForNetworkCapabilities(eq(TEST_PACKAGE_UID), any());
+                .isCarrierServiceUidForNetworkCapabilities(eq(TEST_PACKAGE_UID), any());
 
         // Simulate a restricted telephony network. The telephony factory is entitled to set
         // the access UID to the service package on any of its restricted networks.
@@ -17596,17 +17595,18 @@ public class ConnectivityServiceTest {
         // TODO : fix the builder
         ncb.setNetworkSpecifier(null);
         ncb.removeTransportType(TRANSPORT_CELLULAR);
-        ncb.addTransportType(TRANSPORT_WIFI);
+        ncb.addTransportType(TRANSPORT_BLUETOOTH);
         // Wifi does not get to set access UID, even to the correct UID
         mCm.requestNetwork(new NetworkRequest.Builder()
-                .addTransportType(TRANSPORT_WIFI)
+                .addTransportType(TRANSPORT_BLUETOOTH)
                 .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
                 .build(), cb);
-        mWiFiAgent = new TestNetworkAgentWrapper(TRANSPORT_WIFI, new LinkProperties(), ncb.build());
-        mWiFiAgent.connect(true);
-        cb.expectAvailableThenValidatedCallbacks(mWiFiAgent);
+        final TestNetworkAgentWrapper bluetoothAgent = new TestNetworkAgentWrapper(
+                TRANSPORT_BLUETOOTH, new LinkProperties(), ncb.build());
+        bluetoothAgent.connect(true);
+        cb.expectAvailableThenValidatedCallbacks(bluetoothAgent);
         ncb.setAllowedUids(serviceUidSet);
-        mWiFiAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
+        bluetoothAgent.setNetworkCapabilities(ncb.build(), true /* sendToCS */);
         cb.assertNoCallback(TEST_CALLBACK_TIMEOUT_MS);
         mCm.unregisterNetworkCallback(cb);
     }

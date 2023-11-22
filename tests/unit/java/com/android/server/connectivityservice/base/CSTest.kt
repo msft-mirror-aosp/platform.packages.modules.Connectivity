@@ -176,7 +176,7 @@ open class CSTest {
         override fun getClatCoordinator(netd: INetd?) = this@CSTest.clatCoordinator
         override fun getNetworkStack() = this@CSTest.networkStack
 
-        override fun makeHandlerThread() = csHandlerThread
+        override fun makeHandlerThread(tag: String) = csHandlerThread
         override fun makeProxyTracker(context: Context, connServiceHandler: Handler) = proxyTracker
 
         override fun makeCarrierPrivilegeAuthenticator(
@@ -321,7 +321,7 @@ open class CSTest {
             nc: NetworkCapabilities = defaultNc(),
             nac: NetworkAgentConfig = emptyAgentConfig(nc.getLegacyType()),
             lp: LinkProperties = defaultLp(),
-            lnc: LocalNetworkConfig? = null,
+            lnc: FromS<LocalNetworkConfig>? = null,
             score: FromS<NetworkScore> = defaultScore(),
             provider: NetworkProvider? = null
     ) = CSAgentWrapper(context, deps, csHandlerThread, networkStack,
