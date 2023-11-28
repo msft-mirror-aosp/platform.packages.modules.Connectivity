@@ -1858,6 +1858,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             activityManager.registerUidFrozenStateChangedCallback(
                     (Runnable r) -> r.run(), frozenStateChangedCallback);
         }
+
+        if (mDeps.isFeatureNotChickenedOut(mContext, LOG_BPF_RC)) {
+            mHandler.post(BpfLoaderRcUtils::checkBpfLoaderRc);
+        }
     }
 
     /**
@@ -3295,6 +3299,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @VisibleForTesting
     static final String DELAY_DESTROY_FROZEN_SOCKETS_VERSION =
             "delay_destroy_frozen_sockets_version";
+
+    @VisibleForTesting
+    public static final String ALLOW_SYSUI_CONNECTIVITY_REPORTS =
+            "allow_sysui_connectivity_reports";
+
+    public static final String LOG_BPF_RC = "log_bpf_rc_force_disable";
 
     private void enforceInternetPermission() {
         mContext.enforceCallingOrSelfPermission(
