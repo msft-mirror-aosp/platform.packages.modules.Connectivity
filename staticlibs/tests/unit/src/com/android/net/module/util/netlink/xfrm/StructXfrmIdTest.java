@@ -38,19 +38,17 @@ import java.nio.ByteOrder;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
-public class StructXfrmUsersaIdTest {
+public class StructXfrmIdTest {
     private static final String EXPECTED_HEX_STRING =
-            "C0000201000000000000000000000000" + "7768440002003200";
+            "C0000201000000000000000000000000" + "53FA0FDD32000000";
     private static final byte[] EXPECTED_HEX = HexDump.hexStringToByteArray(EXPECTED_HEX_STRING);
-
     private static final InetAddress DEST_ADDRESS = InetAddresses.parseNumericAddress("192.0.2.1");
-    private static final long SPI = 0x77684400;
-    private static final int FAMILY = OsConstants.AF_INET;
+    private static final long SPI = 0x53fa0fdd;
     private static final short PROTO = IPPROTO_ESP;
 
     @Test
     public void testEncode() throws Exception {
-        final StructXfrmUsersaId struct = new StructXfrmUsersaId(DEST_ADDRESS, SPI, FAMILY, PROTO);
+        final StructXfrmId struct = new StructXfrmId(DEST_ADDRESS, SPI, PROTO);
 
         final ByteBuffer buffer = ByteBuffer.allocate(EXPECTED_HEX.length);
         buffer.order(ByteOrder.nativeOrder());
@@ -63,13 +61,10 @@ public class StructXfrmUsersaIdTest {
     public void testDecode() throws Exception {
         final ByteBuffer buffer = ByteBuffer.wrap(EXPECTED_HEX);
         buffer.order(ByteOrder.nativeOrder());
+        final StructXfrmId struct = StructXfrmId.parse(StructXfrmId.class, buffer);
 
-        final StructXfrmUsersaId struct =
-                StructXfrmUsersaId.parse(StructXfrmUsersaId.class, buffer);
-
-        assertEquals(DEST_ADDRESS, struct.getDestAddress());
+        assertEquals(DEST_ADDRESS, struct.getDestAddress(OsConstants.AF_INET));
         assertEquals(SPI, struct.spi);
-        assertEquals(FAMILY, struct.family);
         assertEquals(PROTO, struct.proto);
     }
 }

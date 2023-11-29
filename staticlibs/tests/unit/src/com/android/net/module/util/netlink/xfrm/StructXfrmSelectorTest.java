@@ -16,12 +16,9 @@
 
 package com.android.net.module.util.netlink.xfrm;
 
-import static com.android.net.module.util.netlink.xfrm.XfrmNetlinkMessage.IPPROTO_ESP;
-
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 
-import android.net.InetAddresses;
 import android.system.OsConstants;
 
 import androidx.test.filters.SmallTest;
@@ -32,25 +29,25 @@ import com.android.net.module.util.HexDump;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import java.net.InetAddress;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
-public class StructXfrmUsersaIdTest {
+public class StructXfrmSelectorTest {
     private static final String EXPECTED_HEX_STRING =
-            "C0000201000000000000000000000000" + "7768440002003200";
+            "00000000000000000000000000000000"
+                    + "00000000000000000000000000000000"
+                    + "00000000000000000200000000000000"
+                    + "0000000000000000";
     private static final byte[] EXPECTED_HEX = HexDump.hexStringToByteArray(EXPECTED_HEX_STRING);
 
-    private static final InetAddress DEST_ADDRESS = InetAddresses.parseNumericAddress("192.0.2.1");
-    private static final long SPI = 0x77684400;
+    private static final byte[] XFRM_ADDRESS_T_ANY_BYTES = new byte[16];
     private static final int FAMILY = OsConstants.AF_INET;
-    private static final short PROTO = IPPROTO_ESP;
 
     @Test
     public void testEncode() throws Exception {
-        final StructXfrmUsersaId struct = new StructXfrmUsersaId(DEST_ADDRESS, SPI, FAMILY, PROTO);
+        final StructXfrmSelector struct = new StructXfrmSelector(FAMILY);
 
         final ByteBuffer buffer = ByteBuffer.allocate(EXPECTED_HEX.length);
         buffer.order(ByteOrder.nativeOrder());
@@ -63,13 +60,20 @@ public class StructXfrmUsersaIdTest {
     public void testDecode() throws Exception {
         final ByteBuffer buffer = ByteBuffer.wrap(EXPECTED_HEX);
         buffer.order(ByteOrder.nativeOrder());
+        final StructXfrmSelector struct =
+                StructXfrmSelector.parse(StructXfrmSelector.class, buffer);
 
-        final StructXfrmUsersaId struct =
-                StructXfrmUsersaId.parse(StructXfrmUsersaId.class, buffer);
-
-        assertEquals(DEST_ADDRESS, struct.getDestAddress());
-        assertEquals(SPI, struct.spi);
-        assertEquals(FAMILY, struct.family);
-        assertEquals(PROTO, struct.proto);
+        assertArrayEquals(XFRM_ADDRESS_T_ANY_BYTES, struct.nestedStructDAddr);
+        assertArrayEquals(XFRM_ADDRESS_T_ANY_BYTES, struct.nestedStructSAddr);
+        assertEquals(0, struct.dPort);
+        assertEquals(0, struct.dPortMask);
+        assertEquals(0, struct.sPort);
+        assertEquals(0, struct.sPortMask);
+        assertEquals(FAMILY, struct.selectorFamily);
+        assertEquals(0, struct.prefixlenD);
+        assertEquals(0, struct.prefixlenS);
+        assertEquals(0, struct.proto);
+        assertEquals(0, struct.ifIndex);
+        assertEquals(0, struct.user);
     }
 }

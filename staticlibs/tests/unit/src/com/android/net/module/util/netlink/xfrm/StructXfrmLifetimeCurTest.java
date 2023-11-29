@@ -16,13 +16,8 @@
 
 package com.android.net.module.util.netlink.xfrm;
 
-import static com.android.net.module.util.netlink.xfrm.XfrmNetlinkMessage.IPPROTO_ESP;
-
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
-
-import android.net.InetAddresses;
-import android.system.OsConstants;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
@@ -32,25 +27,32 @@ import com.android.net.module.util.HexDump;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
-import java.net.InetAddress;
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Calendar;
+import java.util.concurrent.TimeUnit;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
-public class StructXfrmUsersaIdTest {
+public class StructXfrmLifetimeCurTest {
     private static final String EXPECTED_HEX_STRING =
-            "C0000201000000000000000000000000" + "7768440002003200";
+            "00000000000000000000000000000000" + "8CFE4265000000000000000000000000";
     private static final byte[] EXPECTED_HEX = HexDump.hexStringToByteArray(EXPECTED_HEX_STRING);
+    private static final BigInteger ADD_TIME;
 
-    private static final InetAddress DEST_ADDRESS = InetAddresses.parseNumericAddress("192.0.2.1");
-    private static final long SPI = 0x77684400;
-    private static final int FAMILY = OsConstants.AF_INET;
-    private static final short PROTO = IPPROTO_ESP;
+    static {
+        final Calendar cal = Calendar.getInstance();
+        cal.set(2023, Calendar.NOVEMBER, 2, 1, 42, 36);
+        final long timestampSeconds = TimeUnit.MILLISECONDS.toSeconds(cal.getTimeInMillis());
+        ADD_TIME = BigInteger.valueOf(timestampSeconds);
+    }
 
     @Test
     public void testEncode() throws Exception {
-        final StructXfrmUsersaId struct = new StructXfrmUsersaId(DEST_ADDRESS, SPI, FAMILY, PROTO);
+        final StructXfrmLifetimeCur struct =
+                new StructXfrmLifetimeCur(
+                        BigInteger.ZERO, BigInteger.ZERO, ADD_TIME, BigInteger.ZERO);
 
         final ByteBuffer buffer = ByteBuffer.allocate(EXPECTED_HEX.length);
         buffer.order(ByteOrder.nativeOrder());
@@ -63,13 +65,12 @@ public class StructXfrmUsersaIdTest {
     public void testDecode() throws Exception {
         final ByteBuffer buffer = ByteBuffer.wrap(EXPECTED_HEX);
         buffer.order(ByteOrder.nativeOrder());
+        final StructXfrmLifetimeCur struct =
+                StructXfrmLifetimeCur.parse(StructXfrmLifetimeCur.class, buffer);
 
-        final StructXfrmUsersaId struct =
-                StructXfrmUsersaId.parse(StructXfrmUsersaId.class, buffer);
-
-        assertEquals(DEST_ADDRESS, struct.getDestAddress());
-        assertEquals(SPI, struct.spi);
-        assertEquals(FAMILY, struct.family);
-        assertEquals(PROTO, struct.proto);
+        assertEquals(BigInteger.ZERO, struct.bytes);
+        assertEquals(BigInteger.ZERO, struct.packets);
+        assertEquals(ADD_TIME, struct.addTime);
+        assertEquals(BigInteger.ZERO, struct.useTime);
     }
 }
