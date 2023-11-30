@@ -112,6 +112,8 @@ import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnUnregisterQosC
 import com.android.testutils.TestableNetworkAgent.CallbackEntry.OnValidationStatus
 import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.assertThrows
+import com.android.testutils.runAsShell
+import com.android.testutils.tryTest
 import java.io.Closeable
 import java.io.IOException
 import java.net.DatagramSocket
@@ -704,7 +706,6 @@ class NetworkAgentTest {
                 argThat<NetworkInfo> { it.detailedState == NetworkInfo.DetailedState.CONNECTING },
                 any(LinkProperties::class.java),
                 any(NetworkCapabilities::class.java),
-                any(), // LocalNetworkConfig TODO : specify when it's public
                 any(NetworkScore::class.java),
                 any(NetworkAgentConfig::class.java),
                 eq(NetworkProvider.ID_NONE))
