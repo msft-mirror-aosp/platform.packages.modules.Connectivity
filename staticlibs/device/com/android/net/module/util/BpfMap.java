@@ -18,12 +18,14 @@ package com.android.net.module.util;
 import static android.system.OsConstants.EEXIST;
 import static android.system.OsConstants.ENOENT;
 
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
 import android.util.Pair;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -40,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @param <K> the key of the map.
  * @param <V> the value of the map.
  */
+@RequiresApi(Build.VERSION_CODES.S)
 public class BpfMap<K extends Struct, V extends Struct> implements IBpfMap<K, V> {
     static {
         System.loadLibrary(JniUtil.getJniLibraryName(BpfMap.class.getPackage()));
@@ -239,6 +242,11 @@ public class BpfMap<K extends Struct, V extends Struct> implements IBpfMap<K, V>
         return Struct.parse(mValueClass, buffer);
     }
 
+    /** Synchronize Kernel RCU */
+    public static void synchronizeKernelRCU() throws ErrnoException {
+        nativeSynchronizeKernelRCU();
+    }
+
     private static native int nativeBpfFdGet(String path, int mode, int keySize, int valueSize)
             throws ErrnoException, NullPointerException;
 
@@ -260,4 +268,6 @@ public class BpfMap<K extends Struct, V extends Struct> implements IBpfMap<K, V>
 
     private native boolean nativeFindMapEntry(int fd, byte[] key, byte[] value)
             throws ErrnoException;
+
+    private static native void nativeSynchronizeKernelRCU() throws ErrnoException;
 }

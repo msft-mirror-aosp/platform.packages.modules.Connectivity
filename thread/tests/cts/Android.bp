@@ -37,6 +37,7 @@ android_test {
         "androidx.test.ext.junit",
         "compatibility-device-util-axt",
         "ctstestrunner-axt",
+        "guava",
         "guava-android-testlib",
         "net-tests-utils",
         "truth",
@@ -44,6 +45,7 @@ android_test {
     libs: [
         "android.test.base",
         "android.test.runner",
+        "framework-connectivity-module-api-stubs-including-flagged"
     ],
     // Test coverage system runs on different devices. Need to
     // compile for all architectures.
