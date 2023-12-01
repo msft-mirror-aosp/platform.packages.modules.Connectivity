@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.DEVICE_POWER;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.net.ConnectivityManager.NETID_UNSET;
@@ -1645,12 +1646,14 @@ public class NsdService extends INsdManager.Stub {
                         mContext, MdnsFeatureFlags.NSD_FORCE_DISABLE_MDNS_OFFLOAD))
                 .setIncludeInetAddressRecordsInProbing(mDeps.isFeatureEnabled(
                         mContext, MdnsFeatureFlags.INCLUDE_INET_ADDRESS_RECORDS_IN_PROBING))
-                .setIsExpiredServicesRemovalEnabled(mDeps.isTrunkStableFeatureEnabled(
-                        MdnsFeatureFlags.NSD_EXPIRED_SERVICES_REMOVAL))
+                .setIsExpiredServicesRemovalEnabled(mDeps.isFeatureEnabled(
+                        mContext, MdnsFeatureFlags.NSD_EXPIRED_SERVICES_REMOVAL))
+                .setIsLabelCountLimitEnabled(mDeps.isTetheringFeatureNotChickenedOut(
+                        mContext, MdnsFeatureFlags.NSD_LIMIT_LABEL_COUNT))
                 .build();
         mMdnsSocketClient =
                 new MdnsMultinetworkSocketClient(handler.getLooper(), mMdnsSocketProvider,
-                        LOGGER.forSubComponent("MdnsMultinetworkSocketClient"));
+                        LOGGER.forSubComponent("MdnsMultinetworkSocketClient"), flags);
         mMdnsDiscoveryManager = deps.makeMdnsDiscoveryManager(new ExecutorProvider(),
                 mMdnsSocketClient, LOGGER.forSubComponent("MdnsDiscoveryManager"), flags);
         handler.post(() -> mMdnsSocketClient.setCallback(mMdnsDiscoveryManager));
@@ -2102,11 +2105,17 @@ public class NsdService extends INsdManager.Stub {
             if (!SdkLevel.isAtLeastT()) {
                 throw new SecurityException("API is not available in before API level 33");
             }
-            // REGISTER_NSD_OFFLOAD_ENGINE was only added to the SDK in V, but may
-            // be back ported to older builds: accept it as long as it's signature-protected
-            if (PermissionUtils.checkAnyPermissionOf(context, REGISTER_NSD_OFFLOAD_ENGINE)
-                    && (SdkLevel.isAtLeastV() || PermissionUtils.isSystemSignaturePermission(
-                    context, REGISTER_NSD_OFFLOAD_ENGINE))) {
+
+            // REGISTER_NSD_OFFLOAD_ENGINE was only added to the SDK in V.
+            if (SdkLevel.isAtLeastV() && PermissionUtils.checkAnyPermissionOf(context,
+                    REGISTER_NSD_OFFLOAD_ENGINE)) {
+                return;
+            }
+
+            // REGISTER_NSD_OFFLOAD_ENGINE cannot be backport to U. In U, check the DEVICE_POWER
+            // permission instead.
+            if (!SdkLevel.isAtLeastV() && SdkLevel.isAtLeastU()
+                    && PermissionUtils.checkAnyPermissionOf(context, DEVICE_POWER)) {
                 return;
             }
             if (PermissionUtils.checkAnyPermissionOf(context, NETWORK_STACK,
