@@ -17,10 +17,13 @@
 package com.android.server.connectivity;
 
 import static android.net.ConnectivityDiagnosticsManager.ConnectivityReport;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
+import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkCapabilities.transportNamesOf;
 
 import android.annotation.NonNull;
@@ -428,12 +431,28 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
     private final boolean mHasAutomotiveFeature;
 
     /**
+     * Checks that a proposed update to the NCs of this NAI satisfies structural constraints.
+     *
+     * Some changes to NetworkCapabilities are structurally not supported by the stack, and
+     * NetworkAgents are absolutely never allowed to try and do them. When one of these is
+     * violated, this method returns false, which has ConnectivityService disconnect the network ;
+     * this is meant to guarantee that no implementor ever tries to do this.
+     */
+    public boolean respectsNcStructuralConstraints(@NonNull final NetworkCapabilities proposedNc) {
+        if (networkCapabilities.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)
+                != proposedNc.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Sets the capabilities sent by the agent for later retrieval.
-     *
-     * This method does not sanitize the capabilities ; instead, use
-     * {@link #getDeclaredCapabilitiesSanitized} to retrieve a sanitized
-     * copy of the capabilities as they were passed here.
-     *
+     * <p>
+     * This method does not sanitize the capabilities before storing them ; instead, use
+     * {@link #getDeclaredCapabilitiesSanitized} to retrieve a sanitized copy of the capabilities
+     * as they were passed here.
+     * <p>
      * This method makes a defensive copy to avoid issues where the passed object is later mutated.
      *
      * @param caps the caps sent by the agent
@@ -1241,6 +1260,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         return networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
     }
 
+    /** Whether this network is a local network */
+    public boolean isLocalNetwork() {
+        return networkCapabilities.hasCapability(NET_CAPABILITY_LOCAL_NETWORK);
+    }
+
     /**
      * Whether this network should propagate the capabilities from its underlying networks.
      * Currently only true for VPNs.
@@ -1527,7 +1551,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * @param hasAutomotiveFeature true if this device has the automotive feature, false otherwise
      * @param authenticator the carrier privilege authenticator to check for telephony constraints
      */
-    public static void restrictCapabilitiesFromNetworkAgent(@NonNull final NetworkCapabilities nc,
+    public void restrictCapabilitiesFromNetworkAgent(@NonNull final NetworkCapabilities nc,
             final int creatorUid, final boolean hasAutomotiveFeature,
             @NonNull final ConnectivityService.Dependencies deps,
             @Nullable final CarrierPrivilegeAuthenticator authenticator) {
@@ -1540,7 +1564,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         }
     }
 
-    private static boolean areAllowedUidsAcceptableFromNetworkAgent(
+    private boolean areAllowedUidsAcceptableFromNetworkAgent(
             @NonNull final NetworkCapabilities nc, final boolean hasAutomotiveFeature,
             @NonNull final ConnectivityService.Dependencies deps,
             @Nullable final CarrierPrivilegeAuthenticator carrierPrivilegeAuthenticator) {
@@ -1553,21 +1577,28 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         // On a non-restricted network, access UIDs make no sense
         if (nc.hasCapability(NET_CAPABILITY_NOT_RESTRICTED)) return false;
 
-        // If this network has TRANSPORT_TEST, then the caller can do whatever they want to
-        // access UIDs
-        if (nc.hasTransport(TRANSPORT_TEST)) return true;
+        // If this network has TRANSPORT_TEST and nothing else, then the caller can do whatever
+        // they want to access UIDs
+        if (nc.hasSingleTransport(TRANSPORT_TEST)) return true;
 
-        // Factories that make ethernet networks can allow UIDs for automotive devices.
-        if (nc.hasSingleTransport(TRANSPORT_ETHERNET) && hasAutomotiveFeature) {
-            return true;
+        if (nc.hasTransport(TRANSPORT_ETHERNET)) {
+            // Factories that make ethernet networks can allow UIDs for automotive devices.
+            if (hasAutomotiveFeature) return true;
+            // It's also admissible if the ethernet network has TRANSPORT_TEST, as long as it
+            // doesn't have NET_CAPABILITY_INTERNET so it can't become the default network.
+            if (nc.hasTransport(TRANSPORT_TEST) && !nc.hasCapability(NET_CAPABILITY_INTERNET)) {
+                return true;
+            }
+            return false;
         }
 
-        // Factories that make cell networks can allow the UID for the carrier service package.
+        // Factories that make cell/wifi networks can allow the UID for the carrier service package.
         // This can only work in T where there is support for CarrierPrivilegeAuthenticator
         if (null != carrierPrivilegeAuthenticator
-                && nc.hasSingleTransport(TRANSPORT_CELLULAR)
+                && (nc.hasSingleTransportBesidesTest(TRANSPORT_CELLULAR)
+                        || nc.hasSingleTransportBesidesTest(TRANSPORT_WIFI))
                 && (1 == nc.getAllowedUidsNoCopy().size())
-                && (carrierPrivilegeAuthenticator.hasCarrierPrivilegeForNetworkCapabilities(
+                && (carrierPrivilegeAuthenticator.isCarrierServiceUidForNetworkCapabilities(
                         nc.getAllowedUidsNoCopy().valueAt(0), nc))) {
             return true;
         }

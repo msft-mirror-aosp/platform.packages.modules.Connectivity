@@ -19,6 +19,7 @@
 #include <android-base/result.h>
 #include <android-base/unique_fd.h>
 #include <linux/bpf.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <utils/Log.h>
 
@@ -38,6 +39,11 @@ class BpfRingbufBase {
     mConsumerPos = nullptr;
     mProducerPos = nullptr;
   }
+
+  bool isEmpty(void);
+
+  // returns !isEmpty() for convenience
+  bool wait(int timeout_ms = -1);
 
  protected:
   // Non-initializing constructor, used by Create.
@@ -195,6 +201,22 @@ inline base::Result<void> BpfRingbufBase::Init(const char* path) {
 
   mDataPos = pointerAddBytes<void*>(mProducerPos, getpagesize());
   return {};
+}
+
+inline bool BpfRingbufBase::isEmpty(void) {
+  uint32_t prod_pos = mProducerPos->load(std::memory_order_relaxed);
+  uint64_t cons_pos = mConsumerPos->load(std::memory_order_relaxed);
+  return (cons_pos & 0xFFFFFFFF) == prod_pos;
+}
+
+inline bool BpfRingbufBase::wait(int timeout_ms) {
+  // possible optimization: if (!isEmpty()) return true;
+  struct pollfd pfd = {  // 1-element array
+    .fd = mRingFd.get(),
+    .events = POLLIN,
+  };
+  (void)poll(&pfd, 1, timeout_ms);  // 'best effort' poll
+  return !isEmpty();
 }
 
 inline base::Result<int> BpfRingbufBase::ConsumeAll(
