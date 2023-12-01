@@ -146,8 +146,6 @@ public abstract class EthernetTetheringTestBase {
     private final TetheringManager mTm = mContext.getSystemService(TetheringManager.class);
     private final PackageManager mPackageManager = mContext.getPackageManager();
     private final CtsNetUtils mCtsNetUtils = new CtsNetUtils(mContext);
-    private final UiAutomation mUiAutomation =
-            InstrumentationRegistry.getInstrumentation().getUiAutomation();
 
     // Late initialization in setUp()
     private boolean mRunTests;
@@ -276,7 +274,6 @@ public abstract class EthernetTetheringTestBase {
         } finally {
             mHandlerThread.quitSafely();
             mHandlerThread.join();
-            mUiAutomation.dropShellPermissionIdentity();
         }
     }
 
@@ -366,6 +363,11 @@ public abstract class EthernetTetheringTestBase {
         private volatile Collection<TetheredClient> mClients = null;
         private volatile Network mUpstream = null;
 
+        // The dnsmasq in R might block netd for 20 seconds, which can also block tethering
+        // enable/disable for 20 seconds. To fix this, changing the timeouts from 5 seconds to 30
+        // seconds. See b/289881008.
+        private static final int EXPANDED_TIMEOUT_MS = 30000;
+
         MyTetheringEventCallback(TetheringManager tm, String iface) {
             this(tm, iface, null);
             mAcceptAnyUpstream = true;
@@ -424,13 +426,13 @@ public abstract class EthernetTetheringTestBase {
         }
 
         public void awaitInterfaceTethered() throws Exception {
-            assertTrue("Ethernet not tethered after " + TIMEOUT_MS + "ms",
-                    mTetheringStartedLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertTrue("Ethernet not tethered after " + EXPANDED_TIMEOUT_MS + "ms",
+                    mTetheringStartedLatch.await(EXPANDED_TIMEOUT_MS, TimeUnit.MILLISECONDS));
         }
 
         public void awaitInterfaceLocalOnly() throws Exception {
-            assertTrue("Ethernet not local-only after " + TIMEOUT_MS + "ms",
-                    mLocalOnlyStartedLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertTrue("Ethernet not local-only after " + EXPANDED_TIMEOUT_MS + "ms",
+                    mLocalOnlyStartedLatch.await(EXPANDED_TIMEOUT_MS, TimeUnit.MILLISECONDS));
         }
 
         // Used to check if the callback has registered. When the callback is registered,
@@ -444,8 +446,9 @@ public abstract class EthernetTetheringTestBase {
         }
 
         public void awaitCallbackRegistered() throws Exception {
-            if (!mCallbackRegisteredLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                fail("Did not receive callback registered signal after " + TIMEOUT_MS + "ms");
+            if (!mCallbackRegisteredLatch.await(EXPANDED_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                fail("Did not receive callback registered signal after " + EXPANDED_TIMEOUT_MS
+                        + "ms");
             }
         }
 
@@ -457,11 +460,11 @@ public abstract class EthernetTetheringTestBase {
             if (!mInterfaceWasTethered && !mInterfaceWasLocalOnly) return;
 
             if (mInterfaceWasTethered) {
-                assertTrue(mIface + " not untethered after " + TIMEOUT_MS + "ms",
-                        mTetheringStoppedLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS));
+                assertTrue(mIface + " not untethered after " + EXPANDED_TIMEOUT_MS + "ms",
+                        mTetheringStoppedLatch.await(EXPANDED_TIMEOUT_MS, TimeUnit.MILLISECONDS));
             } else if (mInterfaceWasLocalOnly) {
-                assertTrue(mIface + " not untethered after " + TIMEOUT_MS + "ms",
-                        mLocalOnlyStoppedLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS));
+                assertTrue(mIface + " not untethered after " + EXPANDED_TIMEOUT_MS + "ms",
+                        mLocalOnlyStoppedLatch.await(EXPANDED_TIMEOUT_MS, TimeUnit.MILLISECONDS));
             } else {
                 fail(mIface + " cannot be both tethered and local-only. Update this test class.");
             }
@@ -488,8 +491,9 @@ public abstract class EthernetTetheringTestBase {
         }
 
         public Collection<TetheredClient> awaitClientConnected() throws Exception {
-            assertTrue("Did not receive client connected callback after " + TIMEOUT_MS + "ms",
-                    mClientConnectedLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS));
+            assertTrue("Did not receive client connected callback after "
+                    + EXPANDED_TIMEOUT_MS + "ms",
+                    mClientConnectedLatch.await(EXPANDED_TIMEOUT_MS, TimeUnit.MILLISECONDS));
             return mClients;
         }
 
@@ -506,10 +510,10 @@ public abstract class EthernetTetheringTestBase {
         }
 
         public Network awaitUpstreamChanged(boolean throwTimeoutException) throws Exception {
-            if (!mUpstreamLatch.await(TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+            if (!mUpstreamLatch.await(EXPANDED_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                 final String errorMessage = "Did not receive upstream "
                             + (mAcceptAnyUpstream ? "any" : mExpectedUpstream)
-                            + " callback after " + TIMEOUT_MS + "ms";
+                            + " callback after " + EXPANDED_TIMEOUT_MS + "ms";
 
                 if (throwTimeoutException) {
                     throw new TimeoutException(errorMessage);
