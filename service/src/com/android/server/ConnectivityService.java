@@ -1876,6 +1876,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
             activityManager.registerUidFrozenStateChangedCallback(
                     (Runnable r) -> r.run(), frozenStateChangedCallback);
         }
+
+        if (mDeps.isFeatureNotChickenedOut(mContext, LOG_BPF_RC)) {
+            mHandler.post(BpfLoaderRcUtils::checkBpfLoaderRc);
+        }
     }
 
     /**
@@ -3335,6 +3339,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public static final String ALLOW_SYSUI_CONNECTIVITY_REPORTS =
             "allow_sysui_connectivity_reports";
 
+    public static final String LOG_BPF_RC = "log_bpf_rc_force_disable";
+
     private void enforceInternetPermission() {
         mContext.enforceCallingOrSelfPermission(
                 android.Manifest.permission.INTERNET,
@@ -4784,7 +4790,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // If the Private DNS mode is opportunistic, reprogram the DNS servers
         // in order to restart a validation pass from within netd.
         final PrivateDnsConfig cfg = mDnsManager.getPrivateDnsConfig();
-        if (cfg.useTls && TextUtils.isEmpty(cfg.hostname)) {
+        if (cfg.inOpportunisticMode()) {
             updateDnses(nai.linkProperties, null, nai.network.getNetId());
         }
     }

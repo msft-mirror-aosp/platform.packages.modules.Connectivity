@@ -52,7 +52,7 @@ public class StructXfrmUsersaIdTest {
     public void testEncode() throws Exception {
         final StructXfrmUsersaId struct = new StructXfrmUsersaId(DEST_ADDRESS, SPI, FAMILY, PROTO);
 
-        ByteBuffer buffer = ByteBuffer.allocate(EXPECTED_HEX.length);
+        final ByteBuffer buffer = ByteBuffer.allocate(EXPECTED_HEX.length);
         buffer.order(ByteOrder.nativeOrder());
         struct.writeToByteBuffer(buffer);
 
