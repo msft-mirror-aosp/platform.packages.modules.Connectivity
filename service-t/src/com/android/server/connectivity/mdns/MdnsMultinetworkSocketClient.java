@@ -20,8 +20,10 @@ import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningO
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresApi;
 import android.net.LinkAddress;
 import android.net.Network;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.ArrayMap;
@@ -40,6 +42,7 @@ import java.util.List;
  *
  *  * <p>This class is not thread safe.
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
     private static final String TAG = MdnsMultinetworkSocketClient.class.getSimpleName();
     private static final boolean DBG = MdnsDiscoveryManager.DBG;
@@ -47,6 +50,7 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
     @NonNull private final Handler mHandler;
     @NonNull private final MdnsSocketProvider mSocketProvider;
     @NonNull private final SharedLog mSharedLog;
+    @NonNull private final MdnsFeatureFlags mMdnsFeatureFlags;
 
     private final ArrayMap<MdnsServiceBrowserListener, InterfaceSocketCallback> mSocketRequests =
             new ArrayMap<>();
@@ -55,11 +59,12 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
     private int mReceivedPacketNumber = 0;
 
     public MdnsMultinetworkSocketClient(@NonNull Looper looper,
-            @NonNull MdnsSocketProvider provider,
-            @NonNull SharedLog sharedLog) {
+            @NonNull MdnsSocketProvider provider, @NonNull SharedLog sharedLog,
+            @NonNull MdnsFeatureFlags mdnsFeatureFlags) {
         mHandler = new Handler(looper);
         mSocketProvider = provider;
         mSharedLog = sharedLog;
+        mMdnsFeatureFlags = mdnsFeatureFlags;
     }
 
     private class InterfaceSocketCallback implements MdnsSocketProvider.SocketCallback {
@@ -236,7 +241,7 @@ public class MdnsMultinetworkSocketClient implements MdnsSocketClientBase {
 
         final MdnsPacket response;
         try {
-            response = MdnsResponseDecoder.parseResponse(recvbuf, length);
+            response = MdnsResponseDecoder.parseResponse(recvbuf, length, mMdnsFeatureFlags);
         } catch (MdnsPacket.ParseException e) {
             if (e.code != MdnsResponseErrorCode.ERROR_NOT_RESPONSE_MESSAGE) {
                 mSharedLog.e(e.getMessage(), e);

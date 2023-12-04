@@ -47,7 +47,7 @@ import android.os.SystemProperties;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
-import androidx.test.filters.MediumTest;
+import androidx.test.filters.LargeTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.net.module.util.Ipv6Utils;
@@ -79,7 +79,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
 @RunWith(AndroidJUnit4.class)
-@MediumTest
+@LargeTest
 public class EthernetTetheringTest extends EthernetTetheringTestBase {
     @Rule
     public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
@@ -326,6 +326,14 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
 
             waitForRouterAdvertisement(downstreamReader, iface, WAIT_RA_TIMEOUT_MS);
             expectLocalOnlyAddresses(iface);
+
+            // After testing the IPv6 local address, the DHCP server may still be in the process
+            // of being created. If the downstream interface is killed by the test while the
+            // DHCP server is starting, a DHCP server error may occur. To ensure that the DHCP
+            // server has started completely before finishing the test, also test the dhcp server
+            // by calling runDhcp.
+            final TetheringTester tester = new TetheringTester(downstreamReader);
+            tester.runDhcp(MacAddress.fromString("1:2:3:4:5:6").toByteArray());
         } finally {
             maybeStopTapPacketReader(downstreamReader);
             maybeCloseTestInterface(downstreamIface);

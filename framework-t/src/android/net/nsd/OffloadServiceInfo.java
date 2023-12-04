@@ -16,10 +16,13 @@
 
 package android.net.nsd;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntRange;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.RequiresApi;
 import android.annotation.SystemApi;
+import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
 
@@ -37,7 +40,9 @@ import java.util.Objects;
  *
  * @hide
  */
+@FlaggedApi("com.android.net.flags.register_nsd_offload_engine_api")
 @SystemApi
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public final class OffloadServiceInfo implements Parcelable {
     @NonNull
     private final Key mKey;
@@ -158,6 +163,23 @@ public final class OffloadServiceInfo implements Parcelable {
         } else {
             return mOffloadPayload.clone();
         }
+    }
+
+    /**
+     * Create a new OffloadServiceInfo with payload updated.
+     *
+     * @hide
+     */
+    @NonNull
+    public OffloadServiceInfo withOffloadPayload(@NonNull byte[] offloadPayload) {
+        return new OffloadServiceInfo(
+                this.getKey(),
+                this.getSubtypes(),
+                this.getHostname(),
+                offloadPayload,
+                this.getPriority(),
+                this.getOffloadType()
+        );
     }
 
     /**
