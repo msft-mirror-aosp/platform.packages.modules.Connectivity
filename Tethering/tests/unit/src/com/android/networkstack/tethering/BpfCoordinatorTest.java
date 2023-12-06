@@ -79,7 +79,6 @@ import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -573,24 +572,6 @@ public class BpfCoordinatorTest {
     @Before public void setUp() {
         MockitoAnnotations.initMocks(this);
         when(mTetherConfig.isBpfOffloadEnabled()).thenReturn(true /* default value */);
-
-        // Simulate the behavior of RoutingCoordinator
-        if (null != mRoutingCoordinatorManager.value) {
-            doAnswer(it -> {
-                final String fromIface = (String) it.getArguments()[0];
-                final String toIface = (String) it.getArguments()[1];
-                mNetd.tetherAddForward(fromIface, toIface);
-                mNetd.ipfwdAddInterfaceForward(fromIface, toIface);
-                return null;
-            }).when(mRoutingCoordinatorManager.value).addInterfaceForward(any(), any());
-            doAnswer(it -> {
-                final String fromIface = (String) it.getArguments()[0];
-                final String toIface = (String) it.getArguments()[1];
-                mNetd.ipfwdRemoveInterfaceForward(fromIface, toIface);
-                mNetd.tetherRemoveForward(fromIface, toIface);
-                return null;
-            }).when(mRoutingCoordinatorManager.value).removeInterfaceForward(any(), any());
-        }
     }
 
     private void waitForIdle() {
