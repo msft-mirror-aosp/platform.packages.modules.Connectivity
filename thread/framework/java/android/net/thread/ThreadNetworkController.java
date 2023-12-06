@@ -26,6 +26,7 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SystemApi;
+import android.os.Binder;
 import android.os.OutcomeReceiver;
 import android.os.RemoteException;
 
@@ -98,7 +99,8 @@ public final class ThreadNetworkController {
     private final Map<OperationalDatasetCallback, OperationalDatasetCallbackProxy>
             mOpDatasetCallbackMap = new HashMap<>();
 
-    ThreadNetworkController(@NonNull IThreadNetworkController controllerService) {
+    /** @hide */
+    public ThreadNetworkController(@NonNull IThreadNetworkController controllerService) {
         requireNonNull(controllerService, "controllerService cannot be null");
         mControllerService = controllerService;
     }
@@ -180,12 +182,22 @@ public final class ThreadNetworkController {
 
         @Override
         public void onDeviceRoleChanged(@DeviceRole int deviceRole) {
-            mExecutor.execute(() -> mCallback.onDeviceRoleChanged(deviceRole));
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() -> mCallback.onDeviceRoleChanged(deviceRole));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
         }
 
         @Override
         public void onPartitionIdChanged(long partitionId) {
-            mExecutor.execute(() -> mCallback.onPartitionIdChanged(partitionId));
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() -> mCallback.onPartitionIdChanged(partitionId));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
         }
     }
 
@@ -226,15 +238,17 @@ public final class ThreadNetworkController {
      * @param callback the callback which has been registered with {@link #registerStateCallback}
      * @throws IllegalArgumentException if {@code callback} hasn't been registered
      */
+    @RequiresPermission(permission.ACCESS_NETWORK_STATE)
     public void unregisterStateCallback(@NonNull StateCallback callback) {
         requireNonNull(callback, "callback cannot be null");
         synchronized (mStateCallbackMapLock) {
-            StateCallbackProxy callbackProxy = mStateCallbackMap.remove(callback);
+            StateCallbackProxy callbackProxy = mStateCallbackMap.get(callback);
             if (callbackProxy == null) {
                 throw new IllegalArgumentException("callback hasn't been registered");
             }
             try {
                 mControllerService.unregisterStateCallback(callbackProxy);
+                mStateCallbackMap.remove(callback);
             } catch (RemoteException e) {
                 e.rethrowFromSystemServer();
             }
@@ -280,13 +294,24 @@ public final class ThreadNetworkController {
         @Override
         public void onActiveOperationalDatasetChanged(
                 @Nullable ActiveOperationalDataset activeDataset) {
-            mExecutor.execute(() -> mCallback.onActiveOperationalDatasetChanged(activeDataset));
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() -> mCallback.onActiveOperationalDatasetChanged(activeDataset));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
         }
 
         @Override
         public void onPendingOperationalDatasetChanged(
                 @Nullable PendingOperationalDataset pendingDataset) {
-            mExecutor.execute(() -> mCallback.onPendingOperationalDatasetChanged(pendingDataset));
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(
+                        () -> mCallback.onPendingOperationalDatasetChanged(pendingDataset));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
         }
     }
 
@@ -334,15 +359,21 @@ public final class ThreadNetworkController {
      *     #registerOperationalDatasetCallback}
      * @throws IllegalArgumentException if {@code callback} hasn't been registered
      */
+    @RequiresPermission(
+            allOf = {
+                permission.ACCESS_NETWORK_STATE,
+                "android.permission.THREAD_NETWORK_PRIVILEGED"
+            })
     public void unregisterOperationalDatasetCallback(@NonNull OperationalDatasetCallback callback) {
         requireNonNull(callback, "callback cannot be null");
         synchronized (mOpDatasetCallbackMapLock) {
-            OperationalDatasetCallbackProxy callbackProxy = mOpDatasetCallbackMap.remove(callback);
+            OperationalDatasetCallbackProxy callbackProxy = mOpDatasetCallbackMap.get(callback);
             if (callbackProxy == null) {
                 throw new IllegalArgumentException("callback hasn't been registered");
             }
             try {
                 mControllerService.unregisterOperationalDatasetCallback(callbackProxy);
+                mOpDatasetCallbackMap.remove(callback);
             } catch (RemoteException e) {
                 e.rethrowFromSystemServer();
             }
@@ -473,7 +504,13 @@ public final class ThreadNetworkController {
             OutcomeReceiver<T, ThreadNetworkException> receiver,
             int errorCode,
             String errorMsg) {
-        executor.execute(() -> receiver.onError(new ThreadNetworkException(errorCode, errorMsg)));
+        final long identity = Binder.clearCallingIdentity();
+        try {
+            executor.execute(
+                    () -> receiver.onError(new ThreadNetworkException(errorCode, errorMsg)));
+        } finally {
+            Binder.restoreCallingIdentity(identity);
+        }
     }
 
     private static final class ActiveDatasetReceiverProxy
@@ -490,7 +527,12 @@ public final class ThreadNetworkController {
 
         @Override
         public void onSuccess(ActiveOperationalDataset dataset) {
-            mExecutor.execute(() -> mResultReceiver.onResult(dataset));
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() -> mResultReceiver.onResult(dataset));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
         }
 
         @Override
@@ -512,7 +554,12 @@ public final class ThreadNetworkController {
 
         @Override
         public void onSuccess() {
-            mExecutor.execute(() -> mResultReceiver.onResult(null));
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() -> mResultReceiver.onResult(null));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
         }
 
         @Override
