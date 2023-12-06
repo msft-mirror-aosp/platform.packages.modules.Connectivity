@@ -18,6 +18,7 @@ package android.net.thread;
 
 import static java.util.Objects.requireNonNull;
 
+import android.annotation.FlaggedApi;
 import android.annotation.NonNull;
 import android.annotation.SystemApi;
 import android.annotation.SystemService;
@@ -34,9 +35,10 @@ import java.util.List;
  *
  * @hide
  */
+@FlaggedApi(ThreadNetworkFlags.FLAG_THREAD_ENABLED)
 @SystemApi
 @SystemService(ThreadNetworkManager.SERVICE_NAME)
-public class ThreadNetworkManager {
+public final class ThreadNetworkManager {
     /**
      * This value tracks {@link Context#THREAD_NETWORK_SERVICE}.
      *
@@ -63,6 +65,19 @@ public class ThreadNetworkManager {
      * @hide
      */
     public static final String FEATURE_NAME = "android.hardware.thread_network";
+
+    /**
+     * Permission allows changing Thread network state and access to Thread network credentials such
+     * as Network Key and PSKc.
+     *
+     * <p>This is the same value as android.Manifest.permission.THREAD_NETWORK_PRIVILEGED. That
+     * symbol is not available on U while this feature needs to support Android U TV devices, so
+     * here is making a copy of android.Manifest.permission.THREAD_NETWORK_PRIVILEGED.
+     *
+     * @hide
+     */
+    public static final String PERMISSION_THREAD_NETWORK_PRIVILEGED =
+            "android.permission.THREAD_NETWORK_PRIVILEGED";
 
     @NonNull private final Context mContext;
     @NonNull private final List<ThreadNetworkController> mUnmodifiableControllerServices;

@@ -38,6 +38,7 @@ import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.EXTRA_NETWORK;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_REQUEST;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
@@ -47,6 +48,7 @@ import static android.net.ConnectivityManager.FIREWALL_CHAIN_POWERSAVE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_RESTRICTED;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DEFAULT;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE;
 import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
@@ -276,10 +278,8 @@ public class ConnectivityManagerTest {
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
-    // Timeout for waiting network to be validated. Set the timeout to 30s, which is more than
-    // DNS timeout.
-    // TODO(b/252972908): reset the original timer when aosp/2188755 is ramped up.
-    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 30_000;
+    // Timeout for waiting network to be validated.
+    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 5_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int NETWORK_REQUEST_TIMEOUT_MS = 3000;
     private static final int SOCKET_TIMEOUT_MS = 100;
@@ -794,7 +794,7 @@ public class ConnectivityManagerTest {
             // Make sure that the NC is null if the package doesn't hold ACCESS_NETWORK_STATE.
             assertNull(redactNc(nc, groundedUid, groundedPkg));
 
-            // Uids, ssid, underlying networks & subscriptionIds will be redacted if the given uid
+            // Uids, ssid & underlying networks will be redacted if the given uid
             // doesn't hold the associated permissions. The wifi transport info is also suitably
             // redacted.
             final NetworkCapabilities redactedNormal = redactNc(nc, normalUid, normalPkg);
@@ -3537,6 +3537,12 @@ public class ConnectivityManagerTest {
         doTestFirewallBlocking(FIREWALL_CHAIN_DOZABLE, ALLOWLIST);
     }
 
+    @Test @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingBackground() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_BACKGROUND, ALLOWLIST);
+    }
+
     @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
     @AppModeFull(reason = "Socket cannot bind in instant app mode")
     public void testFirewallBlockingPowersave() {
@@ -3591,6 +3597,15 @@ public class ConnectivityManagerTest {
         }
     }
 
+    private void setUidFirewallRule(final int chain, final int uid, final int rule) {
+        try {
+            mCm.setUidFirewallRule(chain, uid, rule);
+        } catch (IllegalStateException ignored) {
+            // Removing match causes an exception when the rule entry for the uid does
+            // not exist. But this is fine and can be ignored.
+        }
+    }
+
     private static final boolean EXPECT_OPEN = false;
     private static final boolean EXPECT_CLOSE = true;
 
@@ -3599,6 +3614,8 @@ public class ConnectivityManagerTest {
         runWithShellPermissionIdentity(() -> {
             // Firewall chain status will be restored after the test.
             final boolean wasChainEnabled = mCm.getFirewallChainEnabled(chain);
+            final int myUid = Process.myUid();
+            final int previousMyUidFirewallRule = mCm.getUidFirewallRule(chain, myUid);
             final int previousUidFirewallRule = mCm.getUidFirewallRule(chain, targetUid);
             final Socket socket = new Socket(TEST_HOST, HTTP_PORT);
             socket.setSoTimeout(NETWORK_REQUEST_TIMEOUT_MS);
@@ -3606,12 +3623,12 @@ public class ConnectivityManagerTest {
                 mCm.setFirewallChainEnabled(chain, false /* enable */);
                 assertSocketOpen(socket);
 
-                try {
-                    mCm.setUidFirewallRule(chain, targetUid, rule);
-                } catch (IllegalStateException ignored) {
-                    // Removing match causes an exception when the rule entry for the uid does
-                    // not exist. But this is fine and can be ignored.
+                setUidFirewallRule(chain, targetUid, rule);
+                if (targetUid != myUid) {
+                    // If this test does not set rule on myUid, remove existing rule on myUid
+                    setUidFirewallRule(chain, myUid, FIREWALL_RULE_DEFAULT);
                 }
+
                 mCm.setFirewallChainEnabled(chain, true /* enable */);
 
                 if (expectClose) {
@@ -3624,11 +3641,9 @@ public class ConnectivityManagerTest {
                     mCm.setFirewallChainEnabled(chain, wasChainEnabled);
                 }, /* cleanup */ () -> {
                     // Restore the uid firewall rule status
-                    try {
-                        mCm.setUidFirewallRule(chain, targetUid, previousUidFirewallRule);
-                    } catch (IllegalStateException ignored) {
-                        // Removing match causes an exception when the rule entry for the uid does
-                        // not exist. But this is fine and can be ignored.
+                    setUidFirewallRule(chain, targetUid, previousUidFirewallRule);
+                    if (targetUid != myUid) {
+                        setUidFirewallRule(chain, myUid, previousMyUidFirewallRule);
                     }
                 }, /* cleanup */ () -> {
                     socket.close();

@@ -18,10 +18,17 @@ package com.android.net.module.util.structs;
 
 import static com.android.net.module.util.NetworkStackConstants.DHCP6_OPTION_IAPREFIX;
 
+import android.net.IpPrefix;
+import android.util.Log;
+
 import com.android.net.module.util.Struct;
+import com.android.net.module.util.Struct.Computed;
 import com.android.net.module.util.Struct.Field;
 import com.android.net.module.util.Struct.Type;
 
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
@@ -52,6 +59,7 @@ import java.nio.ByteOrder;
  * +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
  */
 public class IaPrefixOption extends Struct {
+    private static final String TAG = IaPrefixOption.class.getSimpleName();
     public static final int LENGTH = 25; // option length excluding IAprefix-options
 
     @Field(order = 0, type = Type.S16)
@@ -67,7 +75,11 @@ public class IaPrefixOption extends Struct {
     @Field(order = 5, type = Type.ByteArray, arraysize = 16)
     public final byte[] prefix;
 
-    public IaPrefixOption(final short code, final short length, final long preferred,
+    @Computed
+    private final IpPrefix mIpPrefix;
+
+    // Constructor used by Struct.parse()
+    protected IaPrefixOption(final short code, final short length, final long preferred,
             final long valid, final byte prefixLen, final byte[] prefix) {
         this.code = code;
         this.length = length;
@@ -75,6 +87,57 @@ public class IaPrefixOption extends Struct {
         this.valid = valid;
         this.prefixLen = prefixLen;
         this.prefix = prefix.clone();
+
+        try {
+            final Inet6Address addr = (Inet6Address) InetAddress.getByAddress(prefix);
+            mIpPrefix = new IpPrefix(addr, prefixLen);
+        } catch (UnknownHostException | ClassCastException e) {
+            // UnknownHostException should never happen unless prefix is null.
+            // ClassCastException can occur when prefix is an IPv6 mapped IPv4 address.
+            // Both scenarios should throw an exception in the context of Struct#parse().
+            throw new IllegalArgumentException(e);
+        }
+    }
+
+    public IaPrefixOption(final short length, final long preferred, final long valid,
+            final byte prefixLen, final byte[] prefix) {
+        this((byte) DHCP6_OPTION_IAPREFIX, length, preferred, valid, prefixLen, prefix);
+    }
+
+    /**
+     * Check whether or not IA Prefix option in IA_PD option is valid per RFC8415#section-21.22.
+     *
+     * Note: an expired prefix can still be valid.
+     */
+    public boolean isValid() {
+        if (preferred < 0) {
+            Log.w(TAG, "Invalid preferred lifetime: " + this);
+            return false;
+        }
+        if (valid < 0) {
+            Log.w(TAG, "Invalid valid lifetime: " + this);
+            return false;
+        }
+        if (preferred > valid) {
+            Log.w(TAG, "Invalid lifetime. Preferred lifetime > valid lifetime: " + this);
+            return false;
+        }
+        if (prefixLen > 64) {
+            Log.w(TAG, "Invalid prefix length: " + this);
+            return false;
+        }
+        return true;
+    }
+
+    public IpPrefix getIpPrefix() {
+        return mIpPrefix;
+    }
+
+    /**
+     * Check whether or not IA Prefix option has 0 preferred and valid lifetimes.
+     */
+    public boolean withZeroLifetimes() {
+        return preferred == 0 && valid == 0;
     }
 
     /**
@@ -82,8 +145,14 @@ public class IaPrefixOption extends Struct {
      */
     public static ByteBuffer build(final short length, final long preferred, final long valid,
             final byte prefixLen, final byte[] prefix) {
-        final IaPrefixOption option = new IaPrefixOption((byte) DHCP6_OPTION_IAPREFIX,
+        final IaPrefixOption option = new IaPrefixOption(
                 length /* 25 + IAPrefix options length */, preferred, valid, prefixLen, prefix);
         return ByteBuffer.wrap(option.writeToBytes(ByteOrder.BIG_ENDIAN));
+    }
+
+    @Override
+    public String toString() {
+        return "IA Prefix, length " + length + ": " + mIpPrefix + ", pref " + preferred + ", valid "
+                + valid;
     }
 }

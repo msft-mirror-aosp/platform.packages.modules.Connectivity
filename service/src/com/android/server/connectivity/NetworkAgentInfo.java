@@ -17,10 +17,13 @@
 package com.android.server.connectivity;
 
 import static android.net.ConnectivityDiagnosticsManager.ConnectivityReport;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
+import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkCapabilities.transportNamesOf;
 
 import android.annotation.NonNull;
@@ -35,6 +38,7 @@ import android.net.INetworkAgent;
 import android.net.INetworkAgentRegistry;
 import android.net.INetworkMonitor;
 import android.net.LinkProperties;
+import android.net.LocalNetworkConfig;
 import android.net.NattKeepalivePacketData;
 import android.net.Network;
 import android.net.NetworkAgent;
@@ -64,7 +68,6 @@ import android.util.SparseArray;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.WakeupMessage;
-import com.android.modules.utils.build.SdkLevel;
 import com.android.server.ConnectivityService;
 
 import java.io.PrintWriter;
@@ -174,6 +177,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
     // TODO: make this private with a getter.
     @NonNull public NetworkCapabilities networkCapabilities;
     @NonNull public final NetworkAgentConfig networkAgentConfig;
+    @Nullable public LocalNetworkConfig localNetworkConfig;
 
     // Underlying networks declared by the agent.
     // The networks in this list might be declared by a VPN using setUnderlyingNetworks and are
@@ -427,12 +431,28 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
     private final boolean mHasAutomotiveFeature;
 
     /**
+     * Checks that a proposed update to the NCs of this NAI satisfies structural constraints.
+     *
+     * Some changes to NetworkCapabilities are structurally not supported by the stack, and
+     * NetworkAgents are absolutely never allowed to try and do them. When one of these is
+     * violated, this method returns false, which has ConnectivityService disconnect the network ;
+     * this is meant to guarantee that no implementor ever tries to do this.
+     */
+    public boolean respectsNcStructuralConstraints(@NonNull final NetworkCapabilities proposedNc) {
+        if (networkCapabilities.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)
+                != proposedNc.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)) {
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * Sets the capabilities sent by the agent for later retrieval.
-     *
-     * This method does not sanitize the capabilities ; instead, use
-     * {@link #getDeclaredCapabilitiesSanitized} to retrieve a sanitized
-     * copy of the capabilities as they were passed here.
-     *
+     * <p>
+     * This method does not sanitize the capabilities before storing them ; instead, use
+     * {@link #getDeclaredCapabilitiesSanitized} to retrieve a sanitized copy of the capabilities
+     * as they were passed here.
+     * <p>
      * This method makes a defensive copy to avoid issues where the passed object is later mutated.
      *
      * @param caps the caps sent by the agent
@@ -453,6 +473,8 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * apply to the allowedUids field.
      * They also should not mutate immutable capabilities, although for backward-compatibility
      * this is not enforced and limited to just a log.
+     * Forbidden capabilities also make no sense for networks, so they are disallowed and
+     * will be ignored with a warning.
      *
      * @param carrierPrivilegeAuthenticator the authenticator, to check access UIDs.
      */
@@ -461,14 +483,15 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         final NetworkCapabilities nc = new NetworkCapabilities(mDeclaredCapabilitiesUnsanitized);
         if (nc.hasConnectivityManagedCapability()) {
             Log.wtf(TAG, "BUG: " + this + " has CS-managed capability.");
+            nc.removeAllForbiddenCapabilities();
         }
         if (networkCapabilities.getOwnerUid() != nc.getOwnerUid()) {
             Log.e(TAG, toShortString() + ": ignoring attempt to change owner from "
                     + networkCapabilities.getOwnerUid() + " to " + nc.getOwnerUid());
             nc.setOwnerUid(networkCapabilities.getOwnerUid());
         }
-        restrictCapabilitiesFromNetworkAgent(
-                nc, creatorUid, mHasAutomotiveFeature, carrierPrivilegeAuthenticator);
+        restrictCapabilitiesFromNetworkAgent(nc, creatorUid, mHasAutomotiveFeature,
+                mConnServiceDeps, carrierPrivilegeAuthenticator);
         return nc;
     }
 
@@ -598,6 +621,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
     private static final String TAG = ConnectivityService.class.getSimpleName();
     private static final boolean VDBG = false;
     private final ConnectivityService mConnService;
+    private final ConnectivityService.Dependencies mConnServiceDeps;
     private final Context mContext;
     private final Handler mHandler;
     private final QosCallbackTracker mQosCallbackTracker;
@@ -606,6 +630,7 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
 
     public NetworkAgentInfo(INetworkAgent na, Network net, NetworkInfo info,
             @NonNull LinkProperties lp, @NonNull NetworkCapabilities nc,
+            @Nullable LocalNetworkConfig localNetworkConfig,
             @NonNull NetworkScore score, Context context,
             Handler handler, NetworkAgentConfig config, ConnectivityService connService, INetd netd,
             IDnsResolver dnsResolver, int factorySerialNumber, int creatorUid,
@@ -623,8 +648,10 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         networkInfo = info;
         linkProperties = lp;
         networkCapabilities = nc;
+        this.localNetworkConfig = localNetworkConfig;
         networkAgentConfig = config;
         mConnService = connService;
+        mConnServiceDeps = deps;
         setScore(score); // uses members connService, networkCapabilities and networkAgentConfig
         clatd = new Nat464Xlat(this, netd, dnsResolver, deps);
         mContext = context;
@@ -898,6 +925,12 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
             Objects.requireNonNull(info);
             mHandler.obtainMessage(NetworkAgent.EVENT_NETWORK_INFO_CHANGED,
                     new Pair<>(NetworkAgentInfo.this, info)).sendToTarget();
+        }
+
+        @Override
+        public void sendLocalNetworkConfig(@NonNull final LocalNetworkConfig config) {
+            mHandler.obtainMessage(NetworkAgent.EVENT_LOCAL_NETWORK_CONFIG_CHANGED,
+                    new Pair<>(NetworkAgentInfo.this, config)).sendToTarget();
         }
 
         @Override
@@ -1227,6 +1260,11 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
         return networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN);
     }
 
+    /** Whether this network is a local network */
+    public boolean isLocalNetwork() {
+        return networkCapabilities.hasCapability(NET_CAPABILITY_LOCAL_NETWORK);
+    }
+
     /**
      * Whether this network should propagate the capabilities from its underlying networks.
      * Currently only true for VPNs.
@@ -1513,44 +1551,54 @@ public class NetworkAgentInfo implements NetworkRanker.Scoreable {
      * @param hasAutomotiveFeature true if this device has the automotive feature, false otherwise
      * @param authenticator the carrier privilege authenticator to check for telephony constraints
      */
-    public static void restrictCapabilitiesFromNetworkAgent(@NonNull final NetworkCapabilities nc,
+    public void restrictCapabilitiesFromNetworkAgent(@NonNull final NetworkCapabilities nc,
             final int creatorUid, final boolean hasAutomotiveFeature,
+            @NonNull final ConnectivityService.Dependencies deps,
             @Nullable final CarrierPrivilegeAuthenticator authenticator) {
         if (nc.hasTransport(TRANSPORT_TEST)) {
             nc.restrictCapabilitiesForTestNetwork(creatorUid);
         }
-        if (!areAllowedUidsAcceptableFromNetworkAgent(nc, hasAutomotiveFeature, authenticator)) {
+        if (!areAllowedUidsAcceptableFromNetworkAgent(
+                nc, hasAutomotiveFeature, deps, authenticator)) {
             nc.setAllowedUids(new ArraySet<>());
         }
     }
 
-    private static boolean areAllowedUidsAcceptableFromNetworkAgent(
+    private boolean areAllowedUidsAcceptableFromNetworkAgent(
             @NonNull final NetworkCapabilities nc, final boolean hasAutomotiveFeature,
+            @NonNull final ConnectivityService.Dependencies deps,
             @Nullable final CarrierPrivilegeAuthenticator carrierPrivilegeAuthenticator) {
         // NCs without access UIDs are fine.
         if (!nc.hasAllowedUids()) return true;
         // S and below must never accept access UIDs, even if an agent sends them, because netd
         // didn't support the required feature in S.
-        if (!SdkLevel.isAtLeastT()) return false;
+        if (!deps.isAtLeastT()) return false;
 
         // On a non-restricted network, access UIDs make no sense
         if (nc.hasCapability(NET_CAPABILITY_NOT_RESTRICTED)) return false;
 
-        // If this network has TRANSPORT_TEST, then the caller can do whatever they want to
-        // access UIDs
-        if (nc.hasTransport(TRANSPORT_TEST)) return true;
+        // If this network has TRANSPORT_TEST and nothing else, then the caller can do whatever
+        // they want to access UIDs
+        if (nc.hasSingleTransport(TRANSPORT_TEST)) return true;
 
-        // Factories that make ethernet networks can allow UIDs for automotive devices.
-        if (nc.hasSingleTransport(TRANSPORT_ETHERNET) && hasAutomotiveFeature) {
-            return true;
+        if (nc.hasTransport(TRANSPORT_ETHERNET)) {
+            // Factories that make ethernet networks can allow UIDs for automotive devices.
+            if (hasAutomotiveFeature) return true;
+            // It's also admissible if the ethernet network has TRANSPORT_TEST, as long as it
+            // doesn't have NET_CAPABILITY_INTERNET so it can't become the default network.
+            if (nc.hasTransport(TRANSPORT_TEST) && !nc.hasCapability(NET_CAPABILITY_INTERNET)) {
+                return true;
+            }
+            return false;
         }
 
-        // Factories that make cell networks can allow the UID for the carrier service package.
+        // Factories that make cell/wifi networks can allow the UID for the carrier service package.
         // This can only work in T where there is support for CarrierPrivilegeAuthenticator
         if (null != carrierPrivilegeAuthenticator
-                && nc.hasSingleTransport(TRANSPORT_CELLULAR)
+                && (nc.hasSingleTransportBesidesTest(TRANSPORT_CELLULAR)
+                        || nc.hasSingleTransportBesidesTest(TRANSPORT_WIFI))
                 && (1 == nc.getAllowedUidsNoCopy().size())
-                && (carrierPrivilegeAuthenticator.hasCarrierPrivilegeForNetworkCapabilities(
+                && (carrierPrivilegeAuthenticator.isCarrierServiceUidForNetworkCapabilities(
                         nc.getAllowedUidsNoCopy().valueAt(0), nc))) {
             return true;
         }

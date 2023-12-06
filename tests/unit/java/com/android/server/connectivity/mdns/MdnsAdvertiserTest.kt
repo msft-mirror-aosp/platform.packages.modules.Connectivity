@@ -19,6 +19,7 @@ package com.android.server.connectivity.mdns
 import android.net.InetAddresses.parseNumericAddress
 import android.net.LinkAddress
 import android.net.Network
+import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.nsd.OffloadEngine
 import android.net.nsd.OffloadServiceInfo
@@ -71,6 +72,7 @@ private val TEST_INTERFACE1 = "test_iface1"
 private val TEST_INTERFACE2 = "test_iface2"
 private val TEST_OFFLOAD_PACKET1 = byteArrayOf(0x01, 0x02, 0x03)
 private val TEST_OFFLOAD_PACKET2 = byteArrayOf(0x02, 0x03, 0x04)
+private val DEFAULT_ADVERTISING_OPTION = MdnsAdvertisingOptions.getDefaultOptions()
 
 private val SERVICE_1 = NsdServiceInfo("TestServiceName", "_advertisertest._tcp").apply {
     port = 12345
@@ -153,10 +155,10 @@ class MdnsAdvertiserTest {
         thread.start()
         doReturn(TEST_HOSTNAME).`when`(mockDeps).generateHostname()
         doReturn(mockInterfaceAdvertiser1).`when`(mockDeps).makeAdvertiser(eq(mockSocket1),
-                any(), any(), any(), any(), eq(TEST_HOSTNAME), any()
+                any(), any(), any(), any(), eq(TEST_HOSTNAME), any(), any()
         )
         doReturn(mockInterfaceAdvertiser2).`when`(mockDeps).makeAdvertiser(eq(mockSocket2),
-                any(), any(), any(), any(), eq(TEST_HOSTNAME), any()
+                any(), any(), any(), any(), eq(TEST_HOSTNAME), any(), any()
         )
         doReturn(true).`when`(mockInterfaceAdvertiser1).isProbing(anyInt())
         doReturn(true).`when`(mockInterfaceAdvertiser2).isProbing(anyInt())
@@ -186,7 +188,8 @@ class MdnsAdvertiserTest {
     fun testAddService_OneNetwork() {
         val advertiser =
             MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
-        postSync { advertiser.addService(SERVICE_ID_1, SERVICE_1, null /* subtype */) }
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_1, SERVICE_1,
+                null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
 
         val socketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
         verify(socketProvider).requestSocket(eq(TEST_NETWORK_1), socketCbCaptor.capture())
@@ -202,6 +205,7 @@ class MdnsAdvertiserTest {
             any(),
             intAdvCbCaptor.capture(),
             eq(TEST_HOSTNAME),
+            any(),
             any()
         )
 
@@ -246,7 +250,8 @@ class MdnsAdvertiserTest {
     fun testAddService_AllNetworks() {
         val advertiser =
             MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
-        postSync { advertiser.addService(SERVICE_ID_1, ALL_NETWORKS_SERVICE, TEST_SUBTYPE) }
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_1, ALL_NETWORKS_SERVICE,
+                TEST_SUBTYPE, DEFAULT_ADVERTISING_OPTION) }
 
         val socketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
         verify(socketProvider).requestSocket(eq(ALL_NETWORKS_SERVICE.network),
@@ -259,10 +264,10 @@ class MdnsAdvertiserTest {
         val intAdvCbCaptor1 = ArgumentCaptor.forClass(MdnsInterfaceAdvertiser.Callback::class.java)
         val intAdvCbCaptor2 = ArgumentCaptor.forClass(MdnsInterfaceAdvertiser.Callback::class.java)
         verify(mockDeps).makeAdvertiser(eq(mockSocket1), eq(listOf(TEST_LINKADDR)),
-                eq(thread.looper), any(), intAdvCbCaptor1.capture(), eq(TEST_HOSTNAME), any()
+                eq(thread.looper), any(), intAdvCbCaptor1.capture(), eq(TEST_HOSTNAME), any(), any()
         )
         verify(mockDeps).makeAdvertiser(eq(mockSocket2), eq(listOf(TEST_LINKADDR)),
-                eq(thread.looper), any(), intAdvCbCaptor2.capture(), eq(TEST_HOSTNAME), any()
+                eq(thread.looper), any(), intAdvCbCaptor2.capture(), eq(TEST_HOSTNAME), any(), any()
         )
         verify(mockInterfaceAdvertiser1).addService(
                 anyInt(), eq(ALL_NETWORKS_SERVICE), eq(TEST_SUBTYPE))
@@ -317,24 +322,27 @@ class MdnsAdvertiserTest {
     fun testAddService_Conflicts() {
         val advertiser =
             MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
-        postSync { advertiser.addService(SERVICE_ID_1, SERVICE_1, null /* subtype */) }
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_1, SERVICE_1,
+                null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
 
         val oneNetSocketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
         verify(socketProvider).requestSocket(eq(TEST_NETWORK_1), oneNetSocketCbCaptor.capture())
         val oneNetSocketCb = oneNetSocketCbCaptor.value
 
         // Register a service with the same name on all networks (name conflict)
-        postSync { advertiser.addService(SERVICE_ID_2, ALL_NETWORKS_SERVICE, null /* subtype */) }
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_2, ALL_NETWORKS_SERVICE,
+                null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
         val allNetSocketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
         verify(socketProvider).requestSocket(eq(null), allNetSocketCbCaptor.capture())
         val allNetSocketCb = allNetSocketCbCaptor.value
 
-        postSync { advertiser.addService(LONG_SERVICE_ID_1, LONG_SERVICE_1, null /* subtype */) }
-        postSync { advertiser.addService(LONG_SERVICE_ID_2, LONG_ALL_NETWORKS_SERVICE,
-                null /* subtype */) }
+        postSync { advertiser.addOrUpdateService(LONG_SERVICE_ID_1, LONG_SERVICE_1,
+                null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
+        postSync { advertiser.addOrUpdateService(LONG_SERVICE_ID_2, LONG_ALL_NETWORKS_SERVICE,
+                null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
 
-        postSync { advertiser.addService(CASE_INSENSITIVE_TEST_SERVICE_ID, ALL_NETWORKS_SERVICE_2,
-                null /* subtype */) }
+        postSync { advertiser.addOrUpdateService(CASE_INSENSITIVE_TEST_SERVICE_ID,
+                ALL_NETWORKS_SERVICE_2, null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
 
         // Callbacks for matching network and all networks both get the socket
         postSync {
@@ -367,7 +375,7 @@ class MdnsAdvertiserTest {
 
         val intAdvCbCaptor = ArgumentCaptor.forClass(MdnsInterfaceAdvertiser.Callback::class.java)
         verify(mockDeps).makeAdvertiser(eq(mockSocket1), eq(listOf(TEST_LINKADDR)),
-                eq(thread.looper), any(), intAdvCbCaptor.capture(), eq(TEST_HOSTNAME), any()
+                eq(thread.looper), any(), intAdvCbCaptor.capture(), eq(TEST_HOSTNAME), any(), any()
         )
         verify(mockInterfaceAdvertiser1).addService(eq(SERVICE_ID_1),
                 argThat { it.matches(SERVICE_1) }, eq(null))
@@ -399,11 +407,51 @@ class MdnsAdvertiserTest {
     }
 
     @Test
+    fun testAddOrUpdateService_Updates() {
+        val advertiser =
+                MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_1, ALL_NETWORKS_SERVICE,
+                null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
+
+        val socketCbCaptor = ArgumentCaptor.forClass(SocketCallback::class.java)
+        verify(socketProvider).requestSocket(eq(null), socketCbCaptor.capture())
+
+        val socketCb = socketCbCaptor.value
+        postSync { socketCb.onSocketCreated(TEST_SOCKETKEY_1, mockSocket1, listOf(TEST_LINKADDR)) }
+
+        verify(mockInterfaceAdvertiser1).addService(eq(SERVICE_ID_1),
+                argThat { it.matches(ALL_NETWORKS_SERVICE) }, eq(null))
+
+        val updateOptions = MdnsAdvertisingOptions.newBuilder().setIsOnlyUpdate(true).build()
+
+        // Update with serviceId that is not registered yet should fail
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_2, ALL_NETWORKS_SERVICE, TEST_SUBTYPE,
+                updateOptions) }
+        verify(cb).onRegisterServiceFailed(SERVICE_ID_2, NsdManager.FAILURE_INTERNAL_ERROR)
+
+        // Update service with different NsdServiceInfo should fail
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_1, SERVICE_1, TEST_SUBTYPE,
+                updateOptions) }
+        verify(cb).onRegisterServiceFailed(SERVICE_ID_1, NsdManager.FAILURE_INTERNAL_ERROR)
+
+        // Update service with same NsdServiceInfo but different subType should succeed
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_1, ALL_NETWORKS_SERVICE, TEST_SUBTYPE,
+                updateOptions) }
+        verify(mockInterfaceAdvertiser1).updateService(eq(SERVICE_ID_1), eq(TEST_SUBTYPE))
+
+        // Newly created MdnsInterfaceAdvertiser will get addService() call.
+        postSync { socketCb.onSocketCreated(TEST_SOCKETKEY_2, mockSocket2, listOf(TEST_LINKADDR2)) }
+        verify(mockInterfaceAdvertiser2).addService(eq(SERVICE_ID_1),
+                argThat { it.matches(ALL_NETWORKS_SERVICE) }, eq(TEST_SUBTYPE))
+    }
+
+    @Test
     fun testRemoveService_whenAllServiceRemoved_thenUpdateHostName() {
         val advertiser =
             MdnsAdvertiser(thread.looper, socketProvider, cb, mockDeps, sharedlog, flags)
         verify(mockDeps, times(1)).generateHostname()
-        postSync { advertiser.addService(SERVICE_ID_1, SERVICE_1, null /* subtype */) }
+        postSync { advertiser.addOrUpdateService(SERVICE_ID_1, SERVICE_1,
+                null /* subtype */, DEFAULT_ADVERTISING_OPTION) }
         postSync { advertiser.removeService(SERVICE_ID_1) }
         verify(mockDeps, times(2)).generateHostname()
     }

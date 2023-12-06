@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.DEVICE_POWER;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.net.ConnectivityManager.NETID_UNSET;
@@ -90,6 +91,7 @@ import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.ExecutorProvider;
 import com.android.server.connectivity.mdns.MdnsAdvertiser;
+import com.android.server.connectivity.mdns.MdnsAdvertisingOptions;
 import com.android.server.connectivity.mdns.MdnsDiscoveryManager;
 import com.android.server.connectivity.mdns.MdnsFeatureFlags;
 import com.android.server.connectivity.mdns.MdnsInterfaceSocket;
@@ -519,9 +521,9 @@ public class NsdService extends INsdManager.Stub {
         }
     }
 
+    // TODO: Use a Handler instead of a StateMachine since there are no state changes.
     private class NsdStateMachine extends StateMachine {
 
-        private final DefaultState mDefaultState = new DefaultState();
         private final EnabledState mEnabledState = new EnabledState();
 
         @Override
@@ -591,122 +593,10 @@ public class NsdService extends INsdManager.Stub {
 
         NsdStateMachine(String name, Handler handler) {
             super(name, handler);
-            addState(mDefaultState);
-                addState(mEnabledState, mDefaultState);
+            addState(mEnabledState);
             State initialState = mEnabledState;
             setInitialState(initialState);
             setLogRecSize(25);
-        }
-
-        class DefaultState extends State {
-            @Override
-            public boolean processMessage(Message msg) {
-                final ClientInfo cInfo;
-                final int clientRequestId = msg.arg2;
-                switch (msg.what) {
-                    case NsdManager.REGISTER_CLIENT:
-                        final ConnectorArgs arg = (ConnectorArgs) msg.obj;
-                        final INsdManagerCallback cb = arg.callback;
-                        try {
-                            cb.asBinder().linkToDeath(arg.connector, 0);
-                            final String tag = "Client" + arg.uid + "-" + mClientNumberId++;
-                            final NetworkNsdReportedMetrics metrics =
-                                    mDeps.makeNetworkNsdReportedMetrics(
-                                            (int) mClock.elapsedRealtime());
-                            cInfo = new ClientInfo(cb, arg.uid, arg.useJavaBackend,
-                                    mServiceLogs.forSubComponent(tag), metrics);
-                            mClients.put(arg.connector, cInfo);
-                        } catch (RemoteException e) {
-                            Log.w(TAG, "Client request id " + clientRequestId
-                                    + " has already died");
-                        }
-                        break;
-                    case NsdManager.UNREGISTER_CLIENT:
-                        final NsdServiceConnector connector = (NsdServiceConnector) msg.obj;
-                        cInfo = mClients.remove(connector);
-                        if (cInfo != null) {
-                            cInfo.expungeAllRequests();
-                            if (cInfo.isPreSClient()) {
-                                mLegacyClientCount -= 1;
-                            }
-                        }
-                        maybeStopMonitoringSocketsIfNoActiveRequest();
-                        maybeScheduleStop();
-                        break;
-                    case NsdManager.DISCOVER_SERVICES:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cInfo.onDiscoverServicesFailedImmediately(clientRequestId,
-                                    NsdManager.FAILURE_INTERNAL_ERROR, true /* isLegacy */);
-                        }
-                       break;
-                    case NsdManager.STOP_DISCOVERY:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cInfo.onStopDiscoveryFailed(
-                                    clientRequestId, NsdManager.FAILURE_INTERNAL_ERROR);
-                        }
-                        break;
-                    case NsdManager.REGISTER_SERVICE:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cInfo.onRegisterServiceFailedImmediately(clientRequestId,
-                                    NsdManager.FAILURE_INTERNAL_ERROR, true /* isLegacy */);
-                        }
-                        break;
-                    case NsdManager.UNREGISTER_SERVICE:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cInfo.onUnregisterServiceFailed(
-                                    clientRequestId, NsdManager.FAILURE_INTERNAL_ERROR);
-                        }
-                        break;
-                    case NsdManager.RESOLVE_SERVICE:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cInfo.onResolveServiceFailedImmediately(clientRequestId,
-                                    NsdManager.FAILURE_INTERNAL_ERROR, true /* isLegacy */);
-                        }
-                        break;
-                    case NsdManager.STOP_RESOLUTION:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cInfo.onStopResolutionFailed(
-                                    clientRequestId, NsdManager.FAILURE_OPERATION_NOT_RUNNING);
-                        }
-                        break;
-                    case NsdManager.REGISTER_SERVICE_CALLBACK:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cInfo.onServiceInfoCallbackRegistrationFailed(
-                                    clientRequestId, NsdManager.FAILURE_BAD_PARAMETERS);
-                        }
-                        break;
-                    case NsdManager.DAEMON_CLEANUP:
-                        maybeStopDaemon();
-                        break;
-                    // This event should be only sent by the legacy (target SDK < S) clients.
-                    // Mark the sending client as legacy.
-                    case NsdManager.DAEMON_STARTUP:
-                        cInfo = getClientInfoForReply(msg);
-                        if (cInfo != null) {
-                            cancelStop();
-                            cInfo.setPreSClient();
-                            mLegacyClientCount += 1;
-                            maybeStartDaemon();
-                        }
-                        break;
-                    default:
-                        Log.e(TAG, "Unhandled " + msg);
-                        return NOT_HANDLED;
-                }
-                return HANDLED;
-            }
-
-            private ClientInfo getClientInfoForReply(Message msg) {
-                final ListenerArgs args = (ListenerArgs) msg.obj;
-                return mClients.get(args.connector);
-            }
         }
 
         class EnabledState extends State {
@@ -791,6 +681,11 @@ public class NsdService extends INsdManager.Stub {
                     int transactionId, ClientInfo clientInfo) {
                 clientInfo.unregisterMdnsListenerFromRequest(request);
                 removeRequestMap(clientRequestId, transactionId, clientInfo);
+            }
+
+            private ClientInfo getClientInfoForReply(Message msg) {
+                final ListenerArgs args = (ListenerArgs) msg.obj;
+                return mClients.get(args.connector);
             }
 
             @Override
@@ -956,7 +851,9 @@ public class NsdService extends INsdManager.Stub {
                             // service type would generate service instance names like
                             // Name._subtype._sub._type._tcp, which is incorrect
                             // (it should be Name._type._tcp).
-                            mAdvertiser.addService(transactionId, serviceInfo, typeSubtype.second);
+                            mAdvertiser.addOrUpdateService(transactionId, serviceInfo,
+                                    typeSubtype.second,
+                                    MdnsAdvertisingOptions.newBuilder().build());
                             storeAdvertiserRequestMap(clientRequestId, transactionId, clientInfo,
                                     serviceInfo.getNetwork());
                         } else {
@@ -1214,7 +1111,51 @@ public class NsdService extends INsdManager.Stub {
                     case NsdManager.UNREGISTER_OFFLOAD_ENGINE:
                         mOffloadEngines.unregister((IOffloadEngine) msg.obj);
                         break;
+                    case NsdManager.REGISTER_CLIENT:
+                        final ConnectorArgs arg = (ConnectorArgs) msg.obj;
+                        final INsdManagerCallback cb = arg.callback;
+                        try {
+                            cb.asBinder().linkToDeath(arg.connector, 0);
+                            final String tag = "Client" + arg.uid + "-" + mClientNumberId++;
+                            final NetworkNsdReportedMetrics metrics =
+                                    mDeps.makeNetworkNsdReportedMetrics(
+                                            (int) mClock.elapsedRealtime());
+                            clientInfo = new ClientInfo(cb, arg.uid, arg.useJavaBackend,
+                                    mServiceLogs.forSubComponent(tag), metrics);
+                            mClients.put(arg.connector, clientInfo);
+                        } catch (RemoteException e) {
+                            Log.w(TAG, "Client request id " + clientRequestId
+                                    + " has already died");
+                        }
+                        break;
+                    case NsdManager.UNREGISTER_CLIENT:
+                        final NsdServiceConnector connector = (NsdServiceConnector) msg.obj;
+                        clientInfo = mClients.remove(connector);
+                        if (clientInfo != null) {
+                            clientInfo.expungeAllRequests();
+                            if (clientInfo.isPreSClient()) {
+                                mLegacyClientCount -= 1;
+                            }
+                        }
+                        maybeStopMonitoringSocketsIfNoActiveRequest();
+                        maybeScheduleStop();
+                        break;
+                    case NsdManager.DAEMON_CLEANUP:
+                        maybeStopDaemon();
+                        break;
+                    // This event should be only sent by the legacy (target SDK < S) clients.
+                    // Mark the sending client as legacy.
+                    case NsdManager.DAEMON_STARTUP:
+                        clientInfo = getClientInfoForReply(msg);
+                        if (clientInfo != null) {
+                            cancelStop();
+                            clientInfo.setPreSClient();
+                            mLegacyClientCount += 1;
+                            maybeStartDaemon();
+                        }
+                        break;
                     default:
+                        Log.wtf(TAG, "Unhandled " + msg);
                         return NOT_HANDLED;
                 }
                 return HANDLED;
@@ -1703,15 +1644,22 @@ public class NsdService extends INsdManager.Stub {
         am.addOnUidImportanceListener(new UidImportanceListener(handler),
                 mRunningAppActiveImportanceCutoff);
 
+        final MdnsFeatureFlags flags = new MdnsFeatureFlags.Builder()
+                .setIsMdnsOffloadFeatureEnabled(mDeps.isTetheringFeatureNotChickenedOut(
+                        mContext, MdnsFeatureFlags.NSD_FORCE_DISABLE_MDNS_OFFLOAD))
+                .setIncludeInetAddressRecordsInProbing(mDeps.isFeatureEnabled(
+                        mContext, MdnsFeatureFlags.INCLUDE_INET_ADDRESS_RECORDS_IN_PROBING))
+                .setIsExpiredServicesRemovalEnabled(mDeps.isFeatureEnabled(
+                        mContext, MdnsFeatureFlags.NSD_EXPIRED_SERVICES_REMOVAL))
+                .setIsLabelCountLimitEnabled(mDeps.isTetheringFeatureNotChickenedOut(
+                        mContext, MdnsFeatureFlags.NSD_LIMIT_LABEL_COUNT))
+                .build();
         mMdnsSocketClient =
                 new MdnsMultinetworkSocketClient(handler.getLooper(), mMdnsSocketProvider,
-                        LOGGER.forSubComponent("MdnsMultinetworkSocketClient"));
+                        LOGGER.forSubComponent("MdnsMultinetworkSocketClient"), flags);
         mMdnsDiscoveryManager = deps.makeMdnsDiscoveryManager(new ExecutorProvider(),
-                mMdnsSocketClient, LOGGER.forSubComponent("MdnsDiscoveryManager"));
+                mMdnsSocketClient, LOGGER.forSubComponent("MdnsDiscoveryManager"), flags);
         handler.post(() -> mMdnsSocketClient.setCallback(mMdnsDiscoveryManager));
-        MdnsFeatureFlags flags = new MdnsFeatureFlags.Builder().setIsMdnsOffloadFeatureEnabled(
-                mDeps.isTetheringFeatureNotChickenedOut(mContext,
-                        MdnsFeatureFlags.NSD_FORCE_DISABLE_MDNS_OFFLOAD)).build();
         mAdvertiser = deps.makeMdnsAdvertiser(handler.getLooper(), mMdnsSocketProvider,
                 new AdvertiserCallback(), LOGGER.forSubComponent("MdnsAdvertiser"), flags);
         mClock = deps.makeClock();
@@ -1769,12 +1717,21 @@ public class NsdService extends INsdManager.Stub {
         }
 
         /**
+         * @see DeviceConfigUtils#isTrunkStableFeatureEnabled
+         */
+        public boolean isTrunkStableFeatureEnabled(String feature) {
+            return DeviceConfigUtils.isTrunkStableFeatureEnabled(feature);
+        }
+
+        /**
          * @see MdnsDiscoveryManager
          */
         public MdnsDiscoveryManager makeMdnsDiscoveryManager(
                 @NonNull ExecutorProvider executorProvider,
-                @NonNull MdnsMultinetworkSocketClient socketClient, @NonNull SharedLog sharedLog) {
-            return new MdnsDiscoveryManager(executorProvider, socketClient, sharedLog);
+                @NonNull MdnsMultinetworkSocketClient socketClient, @NonNull SharedLog sharedLog,
+                @NonNull MdnsFeatureFlags featureFlags) {
+            return new MdnsDiscoveryManager(
+                    executorProvider, socketClient, sharedLog, featureFlags);
         }
 
         /**
@@ -2151,11 +2108,17 @@ public class NsdService extends INsdManager.Stub {
             if (!SdkLevel.isAtLeastT()) {
                 throw new SecurityException("API is not available in before API level 33");
             }
-            // REGISTER_NSD_OFFLOAD_ENGINE was only added to the SDK in V, but may
-            // be back ported to older builds: accept it as long as it's signature-protected
-            if (PermissionUtils.checkAnyPermissionOf(context, REGISTER_NSD_OFFLOAD_ENGINE)
-                    && (SdkLevel.isAtLeastV() || PermissionUtils.isSystemSignaturePermission(
-                    context, REGISTER_NSD_OFFLOAD_ENGINE))) {
+
+            // REGISTER_NSD_OFFLOAD_ENGINE was only added to the SDK in V.
+            if (SdkLevel.isAtLeastV() && PermissionUtils.checkAnyPermissionOf(context,
+                    REGISTER_NSD_OFFLOAD_ENGINE)) {
+                return;
+            }
+
+            // REGISTER_NSD_OFFLOAD_ENGINE cannot be backport to U. In U, check the DEVICE_POWER
+            // permission instead.
+            if (!SdkLevel.isAtLeastV() && SdkLevel.isAtLeastU()
+                    && PermissionUtils.checkAnyPermissionOf(context, DEVICE_POWER)) {
                 return;
             }
             if (PermissionUtils.checkAnyPermissionOf(context, NETWORK_STACK,

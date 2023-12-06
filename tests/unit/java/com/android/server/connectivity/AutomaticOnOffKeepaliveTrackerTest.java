@@ -72,11 +72,14 @@ import android.os.Message;
 import android.os.SystemClock;
 import android.telephony.SubscriptionManager;
 import android.test.suitebuilder.annotation.SmallTest;
+import android.util.ArraySet;
 import android.util.Log;
+import android.util.Range;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
+import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker.AutomaticOnOffKeepalive;
 import com.android.server.connectivity.KeepaliveTracker.KeepaliveInfo;
 import com.android.testutils.DevSdkIgnoreRule;
@@ -94,13 +97,16 @@ import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.io.FileDescriptor;
+import java.io.StringWriter;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
@@ -229,6 +235,9 @@ public class AutomaticOnOffKeepaliveTrackerTest {
             SOCK_DIAG_TCP_INET_HEX + SOCK_DIAG_NO_TCP_INET_HEX;
     private static final byte[] TEST_RESPONSE_BYTES =
             HexEncoding.decode(TEST_RESPONSE_HEX.toCharArray(), false);
+
+    private static final Set<Range<Integer>> TEST_UID_RANGES =
+            new ArraySet<>(Arrays.asList(new Range<>(10000, 99999)));
 
     private static class TestKeepaliveInfo {
         private static List<Socket> sOpenSockets = new ArrayList<>();
@@ -407,28 +416,28 @@ public class AutomaticOnOffKeepaliveTrackerTest {
     public void testIsAnyTcpSocketConnected_runOnNonHandlerThread() throws Exception {
         setupResponseWithSocketExisting();
         assertThrows(IllegalStateException.class,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID, TEST_UID_RANGES));
     }
 
     @Test
     public void testIsAnyTcpSocketConnected_withTargetNetId() throws Exception {
         setupResponseWithSocketExisting();
         assertTrue(visibleOnHandlerThread(mTestHandler,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID)));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID, TEST_UID_RANGES)));
     }
 
     @Test
     public void testIsAnyTcpSocketConnected_withIncorrectNetId() throws Exception {
         setupResponseWithSocketExisting();
         assertFalse(visibleOnHandlerThread(mTestHandler,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(OTHER_NETID)));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(OTHER_NETID, TEST_UID_RANGES)));
     }
 
     @Test
     public void testIsAnyTcpSocketConnected_noSocketExists() throws Exception {
         setupResponseWithoutSocketExisting();
         assertFalse(visibleOnHandlerThread(mTestHandler,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID)));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID, TEST_UID_RANGES)));
     }
 
     private void triggerEventKeepalive(int slot, int reason) {
@@ -472,14 +481,16 @@ public class AutomaticOnOffKeepaliveTrackerTest {
         setupResponseWithoutSocketExisting();
         visibleOnHandlerThread(
                 mTestHandler,
-                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(autoKi, TEST_NETID));
+                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(
+                        autoKi, TEST_NETID, TEST_UID_RANGES));
     }
 
     private void doResumeKeepalive(AutomaticOnOffKeepalive autoKi) throws Exception {
         setupResponseWithSocketExisting();
         visibleOnHandlerThread(
                 mTestHandler,
-                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(autoKi, TEST_NETID));
+                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(
+                        autoKi, TEST_NETID, TEST_UID_RANGES));
     }
 
     private void doStopKeepalive(AutomaticOnOffKeepalive autoKi) throws Exception {
@@ -973,5 +984,20 @@ public class AutomaticOnOffKeepaliveTrackerTest {
 
         // The keepalive should be removed in AutomaticOnOffKeepaliveTracker.
         assertNull(getAutoKiForBinder(testInfo.binder));
+    }
+
+    @Test
+    public void testDumpDoesNotCrash() throws Exception {
+        final TestKeepaliveInfo testInfo1 = doStartNattKeepalive();
+        final TestKeepaliveInfo testInfo2 = doStartNattKeepalive();
+        checkAndProcessKeepaliveStart(TEST_SLOT, testInfo1.kpd);
+        checkAndProcessKeepaliveStart(TEST_SLOT + 1, testInfo2.kpd);
+        final AutomaticOnOffKeepalive autoKi1  = getAutoKiForBinder(testInfo1.binder);
+        doPauseKeepalive(autoKi1);
+
+        final StringWriter stringWriter = new StringWriter();
+        final IndentingPrintWriter pw = new IndentingPrintWriter(stringWriter, "   ");
+        visibleOnHandlerThread(mTestHandler, () -> mAOOKeepaliveTracker.dump(pw));
+        assertFalse(stringWriter.toString().isEmpty());
     }
 }

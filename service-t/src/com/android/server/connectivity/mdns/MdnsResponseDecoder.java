@@ -84,20 +84,20 @@ public class MdnsResponseDecoder {
      * @throws MdnsPacket.ParseException if a response packet could not be parsed.
      */
     @NonNull
-    public static MdnsPacket parseResponse(@NonNull byte[] recvbuf, int length)
-            throws MdnsPacket.ParseException {
-        MdnsPacketReader reader = new MdnsPacketReader(recvbuf, length);
+    public static MdnsPacket parseResponse(@NonNull byte[] recvbuf, int length,
+            @NonNull MdnsFeatureFlags mdnsFeatureFlags) throws MdnsPacket.ParseException {
+        final MdnsPacketReader reader = new MdnsPacketReader(recvbuf, length, mdnsFeatureFlags);
 
         final MdnsPacket mdnsPacket;
         try {
-            reader.readUInt16(); // transaction ID (not used)
+            final int transactionId = reader.readUInt16();
             int flags = reader.readUInt16();
             if ((flags & MdnsConstants.FLAGS_RESPONSE_MASK) != MdnsConstants.FLAGS_RESPONSE) {
                 throw new MdnsPacket.ParseException(
                         MdnsResponseErrorCode.ERROR_NOT_RESPONSE_MESSAGE, "Not a response", null);
             }
 
-            mdnsPacket = MdnsPacket.parseRecordsSection(reader, flags);
+            mdnsPacket = MdnsPacket.parseRecordsSection(reader, flags, transactionId);
             if (mdnsPacket.answers.size() < 1) {
                 throw new MdnsPacket.ParseException(
                         MdnsResponseErrorCode.ERROR_NO_ANSWERS, "Response has no answers",

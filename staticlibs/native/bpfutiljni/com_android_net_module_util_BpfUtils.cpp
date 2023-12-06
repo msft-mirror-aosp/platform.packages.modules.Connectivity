@@ -30,9 +30,8 @@ namespace android {
 
 using base::unique_fd;
 
-// If attach fails throw error and return false.
-static jboolean com_android_net_module_util_BpfUtil_attachProgramToCgroup(JNIEnv *env,
-        jobject clazz, jint type, jstring bpfProgPath, jstring cgroupPath, jint flags) {
+static jint com_android_net_module_util_BpfUtil_getProgramIdFromCgroup(JNIEnv *env,
+        jclass clazz, jint type, jstring cgroupPath) {
 
     ScopedUtfChars dirPath(env, cgroupPath);
     unique_fd cg_fd(open(dirPath.c_str(), O_DIRECTORY | O_RDONLY | O_CLOEXEC));
@@ -40,87 +39,27 @@ static jboolean com_android_net_module_util_BpfUtil_attachProgramToCgroup(JNIEnv
         jniThrowExceptionFmt(env, "java/io/IOException",
                              "Failed to open the cgroup directory %s: %s",
                              dirPath.c_str(), strerror(errno));
-        return false;
+        return -1;
     }
 
-    ScopedUtfChars bpfProg(env, bpfProgPath);
-    unique_fd bpf_fd(bpf::retrieveProgram(bpfProg.c_str()));
-    if (bpf_fd == -1) {
+    int id = bpf::queryProgram(cg_fd, (bpf_attach_type) type);
+    if (id < 0) {
         jniThrowExceptionFmt(env, "java/io/IOException",
-                             "Failed to retrieve bpf program from %s: %s",
-                             bpfProg.c_str(), strerror(errno));
-        return false;
+                             "Failed to query bpf program %d at %s: %s",
+                             type, dirPath.c_str(), strerror(errno));
+        return -1;
     }
-    if (bpf::attachProgram((bpf_attach_type) type, bpf_fd, cg_fd, flags)) {
-        jniThrowExceptionFmt(env, "java/io/IOException",
-                             "Failed to attach bpf program %s to %s: %s",
-                             bpfProg.c_str(), dirPath.c_str(), strerror(errno));
-        return false;
-    }
-    return true;
+    return id;  // may return 0 meaning none
 }
 
-// If detach fails throw error and return false.
-static jboolean com_android_net_module_util_BpfUtil_detachProgramFromCgroup(JNIEnv *env,
-        jobject clazz, jint type, jstring cgroupPath) {
-
-    ScopedUtfChars dirPath(env, cgroupPath);
-    unique_fd cg_fd(open(dirPath.c_str(), O_DIRECTORY | O_RDONLY | O_CLOEXEC));
-    if (cg_fd == -1) {
-        jniThrowExceptionFmt(env, "java/io/IOException",
-                             "Failed to open the cgroup directory %s: %s",
-                             dirPath.c_str(), strerror(errno));
-        return false;
-    }
-
-    if (bpf::detachProgram((bpf_attach_type) type, cg_fd)) {
-        jniThrowExceptionFmt(env, "Failed to detach bpf program from %s: %s",
-                dirPath.c_str(), strerror(errno));
-        return false;
-    }
-    return true;
-}
-
-// If detach single program fails throw error and return false.
-static jboolean com_android_net_module_util_BpfUtil_detachSingleProgramFromCgroup(JNIEnv *env,
-        jobject clazz, jint type, jstring bpfProgPath, jstring cgroupPath) {
-
-    ScopedUtfChars dirPath(env, cgroupPath);
-    unique_fd cg_fd(open(dirPath.c_str(), O_DIRECTORY | O_RDONLY | O_CLOEXEC));
-    if (cg_fd == -1) {
-        jniThrowExceptionFmt(env, "java/io/IOException",
-                             "Failed to open the cgroup directory %s: %s",
-                             dirPath.c_str(), strerror(errno));
-        return false;
-    }
-
-    ScopedUtfChars bpfProg(env, bpfProgPath);
-    unique_fd bpf_fd(bpf::retrieveProgram(bpfProg.c_str()));
-    if (bpf_fd == -1) {
-        jniThrowExceptionFmt(env, "java/io/IOException",
-                             "Failed to retrieve bpf program from %s: %s",
-                             bpfProg.c_str(), strerror(errno));
-        return false;
-    }
-    if (bpf::detachSingleProgram((bpf_attach_type) type, bpf_fd, cg_fd)) {
-        jniThrowExceptionFmt(env, "Failed to detach bpf program %s from %s: %s",
-                bpfProg.c_str(), dirPath.c_str(), strerror(errno));
-        return false;
-    }
-    return true;
-}
 
 /*
  * JNI registration.
  */
 static const JNINativeMethod gMethods[] = {
     /* name, signature, funcPtr */
-    { "native_attachProgramToCgroup", "(ILjava/lang/String;Ljava/lang/String;I)Z",
-        (void*) com_android_net_module_util_BpfUtil_attachProgramToCgroup },
-    { "native_detachProgramFromCgroup", "(ILjava/lang/String;)Z",
-        (void*) com_android_net_module_util_BpfUtil_detachProgramFromCgroup },
-    { "native_detachSingleProgramFromCgroup", "(ILjava/lang/String;Ljava/lang/String;)Z",
-        (void*) com_android_net_module_util_BpfUtil_detachSingleProgramFromCgroup },
+    { "native_getProgramIdFromCgroup", "(ILjava/lang/String;)I",
+        (void*) com_android_net_module_util_BpfUtil_getProgramIdFromCgroup },
 };
 
 int register_com_android_net_module_util_BpfUtils(JNIEnv* env, char const* class_name) {
