@@ -127,6 +127,8 @@ open class CSTest {
         it[ConnectivityFlags.NO_REMATCH_ALL_REQUESTS_ON_REGISTER] = true
         it[ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION] = true
+        it[ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS] = true
+        it[ConnectivityService.LOG_BPF_RC] = true
     }
     fun enableFeature(f: String) = enabledFeatures.set(f, true)
     fun disableFeature(f: String) = enabledFeatures.set(f, false)
@@ -194,6 +196,8 @@ open class CSTest {
         // READ_DEVICE_CONFIG permission and device config utils use static methods for
         // checking permissions.
         override fun isFeatureEnabled(context: Context?, name: String?) =
+                enabledFeatures[name] ?: fail("Unmocked feature $name, see CSTest.enabledFeatures")
+        override fun isFeatureNotChickenedOut(context: Context?, name: String?) =
                 enabledFeatures[name] ?: fail("Unmocked feature $name, see CSTest.enabledFeatures")
 
         // Mocked change IDs
