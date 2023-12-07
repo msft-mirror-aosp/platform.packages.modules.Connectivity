@@ -602,10 +602,12 @@ class NetworkAgentTest {
             addCapability(NET_CAPABILITY_NOT_SUSPENDED)
             removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
             setNetworkSpecifier(specifier)
+            /**
             if (TRANSPORT_WIFI in transports && SdkLevel.isAtLeastV()) {
                 // setSubscriptionId only exists in V+
                 setTransportInfo(WifiInfo.Builder().setSubscriptionId(subId).build())
             }
+            */
             setAllowedUids(setOf(uid))
             setOwnerUid(Process.myUid())
             setAdministratorUids(intArrayOf(Process.myUid()))
