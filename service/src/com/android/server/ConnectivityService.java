@@ -1468,6 +1468,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
+         * @see DeviceConfigUtils#isTetheringFeatureNotChickenedOut
+         */
+        public boolean isFeatureNotChickenedOut(Context context, String name) {
+            return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(context, name);
+        }
+
+        /**
          * Get the BpfNetMaps implementation to use in ConnectivityService.
          * @param netd a netd binder
          * @return BpfNetMaps implementation.

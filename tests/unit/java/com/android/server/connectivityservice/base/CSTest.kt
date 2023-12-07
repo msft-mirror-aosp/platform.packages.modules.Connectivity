@@ -197,6 +197,8 @@ open class CSTest {
         // checking permissions.
         override fun isFeatureEnabled(context: Context?, name: String?) =
                 enabledFeatures[name] ?: fail("Unmocked feature $name, see CSTest.enabledFeatures")
+        override fun isFeatureNotChickenedOut(context: Context?, name: String?) =
+                enabledFeatures[name] ?: fail("Unmocked feature $name, see CSTest.enabledFeatures")
 
         // Mocked change IDs
         private val enabledChangeIds = ArraySet<Long>()
