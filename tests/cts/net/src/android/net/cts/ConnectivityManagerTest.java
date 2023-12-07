@@ -278,10 +278,8 @@ public class ConnectivityManagerTest {
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
-    // Timeout for waiting network to be validated. Set the timeout to 30s, which is more than
-    // DNS timeout.
-    // TODO(b/252972908): reset the original timer when aosp/2188755 is ramped up.
-    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 30_000;
+    // Timeout for waiting network to be validated.
+    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 5_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int NETWORK_REQUEST_TIMEOUT_MS = 3000;
     private static final int SOCKET_TIMEOUT_MS = 100;
@@ -796,7 +794,7 @@ public class ConnectivityManagerTest {
             // Make sure that the NC is null if the package doesn't hold ACCESS_NETWORK_STATE.
             assertNull(redactNc(nc, groundedUid, groundedPkg));
 
-            // Uids, ssid, underlying networks & subscriptionIds will be redacted if the given uid
+            // Uids, ssid & underlying networks will be redacted if the given uid
             // doesn't hold the associated permissions. The wifi transport info is also suitably
             // redacted.
             final NetworkCapabilities redactedNormal = redactNc(nc, normalUid, normalPkg);
