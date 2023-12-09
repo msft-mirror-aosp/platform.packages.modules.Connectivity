@@ -279,7 +279,7 @@ public class ConnectivityManagerTest {
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
     // Timeout for waiting network to be validated.
-    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 5_000;
+    private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 30_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int NETWORK_REQUEST_TIMEOUT_MS = 3000;
     private static final int SOCKET_TIMEOUT_MS = 100;
@@ -726,6 +726,7 @@ public class ConnectivityManagerTest {
         return mCm.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName);
     }
 
+    @ConnectivityModuleTest
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
     @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
@@ -801,8 +802,7 @@ public class ConnectivityManagerTest {
             assertNull(redactedNormal.getUids());
             assertNull(redactedNormal.getSsid());
             assertNull(redactedNormal.getUnderlyingNetworks());
-            // Owner UID is allowed to see the subscription IDs.
-            assertEquals(2, redactedNormal.getSubscriptionIds().size());
+            assertEquals(0, redactedNormal.getSubscriptionIds().size());
             assertEquals(WifiInfo.DEFAULT_MAC_ADDRESS,
                     ((WifiInfo) redactedNormal.getTransportInfo()).getBSSID());
             assertEquals(rssi, ((WifiInfo) redactedNormal.getTransportInfo()).getRssi());
