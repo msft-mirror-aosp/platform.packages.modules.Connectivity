@@ -18,10 +18,14 @@ package com.android.server.nearby.presence;
 
 import android.os.ParcelUuid;
 
+import com.android.server.nearby.util.ArrayUtils;
+
 /**
  * Constants for Nearby Presence operations.
  */
 public class PresenceConstants {
+    /** The Presence UUID value in byte array format. */
+    public static final byte[] PRESENCE_UUID_BYTES = ArrayUtils.intToByteArray(0xFCF1);
 
     /** Presence advertisement service data uuid. */
     public static final ParcelUuid PRESENCE_UUID =
