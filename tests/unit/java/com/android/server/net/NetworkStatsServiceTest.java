@@ -64,6 +64,8 @@ import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
 import static android.text.format.DateUtils.WEEK_IN_MILLIS;
 
+import static com.android.server.net.NetworkStatsEventLogger.POLL_REASON_RAT_CHANGED;
+import static com.android.server.net.NetworkStatsEventLogger.PollEvent.pollReasonNameOf;
 import static com.android.server.net.NetworkStatsService.ACTION_NETWORK_STATS_POLL;
 import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_ATTEMPTS_COUNTER_NAME;
 import static com.android.server.net.NetworkStatsService.NETSTATS_IMPORT_FALLBACKS_COUNTER_NAME;
@@ -118,6 +120,7 @@ import android.os.DropBoxManager;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SimpleClock;
 import android.provider.Settings;
@@ -190,6 +193,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * TODO: This test used to be really brittle because it used Easymock - it uses Mockito now, but
  * still uses the Easymock structure, which could be simplified.
  */
+@DevSdkIgnoreRunner.MonitorThreadLeak
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
 // NetworkStatsService is not updatable before T, so tests do not need to be backwards compatible
@@ -282,6 +286,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private @Mock PersistentInt mImportLegacyFallbacksCounter;
     private @Mock Resources mResources;
     private Boolean mIsDebuggable;
+    private HandlerThread mObserverHandlerThread;
 
     private class MockContext extends BroadcastInterceptingContext {
         private final Context mBaseContext;
@@ -363,10 +368,23 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         PowerManager.WakeLock wakeLock =
                 powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG);
 
-        mHandlerThread = new HandlerThread("HandlerThread");
+        mHandlerThread = new HandlerThread("NetworkStatsServiceTest-HandlerThread");
         final NetworkStatsService.Dependencies deps = makeDependencies();
+        // Create a separate thread for observers to run on. This thread cannot be the same
+        // as the handler thread, because the observer callback is fired on this thread, and
+        // it should not be blocked by client code. Additionally, creating the observers
+        // object requires a looper, which can only be obtained after a thread has been started.
+        mObserverHandlerThread = new HandlerThread("NetworkStatsServiceTest-ObserversThread");
+        mObserverHandlerThread.start();
+        final Looper observerLooper = mObserverHandlerThread.getLooper();
+        final NetworkStatsObservers statsObservers = new NetworkStatsObservers() {
+            @Override
+            protected Looper getHandlerLooperLocked() {
+                return observerLooper;
+            }
+        };
         mService = new NetworkStatsService(mServiceContext, mNetd, mAlarmManager, wakeLock,
-                mClock, mSettings, mStatsFactory, new NetworkStatsObservers(), deps);
+                mClock, mSettings, mStatsFactory, statsObservers, deps);
 
         mElapsedRealtime = 0L;
 
@@ -525,6 +543,11 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                     IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap, Handler handler) {
                 return mSkDestroyListener;
             }
+
+            @Override
+            public boolean supportEventLogger(@NonNull Context cts) {
+                return true;
+            }
         };
     }
 
@@ -538,8 +561,14 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         mSession.close();
         mService = null;
 
-        mHandlerThread.quitSafely();
-        mHandlerThread.join();
+        if (mHandlerThread != null) {
+            mHandlerThread.quitSafely();
+            mHandlerThread.join();
+        }
+        if (mObserverHandlerThread != null) {
+            mObserverHandlerThread.quitSafely();
+            mObserverHandlerThread.join();
+        }
     }
 
     private void initWifiStats(NetworkStateSnapshot snapshot) throws Exception {
@@ -2673,5 +2702,15 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     public void testDumpIfaceStatsMapUnknownInterface() throws Exception {
         doReturn(null).when(mBpfInterfaceMapUpdater).getIfNameByIndex(10 /* index */);
         doTestDumpIfaceStatsMap("unknown");
+    }
+
+    // Basic test to ensure event logger dump is called.
+    // Note that tests to ensure detailed correctness is done in the dedicated tests.
+    // See NetworkStatsEventLoggerTest.
+    @Test
+    public void testDumpEventLogger() {
+        setMobileRatTypeAndWaitForIdle(TelephonyManager.NETWORK_TYPE_UMTS);
+        final String dump = getDump();
+        assertDumpContains(dump, pollReasonNameOf(POLL_REASON_RAT_CHANGED));
     }
 }

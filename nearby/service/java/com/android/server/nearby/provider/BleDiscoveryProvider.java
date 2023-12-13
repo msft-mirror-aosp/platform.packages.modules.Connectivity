@@ -19,6 +19,7 @@ package com.android.server.nearby.provider;
 import static android.nearby.ScanCallback.ERROR_UNKNOWN;
 
 import static com.android.server.nearby.NearbyService.TAG;
+import static com.android.server.nearby.presence.PresenceConstants.PRESENCE_UUID;
 
 import android.annotation.Nullable;
 import android.bluetooth.BluetoothAdapter;
@@ -40,10 +41,8 @@ import android.os.ParcelUuid;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
-import com.android.server.nearby.common.bluetooth.fastpair.Constants;
 import com.android.server.nearby.injector.Injector;
 import com.android.server.nearby.presence.ExtendedAdvertisement;
-import com.android.server.nearby.presence.PresenceConstants;
 import com.android.server.nearby.util.ArrayUtils;
 import com.android.server.nearby.util.ForegroundThread;
 
@@ -60,10 +59,6 @@ import java.util.concurrent.Executor;
  */
 public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
 
-    @VisibleForTesting
-    static final ParcelUuid FAST_PAIR_UUID = new ParcelUuid(Constants.FastPairService.ID);
-    private static final ParcelUuid PRESENCE_UUID = new ParcelUuid(PresenceConstants.PRESENCE_UUID);
-
     // Don't block the thread as it may be used by other services.
     private static final Executor NEARBY_EXECUTOR = ForegroundThread.getExecutor();
     private final Injector mInjector;
@@ -73,15 +68,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
     @GuardedBy("mLock")
     @Nullable
     private List<android.nearby.ScanFilter> mScanFilters;
-    private android.bluetooth.le.ScanCallback mScanCallbackLegacy =
-            new android.bluetooth.le.ScanCallback() {
-                @Override
-                public void onScanResult(int callbackType, ScanResult scanResult) {
-                }
-                @Override
-                public void onScanFailed(int errorCode) {
-                }
-            };
     private android.bluetooth.le.ScanCallback mScanCallback =
             new android.bluetooth.le.ScanCallback() {
                 @Override
@@ -102,15 +88,10 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
                         }
                         Map<ParcelUuid, byte[]> serviceDataMap = record.getServiceData();
                         if (serviceDataMap != null) {
-                            byte[] fastPairData = serviceDataMap.get(FAST_PAIR_UUID);
-                            if (fastPairData != null) {
-                                builder.setData(serviceDataMap.get(FAST_PAIR_UUID));
-                            } else {
-                                byte[] presenceData = serviceDataMap.get(PRESENCE_UUID);
-                                if (presenceData != null) {
-                                    setPresenceDevice(presenceData, builder, deviceName,
-                                            scanResult.getRssi());
-                                }
+                            byte[] presenceData = serviceDataMap.get(PRESENCE_UUID);
+                            if (presenceData != null) {
+                                setPresenceDevice(presenceData, builder, deviceName,
+                                        scanResult.getRssi());
                             }
                         }
                     }
@@ -152,10 +133,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
         List<ScanFilter> scanFilterList = new ArrayList<>();
         scanFilterList.add(
                 new ScanFilter.Builder()
-                        .setServiceData(FAST_PAIR_UUID, new byte[]{0}, new byte[]{0})
-                        .build());
-        scanFilterList.add(
-                new ScanFilter.Builder()
                         .setServiceData(PRESENCE_UUID, new byte[]{0}, new byte[]{0})
                         .build());
         return scanFilterList;
@@ -184,7 +161,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
         if (isBleAvailable()) {
             Log.d(TAG, "BleDiscoveryProvider started");
             startScan(getScanFilters(), getScanSettings(/* legacy= */ false), mScanCallback);
-            startScan(getScanFilters(), getScanSettings(/* legacy= */ true), mScanCallbackLegacy);
             return;
         }
         Log.w(TAG, "Cannot start BleDiscoveryProvider because Ble is not available.");
@@ -201,7 +177,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
         }
         Log.v(TAG, "Ble scan stopped.");
         bluetoothLeScanner.stopScan(mScanCallback);
-        bluetoothLeScanner.stopScan(mScanCallbackLegacy);
         synchronized (mLock) {
             if (mScanFilters != null) {
                 mScanFilters = null;

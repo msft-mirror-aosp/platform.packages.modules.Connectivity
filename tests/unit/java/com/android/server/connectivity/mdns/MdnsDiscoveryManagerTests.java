@@ -56,6 +56,7 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 
 /** Tests for {@link MdnsDiscoveryManager}. */
+@DevSdkIgnoreRunner.MonitorThreadLeak
 @RunWith(DevSdkIgnoreRunner.class)
 @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
 public class MdnsDiscoveryManagerTests {
@@ -106,7 +107,7 @@ public class MdnsDiscoveryManagerTests {
         doReturn(thread.getLooper()).when(socketClient).getLooper();
         doReturn(true).when(socketClient).supportsRequestingSpecificNetworks();
         discoveryManager = new MdnsDiscoveryManager(executorProvider, socketClient,
-                sharedLog) {
+                sharedLog, MdnsFeatureFlags.newBuilder().build()) {
                     @Override
                     MdnsServiceTypeClient createServiceTypeClient(@NonNull String serviceType,
                             @NonNull SocketKey socketKey) {
@@ -134,9 +135,10 @@ public class MdnsDiscoveryManagerTests {
     }
 
     @After
-    public void tearDown() {
+    public void tearDown() throws Exception {
         if (thread != null) {
             thread.quitSafely();
+            thread.join();
         }
     }
 

@@ -18,7 +18,8 @@ package com.android.server.connectivity.mdns;
 
 import android.annotation.Nullable;
 
-import com.android.internal.annotations.VisibleForTesting;
+import androidx.annotation.VisibleForTesting;
+
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
@@ -27,7 +28,7 @@ import java.util.Locale;
 import java.util.Objects;
 
 /** An mDNS "SRV" record, which contains service information. */
-@VisibleForTesting
+@VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
 public class MdnsServiceRecord extends MdnsRecord {
     public static final int PROTO_NONE = 0;
     public static final int PROTO_TCP = 1;
@@ -46,6 +47,12 @@ public class MdnsServiceRecord extends MdnsRecord {
     public MdnsServiceRecord(String[] name, MdnsPacketReader reader, boolean isQuestion)
             throws IOException {
         super(name, TYPE_SRV, reader, isQuestion);
+    }
+
+    public MdnsServiceRecord(String[] name, boolean isUnicast) {
+        super(name, TYPE_SRV,
+                MdnsConstants.QCLASS_INTERNET | (isUnicast ? MdnsConstants.QCLASS_UNICAST : 0),
+                0L /* receiptTimeMillis */, false /* cacheFlush */, 0L /* ttlMillis */);
     }
 
     public MdnsServiceRecord(String[] name, long receiptTimeMillis, boolean cacheFlush,

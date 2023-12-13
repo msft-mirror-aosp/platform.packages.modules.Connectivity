@@ -18,14 +18,15 @@ package com.android.server.connectivity.mdns;
 
 import android.annotation.Nullable;
 
-import com.android.internal.annotations.VisibleForTesting;
+import androidx.annotation.VisibleForTesting;
+
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.util.Arrays;
 
 /** An mDNS "PTR" record, which holds a name (the "pointer"). */
-@VisibleForTesting
+@VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
 public class MdnsPointerRecord extends MdnsRecord {
     private String[] pointer;
 
@@ -36,6 +37,12 @@ public class MdnsPointerRecord extends MdnsRecord {
     public MdnsPointerRecord(String[] name, MdnsPacketReader reader, boolean isQuestion)
             throws IOException {
         super(name, TYPE_PTR, reader, isQuestion);
+    }
+
+    public MdnsPointerRecord(String[] name, boolean isUnicast) {
+        super(name, TYPE_PTR,
+                MdnsConstants.QCLASS_INTERNET | (isUnicast ? MdnsConstants.QCLASS_UNICAST : 0),
+                0L /* receiptTimeMillis */, false /* cacheFlush */, 0L /* ttlMillis */);
     }
 
     public MdnsPointerRecord(String[] name, long receiptTimeMillis, boolean cacheFlush,
