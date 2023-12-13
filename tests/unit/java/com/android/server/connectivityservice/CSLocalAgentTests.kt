@@ -102,6 +102,7 @@ class CSLocalAgentTests : CSTest() {
         val newLnc = LocalNetworkConfig.Builder()
                 .setUpstreamSelector(NetworkRequest.Builder()
                         .addTransportType(TRANSPORT_WIFI)
+                        .addForbiddenCapability(NET_CAPABILITY_LOCAL_NETWORK)
                         .build())
                 .build()
         localAgent.sendLocalNetworkConfig(newLnc)
