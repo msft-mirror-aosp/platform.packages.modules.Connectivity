@@ -62,6 +62,11 @@ class NetworkTemplateTest {
             }
         }
 
+        // Verify hidden match rules cannot construct templates.
+        assertFailsWith<IllegalArgumentException> {
+            NetworkTemplate.Builder(MATCH_PROXY).build()
+        }
+
         // Verify template which matches metered cellular and carrier networks with
         // the given IMSI. See buildTemplateMobileAll and buildTemplateCarrierMetered.
         listOf(MATCH_MOBILE, MATCH_CARRIER).forEach { matchRule ->
@@ -165,9 +170,9 @@ class NetworkTemplateTest {
                     assertEquals(expectedTemplate, it)
                 }
 
-        // Verify template which matches ethernet, bluetooth and proxy networks.
+        // Verify template which matches ethernet and bluetooth networks.
         // See buildTemplateEthernet and buildTemplateBluetooth.
-        listOf(MATCH_ETHERNET, MATCH_BLUETOOTH, MATCH_PROXY).forEach { matchRule ->
+        listOf(MATCH_ETHERNET, MATCH_BLUETOOTH).forEach { matchRule ->
             NetworkTemplate.Builder(matchRule).build().let {
                 val expectedTemplate = NetworkTemplate(matchRule,
                         emptyArray<String>() /*subscriberIds*/, emptyArray<String>(),
