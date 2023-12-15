@@ -18,7 +18,7 @@ package com.android.server.connectivity.mdns;
 
 import static android.net.InetAddresses.parseNumericAddress;
 
-import static com.android.server.connectivity.mdns.MdnsResponseDecoder.Clock;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.Clock;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -339,13 +339,14 @@ public class MdnsResponseDecoderTests {
         packet.setSocketAddress(
                 new InetSocketAddress(MdnsConstants.getMdnsIPv6Address(), MdnsConstants.MDNS_PORT));
 
-        final MdnsPacket parsedPacket = MdnsResponseDecoder.parseResponse(data6, data6.length);
+        final MdnsPacket parsedPacket = MdnsResponseDecoder.parseResponse(
+                data6, data6.length, MdnsFeatureFlags.newBuilder().build());
         assertNotNull(parsedPacket);
 
         final Network network = mock(Network.class);
-        responses = decoder.augmentResponses(parsedPacket,
+        responses = new ArraySet<>(decoder.augmentResponses(parsedPacket,
                 /* existingResponses= */ Collections.emptyList(),
-                /* interfaceIndex= */ 10, network /* expireOnExit= */).first;
+                /* interfaceIndex= */ 10, network /* expireOnExit= */).first);
 
         assertEquals(responses.size(), 1);
         assertEquals(responses.valueAt(0).getInterfaceIndex(), 10);
@@ -638,11 +639,12 @@ public class MdnsResponseDecoderTests {
 
     private ArraySet<MdnsResponse> decode(MdnsResponseDecoder decoder, byte[] data,
             Collection<MdnsResponse> existingResponses) throws MdnsPacket.ParseException {
-        final MdnsPacket parsedPacket = MdnsResponseDecoder.parseResponse(data, data.length);
+        final MdnsPacket parsedPacket = MdnsResponseDecoder.parseResponse(
+                data, data.length, MdnsFeatureFlags.newBuilder().build());
         assertNotNull(parsedPacket);
 
-        return decoder.augmentResponses(parsedPacket,
+        return new ArraySet<>(decoder.augmentResponses(parsedPacket,
                 existingResponses,
-                MdnsSocket.INTERFACE_INDEX_UNSPECIFIED, mock(Network.class)).first;
+                MdnsSocket.INTERFACE_INDEX_UNSPECIFIED, mock(Network.class)).first);
     }
 }

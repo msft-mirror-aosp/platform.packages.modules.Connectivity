@@ -78,6 +78,7 @@ import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -119,6 +120,7 @@ public class MdnsSocketProviderTest {
     @Mock private NetworkInterfaceWrapper mLocalOnlyIfaceWrapper;
     @Mock private NetworkInterfaceWrapper mTetheredIfaceWrapper;
     @Mock private SocketRequestMonitor mSocketRequestMonitor;
+    private HandlerThread mHandlerThread;
     private Handler mHandler;
     private MdnsSocketProvider mSocketProvider;
     private NetworkCallback mNetworkCallback;
@@ -152,14 +154,14 @@ public class MdnsSocketProviderTest {
                 .getNetworkInterfaceByName(WIFI_P2P_IFACE_NAME);
         doReturn(mTetheredIfaceWrapper).when(mDeps).getNetworkInterfaceByName(TETHERED_IFACE_NAME);
         doReturn(mock(MdnsInterfaceSocket.class))
-                .when(mDeps).createMdnsInterfaceSocket(any(), anyInt(), any(), any());
+                .when(mDeps).createMdnsInterfaceSocket(any(), anyInt(), any(), any(), any());
         doReturn(TETHERED_IFACE_IDX).when(mDeps).getNetworkInterfaceIndexByName(
-                TETHERED_IFACE_NAME);
+                eq(TETHERED_IFACE_NAME), any());
         doReturn(789).when(mDeps).getNetworkInterfaceIndexByName(
-                WIFI_P2P_IFACE_NAME);
-        final HandlerThread thread = new HandlerThread("MdnsSocketProviderTest");
-        thread.start();
-        mHandler = new Handler(thread.getLooper());
+                eq(WIFI_P2P_IFACE_NAME), any());
+        mHandlerThread = new HandlerThread("MdnsSocketProviderTest");
+        mHandlerThread.start();
+        mHandler = new Handler(mHandlerThread.getLooper());
 
         doReturn(mTestSocketNetLinkMonitor).when(mDeps).createSocketNetlinkMonitor(any(), any(),
                 any());
@@ -170,8 +172,16 @@ public class MdnsSocketProviderTest {
             return mTestSocketNetLinkMonitor;
         }).when(mDeps).createSocketNetlinkMonitor(any(), any(),
                 any());
-        mSocketProvider = new MdnsSocketProvider(mContext, thread.getLooper(), mDeps, mLog,
+        mSocketProvider = new MdnsSocketProvider(mContext, mHandlerThread.getLooper(), mDeps, mLog,
                 mSocketRequestMonitor);
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        if (mHandlerThread != null) {
+            mHandlerThread.quitSafely();
+            mHandlerThread.join();
+        }
     }
 
     private void runOnHandler(Runnable r) {

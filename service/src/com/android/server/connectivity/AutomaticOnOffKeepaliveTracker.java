@@ -20,7 +20,6 @@ import static android.net.SocketKeepalive.ERROR_INVALID_SOCKET;
 import static android.net.SocketKeepalive.MIN_INTERVAL_SEC;
 import static android.net.SocketKeepalive.SUCCESS;
 import static android.net.SocketKeepalive.SUCCESS_PAUSED;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 import static android.system.OsConstants.AF_INET;
 import static android.system.OsConstants.AF_INET6;
 import static android.system.OsConstants.SOL_SOCKET;
@@ -54,6 +53,7 @@ import android.system.StructTimeval;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.Pair;
+import android.util.Range;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -78,6 +78,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Manages automatic on/off socket keepalive requests.
@@ -92,8 +93,8 @@ public class AutomaticOnOffKeepaliveTracker {
     private static final int[] ADDRESS_FAMILIES = new int[] {AF_INET6, AF_INET};
     private static final long LOW_TCP_POLLING_INTERVAL_MS = 1_000L;
     private static final int ADJUST_TCP_POLLING_DELAY_MS = 2000;
-    private static final String AUTOMATIC_ON_OFF_KEEPALIVE_VERSION =
-            "automatic_on_off_keepalive_version";
+    private static final String AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG =
+            "automatic_on_off_keepalive_disable_flag";
     public static final long METRICS_COLLECTION_DURATION_MS = 24 * 60 * 60 * 1_000L;
 
     // ConnectivityService parses message constants from itself and AutomaticOnOffKeepaliveTracker
@@ -219,30 +220,35 @@ public class AutomaticOnOffKeepaliveTracker {
             // Reading DeviceConfig will check if the calling uid and calling package name are the
             // same. Clear calling identity to align the calling uid and package
             final boolean enabled = BinderUtils.withCleanCallingIdentity(
-                    () -> mDependencies.isFeatureEnabled(AUTOMATIC_ON_OFF_KEEPALIVE_VERSION,
-                            true /* defaultEnabled */));
+                    () -> mDependencies.isTetheringFeatureNotChickenedOut(
+                            AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG));
             if (autoOnOff && enabled) {
                 mAutomaticOnOffState = STATE_ENABLED;
                 if (null == ki.mFd) {
                     throw new IllegalArgumentException("fd can't be null with automatic "
                             + "on/off keepalives");
                 }
-                try {
-                    mFd = Os.dup(ki.mFd);
-                } catch (ErrnoException e) {
-                    Log.e(TAG, "Cannot dup fd: ", e);
-                    throw new InvalidSocketException(ERROR_INVALID_SOCKET, e);
-                }
                 mAlarmListener = () -> mConnectivityServiceHandler.obtainMessage(
                         CMD_MONITOR_AUTOMATIC_KEEPALIVE, mCallback.asBinder())
                         .sendToTarget();
             } else {
                 mAutomaticOnOffState = STATE_ALWAYS_ON;
-                // A null fd is acceptable in KeepaliveInfo for backward compatibility of
-                // PacketKeepalive API, but it must never happen with automatic keepalives.
-                // TODO : remove mFd from KeepaliveInfo or from this class.
-                mFd = ki.mFd;
                 mAlarmListener = null;
+            }
+
+            // A null fd is acceptable in KeepaliveInfo for backward compatibility of
+            // PacketKeepalive API, but it must never happen with automatic keepalives.
+            // TODO : remove mFd from KeepaliveInfo.
+            mFd = dupFd(ki.mFd);
+        }
+
+        private FileDescriptor dupFd(FileDescriptor fd) throws InvalidSocketException {
+            try {
+                if (fd == null) return null;
+                return Os.dup(fd);
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Cannot dup fd: ", e);
+                throw new InvalidSocketException(ERROR_INVALID_SOCKET, e);
             }
         }
 
@@ -332,12 +338,18 @@ public class AutomaticOnOffKeepaliveTracker {
 
         final long time = mDependencies.getElapsedRealtime();
         mMetricsWriteTimeBase = time % METRICS_COLLECTION_DURATION_MS;
-        final long triggerAtMillis = mMetricsWriteTimeBase + METRICS_COLLECTION_DURATION_MS;
-        mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtMillis, TAG,
-                this::writeMetricsAndRescheduleAlarm, handler);
+        if (mKeepaliveStatsTracker.isEnabled()) {
+            final long triggerAtMillis = mMetricsWriteTimeBase + METRICS_COLLECTION_DURATION_MS;
+            mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtMillis, TAG,
+                    this::writeMetricsAndRescheduleAlarm, handler);
+        }
     }
 
     private void writeMetricsAndRescheduleAlarm() {
+        // If the metrics is disabled, skip writing and scheduling the next alarm.
+        if (!mKeepaliveStatsTracker.isEnabled()) {
+            return;
+        }
         mKeepaliveStatsTracker.writeAndResetMetrics();
 
         final long time = mDependencies.getElapsedRealtime();
@@ -363,26 +375,27 @@ public class AutomaticOnOffKeepaliveTracker {
      * Determine if any state transition is needed for the specific automatic keepalive.
      */
     public void handleMonitorAutomaticKeepalive(@NonNull final AutomaticOnOffKeepalive ki,
-            final int vpnNetId) {
+            final int vpnNetId, @NonNull Set<Range<Integer>> vpnUidRanges) {
         // Might happen if the automatic keepalive was removed by the app just as the alarm fires.
         if (!mAutomaticOnOffKeepalives.contains(ki)) return;
         if (STATE_ALWAYS_ON == ki.mAutomaticOnOffState) {
             throw new IllegalStateException("Should not monitor non-auto keepalive");
         }
 
-        handleMonitorTcpConnections(ki, vpnNetId);
+        handleMonitorTcpConnections(ki, vpnNetId, vpnUidRanges);
     }
 
     /**
      * Determine if disable or re-enable keepalive is needed or not based on TCP sockets status.
      */
-    private void handleMonitorTcpConnections(@NonNull AutomaticOnOffKeepalive ki, int vpnNetId) {
+    private void handleMonitorTcpConnections(@NonNull AutomaticOnOffKeepalive ki, int vpnNetId,
+            @NonNull Set<Range<Integer>> vpnUidRanges) {
         // Might happen if the automatic keepalive was removed by the app just as the alarm fires.
         if (!mAutomaticOnOffKeepalives.contains(ki)) return;
         if (STATE_ALWAYS_ON == ki.mAutomaticOnOffState) {
             throw new IllegalStateException("Should not monitor non-auto keepalive");
         }
-        if (!isAnyTcpSocketConnected(vpnNetId)) {
+        if (!isAnyTcpSocketConnected(vpnNetId, vpnUidRanges)) {
             // No TCP socket exists. Stop keepalive if ENABLED, and remain SUSPENDED if currently
             // SUSPENDED.
             if (ki.mAutomaticOnOffState == STATE_ENABLED) {
@@ -495,7 +508,6 @@ public class AutomaticOnOffKeepaliveTracker {
         final AutomaticOnOffKeepalive autoKi;
         try {
             autoKi = target.withKeepaliveInfo(res.second);
-            // Close the duplicated fd.
             target.close();
         } catch (InvalidSocketException e) {
             Log.wtf(TAG, "Fail to create AutomaticOnOffKeepalive", e);
@@ -683,15 +695,17 @@ public class AutomaticOnOffKeepaliveTracker {
 
     /**
      * Dump AutomaticOnOffKeepaliveTracker state.
+     * This should be only be called in ConnectivityService handler thread.
      */
     public void dump(IndentingPrintWriter pw) {
+        ensureRunningOnHandlerThread();
         mKeepaliveTracker.dump(pw);
         // Reading DeviceConfig will check if the calling uid and calling package name are the same.
         // Clear calling identity to align the calling uid and package so that it won't fail if cts
         // would like to call dump()
         final boolean featureEnabled = BinderUtils.withCleanCallingIdentity(
-                () -> mDependencies.isFeatureEnabled(AUTOMATIC_ON_OFF_KEEPALIVE_VERSION,
-                        true /* defaultEnabled */));
+                () -> mDependencies.isTetheringFeatureNotChickenedOut(
+                        AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG));
         pw.println("AutomaticOnOff enabled: " + featureEnabled);
         pw.increaseIndent();
         for (AutomaticOnOffKeepalive autoKi : mAutomaticOnOffKeepalives) {
@@ -703,6 +717,9 @@ public class AutomaticOnOffKeepaliveTracker {
         pw.increaseIndent();
         mEventLog.reverseDump(pw);
         pw.decreaseIndent();
+
+        pw.println();
+        mKeepaliveStatsTracker.dump(pw);
     }
 
     /**
@@ -730,7 +747,7 @@ public class AutomaticOnOffKeepaliveTracker {
     }
 
     @VisibleForTesting
-    boolean isAnyTcpSocketConnected(int netId) {
+    boolean isAnyTcpSocketConnected(int netId, @NonNull Set<Range<Integer>> vpnUidRanges) {
         FileDescriptor fd = null;
 
         try {
@@ -743,7 +760,8 @@ public class AutomaticOnOffKeepaliveTracker {
 
             // Send request for each IP family
             for (final int family : ADDRESS_FAMILIES) {
-                if (isAnyTcpSocketConnectedForFamily(fd, family, networkMark, networkMask)) {
+                if (isAnyTcpSocketConnectedForFamily(
+                        fd, family, networkMark, networkMask, vpnUidRanges)) {
                     return true;
                 }
             }
@@ -757,7 +775,8 @@ public class AutomaticOnOffKeepaliveTracker {
     }
 
     private boolean isAnyTcpSocketConnectedForFamily(FileDescriptor fd, int family, int networkMark,
-            int networkMask) throws ErrnoException, InterruptedIOException {
+            int networkMask, @NonNull Set<Range<Integer>> vpnUidRanges)
+            throws ErrnoException, InterruptedIOException {
         ensureRunningOnHandlerThread();
         // Build SocketDiag messages and cache it.
         if (mSockDiagMsg.get(family) == null) {
@@ -886,7 +905,7 @@ public class AutomaticOnOffKeepaliveTracker {
         public FileDescriptor createConnectedNetlinkSocket()
                 throws ErrnoException, SocketException {
             final FileDescriptor fd = NetlinkUtils.createNetLinkInetDiagSocket();
-            NetlinkUtils.connectSocketToNetlink(fd);
+            NetlinkUtils.connectToKernel(fd);
             Os.setsockoptTimeval(fd, SOL_SOCKET, SO_SNDTIMEO,
                     StructTimeval.fromMillis(IO_TIMEOUT_MS));
             return fd;
@@ -959,16 +978,13 @@ public class AutomaticOnOffKeepaliveTracker {
         }
 
         /**
-         * Find out if a feature is enabled from DeviceConfig.
+         * Find out if a feature is not disabled from DeviceConfig.
          *
          * @param name The name of the property to look up.
-         * @param defaultEnabled whether to consider the feature enabled in the absence of
-         *                       the flag. This MUST be a statically-known constant.
          * @return whether the feature is enabled
          */
-        public boolean isFeatureEnabled(@NonNull final String name, final boolean defaultEnabled) {
-            return DeviceConfigUtils.isFeatureEnabled(mContext, NAMESPACE_TETHERING, name,
-                    DeviceConfigUtils.TETHERING_MODULE_NAME, defaultEnabled);
+        public boolean isTetheringFeatureNotChickenedOut(@NonNull final String name) {
+            return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(mContext, name);
         }
 
         /**
