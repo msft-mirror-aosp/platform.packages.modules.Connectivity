@@ -14,12 +14,7 @@
  * limitations under the License.
  */
 
-package com.android.server.remoteauth.connectivity;
+package android.net;
 
-import android.annotation.NonNull;
-
-/** Listens to the events from underlying transport. */
-public interface EventListener {
-    /** Called when remote device is disconnected from the underlying transport. */
-    void onDisconnect(@NonNull ConnectionInfo connectionInfo);
-}
+/** @hide */
+parcelable IpSecTransformState;
