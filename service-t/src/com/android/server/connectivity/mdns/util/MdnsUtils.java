@@ -19,17 +19,25 @@ package com.android.server.connectivity.mdns.util;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.Network;
+import android.os.Build;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.util.ArraySet;
 
 import com.android.server.connectivity.mdns.MdnsConstants;
+import com.android.server.connectivity.mdns.MdnsPacket;
+import com.android.server.connectivity.mdns.MdnsPacketWriter;
 import com.android.server.connectivity.mdns.MdnsRecord;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Mdns utility functions.
@@ -51,6 +59,17 @@ public class MdnsUtils {
             outChars[i] = toDnsLowerCase(string.charAt(i));
         }
         return new String(outChars);
+    }
+
+    /**
+     * Create a ArraySet or HashSet based on the sdk version.
+     */
+    public static <Type> Set<Type> newSet() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            return new ArraySet<>();
+        } else {
+            return new HashSet<>();
+        }
     }
 
     /**
@@ -138,7 +157,7 @@ public class MdnsUtils {
 
     /*** Check whether the target network matches any of the current networks */
     public static boolean isAnyNetworkMatched(@Nullable Network targetNetwork,
-            ArraySet<Network> currentNetworks) {
+            Set<Network> currentNetworks) {
         if (targetNetwork == null) {
             return !currentNetworks.isEmpty();
         }
@@ -164,6 +183,46 @@ public class MdnsUtils {
     }
 
     /**
+     * Write the mdns packet from given MdnsPacket.
+     */
+    public static void writeMdnsPacket(@NonNull MdnsPacketWriter writer, @NonNull MdnsPacket packet)
+            throws IOException {
+        writer.writeUInt16(packet.transactionId); // Transaction ID (advertisement: 0)
+        writer.writeUInt16(packet.flags); // Response, authoritative (rfc6762 18.4)
+        writer.writeUInt16(packet.questions.size()); // questions count
+        writer.writeUInt16(packet.answers.size()); // answers count
+        writer.writeUInt16(packet.authorityRecords.size()); // authority entries count
+        writer.writeUInt16(packet.additionalRecords.size()); // additional records count
+
+        for (MdnsRecord record : packet.questions) {
+            // Questions do not have TTL or data
+            record.writeHeaderFields(writer);
+        }
+        for (MdnsRecord record : packet.answers) {
+            record.write(writer, 0L);
+        }
+        for (MdnsRecord record : packet.authorityRecords) {
+            record.write(writer, 0L);
+        }
+        for (MdnsRecord record : packet.additionalRecords) {
+            record.write(writer, 0L);
+        }
+    }
+
+    /**
+     * Create a raw DNS packet.
+     */
+    public static byte[] createRawDnsPacket(@NonNull byte[] packetCreationBuffer,
+            @NonNull MdnsPacket packet) throws IOException {
+        // TODO: support packets over size (send in multiple packets with TC bit set)
+        final MdnsPacketWriter writer = new MdnsPacketWriter(packetCreationBuffer);
+        writeMdnsPacket(writer, packet);
+
+        final int len = writer.getWritePosition();
+        return Arrays.copyOfRange(packetCreationBuffer, 0, len);
+    }
+
+    /**
      * Checks if the MdnsRecord needs to be renewed or not.
      *
      * <p>As per RFC6762 7.1 no need to query if remaining TTL is more than half the original one,
@@ -172,5 +231,29 @@ public class MdnsUtils {
     public static boolean isRecordRenewalNeeded(@NonNull MdnsRecord mdnsRecord, final long now) {
         return mdnsRecord.getTtl() > 0
                 && mdnsRecord.getRemainingTTL(now) <= mdnsRecord.getTtl() / 2;
+    }
+
+    /**
+     * Creates a new full subtype name with given service type and subtype labels.
+     *
+     * For example, given ["_http", "_tcp"] and "_printer", this method returns a new String array
+     * of ["_printer", "_sub", "_http", "_tcp"].
+     */
+    public static String[] constructFullSubtype(String[] serviceType, String subtype) {
+        String[] fullSubtype = new String[serviceType.length + 2];
+        fullSubtype[0] = subtype;
+        fullSubtype[1] = MdnsConstants.SUBTYPE_LABEL;
+        System.arraycopy(serviceType, 0, fullSubtype, 2, serviceType.length);
+        return fullSubtype;
+    }
+
+    /** A wrapper class of {@link SystemClock} to be mocked in unit tests. */
+    public static class Clock {
+        /**
+         * @see SystemClock#elapsedRealtime
+         */
+        public long elapsedRealtime() {
+            return SystemClock.elapsedRealtime();
+        }
     }
 }

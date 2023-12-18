@@ -36,11 +36,13 @@ import android.os.Handler;
 import android.os.HandlerThread;
 
 import com.android.net.module.util.HexDump;
+import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.MdnsSocketClientBase.SocketCreationCallback;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
 
+import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -66,7 +68,9 @@ public class MdnsMultinetworkSocketClientTest {
     @Mock private MdnsServiceBrowserListener mListener;
     @Mock private MdnsSocketClientBase.Callback mCallback;
     @Mock private SocketCreationCallback mSocketCreationCallback;
+    @Mock private SharedLog mSharedLog;
     private MdnsMultinetworkSocketClient mSocketClient;
+    private HandlerThread mHandlerThread;
     private Handler mHandler;
     private SocketKey mSocketKey;
 
@@ -74,12 +78,21 @@ public class MdnsMultinetworkSocketClientTest {
     public void setUp() throws SocketException {
         MockitoAnnotations.initMocks(this);
 
-        final HandlerThread thread = new HandlerThread("MdnsMultinetworkSocketClientTest");
-        thread.start();
-        mHandler = new Handler(thread.getLooper());
+        mHandlerThread = new HandlerThread("MdnsMultinetworkSocketClientTest");
+        mHandlerThread.start();
+        mHandler = new Handler(mHandlerThread.getLooper());
         mSocketKey = new SocketKey(1000 /* interfaceIndex */);
-        mSocketClient = new MdnsMultinetworkSocketClient(thread.getLooper(), mProvider);
+        mSocketClient = new MdnsMultinetworkSocketClient(mHandlerThread.getLooper(), mProvider,
+                mSharedLog, MdnsFeatureFlags.newBuilder().build());
         mHandler.post(() -> mSocketClient.setCallback(mCallback));
+    }
+
+    @After
+    public void tearDown() throws Exception {
+        if (mHandlerThread != null) {
+            mHandlerThread.quitSafely();
+            mHandlerThread.join();
+        }
     }
 
     private SocketCallback expectSocketCallback() {

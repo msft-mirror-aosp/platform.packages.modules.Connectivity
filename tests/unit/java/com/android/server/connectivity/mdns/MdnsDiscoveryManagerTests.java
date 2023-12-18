@@ -53,8 +53,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ScheduledExecutorService;
 
 /** Tests for {@link MdnsDiscoveryManager}. */
+@DevSdkIgnoreRunner.MonitorThreadLeak
 @RunWith(DevSdkIgnoreRunner.class)
 @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
 public class MdnsDiscoveryManagerTests {
@@ -80,6 +82,7 @@ public class MdnsDiscoveryManagerTests {
     private static final Pair<String, SocketKey> PER_SOCKET_SERVICE_TYPE_2_NETWORK_2 =
             Pair.create(SERVICE_TYPE_2, SOCKET_KEY_NETWORK_2);
     @Mock private ExecutorProvider executorProvider;
+    @Mock private ScheduledExecutorService mockExecutorService;
     @Mock private MdnsSocketClientBase socketClient;
     @Mock private MdnsServiceTypeClient mockServiceTypeClientType1NullNetwork;
     @Mock private MdnsServiceTypeClient mockServiceTypeClientType1Network1;
@@ -104,7 +107,7 @@ public class MdnsDiscoveryManagerTests {
         doReturn(thread.getLooper()).when(socketClient).getLooper();
         doReturn(true).when(socketClient).supportsRequestingSpecificNetworks();
         discoveryManager = new MdnsDiscoveryManager(executorProvider, socketClient,
-                sharedLog) {
+                sharedLog, MdnsFeatureFlags.newBuilder().build()) {
                     @Override
                     MdnsServiceTypeClient createServiceTypeClient(@NonNull String serviceType,
                             @NonNull SocketKey socketKey) {
@@ -128,12 +131,14 @@ public class MdnsDiscoveryManagerTests {
                         return null;
                     }
                 };
+        doReturn(mockExecutorService).when(mockServiceTypeClientType1NullNetwork).getExecutor();
     }
 
     @After
-    public void tearDown() {
+    public void tearDown() throws Exception {
         if (thread != null) {
             thread.quitSafely();
+            thread.join();
         }
     }
 
@@ -165,8 +170,22 @@ public class MdnsDiscoveryManagerTests {
         when(mockServiceTypeClientType1NullNetwork.stopSendAndReceive(mockListenerOne))
                 .thenReturn(true);
         runOnHandler(() -> discoveryManager.unregisterListener(SERVICE_TYPE_1, mockListenerOne));
+        verify(executorProvider).shutdownExecutorService(mockExecutorService);
         verify(mockServiceTypeClientType1NullNetwork).stopSendAndReceive(mockListenerOne);
         verify(socketClient).stopDiscovery();
+    }
+
+    @Test
+    public void onSocketDestroy_shutdownExecutorService() throws IOException {
+        final MdnsSearchOptions options =
+                MdnsSearchOptions.newBuilder().setNetwork(null /* network */).build();
+        final SocketCreationCallback callback = expectSocketCreationCallback(
+                SERVICE_TYPE_1, mockListenerOne, options);
+        runOnHandler(() -> callback.onSocketCreated(SOCKET_KEY_NULL_NETWORK));
+        verify(mockServiceTypeClientType1NullNetwork).startSendAndReceive(mockListenerOne, options);
+
+        runOnHandler(() -> callback.onSocketDestroyed(SOCKET_KEY_NULL_NETWORK));
+        verify(executorProvider).shutdownExecutorService(mockExecutorService);
     }
 
     @Test
