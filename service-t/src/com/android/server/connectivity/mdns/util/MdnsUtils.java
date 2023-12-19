@@ -35,6 +35,7 @@ import java.nio.CharBuffer;
 import java.nio.charset.Charset;
 import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
 
@@ -182,13 +183,10 @@ public class MdnsUtils {
     }
 
     /**
-     * Create a raw DNS packet.
+     * Write the mdns packet from given MdnsPacket.
      */
-    public static byte[] createRawDnsPacket(@NonNull byte[] packetCreationBuffer,
-            @NonNull MdnsPacket packet) throws IOException {
-        // TODO: support packets over size (send in multiple packets with TC bit set)
-        final MdnsPacketWriter writer = new MdnsPacketWriter(packetCreationBuffer);
-
+    public static void writeMdnsPacket(@NonNull MdnsPacketWriter writer, @NonNull MdnsPacket packet)
+            throws IOException {
         writer.writeUInt16(packet.transactionId); // Transaction ID (advertisement: 0)
         writer.writeUInt16(packet.flags); // Response, authoritative (rfc6762 18.4)
         writer.writeUInt16(packet.questions.size()); // questions count
@@ -209,11 +207,19 @@ public class MdnsUtils {
         for (MdnsRecord record : packet.additionalRecords) {
             record.write(writer, 0L);
         }
+    }
+
+    /**
+     * Create a raw DNS packet.
+     */
+    public static byte[] createRawDnsPacket(@NonNull byte[] packetCreationBuffer,
+            @NonNull MdnsPacket packet) throws IOException {
+        // TODO: support packets over size (send in multiple packets with TC bit set)
+        final MdnsPacketWriter writer = new MdnsPacketWriter(packetCreationBuffer);
+        writeMdnsPacket(writer, packet);
 
         final int len = writer.getWritePosition();
-        final byte[] outBuffer = new byte[len];
-        System.arraycopy(packetCreationBuffer, 0, outBuffer, 0, len);
-        return outBuffer;
+        return Arrays.copyOfRange(packetCreationBuffer, 0, len);
     }
 
     /**
@@ -225,6 +231,20 @@ public class MdnsUtils {
     public static boolean isRecordRenewalNeeded(@NonNull MdnsRecord mdnsRecord, final long now) {
         return mdnsRecord.getTtl() > 0
                 && mdnsRecord.getRemainingTTL(now) <= mdnsRecord.getTtl() / 2;
+    }
+
+    /**
+     * Creates a new full subtype name with given service type and subtype labels.
+     *
+     * For example, given ["_http", "_tcp"] and "_printer", this method returns a new String array
+     * of ["_printer", "_sub", "_http", "_tcp"].
+     */
+    public static String[] constructFullSubtype(String[] serviceType, String subtype) {
+        String[] fullSubtype = new String[serviceType.length + 2];
+        fullSubtype[0] = subtype;
+        fullSubtype[1] = MdnsConstants.SUBTYPE_LABEL;
+        System.arraycopy(serviceType, 0, fullSubtype, 2, serviceType.length);
+        return fullSubtype;
     }
 
     /** A wrapper class of {@link SystemClock} to be mocked in unit tests. */

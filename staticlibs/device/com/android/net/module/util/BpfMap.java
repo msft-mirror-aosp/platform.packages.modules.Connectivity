@@ -18,12 +18,14 @@ package com.android.net.module.util;
 import static android.system.OsConstants.EEXIST;
 import static android.system.OsConstants.ENOENT;
 
+import android.os.Build;
 import android.os.ParcelFileDescriptor;
 import android.system.ErrnoException;
 import android.util.Pair;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -40,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * @param <K> the key of the map.
  * @param <V> the value of the map.
  */
+@RequiresApi(Build.VERSION_CODES.S)
 public class BpfMap<K extends Struct, V extends Struct> implements IBpfMap<K, V> {
     static {
         System.loadLibrary(JniUtil.getJniLibraryName(BpfMap.class.getPackage()));
@@ -187,12 +190,6 @@ public class BpfMap<K extends Struct, V extends Struct> implements IBpfMap<K, V>
         return nativeDeleteMapEntry(mMapFd.getFd(), key.writeToBytes());
     }
 
-    /** Returns {@code true} if this map contains no elements. */
-    @Override
-    public boolean isEmpty() throws ErrnoException {
-        return getFirstKey() == null;
-    }
-
     private K getNextKeyInternal(@Nullable K key) throws ErrnoException {
         byte[] rawKey = new byte[mKeySize];
 
@@ -245,47 +242,9 @@ public class BpfMap<K extends Struct, V extends Struct> implements IBpfMap<K, V>
         return Struct.parse(mValueClass, buffer);
     }
 
-    /**
-     * Iterate through the map and handle each key -> value retrieved base on the given BiConsumer.
-     * The given BiConsumer may to delete the passed-in entry, but is not allowed to perform any
-     * other structural modifications to the map, such as adding entries or deleting other entries.
-     * Otherwise, iteration will result in undefined behaviour.
-     */
-    @Override
-    public void forEach(ThrowingBiConsumer<K, V> action) throws ErrnoException {
-        @Nullable K nextKey = getFirstKey();
-
-        while (nextKey != null) {
-            @NonNull final K curKey = nextKey;
-            @NonNull final V value = getValue(curKey);
-
-            nextKey = getNextKey(curKey);
-            action.accept(curKey, value);
-        }
-    }
-
-    /* Empty implementation to implement AutoCloseable, so we can use BpfMaps
-     * with try with resources, but due to persistent FD cache, there is no actual
-     * need to close anything.  File descriptors will actually be closed when we
-     * unlock the BpfMap class and destroy the ParcelFileDescriptor objects.
-     */
-    @Override
-    public void close() throws IOException {
-    }
-
-    /**
-     * Clears the map. The map may already be empty.
-     *
-     * @throws ErrnoException if the map is already closed, if an error occurred during iteration,
-     *                        or if a non-ENOENT error occurred when deleting a key.
-     */
-    @Override
-    public void clear() throws ErrnoException {
-        K key = getFirstKey();
-        while (key != null) {
-            deleteEntry(key);  // ignores ENOENT.
-            key = getFirstKey();
-        }
+    /** Synchronize Kernel RCU */
+    public static void synchronizeKernelRCU() throws ErrnoException {
+        nativeSynchronizeKernelRCU();
     }
 
     private static native int nativeBpfFdGet(String path, int mode, int keySize, int valueSize)
@@ -309,4 +268,6 @@ public class BpfMap<K extends Struct, V extends Struct> implements IBpfMap<K, V>
 
     private native boolean nativeFindMapEntry(int fd, byte[] key, byte[] value)
             throws ErrnoException;
+
+    private static native void nativeSynchronizeKernelRCU() throws ErrnoException;
 }

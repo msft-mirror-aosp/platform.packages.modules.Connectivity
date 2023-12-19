@@ -38,6 +38,7 @@ import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.EXTRA_NETWORK;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_REQUEST;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
@@ -277,9 +278,7 @@ public class ConnectivityManagerTest {
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
-    // Timeout for waiting network to be validated. Set the timeout to 30s, which is more than
-    // DNS timeout.
-    // TODO(b/252972908): reset the original timer when aosp/2188755 is ramped up.
+    // Timeout for waiting network to be validated.
     private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 30_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int NETWORK_REQUEST_TIMEOUT_MS = 3000;
@@ -727,6 +726,7 @@ public class ConnectivityManagerTest {
         return mCm.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName);
     }
 
+    @ConnectivityModuleTest
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
     @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
@@ -795,7 +795,7 @@ public class ConnectivityManagerTest {
             // Make sure that the NC is null if the package doesn't hold ACCESS_NETWORK_STATE.
             assertNull(redactNc(nc, groundedUid, groundedPkg));
 
-            // Uids, ssid, underlying networks & subscriptionIds will be redacted if the given uid
+            // Uids, ssid & underlying networks will be redacted if the given uid
             // doesn't hold the associated permissions. The wifi transport info is also suitably
             // redacted.
             final NetworkCapabilities redactedNormal = redactNc(nc, normalUid, normalPkg);
@@ -3536,6 +3536,12 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Socket cannot bind in instant app mode")
     public void testFirewallBlockingDozable() {
         doTestFirewallBlocking(FIREWALL_CHAIN_DOZABLE, ALLOWLIST);
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingBackground() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_BACKGROUND, ALLOWLIST);
     }
 
     @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest

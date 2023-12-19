@@ -38,6 +38,7 @@ java_library {
         "net-utils-device-common",
         "net-utils-device-common-async",
         "net-utils-device-common-netlink",
+        "net-utils-device-common-struct",
         "net-utils-device-common-wear",
         "modules-utils-build_system",
     ],
@@ -83,6 +84,13 @@ java_test_host {
         "host/**/*.kt",
     ],
     libs: ["tradefed"],
-    test_suites: ["ats", "device-tests", "general-tests", "cts", "mts-networking"],
+    test_suites: [
+        "ats",
+        "device-tests",
+        "general-tests",
+        "cts",
+        "mts-networking",
+        "mcts-networking",
+    ],
     data: [":ConnectivityTestPreparer"],
 }

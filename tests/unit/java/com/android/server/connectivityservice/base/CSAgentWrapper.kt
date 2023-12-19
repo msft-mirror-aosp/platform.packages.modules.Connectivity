@@ -34,7 +34,6 @@ import android.net.NetworkScore
 import android.net.NetworkTestResultParcelable
 import android.net.networkstack.NetworkStackClientBase
 import android.os.HandlerThread
-import com.android.modules.utils.build.SdkLevel
 import com.android.testutils.RecorderCallback.CallbackEntry.Available
 import com.android.testutils.RecorderCallback.CallbackEntry.Lost
 import com.android.testutils.TestableNetworkCallback
@@ -70,7 +69,7 @@ class CSAgentWrapper(
         nac: NetworkAgentConfig,
         val nc: NetworkCapabilities,
         val lp: LinkProperties,
-        val lnc: LocalNetworkConfig?,
+        val lnc: FromS<LocalNetworkConfig>?,
         val score: FromS<NetworkScore>,
         val provider: NetworkProvider?
 ) : TestableNetworkCallback.HasNetwork {
@@ -102,7 +101,7 @@ class CSAgentWrapper(
         // Create the actual agent. NetworkAgent is abstract, so make an anonymous subclass.
         if (deps.isAtLeastS()) {
             agent = object : NetworkAgent(context, csHandlerThread.looper, TAG,
-                    nc, lp, lnc, score.value, nac, provider) {}
+                    nc, lp, lnc?.value, score.value, nac, provider) {}
         } else {
             agent = object : NetworkAgent(context, csHandlerThread.looper, TAG,
                     nc, lp, 50 /* score */, nac, provider) {}
@@ -168,5 +167,8 @@ class CSAgentWrapper(
         cb.eventuallyExpect<Lost> { it.network == agent.network }
     }
 
+    fun unregisterAfterReplacement(timeoutMs: Int) = agent.unregisterAfterReplacement(timeoutMs)
+
     fun sendLocalNetworkConfig(lnc: LocalNetworkConfig) = agent.sendLocalNetworkConfig(lnc)
+    fun sendNetworkCapabilities(nc: NetworkCapabilities) = agent.sendNetworkCapabilities(nc)
 }

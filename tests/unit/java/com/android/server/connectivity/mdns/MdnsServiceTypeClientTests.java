@@ -87,6 +87,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 /** Tests for {@link MdnsServiceTypeClient}. */
+@DevSdkIgnoreRunner.MonitorThreadLeak
 @RunWith(DevSdkIgnoreRunner.class)
 @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
 public class MdnsServiceTypeClientTests {
@@ -193,7 +194,10 @@ public class MdnsServiceTypeClientTests {
         thread = new HandlerThread("MdnsServiceTypeClientTests");
         thread.start();
         handler = new Handler(thread.getLooper());
-        serviceCache = new MdnsServiceCache(thread.getLooper());
+        serviceCache = new MdnsServiceCache(
+                thread.getLooper(),
+                MdnsFeatureFlags.newBuilder().setIsExpiredServicesRemovalEnabled(false).build(),
+                mockDecoderClock);
 
         doAnswer(inv -> {
             latestDelayMs = 0;
@@ -227,9 +231,10 @@ public class MdnsServiceTypeClientTests {
     }
 
     @After
-    public void tearDown() {
+    public void tearDown() throws Exception {
         if (thread != null) {
             thread.quitSafely();
+            thread.join();
         }
     }
 

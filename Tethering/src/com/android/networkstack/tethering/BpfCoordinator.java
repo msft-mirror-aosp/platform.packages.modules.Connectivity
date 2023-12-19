@@ -28,6 +28,7 @@ import static android.system.OsConstants.ETH_P_IP;
 import static android.system.OsConstants.ETH_P_IPV6;
 
 import static com.android.net.module.util.NetworkStackConstants.IPV4_MIN_MTU;
+import static com.android.net.module.util.NetworkStackConstants.IPV6_ADDR_LEN;
 import static com.android.net.module.util.ip.ConntrackMonitor.ConntrackEvent;
 import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
@@ -89,8 +90,6 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.UnknownHostException;
-import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -123,7 +122,6 @@ public class BpfCoordinator {
     private static final int DUMP_TIMEOUT_MS = 10_000;
     private static final MacAddress NULL_MAC_ADDRESS = MacAddress.fromString(
             "00:00:00:00:00:00");
-    private static final IpPrefix IPV6_ZERO_PREFIX64 = new IpPrefix("::/64");
     private static final String TETHER_DOWNSTREAM4_MAP_PATH = makeMapPath(DOWNSTREAM, 4);
     private static final String TETHER_UPSTREAM4_MAP_PATH = makeMapPath(UPSTREAM, 4);
     private static final String TETHER_DOWNSTREAM6_FS_PATH = makeMapPath(DOWNSTREAM, 6);
@@ -768,7 +766,8 @@ public class BpfCoordinator {
      * Note that this can be only called on handler thread.
      */
     public void updateAllIpv6Rules(@NonNull final IpServer ipServer,
-            final InterfaceParams interfaceParams, int newUpstreamIfindex) {
+            final InterfaceParams interfaceParams, int newUpstreamIfindex,
+            @NonNull final Set<IpPrefix> newUpstreamPrefixes) {
         if (!isUsingBpf()) return;
 
         // Remove IPv6 downstream rules. Remove the old ones before adding the new rules, otherwise
@@ -791,9 +790,11 @@ public class BpfCoordinator {
 
         // Add new upstream rules.
         if (newUpstreamIfindex != 0 && interfaceParams != null && interfaceParams.macAddr != null) {
-            addIpv6UpstreamRule(ipServer, new Ipv6UpstreamRule(
-                    newUpstreamIfindex, interfaceParams.index, IPV6_ZERO_PREFIX64,
-                    interfaceParams.macAddr, NULL_MAC_ADDRESS, NULL_MAC_ADDRESS));
+            for (final IpPrefix ipPrefix : newUpstreamPrefixes) {
+                addIpv6UpstreamRule(ipServer, new Ipv6UpstreamRule(
+                        newUpstreamIfindex, interfaceParams.index, ipPrefix,
+                        interfaceParams.macAddr, NULL_MAC_ADDRESS, NULL_MAC_ADDRESS));
+            }
         }
 
         // Add updated downstream rules.
@@ -1256,10 +1257,30 @@ public class BpfCoordinator {
         pw.decreaseIndent();
     }
 
+    /**
+     * Returns a /64 IpPrefix corresponding to the passed in byte array
+     *
+     * @param ip64 byte array to convert format
+     * @return the converted IpPrefix
+     */
+    @VisibleForTesting
+    public static IpPrefix bytesToPrefix(final byte[] ip64) {
+        IpPrefix sourcePrefix;
+        byte[] prefixBytes = Arrays.copyOf(ip64, IPV6_ADDR_LEN);
+        try {
+            sourcePrefix = new IpPrefix(InetAddress.getByAddress(prefixBytes), 64);
+        } catch (UnknownHostException e) {
+            // Cannot happen. InetAddress.getByAddress can only throw an exception if the byte array
+            // is the wrong length, but we allocate it with fixed length IPV6_ADDR_LEN.
+            throw new IllegalArgumentException("Invalid IPv6 address");
+        }
+        return sourcePrefix;
+    }
+
     private String ipv6UpstreamRuleToString(TetherUpstream6Key key, Tether6Value value) {
-        return String.format("%d(%s) [%s] -> %d(%s) %04x [%s] [%s]",
-                key.iif, getIfName(key.iif), key.dstMac, value.oif, getIfName(value.oif),
-                value.ethProto, value.ethSrcMac, value.ethDstMac);
+        return String.format("%d(%s) [%s] [%s] -> %d(%s) %04x [%s] [%s]",
+                key.iif, getIfName(key.iif), key.dstMac, bytesToPrefix(key.src64), value.oif,
+                getIfName(value.oif), value.ethProto, value.ethSrcMac, value.ethDstMac);
     }
 
     private void dumpIpv6UpstreamRules(IndentingPrintWriter pw) {
@@ -1309,8 +1330,8 @@ public class BpfCoordinator {
     // TODO: use dump utils with headerline and lambda which prints key and value to reduce
     // duplicate bpf map dump code.
     private void dumpBpfForwardingRulesIpv6(IndentingPrintWriter pw) {
-        pw.println("IPv6 Upstream: iif(iface) [inDstMac] -> oif(iface) etherType [outSrcMac] "
-                + "[outDstMac]");
+        pw.println("IPv6 Upstream: iif(iface) [inDstMac] [sourcePrefix] -> oif(iface) etherType "
+                + "[outSrcMac] [outDstMac]");
         pw.increaseIndent();
         dumpIpv6UpstreamRules(pw);
         pw.decreaseIndent();
@@ -1554,8 +1575,7 @@ public class BpfCoordinator {
          */
         @NonNull
         public TetherUpstream6Key makeTetherUpstream6Key() {
-            byte[] prefixBytes = Arrays.copyOf(sourcePrefix.getRawAddress(), 8);
-            long prefix64 = ByteBuffer.wrap(prefixBytes).order(ByteOrder.BIG_ENDIAN).getLong();
+            final byte[] prefix64 = Arrays.copyOf(sourcePrefix.getRawAddress(), 8);
             return new TetherUpstream6Key(downstreamIfindex, inDstMac, prefix64);
         }
 
@@ -1582,10 +1602,8 @@ public class BpfCoordinator {
 
         @Override
         public int hashCode() {
-            // TODO: if this is ever used in production code, don't pass ifindices
-            // to Objects.hash() to avoid autoboxing overhead.
-            return Objects.hash(upstreamIfindex, downstreamIfindex, sourcePrefix, inDstMac,
-                    outSrcMac, outDstMac);
+            return 13 * upstreamIfindex + 41 * downstreamIfindex
+                    + Objects.hash(sourcePrefix, inDstMac, outSrcMac, outDstMac);
         }
 
         @Override
@@ -1710,9 +1728,8 @@ public class BpfCoordinator {
 
         @Override
         public int hashCode() {
-            // TODO: if this is ever used in production code, don't pass ifindices
-            // to Objects.hash() to avoid autoboxing overhead.
-            return Objects.hash(upstreamIfindex, downstreamIfindex, address, srcMac, dstMac);
+            return 13 * upstreamIfindex + 41 * downstreamIfindex
+                    + Objects.hash(address, srcMac, dstMac);
         }
 
         @Override

@@ -53,6 +53,7 @@ import android.system.StructTimeval;
 import android.util.LocalLog;
 import android.util.Log;
 import android.util.Pair;
+import android.util.Range;
 import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -77,6 +78,7 @@ import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Manages automatic on/off socket keepalive requests.
@@ -373,26 +375,27 @@ public class AutomaticOnOffKeepaliveTracker {
      * Determine if any state transition is needed for the specific automatic keepalive.
      */
     public void handleMonitorAutomaticKeepalive(@NonNull final AutomaticOnOffKeepalive ki,
-            final int vpnNetId) {
+            final int vpnNetId, @NonNull Set<Range<Integer>> vpnUidRanges) {
         // Might happen if the automatic keepalive was removed by the app just as the alarm fires.
         if (!mAutomaticOnOffKeepalives.contains(ki)) return;
         if (STATE_ALWAYS_ON == ki.mAutomaticOnOffState) {
             throw new IllegalStateException("Should not monitor non-auto keepalive");
         }
 
-        handleMonitorTcpConnections(ki, vpnNetId);
+        handleMonitorTcpConnections(ki, vpnNetId, vpnUidRanges);
     }
 
     /**
      * Determine if disable or re-enable keepalive is needed or not based on TCP sockets status.
      */
-    private void handleMonitorTcpConnections(@NonNull AutomaticOnOffKeepalive ki, int vpnNetId) {
+    private void handleMonitorTcpConnections(@NonNull AutomaticOnOffKeepalive ki, int vpnNetId,
+            @NonNull Set<Range<Integer>> vpnUidRanges) {
         // Might happen if the automatic keepalive was removed by the app just as the alarm fires.
         if (!mAutomaticOnOffKeepalives.contains(ki)) return;
         if (STATE_ALWAYS_ON == ki.mAutomaticOnOffState) {
             throw new IllegalStateException("Should not monitor non-auto keepalive");
         }
-        if (!isAnyTcpSocketConnected(vpnNetId)) {
+        if (!isAnyTcpSocketConnected(vpnNetId, vpnUidRanges)) {
             // No TCP socket exists. Stop keepalive if ENABLED, and remain SUSPENDED if currently
             // SUSPENDED.
             if (ki.mAutomaticOnOffState == STATE_ENABLED) {
@@ -692,8 +695,10 @@ public class AutomaticOnOffKeepaliveTracker {
 
     /**
      * Dump AutomaticOnOffKeepaliveTracker state.
+     * This should be only be called in ConnectivityService handler thread.
      */
     public void dump(IndentingPrintWriter pw) {
+        ensureRunningOnHandlerThread();
         mKeepaliveTracker.dump(pw);
         // Reading DeviceConfig will check if the calling uid and calling package name are the same.
         // Clear calling identity to align the calling uid and package so that it won't fail if cts
@@ -712,6 +717,9 @@ public class AutomaticOnOffKeepaliveTracker {
         pw.increaseIndent();
         mEventLog.reverseDump(pw);
         pw.decreaseIndent();
+
+        pw.println();
+        mKeepaliveStatsTracker.dump(pw);
     }
 
     /**
@@ -739,7 +747,7 @@ public class AutomaticOnOffKeepaliveTracker {
     }
 
     @VisibleForTesting
-    boolean isAnyTcpSocketConnected(int netId) {
+    boolean isAnyTcpSocketConnected(int netId, @NonNull Set<Range<Integer>> vpnUidRanges) {
         FileDescriptor fd = null;
 
         try {
@@ -752,7 +760,8 @@ public class AutomaticOnOffKeepaliveTracker {
 
             // Send request for each IP family
             for (final int family : ADDRESS_FAMILIES) {
-                if (isAnyTcpSocketConnectedForFamily(fd, family, networkMark, networkMask)) {
+                if (isAnyTcpSocketConnectedForFamily(
+                        fd, family, networkMark, networkMask, vpnUidRanges)) {
                     return true;
                 }
             }
@@ -766,7 +775,8 @@ public class AutomaticOnOffKeepaliveTracker {
     }
 
     private boolean isAnyTcpSocketConnectedForFamily(FileDescriptor fd, int family, int networkMark,
-            int networkMask) throws ErrnoException, InterruptedIOException {
+            int networkMask, @NonNull Set<Range<Integer>> vpnUidRanges)
+            throws ErrnoException, InterruptedIOException {
         ensureRunningOnHandlerThread();
         // Build SocketDiag messages and cache it.
         if (mSockDiagMsg.get(family) == null) {
@@ -895,7 +905,7 @@ public class AutomaticOnOffKeepaliveTracker {
         public FileDescriptor createConnectedNetlinkSocket()
                 throws ErrnoException, SocketException {
             final FileDescriptor fd = NetlinkUtils.createNetLinkInetDiagSocket();
-            NetlinkUtils.connectSocketToNetlink(fd);
+            NetlinkUtils.connectToKernel(fd);
             Os.setsockoptTimeval(fd, SOL_SOCKET, SO_SNDTIMEO,
                     StructTimeval.fromMillis(IO_TIMEOUT_MS));
             return fd;

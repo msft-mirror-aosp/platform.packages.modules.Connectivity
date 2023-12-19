@@ -130,6 +130,11 @@ public class TetheringConfiguration {
     public static final String TETHER_ENABLE_WEAR_TETHERING =
             "tether_enable_wear_tethering";
 
+    public static final String TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION =
+            "tether_force_random_prefix_base_selection";
+
+    public static final String TETHER_ENABLE_SYNC_SM = "tether_enable_sync_sm";
+
     /**
      * Default value that used to periodic polls tether offload stats from tethering offload HAL
      * to make the data warnings work.
@@ -168,6 +173,8 @@ public class TetheringConfiguration {
     private final int mP2pLeasesSubnetPrefixLength;
 
     private final boolean mEnableWearTethering;
+    private final boolean mRandomPrefixBase;
+    private final boolean mEnableSyncSm;
 
     private final int mUsbTetheringFunction;
     protected final ContentResolver mContentResolver;
@@ -285,6 +292,9 @@ public class TetheringConfiguration {
 
         mEnableWearTethering = shouldEnableWearTethering(ctx);
 
+        mRandomPrefixBase = mDeps.isFeatureEnabled(ctx, TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION);
+        mEnableSyncSm = mDeps.isFeatureEnabled(ctx, TETHER_ENABLE_SYNC_SM);
+
         configLog.log(toString());
     }
 
@@ -373,6 +383,14 @@ public class TetheringConfiguration {
         return mEnableWearTethering;
     }
 
+    public boolean isRandomPrefixBaseEnabled() {
+        return mRandomPrefixBase;
+    }
+
+    public boolean isSyncSM() {
+        return mEnableSyncSm;
+    }
+
     /** Does the dumping.*/
     public void dump(PrintWriter pw) {
         pw.print("activeDataSubId: ");
@@ -423,6 +441,12 @@ public class TetheringConfiguration {
 
         pw.print("mUsbTetheringFunction: ");
         pw.println(isUsingNcm() ? "NCM" : "RNDIS");
+
+        pw.print("mRandomPrefixBase: ");
+        pw.println(mRandomPrefixBase);
+
+        pw.print("mEnableSyncSm: ");
+        pw.println(mEnableSyncSm);
     }
 
     /** Returns the string representation of this object.*/

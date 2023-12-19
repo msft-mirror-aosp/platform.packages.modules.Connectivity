@@ -92,7 +92,7 @@ DEFINE_BPF_MAP_NO_NETD(app_uid_stats_map, HASH, uint32_t, StatsValue, APP_STATS_
 DEFINE_BPF_MAP_RO_NETD(stats_map_A, HASH, StatsKey, StatsValue, STATS_MAP_SIZE)
 DEFINE_BPF_MAP_RO_NETD(stats_map_B, HASH, StatsKey, StatsValue, STATS_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(iface_stats_map, HASH, uint32_t, StatsValue, IFACE_STATS_MAP_SIZE)
-DEFINE_BPF_MAP_NO_NETD(uid_owner_map, HASH, uint32_t, UidOwnerValue, UID_OWNER_MAP_SIZE)
+DEFINE_BPF_MAP_RO_NETD(uid_owner_map, HASH, uint32_t, UidOwnerValue, UID_OWNER_MAP_SIZE)
 DEFINE_BPF_MAP_RO_NETD(uid_permission_map, HASH, uint32_t, uint8_t, UID_OWNER_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(ingress_discard_map, HASH, IngressDiscardKey, IngressDiscardValue,
                        INGRESS_DISCARD_MAP_SIZE)
@@ -111,6 +111,9 @@ DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
                        AID_ROOT, AID_SYSTEM, 0060, "fs_bpf_net_shared", "", PRIVATE,
                        BPFLOADER_IGNORED_ON_VERSION, BPFLOADER_MAX_VER, LOAD_ON_ENG,
                        LOAD_ON_USER, LOAD_ON_USERDEBUG);
+
+DEFINE_BPF_MAP_RO_NETD(data_saver_enabled_map, ARRAY, uint32_t, bool,
+                       DATA_SAVER_ENABLED_MAP_SIZE)
 
 // iptables xt_bpf programs need to be usable by both netd and netutils_wrappers
 // selinux contexts, because even non-xt_bpf iptables mutations are implemented as
@@ -141,12 +144,6 @@ DEFINE_BPF_RINGBUF_EXT(packet_trace_ringbuf, PacketTrace, PACKET_TRACE_BUF_SIZE,
     DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, KVER_NONE, KVER_INF,  \
                         BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, MANDATORY, \
                         "fs_bpf_net_shared", "", LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
-
-static __always_inline int is_system_uid(uint32_t uid) {
-    // MIN_SYSTEM_UID is AID_ROOT == 0, so uint32_t is *always* >= 0
-    // MAX_SYSTEM_UID is AID_NOBODY == 9999, while AID_APP_START == 10000
-    return (uid < AID_APP_START);
-}
 
 /*
  * Note: this blindly assumes an MTU of 1500, and that packets > MTU are always TCP,
