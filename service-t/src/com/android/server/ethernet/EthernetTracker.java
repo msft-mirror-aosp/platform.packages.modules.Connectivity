@@ -241,11 +241,11 @@ public class EthernetTracker {
         String ifaceMatchRegex = mDeps.getInterfaceRegexFromResource(mContext);
         // "*" is a magic string to indicate "pick the default".
         if (ifaceMatchRegex.equals("*")) {
-            if (SdkLevel.isAtLeastU()) {
-                // On U+, include both usb%d and eth%d interfaces.
+            if (SdkLevel.isAtLeastV()) {
+                // On V+, include both usb%d and eth%d interfaces.
                 ifaceMatchRegex = "(usb|eth)\\d+";
             } else {
-                // On T, include only eth%d interfaces.
+                // On T and U, include only eth%d interfaces.
                 ifaceMatchRegex = "eth\\d+";
             }
         }

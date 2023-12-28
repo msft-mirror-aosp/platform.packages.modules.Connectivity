@@ -54,6 +54,7 @@ import android.util.ArraySet
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.internal.app.IBatteryStats
 import com.android.internal.util.test.BroadcastInterceptingContext
+import com.android.metrics.NetworkRequestStateStatsMetrics
 import com.android.modules.utils.build.SdkLevel
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.networkstack.apishim.common.UnsupportedApiLevelException
@@ -132,6 +133,7 @@ open class CSTest {
         it[ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS] = true
+        it[ConnectivityService.LOG_BPF_RC] = true
     }
     fun enableFeature(f: String) = enabledFeatures.set(f, true)
     fun disableFeature(f: String) = enabledFeatures.set(f, false)
@@ -156,6 +158,7 @@ open class CSTest {
     val netd = mock<INetd>()
     val bpfNetMaps = mock<BpfNetMaps>()
     val clatCoordinator = mock<ClatCoordinator>()
+    val networkRequestStateStatsMetrics = mock<NetworkRequestStateStatsMetrics>()
     val proxyTracker = ProxyTracker(context, mock<Handler>(), 16 /* EVENT_PROXY_HAS_CHANGED */)
     val alarmManager = makeMockAlarmManager()
     val systemConfigManager = makeMockSystemConfigManager()
@@ -195,6 +198,9 @@ open class CSTest {
         override fun makeMultinetworkPolicyTracker(c: Context, h: Handler, r: Runnable) =
                 MultinetworkPolicyTracker(c, h, r,
                         MultinetworkPolicyTrackerTestDependencies(connResources.get()))
+
+        override fun makeNetworkRequestStateStatsMetrics(c: Context) =
+                this@CSTest.networkRequestStateStatsMetrics
 
         // All queried features must be mocked, because the test cannot hold the
         // READ_DEVICE_CONFIG permission and device config utils use static methods for
