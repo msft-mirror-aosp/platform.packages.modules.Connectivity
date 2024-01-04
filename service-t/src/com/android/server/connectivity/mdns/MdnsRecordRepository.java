@@ -46,6 +46,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -74,8 +75,6 @@ public class MdnsRecordRepository {
 
     // Top-level domain for link-local queries, as per RFC6762 3.
     private static final String LOCAL_TLD = "local";
-    // Subtype separator as per RFC6763 7.1 (_printer._sub._http._tcp.local)
-    private static final String SUBTYPE_SEPARATOR = "_sub";
 
     // Service type for service enumeration (RFC6763 9.)
     private static final String[] DNS_SD_SERVICE_TYPE =
@@ -92,6 +91,7 @@ public class MdnsRecordRepository {
     private final Looper mLooper;
     @NonNull
     private final String[] mDeviceHostname;
+    @NonNull
     private final MdnsFeatureFlags mMdnsFeatureFlags;
 
     public MdnsRecordRepository(@NonNull Looper looper, @NonNull String[] deviceHostname,
@@ -141,6 +141,9 @@ public class MdnsRecordRepository {
          * Last time (as per SystemClock.elapsedRealtime) when sent via unicast or multicast,
          * 0 if never
          */
+        // FIXME: the `lastSentTimeMs` and `lastAdvertisedTimeMs` should be maintained separately
+        // for IPv4 and IPv6, because neither IPv4 nor and IPv6 clients can receive replies in
+        // different address space.
         public long lastSentTimeMs;
 
         RecordInfo(NsdServiceInfo serviceInfo, T record, boolean sharedName) {
@@ -161,13 +164,11 @@ public class MdnsRecordRepository {
         public final RecordInfo<MdnsTextRecord> txtRecord;
         @NonNull
         public final NsdServiceInfo serviceInfo;
-        @Nullable
-        public final String subtype;
 
         /**
          * Whether the service is sending exit announcements and will be destroyed soon.
          */
-        public boolean exiting = false;
+        public boolean exiting;
 
         /**
          * The replied query packet count of this service.
@@ -185,21 +186,28 @@ public class MdnsRecordRepository {
         private boolean isProbing;
 
         /**
+         * Create a ServiceRegistration with only update the subType.
+         */
+        ServiceRegistration withSubtypes(@NonNull Set<String> newSubtypes) {
+            NsdServiceInfo newServiceInfo = new NsdServiceInfo(serviceInfo);
+            newServiceInfo.setSubtypes(newSubtypes);
+            return new ServiceRegistration(srvRecord.record.getServiceHost(), newServiceInfo,
+                    repliedServiceCount, sentPacketCount, exiting, isProbing);
+        }
+
+        /**
          * Create a ServiceRegistration for dns-sd service registration (RFC6763).
-         *
-         * @param deviceHostname Hostname of the device (for the interface used)
-         * @param serviceInfo Service to advertise
          */
         ServiceRegistration(@NonNull String[] deviceHostname, @NonNull NsdServiceInfo serviceInfo,
-                @Nullable String subtype, int repliedServiceCount, int sentPacketCount) {
+                int repliedServiceCount, int sentPacketCount, boolean exiting, boolean isProbing) {
             this.serviceInfo = serviceInfo;
-            this.subtype = subtype;
 
             final String[] serviceType = splitServiceType(serviceInfo);
             final String[] serviceName = splitFullyQualifiedName(serviceInfo, serviceType);
 
-            // Service PTR record
-            final RecordInfo<MdnsPointerRecord> ptrRecord = new RecordInfo<>(
+            // Service PTR records
+            ptrRecords = new ArrayList<>(serviceInfo.getSubtypes().size() + 1);
+            ptrRecords.add(new RecordInfo<>(
                     serviceInfo,
                     new MdnsPointerRecord(
                             serviceType,
@@ -207,26 +215,17 @@ public class MdnsRecordRepository {
                             false /* cacheFlush */,
                             NON_NAME_RECORDS_TTL_MILLIS,
                             serviceName),
-                    true /* sharedName */);
-
-            if (subtype == null) {
-                this.ptrRecords = Collections.singletonList(ptrRecord);
-            } else {
-                final String[] subtypeName = new String[serviceType.length + 2];
-                System.arraycopy(serviceType, 0, subtypeName, 2, serviceType.length);
-                subtypeName[0] = subtype;
-                subtypeName[1] = SUBTYPE_SEPARATOR;
-                final RecordInfo<MdnsPointerRecord> subtypeRecord = new RecordInfo<>(
-                        serviceInfo,
-                        new MdnsPointerRecord(
-                                subtypeName,
-                                0L /* receiptTimeMillis */,
-                                false /* cacheFlush */,
-                                NON_NAME_RECORDS_TTL_MILLIS,
-                                serviceName),
-                        true /* sharedName */);
-
-                this.ptrRecords = List.of(ptrRecord, subtypeRecord);
+                    true /* sharedName */));
+            for (String subtype : serviceInfo.getSubtypes()) {
+                ptrRecords.add(new RecordInfo<>(
+                    serviceInfo,
+                    new MdnsPointerRecord(
+                            MdnsUtils.constructFullSubtype(serviceType, subtype),
+                            0L /* receiptTimeMillis */,
+                            false /* cacheFlush */,
+                            NON_NAME_RECORDS_TTL_MILLIS,
+                            serviceName),
+                    true /* sharedName */));
             }
 
             srvRecord = new RecordInfo<>(
@@ -266,7 +265,20 @@ public class MdnsRecordRepository {
             this.allRecords = Collections.unmodifiableList(allRecords);
             this.repliedServiceCount = repliedServiceCount;
             this.sentPacketCount = sentPacketCount;
-            this.isProbing = true;
+            this.isProbing = isProbing;
+            this.exiting = exiting;
+        }
+
+        /**
+         * Create a ServiceRegistration for dns-sd service registration (RFC6763).
+         *
+         * @param deviceHostname Hostname of the device (for the interface used)
+         * @param serviceInfo Service to advertise
+         */
+        ServiceRegistration(@NonNull String[] deviceHostname, @NonNull NsdServiceInfo serviceInfo,
+                int repliedServiceCount, int sentPacketCount) {
+            this(deviceHostname, serviceInfo,repliedServiceCount, sentPacketCount,
+                    false /* exiting */, true /* isProbing */);
         }
 
         void setProbing(boolean probing) {
@@ -305,6 +317,23 @@ public class MdnsRecordRepository {
     }
 
     /**
+     * Update a service that already registered in the repository.
+     *
+     * @param serviceId An existing service ID.
+     * @param subtypes New subtypes
+     */
+    public void updateService(int serviceId, @NonNull Set<String> subtypes) {
+        final ServiceRegistration existingRegistration = mServices.get(serviceId);
+        if (existingRegistration == null) {
+            throw new IllegalArgumentException(
+                    "Service ID must already exist for an update request: " + serviceId);
+        }
+        final ServiceRegistration updatedRegistration = existingRegistration.withSubtypes(
+                subtypes);
+        mServices.put(serviceId, updatedRegistration);
+    }
+
+    /**
      * Add a service to the repository.
      *
      * This may remove/replace any existing service that used the name added but is exiting.
@@ -314,8 +343,7 @@ public class MdnsRecordRepository {
      *         ID of the replaced service.
      * @throws NameConflictException There is already a (non-exiting) service using the name.
      */
-    public int addService(int serviceId, NsdServiceInfo serviceInfo, @Nullable String subtype)
-            throws NameConflictException {
+    public int addService(int serviceId, NsdServiceInfo serviceInfo) throws NameConflictException {
         if (mServices.contains(serviceId)) {
             throw new IllegalArgumentException(
                     "Service ID must not be reused across registrations: " + serviceId);
@@ -328,7 +356,7 @@ public class MdnsRecordRepository {
         }
 
         final ServiceRegistration registration = new ServiceRegistration(
-                mDeviceHostname, serviceInfo, subtype, NO_PACKET /* repliedServiceCount */,
+                mDeviceHostname, serviceInfo, NO_PACKET /* repliedServiceCount */,
                 NO_PACKET /* sentPacketCount */);
         mServices.put(serviceId, registration);
 
@@ -472,13 +500,17 @@ public class MdnsRecordRepository {
     public MdnsReplyInfo getReply(MdnsPacket packet, InetSocketAddress src) {
         final long now = SystemClock.elapsedRealtime();
         final boolean replyUnicast = (packet.flags & MdnsConstants.QCLASS_UNICAST) != 0;
-        final ArrayList<MdnsRecord> additionalAnswerRecords = new ArrayList<>();
-        final ArrayList<RecordInfo<?>> answerInfo = new ArrayList<>();
+
+        // Use LinkedHashSet for preserving the insert order of the RRs, so that RRs of the same
+        // service or host are grouped together (which is more developer-friendly).
+        final Set<RecordInfo<?>> answerInfo = new LinkedHashSet<>();
+        final Set<RecordInfo<?>> additionalAnswerInfo = new LinkedHashSet<>();
+
         for (MdnsRecord question : packet.questions) {
             // Add answers from general records
             addReplyFromService(question, mGeneralRecords, null /* servicePtrRecord */,
                     null /* serviceSrvRecord */, null /* serviceTxtRecord */, replyUnicast, now,
-                    answerInfo, additionalAnswerRecords);
+                    answerInfo, additionalAnswerInfo, Collections.emptyList());
 
             // Add answers from each service
             for (int i = 0; i < mServices.size(); i++) {
@@ -486,12 +518,32 @@ public class MdnsRecordRepository {
                 if (registration.exiting || registration.isProbing) continue;
                 if (addReplyFromService(question, registration.allRecords, registration.ptrRecords,
                         registration.srvRecord, registration.txtRecord, replyUnicast, now,
-                        answerInfo, additionalAnswerRecords)) {
+                        answerInfo, additionalAnswerInfo, packet.answers)) {
                     registration.repliedServiceCount++;
                     registration.sentPacketCount++;
                 }
             }
         }
+
+        // If any record was already in the answer section, remove it from the additional answer
+        // section. This can typically happen when there are both queries for
+        // SRV / TXT / A / AAAA and PTR (which can cause SRV / TXT / A / AAAA records being added
+        // to the additional answer section).
+        additionalAnswerInfo.removeAll(answerInfo);
+
+        final List<MdnsRecord> additionalAnswerRecords =
+                new ArrayList<>(additionalAnswerInfo.size());
+        for (RecordInfo<?> info : additionalAnswerInfo) {
+            additionalAnswerRecords.add(info.record);
+        }
+
+        // RFC6762 6.1: negative responses
+        // "On receipt of a question for a particular name, rrtype, and rrclass, for which a
+        // responder does have one or more unique answers, the responder MAY also include an NSEC
+        // record in the Additional Record Section indicating the nonexistence of other rrtypes
+        // for that name and rrclass."
+        addNsecRecordsForUniqueNames(additionalAnswerRecords,
+                answerInfo.iterator(), additionalAnswerInfo.iterator());
 
         if (answerInfo.size() == 0 && additionalAnswerRecords.size() == 0) {
             return null;
@@ -539,6 +591,15 @@ public class MdnsRecordRepository {
         return new MdnsReplyInfo(answerRecords, additionalAnswerRecords, delayMs, dest);
     }
 
+    private boolean isKnownAnswer(MdnsRecord answer, @NonNull List<MdnsRecord> knownAnswerRecords) {
+        for (MdnsRecord knownAnswer : knownAnswerRecords) {
+            if (answer.equals(knownAnswer) && knownAnswer.getTtl() > (answer.getTtl() / 2)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /**
      * Add answers and additional answers for a question, from a ServiceRegistration.
      */
@@ -547,14 +608,15 @@ public class MdnsRecordRepository {
             @Nullable List<RecordInfo<MdnsPointerRecord>> servicePtrRecords,
             @Nullable RecordInfo<MdnsServiceRecord> serviceSrvRecord,
             @Nullable RecordInfo<MdnsTextRecord> serviceTxtRecord,
-            boolean replyUnicast, long now, @NonNull List<RecordInfo<?>> answerInfo,
-            @NonNull List<MdnsRecord> additionalAnswerRecords) {
+            boolean replyUnicast, long now, @NonNull Set<RecordInfo<?>> answerInfo,
+            @NonNull Set<RecordInfo<?>> additionalAnswerInfo,
+            @NonNull List<MdnsRecord> knownAnswerRecords) {
         boolean hasDnsSdPtrRecordAnswer = false;
         boolean hasDnsSdSrvRecordAnswer = false;
         boolean hasFullyOwnedNameMatch = false;
         boolean hasKnownAnswer = false;
 
-        final int answersStartIndex = answerInfo.size();
+        final int answersStartSize = answerInfo.size();
         for (RecordInfo<?> info : serviceRecords) {
 
              /* RFC6762 6.: the record name must match the question name, the record rrtype
@@ -577,6 +639,20 @@ public class MdnsRecordRepository {
             }
 
             hasKnownAnswer = true;
+
+            // RFC6762 7.1. Known-Answer Suppression:
+            // A Multicast DNS responder MUST NOT answer a Multicast DNS query if
+            // the answer it would give is already included in the Answer Section
+            // with an RR TTL at least half the correct value.  If the RR TTL of the
+            // answer as given in the Answer Section is less than half of the true
+            // RR TTL as known by the Multicast DNS responder, the responder MUST
+            // send an answer so as to update the querier's cache before the record
+            // becomes in danger of expiration.
+            if (mMdnsFeatureFlags.mIsKnownAnswerSuppressionEnabled
+                    && isKnownAnswer(info.record, knownAnswerRecords)) {
+                continue;
+            }
+
             hasDnsSdPtrRecordAnswer |= (servicePtrRecords != null
                     && CollectionUtils.any(servicePtrRecords, r -> info == r));
             hasDnsSdSrvRecordAnswer |= (info == serviceSrvRecord);
@@ -588,8 +664,6 @@ public class MdnsRecordRepository {
                 continue;
             }
 
-            // TODO: Don't reply if in known answers of the querier (7.1) if TTL is > half
-
             answerInfo.add(info);
         }
 
@@ -598,7 +672,7 @@ public class MdnsRecordRepository {
         // ownership, for a type for which that name has no records, the responder MUST [...]
         // respond asserting the nonexistence of that record"
         if (hasFullyOwnedNameMatch && !hasKnownAnswer) {
-            additionalAnswerRecords.add(new MdnsNsecRecord(
+            MdnsNsecRecord nsecRecord = new MdnsNsecRecord(
                     question.getName(),
                     0L /* receiptTimeMillis */,
                     true /* cacheFlush */,
@@ -606,13 +680,14 @@ public class MdnsRecordRepository {
                     // be the same as the TTL that the record would have had, had it existed."
                     NAME_RECORDS_TTL_MILLIS,
                     question.getName(),
-                    new int[] { question.getType() }));
+                    new int[] { question.getType() });
+            additionalAnswerInfo.add(
+                    new RecordInfo<>(null /* serviceInfo */, nsecRecord, false /* isSharedName */));
         }
 
         // No more records to add if no answer
-        if (answerInfo.size() == answersStartIndex) return false;
+        if (answerInfo.size() == answersStartSize) return false;
 
-        final List<RecordInfo<?>> additionalAnswerInfo = new ArrayList<>();
         // RFC6763 12.1: if including PTR record, include the SRV and TXT records it names
         if (hasDnsSdPtrRecordAnswer) {
             if (serviceTxtRecord != null) {
@@ -631,15 +706,6 @@ public class MdnsRecordRepository {
                 }
             }
         }
-
-        for (RecordInfo<?> info : additionalAnswerInfo) {
-            additionalAnswerRecords.add(info.record);
-        }
-
-        // RFC6762 6.1: negative responses
-        addNsecRecordsForUniqueNames(additionalAnswerRecords,
-                answerInfo.listIterator(answersStartIndex),
-                additionalAnswerInfo.listIterator());
         return true;
     }
 
@@ -656,7 +722,7 @@ public class MdnsRecordRepository {
      *                      answer and additionalAnswer sections)
      */
     @SafeVarargs
-    private static void addNsecRecordsForUniqueNames(
+    private void addNsecRecordsForUniqueNames(
             List<MdnsRecord> destinationList,
             Iterator<RecordInfo<?>>... answerRecords) {
         // Group unique records by name. Use a TreeMap with comparator as arrays don't implement
@@ -672,6 +738,12 @@ public class MdnsRecordRepository {
 
         for (String[] nsecName : namesInAddedOrder) {
             final List<MdnsRecord> entryRecords = nsecByName.get(nsecName);
+
+            // Add NSEC records only when the answers include all unique records of this name
+            if (entryRecords.size() != countUniqueRecords(nsecName)) {
+                continue;
+            }
+
             long minTtl = Long.MAX_VALUE;
             final Set<Integer> types = new ArraySet<>(entryRecords.size());
             for (MdnsRecord record : entryRecords) {
@@ -689,6 +761,27 @@ public class MdnsRecordRepository {
         }
     }
 
+    /** Returns the number of unique records on this device for a given {@code name}. */
+    private int countUniqueRecords(String[] name) {
+        int cnt = countUniqueRecords(mGeneralRecords, name);
+
+        for (int i = 0; i < mServices.size(); i++) {
+            final ServiceRegistration registration = mServices.valueAt(i);
+            cnt += countUniqueRecords(registration.allRecords, name);
+        }
+        return cnt;
+    }
+
+    private static int countUniqueRecords(List<RecordInfo<?>> records, String[] name) {
+        int cnt = 0;
+        for (RecordInfo<?> record : records) {
+            if (!record.isSharedName && Arrays.equals(name, record.record.getName())) {
+                cnt++;
+            }
+        }
+        return cnt;
+    }
+
     /**
      * Add non-shared records to a map listing them by record name, and to a list of names that
      * remembers the adding order.
@@ -703,10 +796,10 @@ public class MdnsRecordRepository {
     private static void addNonSharedRecordsToMap(
             Iterator<RecordInfo<?>> records,
             Map<String[], List<MdnsRecord>> dest,
-            List<String[]> namesInAddedOrder) {
+            @Nullable List<String[]> namesInAddedOrder) {
         while (records.hasNext()) {
             final RecordInfo<?> record = records.next();
-            if (record.isSharedName) continue;
+            if (record.isSharedName || record.record instanceof MdnsNsecRecord) continue;
             final List<MdnsRecord> recordsForName = dest.computeIfAbsent(record.record.name,
                     key -> {
                         namesInAddedOrder.add(key);
@@ -891,7 +984,7 @@ public class MdnsRecordRepository {
         if (existing == null) return null;
 
         final ServiceRegistration newService = new ServiceRegistration(mDeviceHostname, newInfo,
-                existing.subtype, existing.repliedServiceCount, existing.sentPacketCount);
+                existing.repliedServiceCount, existing.sentPacketCount);
         mServices.put(serviceId, newService);
         return makeProbingInfo(
                 serviceId, newService.srvRecord.record, makeProbingInetAddressRecords());
