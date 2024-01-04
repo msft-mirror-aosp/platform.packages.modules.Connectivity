@@ -19,12 +19,15 @@ package com.android.server.connectivity.mdns;
 import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
 
 import android.annotation.NonNull;
+import android.annotation.RequiresApi;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
-import android.util.Log;
 
-import com.android.server.connectivity.mdns.MdnsRecordRepository.ReplyInfo;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.SharedLog;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
@@ -40,36 +43,74 @@ import java.util.Collections;
  *
  * TODO: implement sending after a delay, combining queued replies and duplicate answer suppression
  */
+@RequiresApi(Build.VERSION_CODES.TIRAMISU)
 public class MdnsReplySender {
-    private static final boolean DBG = MdnsAdvertiser.DBG;
     private static final int MSG_SEND = 1;
+    private static final int PACKET_NOT_SENT = 0;
+    private static final int PACKET_SENT = 1;
 
-    private final String mLogTag;
     @NonNull
     private final MdnsInterfaceSocket mSocket;
     @NonNull
     private final Handler mHandler;
     @NonNull
     private final byte[] mPacketCreationBuffer;
+    @NonNull
+    private final SharedLog mSharedLog;
+    private final boolean mEnableDebugLog;
+    @NonNull
+    private final Dependencies mDependencies;
 
-    public MdnsReplySender(@NonNull String interfaceTag, @NonNull Looper looper,
-            @NonNull MdnsInterfaceSocket socket, @NonNull byte[] packetCreationBuffer) {
+    /**
+     * Dependencies of MdnsReplySender, for injection in tests.
+     */
+    @VisibleForTesting
+    public static class Dependencies {
+        /**
+         * @see Handler#sendMessageDelayed(Message, long)
+         */
+        public void sendMessageDelayed(@NonNull Handler handler, @NonNull Message message,
+                long delayMillis) {
+            handler.sendMessageDelayed(message, delayMillis);
+        }
+
+        /**
+         * @see Handler#removeMessages(int)
+         */
+        public void removeMessages(@NonNull Handler handler, int what) {
+            handler.removeMessages(what);
+        }
+    }
+
+    public MdnsReplySender(@NonNull Looper looper, @NonNull MdnsInterfaceSocket socket,
+            @NonNull byte[] packetCreationBuffer, @NonNull SharedLog sharedLog,
+            boolean enableDebugLog) {
+        this(looper, socket, packetCreationBuffer, sharedLog, enableDebugLog, new Dependencies());
+    }
+
+    @VisibleForTesting
+    public MdnsReplySender(@NonNull Looper looper, @NonNull MdnsInterfaceSocket socket,
+            @NonNull byte[] packetCreationBuffer, @NonNull SharedLog sharedLog,
+            boolean enableDebugLog, @NonNull Dependencies dependencies) {
         mHandler = new SendHandler(looper);
-        mLogTag = MdnsReplySender.class.getSimpleName() + "/" +  interfaceTag;
         mSocket = socket;
         mPacketCreationBuffer = packetCreationBuffer;
+        mSharedLog = sharedLog;
+        mEnableDebugLog = enableDebugLog;
+        mDependencies = dependencies;
     }
 
     /**
      * Queue a reply to be sent when its send delay expires.
      */
-    public void queueReply(@NonNull ReplyInfo reply) {
+    public void queueReply(@NonNull MdnsReplyInfo reply) {
         ensureRunningOnHandlerThread(mHandler);
         // TODO: implement response aggregation (RFC 6762 6.4)
-        mHandler.sendMessageDelayed(mHandler.obtainMessage(MSG_SEND, reply), reply.sendDelayMs);
+        mDependencies.sendMessageDelayed(
+                mHandler, mHandler.obtainMessage(MSG_SEND, reply), reply.sendDelayMs);
 
-        if (DBG) {
-            Log.v(mLogTag, "Scheduling " + reply);
+        if (mEnableDebugLog) {
+            mSharedLog.v("Scheduling " + reply);
         }
     }
 
@@ -78,44 +119,17 @@ public class MdnsReplySender {
      *
      * Must be called on the looper thread used by the {@link MdnsReplySender}.
      */
-    public void sendNow(@NonNull MdnsPacket packet, @NonNull InetSocketAddress destination)
+    public int sendNow(@NonNull MdnsPacket packet, @NonNull InetSocketAddress destination)
             throws IOException {
         ensureRunningOnHandlerThread(mHandler);
         if (!((destination.getAddress() instanceof Inet6Address && mSocket.hasJoinedIpv6())
                 || (destination.getAddress() instanceof Inet4Address && mSocket.hasJoinedIpv4()))) {
             // Skip sending if the socket has not joined the v4/v6 group (there was no address)
-            return;
+            return PACKET_NOT_SENT;
         }
-
-        // TODO: support packets over size (send in multiple packets with TC bit set)
-        final MdnsPacketWriter writer = new MdnsPacketWriter(mPacketCreationBuffer);
-
-        writer.writeUInt16(0); // Transaction ID (advertisement: 0)
-        writer.writeUInt16(packet.flags); // Response, authoritative (rfc6762 18.4)
-        writer.writeUInt16(packet.questions.size()); // questions count
-        writer.writeUInt16(packet.answers.size()); // answers count
-        writer.writeUInt16(packet.authorityRecords.size()); // authority entries count
-        writer.writeUInt16(packet.additionalRecords.size()); // additional records count
-
-        for (MdnsRecord record : packet.questions) {
-            // Questions do not have TTL or data
-            record.writeHeaderFields(writer);
-        }
-        for (MdnsRecord record : packet.answers) {
-            record.write(writer, 0L);
-        }
-        for (MdnsRecord record : packet.authorityRecords) {
-            record.write(writer, 0L);
-        }
-        for (MdnsRecord record : packet.additionalRecords) {
-            record.write(writer, 0L);
-        }
-
-        final int len = writer.getWritePosition();
-        final byte[] outBuffer = new byte[len];
-        System.arraycopy(mPacketCreationBuffer, 0, outBuffer, 0, len);
-
-        mSocket.send(new DatagramPacket(outBuffer, 0, len, destination));
+        final byte[] outBuffer = MdnsUtils.createRawDnsPacket(mPacketCreationBuffer, packet);
+        mSocket.send(new DatagramPacket(outBuffer, 0, outBuffer.length, destination));
+        return PACKET_SENT;
     }
 
     /**
@@ -123,7 +137,7 @@ public class MdnsReplySender {
      */
     public void cancelAll() {
         ensureRunningOnHandlerThread(mHandler);
-        mHandler.removeMessages(MSG_SEND);
+        mDependencies.removeMessages(mHandler, MSG_SEND);
     }
 
     private class SendHandler extends Handler {
@@ -133,8 +147,8 @@ public class MdnsReplySender {
 
         @Override
         public void handleMessage(@NonNull Message msg) {
-            final ReplyInfo replyInfo = (ReplyInfo) msg.obj;
-            if (DBG) Log.v(mLogTag, "Sending " + replyInfo);
+            final MdnsReplyInfo replyInfo = (MdnsReplyInfo) msg.obj;
+            if (mEnableDebugLog) mSharedLog.v("Sending " + replyInfo);
 
             final int flags = 0x8400; // Response, authoritative (rfc6762 18.4)
             final MdnsPacket packet = new MdnsPacket(flags,
@@ -146,7 +160,7 @@ public class MdnsReplySender {
             try {
                 sendNow(packet, replyInfo.destination);
             } catch (IOException e) {
-                Log.e(mLogTag, "Error sending MDNS response", e);
+                mSharedLog.e("Error sending MDNS response", e);
             }
         }
     }

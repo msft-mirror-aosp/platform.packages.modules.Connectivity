@@ -28,6 +28,7 @@ import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.assertEqualBothWays
 import com.android.testutils.assertParcelingIsLossless
 import com.android.testutils.parcelingRoundTrip
+import java.net.Inet6Address
 import java.net.InetAddress
 import kotlin.test.assertFailsWith
 import org.junit.Assert.assertEquals
@@ -44,10 +45,33 @@ class NattKeepalivePacketDataTest {
 
     private val TEST_PORT = 4243
     private val TEST_PORT2 = 4244
+    // ::FFFF:1.2.3.4
+    private val SRC_V4_MAPPED_V6_ADDRESS_BYTES = byteArrayOf(
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0x00.toByte(),
+        0xff.toByte(),
+        0xff.toByte(),
+        0x01.toByte(),
+        0x02.toByte(),
+        0x03.toByte(),
+        0x04.toByte()
+    )
     private val TEST_SRC_ADDRV4 = "198.168.0.2".address()
     private val TEST_DST_ADDRV4 = "198.168.0.1".address()
     private val TEST_ADDRV6 = "2001:db8::1".address()
-    private val TEST_ADDRV4MAPPEDV6 = "::ffff:1.2.3.4".address()
+    // This constant requires to be an Inet6Address, but InetAddresses.parseNumericAddress() will
+    // convert v4 mapped v6 address into an Inet4Address. So use Inet6Address.getByAddress() to
+    // create the address.
+    private val TEST_ADDRV4MAPPEDV6 = Inet6Address.getByAddress(null /* host */,
+        SRC_V4_MAPPED_V6_ADDRESS_BYTES, -1 /* scope_id */)
     private val TEST_ADDRV4 = "1.2.3.4".address()
 
     private fun String.address() = InetAddresses.parseNumericAddress(this)
@@ -58,7 +82,7 @@ class NattKeepalivePacketDataTest {
         dstPort: Int = NATT_PORT
     ) = NattKeepalivePacketData.nattKeepalivePacket(srcAddress, srcPort, dstAddress, dstPort)
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     fun testConstructor() {
         assertFailsWith<InvalidPacketException>(
             "Dst port is not NATT port should cause exception") {
@@ -108,12 +132,12 @@ class NattKeepalivePacketDataTest {
         assertEquals(TEST_ADDRV6, packet2.dstAddress)
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     fun testParcel() {
         assertParcelingIsLossless(nattKeepalivePacket())
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     fun testEquals() {
         assertEqualBothWays(nattKeepalivePacket(), nattKeepalivePacket())
         assertNotEquals(nattKeepalivePacket(dstAddress = TEST_SRC_ADDRV4), nattKeepalivePacket())
@@ -122,7 +146,7 @@ class NattKeepalivePacketDataTest {
         assertNotEquals(nattKeepalivePacket(srcPort = TEST_PORT2), nattKeepalivePacket())
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     fun testHashCode() {
         assertEquals(nattKeepalivePacket().hashCode(), nattKeepalivePacket().hashCode())
     }
