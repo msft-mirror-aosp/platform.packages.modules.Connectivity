@@ -43,6 +43,7 @@ import android.net.cts.NsdDiscoveryRecord.DiscoveryEvent.DiscoveryStarted
 import android.net.cts.NsdDiscoveryRecord.DiscoveryEvent.DiscoveryStopped
 import android.net.cts.NsdDiscoveryRecord.DiscoveryEvent.ServiceFound
 import android.net.cts.NsdDiscoveryRecord.DiscoveryEvent.ServiceLost
+import android.net.cts.NsdRegistrationRecord.RegistrationEvent.RegistrationFailed
 import android.net.cts.NsdRegistrationRecord.RegistrationEvent.ServiceRegistered
 import android.net.cts.NsdRegistrationRecord.RegistrationEvent.ServiceUnregistered
 import android.net.cts.NsdResolveRecord.ResolveEvent.ResolutionStopped
@@ -992,6 +993,130 @@ class NsdManagerTest {
     }
 
     @Test
+    fun testSubtypeAdvertisingAndDiscovery_withSetSubtypesApi() {
+        runSubtypeAdvertisingAndDiscoveryTest(useLegacySpecifier = false)
+    }
+
+    @Test
+    fun testSubtypeAdvertisingAndDiscovery_withSetSubtypesApiAndLegacySpecifier() {
+        runSubtypeAdvertisingAndDiscoveryTest(useLegacySpecifier = true)
+    }
+
+    private fun runSubtypeAdvertisingAndDiscoveryTest(useLegacySpecifier: Boolean) {
+        val si = makeTestServiceInfo(network = testNetwork1.network)
+        if (useLegacySpecifier) {
+            si.subtypes = setOf("_subtype1")
+
+            // Test "_type._tcp.local,_subtype" syntax with the registration
+            si.serviceType = si.serviceType + ",_subtype2"
+        } else {
+            si.subtypes = setOf("_subtype1", "_subtype2")
+        }
+
+        val registrationRecord = NsdRegistrationRecord()
+
+        val baseTypeDiscoveryRecord = NsdDiscoveryRecord()
+        val subtype1DiscoveryRecord = NsdDiscoveryRecord()
+        val subtype2DiscoveryRecord = NsdDiscoveryRecord()
+        val otherSubtypeDiscoveryRecord = NsdDiscoveryRecord()
+        tryTest {
+            registerService(registrationRecord, si)
+
+            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD,
+                    testNetwork1.network, Executor { it.run() }, baseTypeDiscoveryRecord)
+
+            // Test "<subtype>._type._tcp.local" syntax with discovery. Note this is not
+            // "<subtype>._sub._type._tcp.local".
+            nsdManager.discoverServices("_othersubtype.$serviceType",
+                    NsdManager.PROTOCOL_DNS_SD,
+                    testNetwork1.network, Executor { it.run() }, otherSubtypeDiscoveryRecord)
+            nsdManager.discoverServices("_subtype1.$serviceType",
+                    NsdManager.PROTOCOL_DNS_SD,
+                    testNetwork1.network, Executor { it.run() }, subtype1DiscoveryRecord)
+            nsdManager.discoverServices("_subtype2.$serviceType",
+                    NsdManager.PROTOCOL_DNS_SD,
+                    testNetwork1.network, Executor { it.run() }, subtype2DiscoveryRecord)
+
+            val info1 = subtype1DiscoveryRecord.waitForServiceDiscovered(
+                    serviceName, serviceType, testNetwork1.network)
+            assertTrue(info1.subtypes.contains("_subtype1"))
+            val info2 = subtype2DiscoveryRecord.waitForServiceDiscovered(
+                    serviceName, serviceType, testNetwork1.network)
+            assertTrue(info2.subtypes.contains("_subtype2"))
+            baseTypeDiscoveryRecord.waitForServiceDiscovered(
+                    serviceName, serviceType, testNetwork1.network)
+            otherSubtypeDiscoveryRecord.expectCallback<DiscoveryStarted>()
+            // The subtype callback was registered later but called, no need for an extra delay
+            otherSubtypeDiscoveryRecord.assertNoCallback(timeoutMs = 0)
+        } cleanupStep {
+            nsdManager.stopServiceDiscovery(baseTypeDiscoveryRecord)
+            nsdManager.stopServiceDiscovery(subtype1DiscoveryRecord)
+            nsdManager.stopServiceDiscovery(subtype2DiscoveryRecord)
+            nsdManager.stopServiceDiscovery(otherSubtypeDiscoveryRecord)
+
+            baseTypeDiscoveryRecord.expectCallback<DiscoveryStopped>()
+            subtype1DiscoveryRecord.expectCallback<DiscoveryStopped>()
+            subtype2DiscoveryRecord.expectCallback<DiscoveryStopped>()
+            otherSubtypeDiscoveryRecord.expectCallback<DiscoveryStopped>()
+        } cleanup {
+            nsdManager.unregisterService(registrationRecord)
+        }
+    }
+
+    @Test
+    fun testMultipleSubTypeAdvertisingAndDiscovery_withUpdate() {
+        val si1 = makeTestServiceInfo(network = testNetwork1.network).apply {
+            serviceType += ",_subtype1"
+        }
+        val si2 = makeTestServiceInfo(network = testNetwork1.network).apply {
+            serviceType += ",_subtype2"
+        }
+        val registrationRecord = NsdRegistrationRecord()
+        val subtype3DiscoveryRecord = NsdDiscoveryRecord()
+        tryTest {
+            registerService(registrationRecord, si1)
+            updateService(registrationRecord, si2)
+            nsdManager.discoverServices("_subtype2.$serviceType",
+                    NsdManager.PROTOCOL_DNS_SD, testNetwork1.network,
+                    { it.run() }, subtype3DiscoveryRecord)
+            subtype3DiscoveryRecord.waitForServiceDiscovered(serviceName,
+                    serviceType, testNetwork1.network)
+        } cleanupStep {
+            nsdManager.stopServiceDiscovery(subtype3DiscoveryRecord)
+            subtype3DiscoveryRecord.expectCallback<DiscoveryStopped>()
+        } cleanup {
+            nsdManager.unregisterService(registrationRecord)
+        }
+    }
+
+    @Test
+    fun testSubtypeAdvertising_tooManySubtypes_returnsFailureBadParameters() {
+        val si = makeTestServiceInfo(network = testNetwork1.network)
+        // Sets 101 subtypes in total
+        val seq = generateSequence(1) { it + 1}
+        si.subtypes = seq.take(100).toList().map {it -> "_subtype" + it}.toSet()
+        si.serviceType = si.serviceType + ",_subtype"
+
+        val record = NsdRegistrationRecord()
+        nsdManager.registerService(si, NsdManager.PROTOCOL_DNS_SD, Executor { it.run() }, record)
+
+        val failedCb = record.expectCallback<RegistrationFailed>(REGISTRATION_TIMEOUT_MS)
+        assertEquals(NsdManager.FAILURE_BAD_PARAMETERS, failedCb.errorCode)
+    }
+
+    @Test
+    fun testSubtypeAdvertising_emptySubtypeLabel_returnsFailureBadParameters() {
+        val si = makeTestServiceInfo(network = testNetwork1.network)
+        si.subtypes = setOf("")
+
+        val record = NsdRegistrationRecord()
+        nsdManager.registerService(si, NsdManager.PROTOCOL_DNS_SD, Executor { it.run() }, record)
+
+        val failedCb = record.expectCallback<RegistrationFailed>(REGISTRATION_TIMEOUT_MS)
+        assertEquals(NsdManager.FAILURE_BAD_PARAMETERS, failedCb.errorCode)
+    }
+
+    @Test
     fun testRegisterWithConflictDuringProbing() {
         // This test requires shims supporting T+ APIs (NsdServiceInfo.network)
         assumeTrue(TestUtils.shouldTestTApis())
@@ -1303,6 +1428,18 @@ class NsdManagerTest {
         // This events tells us the name that was registered.
         val cb = record.expectCallback<ServiceRegistered>(REGISTRATION_TIMEOUT_MS)
         return cb.serviceInfo
+    }
+
+    /**
+     * Update a service.
+     */
+    private fun updateService(
+            record: NsdRegistrationRecord,
+            si: NsdServiceInfo,
+            executor: Executor = Executor { it.run() }
+    ) {
+        nsdManager.registerService(si, NsdManager.PROTOCOL_DNS_SD, executor, record)
+        // TODO: add the callback check for the update.
     }
 
     private fun resolveService(discoveredInfo: NsdServiceInfo): NsdServiceInfo {
