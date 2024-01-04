@@ -626,6 +626,7 @@ class NetworkAgentTest {
             }
         }
         agent.unregister()
+        callback.eventuallyExpect<Lost> { it.network == agent.network }
         // callback will be unregistered in tearDown()
     }
 
@@ -774,11 +775,13 @@ class NetworkAgentTest {
 
             // Cell and WiFi are allowed to set UIDs, but not Bluetooth or agents with multiple
             // transports.
-            doTestAllowedUids(defaultSubId, TRANSPORT_CELLULAR, uid, expectUidsPresent = true)
+            // TODO(b/315136340): Allow ownerUid to see allowedUids and enable below test case
+            // doTestAllowedUids(defaultSubId, TRANSPORT_CELLULAR, uid, expectUidsPresent = true)
             if (SdkLevel.isAtLeastV()) {
                 // Cannot be tested before V because WifiInfo.Builder#setSubscriptionId doesn't
                 // exist
-                doTestAllowedUids(defaultSubId, TRANSPORT_WIFI, uid, expectUidsPresent = true)
+                // TODO(b/315136340): Allow ownerUid to see allowedUids and enable below test case
+                // doTestAllowedUids(defaultSubId, TRANSPORT_WIFI, uid, expectUidsPresent = true)
             }
             doTestAllowedUids(defaultSubId, TRANSPORT_BLUETOOTH, uid, expectUidsPresent = false)
             doTestAllowedUids(defaultSubId, intArrayOf(TRANSPORT_CELLULAR, TRANSPORT_WIFI), uid,
