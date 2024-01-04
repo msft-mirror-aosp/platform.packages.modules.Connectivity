@@ -19,15 +19,6 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// In the branch which does not support FlaggedAPI, use this default to ignore the annotated APIs.
-java_defaults {
-    name: "FlaggedApiDefaults",
-}
-
-// The above variables may have different values
-// depending on the branch, and this comment helps
-// separate them from the rest of the file to avoid merge conflicts
-
 filegroup {
     name: "framework-connectivity-internal-sources",
     srcs: [
@@ -94,7 +85,9 @@ java_defaults {
         "framework-wifi.stubs.module_lib",
     ],
     static_libs: [
-        "mdns_aidl_interface-lateststable-java",
+        // Not using the latest stable version because all functions in the latest version of
+        // mdns_aidl_interface are deprecated.
+        "mdns_aidl_interface-V1-java",
         "modules-utils-backgroundthread",
         "modules-utils-build",
         "modules-utils-preconditions",
@@ -112,7 +105,9 @@ java_defaults {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        strict_updatability_linting: true,
+    },
 }
 
 java_library {
@@ -141,7 +136,10 @@ java_library {
         "framework-tethering.impl",
         "framework-wifi.stubs.module_lib",
     ],
-    visibility: ["//packages/modules/Connectivity:__subpackages__"]
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
 
 java_defaults {
@@ -161,7 +159,6 @@ java_sdk_library {
     defaults: [
         "framework-connectivity-defaults",
         "CronetJavaDefaults",
-        "FlaggedApiDefaults",
     ],
     installable: true,
     jarjar_rules: ":framework-connectivity-jarjar-rules",
@@ -193,10 +190,14 @@ java_sdk_library {
         "//packages/modules/Connectivity/Cronet/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/thread/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
     ],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
 
 platform_compat_config {
@@ -256,6 +257,9 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
 
 java_genrule {
@@ -266,6 +270,7 @@ java_genrule {
         ":framework-connectivity-t-pre-jarjar{.jar}",
         ":framework-connectivity.stubs.module_lib{.jar}",
         ":framework-connectivity-t.stubs.module_lib{.jar}",
+        ":framework-connectivity-module-api-stubs-including-flagged{.jar}",
         "jarjar-excludes.txt",
     ],
     tools: [
@@ -278,6 +283,7 @@ java_genrule {
         "--prefix android.net.connectivity " +
         "--apistubs $(location :framework-connectivity.stubs.module_lib{.jar}) " +
         "--apistubs $(location :framework-connectivity-t.stubs.module_lib{.jar}) " +
+        "--apistubs $(location :framework-connectivity-module-api-stubs-including-flagged{.jar}) " +
         // Make a ":"-separated list. There will be an extra ":" but empty items are ignored.
         "--unsupportedapi $$(printf ':%s' $(locations :connectivity-hiddenapi-files)) " +
         "--excludes $(location jarjar-excludes.txt) " +
@@ -287,6 +293,36 @@ java_genrule {
         "//packages/modules/Connectivity/framework-t:__subpackages__",
         "//packages/modules/Connectivity/service",
     ],
+}
+
+droidstubs {
+    name: "framework-connectivity-module-api-stubs-including-flagged-droidstubs",
+    srcs: [
+        ":framework-connectivity-sources",
+        ":framework-connectivity-tiramisu-updatable-sources",
+        ":framework-nearby-java-sources",
+        ":framework-thread-sources",
+    ],
+    flags: [
+        "--show-for-stub-purposes-annotation android.annotation.SystemApi" +
+            "\\(client=android.annotation.SystemApi.Client.PRIVILEGED_APPS\\)",
+        "--show-for-stub-purposes-annotation android.annotation.SystemApi" +
+            "\\(client=android.annotation.SystemApi.Client.MODULE_LIBRARIES\\)",
+    ],
+    aidl: {
+        include_dirs: [
+            "packages/modules/Connectivity/framework/aidl-export",
+            "frameworks/native/aidl/binder", // For PersistableBundle.aidl
+        ],
+    },
+}
+
+java_library {
+    name: "framework-connectivity-module-api-stubs-including-flagged",
+    srcs: [":framework-connectivity-module-api-stubs-including-flagged-droidstubs"],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
 
 // Library providing limited APIs within the connectivity module, so that R+ components like
@@ -306,9 +342,12 @@ java_library {
         // Files listed here MUST all be annotated with @RequiresApi(Build.VERSION_CODES.S)
         // or above as appropriate so that API checks are enforced for R+ users of this library
         "src/android/net/RoutingCoordinatorManager.java",
-        "src/android/net/connectivity/TiramisuConnectivityInternalApiUtil.java",
+        "src/android/net/connectivity/ConnectivityInternalApiUtil.java",
     ],
     visibility: [
         "//packages/modules/Connectivity/Tethering:__subpackages__",
     ],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }

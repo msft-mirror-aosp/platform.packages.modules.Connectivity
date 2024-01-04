@@ -196,8 +196,8 @@
 
     <!-- Regex of wired ethernet ifaces. Network interfaces that match this regex will be tracked
          by ethernet service.
-         If set to "*", ethernet service uses "(eth|usb)\\d+" on Android U+ and eth\\d+ on
-         Android T. -->
+         If set to "*", ethernet service uses "(eth|usb)\\d+" on Android V+ and eth\\d+ on
+         Android T and U. -->
     <string translatable="false" name="config_ethernet_iface_regex">*</string>
 
     <!-- Ignores Wi-Fi validation failures after roam.

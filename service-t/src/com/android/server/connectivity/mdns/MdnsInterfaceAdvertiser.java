@@ -37,6 +37,7 @@ import com.android.server.connectivity.mdns.util.MdnsUtils;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A class that handles advertising services on a {@link MdnsInterfaceSocket} tied to an interface.
@@ -65,11 +66,12 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
     private final MdnsProber mProber;
     @NonNull
     private final MdnsReplySender mReplySender;
-
     @NonNull
     private final SharedLog mSharedLog;
     @NonNull
     private final byte[] mPacketCreationBuffer;
+    @NonNull
+    private final MdnsFeatureFlags mMdnsFeatureFlags;
 
     /**
      * Callbacks called by {@link MdnsInterfaceAdvertiser} to report status updates.
@@ -213,6 +215,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         mProber = deps.makeMdnsProber(sharedLog.getTag(), looper, mReplySender, mProbingCallback,
                 sharedLog);
         mSharedLog = sharedLog;
+        mMdnsFeatureFlags = mdnsFeatureFlags;
     }
 
     /**
@@ -227,13 +230,24 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
     }
 
     /**
+     * Update an already registered service without sending exit/re-announcement packet.
+     *
+     * @param id An exiting service id
+     * @param subtypes New subtypes
+     */
+    public void updateService(int id, @NonNull Set<String> subtypes) {
+        // The current implementation is intended to be used in cases where subtypes don't get
+        // announced.
+        mRecordRepository.updateService(id, subtypes);
+    }
+
+    /**
      * Start advertising a service.
      *
      * @throws NameConflictException There is already a service being advertised with that name.
      */
-    public void addService(int id, NsdServiceInfo service, @Nullable String subtype)
-            throws NameConflictException {
-        final int replacedExitingService = mRecordRepository.addService(id, service, subtype);
+    public void addService(int id, NsdServiceInfo service) throws NameConflictException {
+        final int replacedExitingService = mRecordRepository.addService(id, service);
         // Cancel announcements for the existing service. This only happens for exiting services
         // (so cancelling exiting announcements), as per RecordRepository.addService.
         if (replacedExitingService >= 0) {
@@ -351,7 +365,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
     public void handlePacket(byte[] recvbuf, int length, InetSocketAddress src) {
         final MdnsPacket packet;
         try {
-            packet = MdnsPacket.parse(new MdnsPacketReader(recvbuf, length));
+            packet = MdnsPacket.parse(new MdnsPacketReader(recvbuf, length, mMdnsFeatureFlags));
         } catch (MdnsPacket.ParseException e) {
             mSharedLog.e("Error parsing mDNS packet", e);
             if (DBG) {

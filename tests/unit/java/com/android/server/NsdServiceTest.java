@@ -16,6 +16,7 @@
 
 package com.android.server;
 
+import static android.Manifest.permission.DEVICE_POWER;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.NETWORK_STACK;
 import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED;
@@ -24,7 +25,6 @@ import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_GONE;
 import static android.app.ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
 import static android.content.pm.PackageManager.PERMISSION_DENIED;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
-import static android.content.pm.PermissionInfo.PROTECTION_SIGNATURE;
 import static android.net.InetAddresses.parseNumericAddress;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
@@ -75,7 +75,6 @@ import android.compat.testing.PlatformCompatChangeRule;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.pm.PackageManager;
-import android.content.pm.PermissionInfo;
 import android.net.INetd;
 import android.net.Network;
 import android.net.mdns.aidl.DiscoveryInfo;
@@ -141,14 +140,19 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Queue;
+import java.util.Set;
 
 // TODOs:
 //  - test client can send requests and receive replies
 //  - test NSD_ON ENABLE/DISABLED listening
+@DevSdkIgnoreRunner.MonitorThreadLeak
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
 @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 public class NsdServiceTest {
+    @Rule
+    public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
+
     static final int PROTOCOL = NsdManager.PROTOCOL_DNS_SD;
     private static final long CLEANUP_DELAY_MS = 500;
     private static final long TIMEOUT_MS = 500;
@@ -169,6 +173,8 @@ public class NsdServiceTest {
 
     @Rule
     public TestRule compatChangeRule = new PlatformCompatChangeRule();
+    @Rule
+    public TestRule ignoreRule = new DevSdkIgnoreRule();
     @Mock Context mContext;
     @Mock PackageManager mPackageManager;
     @Mock ContentResolver mResolver;
@@ -252,6 +258,8 @@ public class NsdServiceTest {
         }
     }
 
+    // Native mdns provided by Netd is removed after U.
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     @Test
     @DisableCompatChanges({
             RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER,
@@ -284,6 +292,7 @@ public class NsdServiceTest {
     @Test
     @EnableCompatChanges(RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testNoDaemonStartedWhenClientsConnect() throws Exception {
         // Creating an NsdManager will not cause daemon startup.
         connectClient(mService);
@@ -319,6 +328,7 @@ public class NsdServiceTest {
     @Test
     @EnableCompatChanges(RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testClientRequestsAreGCedAtDisconnection() throws Exception {
         final NsdManager client = connectClient(mService);
         final INsdManagerCallback cb1 = getCallback();
@@ -363,6 +373,7 @@ public class NsdServiceTest {
     @Test
     @EnableCompatChanges(RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER)
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testCleanupDelayNoRequestActive() throws Exception {
         final NsdManager client = connectClient(mService);
 
@@ -399,6 +410,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testDiscoverOnTetheringDownstream() throws Exception {
         final NsdManager client = connectClient(mService);
         final int interfaceIdx = 123;
@@ -497,6 +509,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testDiscoverOnBlackholeNetwork() throws Exception {
         final NsdManager client = connectClient(mService);
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
@@ -529,6 +542,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testServiceRegistrationSuccessfulAndFailed() throws Exception {
         final NsdManager client = connectClient(mService);
         final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
@@ -583,6 +597,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testServiceDiscoveryFailed() throws Exception {
         final NsdManager client = connectClient(mService);
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
@@ -615,6 +630,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testServiceResolutionFailed() throws Exception {
         final NsdManager client = connectClient(mService);
         final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
@@ -650,6 +666,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testGettingAddressFailed() throws Exception {
         final NsdManager client = connectClient(mService);
         final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
@@ -701,6 +718,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testNoCrashWhenProcessResolutionAfterBinderDied() throws Exception {
         final NsdManager client = connectClient(mService);
         final INsdManagerCallback cb = getCallback();
@@ -721,6 +739,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testStopServiceResolution() {
         final NsdManager client = connectClient(mService);
         final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
@@ -747,6 +766,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testStopResolutionFailed() {
         final NsdManager client = connectClient(mService);
         final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
@@ -772,6 +792,7 @@ public class NsdServiceTest {
 
     @Test @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.TIRAMISU)
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testStopResolutionDuringGettingAddress() throws RemoteException {
         final NsdManager client = connectClient(mService);
         final NsdServiceInfo request = new NsdServiceInfo(SERVICE_NAME, SERVICE_TYPE);
@@ -953,6 +974,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testMdnsDiscoveryManagerFeature() {
         // Create NsdService w/o feature enabled.
         final NsdManager client = connectClient(mService);
@@ -1113,9 +1135,10 @@ public class NsdServiceTest {
         final RegistrationListener regListener = mock(RegistrationListener.class);
         client.registerService(regInfo, NsdManager.PROTOCOL_DNS_SD, Runnable::run, regListener);
         waitForIdle();
-        verify(mAdvertiser).addService(anyInt(), argThat(s ->
+        verify(mAdvertiser).addOrUpdateService(anyInt(), argThat(s ->
                 "Instance".equals(s.getServiceName())
-                        && SERVICE_TYPE.equals(s.getServiceType())), eq("_subtype"));
+                        && SERVICE_TYPE.equals(s.getServiceType())
+                        && s.getSubtypes().equals(Set.of("_subtype"))), any());
 
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
         client.discoverServices(typeWithSubtype, PROTOCOL, network, Runnable::run, discListener);
@@ -1199,6 +1222,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testMdnsAdvertiserFeatureFlagging() {
         // Create NsdService w/o feature enabled.
         final NsdManager client = connectClient(mService);
@@ -1220,8 +1244,8 @@ public class NsdServiceTest {
         waitForIdle();
 
         final ArgumentCaptor<Integer> serviceIdCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(mAdvertiser).addService(serviceIdCaptor.capture(),
-                argThat(info -> matches(info, regInfo)), eq(null) /* subtype */);
+        verify(mAdvertiser).addOrUpdateService(serviceIdCaptor.capture(),
+                argThat(info -> matches(info, regInfo)), any());
 
         client.unregisterService(regListenerWithoutFeature);
         waitForIdle();
@@ -1237,6 +1261,7 @@ public class NsdServiceTest {
 
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testTypeSpecificFeatureFlagging() {
         doReturn("_type1._tcp:flag1,_type2._tcp:flag2").when(mDeps).getTypeAllowlistFlags();
         doReturn(true).when(mDeps).isFeatureEnabled(any(),
@@ -1280,10 +1305,10 @@ public class NsdServiceTest {
         waitForIdle();
 
         // The advertiser is enabled for _type2 but not _type1
-        verify(mAdvertiser, never()).addService(
-                anyInt(), argThat(info -> matches(info, service1)), eq(null) /* subtype */);
-        verify(mAdvertiser).addService(
-                anyInt(), argThat(info -> matches(info, service2)), eq(null) /* subtype */);
+        verify(mAdvertiser, never()).addOrUpdateService(anyInt(),
+                argThat(info -> matches(info, service1)), any());
+        verify(mAdvertiser).addOrUpdateService(anyInt(), argThat(info -> matches(info, service2)),
+                any());
     }
 
     @Test
@@ -1307,8 +1332,8 @@ public class NsdServiceTest {
         waitForIdle();
         verify(mSocketProvider).startMonitoringSockets();
         final ArgumentCaptor<Integer> idCaptor = ArgumentCaptor.forClass(Integer.class);
-        verify(mAdvertiser).addService(idCaptor.capture(), argThat(info ->
-                matches(info, regInfo)), eq(null) /* subtype */);
+        verify(mAdvertiser).addOrUpdateService(idCaptor.capture(), argThat(info ->
+                matches(info, regInfo)), any());
 
         // Verify onServiceRegistered callback
         final MdnsAdvertiser.AdvertiserCallback cb = cbCaptor.getValue();
@@ -1356,7 +1381,7 @@ public class NsdServiceTest {
 
         client.registerService(regInfo, NsdManager.PROTOCOL_DNS_SD, Runnable::run, regListener);
         waitForIdle();
-        verify(mAdvertiser, never()).addService(anyInt(), any(), any());
+        verify(mAdvertiser, never()).addOrUpdateService(anyInt(), any(), any());
 
         verify(regListener, timeout(TIMEOUT_MS)).onRegistrationFailed(
                 argThat(info -> matches(info, regInfo)), eq(FAILURE_INTERNAL_ERROR));
@@ -1385,9 +1410,8 @@ public class NsdServiceTest {
         waitForIdle();
         final ArgumentCaptor<Integer> idCaptor = ArgumentCaptor.forClass(Integer.class);
         // Service name is truncated to 63 characters
-        verify(mAdvertiser).addService(idCaptor.capture(),
-                argThat(info -> info.getServiceName().equals("a".repeat(63))),
-                eq(null) /* subtype */);
+        verify(mAdvertiser).addOrUpdateService(idCaptor.capture(),
+                argThat(info -> info.getServiceName().equals("a".repeat(63))), any());
 
         // Verify onServiceRegistered callback
         final MdnsAdvertiser.AdvertiserCallback cb = cbCaptor.getValue();
@@ -1451,14 +1475,22 @@ public class NsdServiceTest {
         final String serviceType5 = "_TEST._999._tcp.";
         final String serviceType6 = "_998._tcp.,_TEST";
         final String serviceType7 = "_997._tcp,_TEST";
+        final String serviceType8 = "_997._tcp,_test1,_test2,_test3";
+        final String serviceType9 = "_test4._997._tcp,_test1,_test2,_test3";
 
         assertNull(parseTypeAndSubtype(serviceType1));
         assertNull(parseTypeAndSubtype(serviceType2));
         assertNull(parseTypeAndSubtype(serviceType3));
-        assertEquals(new Pair<>("_123._udp", null), parseTypeAndSubtype(serviceType4));
-        assertEquals(new Pair<>("_999._tcp", "_TEST"), parseTypeAndSubtype(serviceType5));
-        assertEquals(new Pair<>("_998._tcp", "_TEST"), parseTypeAndSubtype(serviceType6));
-        assertEquals(new Pair<>("_997._tcp", "_TEST"), parseTypeAndSubtype(serviceType7));
+        assertEquals(new Pair<>("_123._udp", Collections.emptyList()),
+                parseTypeAndSubtype(serviceType4));
+        assertEquals(new Pair<>("_999._tcp", List.of("_TEST")), parseTypeAndSubtype(serviceType5));
+        assertEquals(new Pair<>("_998._tcp", List.of("_TEST")), parseTypeAndSubtype(serviceType6));
+        assertEquals(new Pair<>("_997._tcp", List.of("_TEST")), parseTypeAndSubtype(serviceType7));
+
+        assertEquals(new Pair<>("_997._tcp", List.of("_test1", "_test2", "_test3")),
+                parseTypeAndSubtype(serviceType8));
+        assertEquals(new Pair<>("_997._tcp", List.of("_test4")),
+                parseTypeAndSubtype(serviceType9));
     }
 
     @Test
@@ -1477,7 +1509,7 @@ public class NsdServiceTest {
         client.registerService(regInfo, NsdManager.PROTOCOL_DNS_SD, Runnable::run, regListener);
         waitForIdle();
         verify(mSocketProvider).startMonitoringSockets();
-        verify(mAdvertiser).addService(anyInt(), any(), any());
+        verify(mAdvertiser).addOrUpdateService(anyInt(), any(), any());
 
         // Verify the discovery uses MdnsDiscoveryManager
         final DiscoveryListener discListener = mock(DiscoveryListener.class);
@@ -1510,7 +1542,7 @@ public class NsdServiceTest {
         client.registerService(regInfo, NsdManager.PROTOCOL_DNS_SD, Runnable::run, regListener);
         waitForIdle();
         verify(mSocketProvider).startMonitoringSockets();
-        verify(mAdvertiser).addService(anyInt(), any(), any());
+        verify(mAdvertiser).addOrUpdateService(anyInt(), any(), any());
 
         final Network wifiNetwork1 = new Network(123);
         final Network wifiNetwork2 = new Network(124);
@@ -1696,8 +1728,8 @@ public class NsdServiceTest {
 
     @Test
     @EnableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
-    public void testRegisterOffloadEngine_checkPermission()
-            throws PackageManager.NameNotFoundException {
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public void testRegisterOffloadEngine_checkPermission_V() {
         final NsdManager client = connectClient(mService);
         final OffloadEngine offloadEngine = mock(OffloadEngine.class);
         doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(NETWORK_STACK);
@@ -1707,17 +1739,41 @@ public class NsdServiceTest {
         doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(
                 REGISTER_NSD_OFFLOAD_ENGINE);
 
-        PermissionInfo permissionInfo = new PermissionInfo("");
-        permissionInfo.packageName = "android";
-        permissionInfo.protectionLevel = PROTECTION_SIGNATURE;
-        doReturn(permissionInfo).when(mPackageManager).getPermissionInfo(
-                REGISTER_NSD_OFFLOAD_ENGINE, 0);
-        client.registerOffloadEngine("iface1", OffloadEngine.OFFLOAD_TYPE_REPLY,
-                OffloadEngine.OFFLOAD_CAPABILITY_BYPASS_MULTICAST_LOCK,
-                Runnable::run, offloadEngine);
-        client.unregisterOffloadEngine(offloadEngine);
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(
+                REGISTER_NSD_OFFLOAD_ENGINE);
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(DEVICE_POWER);
+        assertThrows(SecurityException.class,
+                () -> client.registerOffloadEngine("iface1", OffloadEngine.OFFLOAD_TYPE_REPLY,
+                        OffloadEngine.OFFLOAD_CAPABILITY_BYPASS_MULTICAST_LOCK, Runnable::run,
+                        offloadEngine));
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(
+                REGISTER_NSD_OFFLOAD_ENGINE);
+        final OffloadEngine offloadEngine2 = mock(OffloadEngine.class);
+        client.registerOffloadEngine("iface2", OffloadEngine.OFFLOAD_TYPE_REPLY,
+                OffloadEngine.OFFLOAD_CAPABILITY_BYPASS_MULTICAST_LOCK, Runnable::run,
+                offloadEngine2);
+        client.unregisterOffloadEngine(offloadEngine2);
+    }
 
-        // TODO: add checks to test the packageName other than android
+    @Test
+    @EnableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.TIRAMISU)
+    public void testRegisterOffloadEngine_checkPermission_U() {
+        final NsdManager client = connectClient(mService);
+        final OffloadEngine offloadEngine = mock(OffloadEngine.class);
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(NETWORK_STACK);
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(
+                PERMISSION_MAINLINE_NETWORK_STACK);
+        doReturn(PERMISSION_DENIED).when(mContext).checkCallingOrSelfPermission(NETWORK_SETTINGS);
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(
+                REGISTER_NSD_OFFLOAD_ENGINE);
+
+        doReturn(PERMISSION_GRANTED).when(mContext).checkCallingOrSelfPermission(DEVICE_POWER);
+        client.registerOffloadEngine("iface2", OffloadEngine.OFFLOAD_TYPE_REPLY,
+                OffloadEngine.OFFLOAD_CAPABILITY_BYPASS_MULTICAST_LOCK, Runnable::run,
+                offloadEngine);
+        client.unregisterOffloadEngine(offloadEngine);
     }
 
 

@@ -27,7 +27,11 @@
 
     <test class="com.android.tradefed.testtype.AndroidJUnitTest" >
         <option name="package" value="android.net.thread.unittests" />
+        <option name="hidden-api-checks" value="false"/>
         <!-- Ignores tests introduced by guava-android-testlib -->
         <option name="exclude-annotation" value="org.junit.Ignore"/>
+        <!-- Ignores tests introduced by frameworks-base-testutils -->
+        <option name="exclude-filter" value="android.os.test.TestLooperTest"/>
+        <option name="exclude-filter" value="com.android.test.filters.SelectTestTests"/>
     </test>
 </configuration>

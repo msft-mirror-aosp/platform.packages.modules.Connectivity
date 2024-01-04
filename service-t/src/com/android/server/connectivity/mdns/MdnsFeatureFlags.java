@@ -36,6 +36,16 @@ public class MdnsFeatureFlags {
     public static final String NSD_EXPIRED_SERVICES_REMOVAL =
             "nsd_expired_services_removal";
 
+    /**
+     * A feature flag to control whether the label count limit should be enabled.
+     */
+    public static final String NSD_LIMIT_LABEL_COUNT = "nsd_limit_label_count";
+
+    /**
+     * A feature flag to control whether the known-answer suppression should be enabled.
+     */
+    public static final String NSD_KNOWN_ANSWER_SUPPRESSION = "nsd_known_answer_suppression";
+
     // Flag for offload feature
     public final boolean mIsMdnsOffloadFeatureEnabled;
 
@@ -45,14 +55,25 @@ public class MdnsFeatureFlags {
     // Flag for expired services removal
     public final boolean mIsExpiredServicesRemovalEnabled;
 
+    // Flag for label count limit
+    public final boolean mIsLabelCountLimitEnabled;
+
+    // Flag for known-answer suppression
+    public final boolean mIsKnownAnswerSuppressionEnabled;
+
     /**
      * The constructor for {@link MdnsFeatureFlags}.
      */
     public MdnsFeatureFlags(boolean isOffloadFeatureEnabled,
-            boolean includeInetAddressRecordsInProbing, boolean isExpiredServicesRemovalEnabled) {
+            boolean includeInetAddressRecordsInProbing,
+            boolean isExpiredServicesRemovalEnabled,
+            boolean isLabelCountLimitEnabled,
+            boolean isKnownAnswerSuppressionEnabled) {
         mIsMdnsOffloadFeatureEnabled = isOffloadFeatureEnabled;
         mIncludeInetAddressRecordsInProbing = includeInetAddressRecordsInProbing;
         mIsExpiredServicesRemovalEnabled = isExpiredServicesRemovalEnabled;
+        mIsLabelCountLimitEnabled = isLabelCountLimitEnabled;
+        mIsKnownAnswerSuppressionEnabled = isKnownAnswerSuppressionEnabled;
     }
 
 
@@ -67,6 +88,8 @@ public class MdnsFeatureFlags {
         private boolean mIsMdnsOffloadFeatureEnabled;
         private boolean mIncludeInetAddressRecordsInProbing;
         private boolean mIsExpiredServicesRemovalEnabled;
+        private boolean mIsLabelCountLimitEnabled;
+        private boolean mIsKnownAnswerSuppressionEnabled;
 
         /**
          * The constructor for {@link Builder}.
@@ -74,7 +97,9 @@ public class MdnsFeatureFlags {
         public Builder() {
             mIsMdnsOffloadFeatureEnabled = false;
             mIncludeInetAddressRecordsInProbing = false;
-            mIsExpiredServicesRemovalEnabled = true; // Default enabled.
+            mIsExpiredServicesRemovalEnabled = false;
+            mIsLabelCountLimitEnabled = true; // Default enabled.
+            mIsKnownAnswerSuppressionEnabled = false;
         }
 
         /**
@@ -109,11 +134,34 @@ public class MdnsFeatureFlags {
         }
 
         /**
+         * Set whether the label count limit is enabled.
+         *
+         * @see #NSD_LIMIT_LABEL_COUNT
+         */
+        public Builder setIsLabelCountLimitEnabled(boolean isLabelCountLimitEnabled) {
+            mIsLabelCountLimitEnabled = isLabelCountLimitEnabled;
+            return this;
+        }
+
+        /**
+         * Set whether the known-answer suppression is enabled.
+         *
+         * @see #NSD_KNOWN_ANSWER_SUPPRESSION
+         */
+        public Builder setIsKnownAnswerSuppressionEnabled(boolean isKnownAnswerSuppressionEnabled) {
+            mIsKnownAnswerSuppressionEnabled = isKnownAnswerSuppressionEnabled;
+            return this;
+        }
+
+        /**
          * Builds a {@link MdnsFeatureFlags} with the arguments supplied to this builder.
          */
         public MdnsFeatureFlags build() {
             return new MdnsFeatureFlags(mIsMdnsOffloadFeatureEnabled,
-                    mIncludeInetAddressRecordsInProbing, mIsExpiredServicesRemovalEnabled);
+                    mIncludeInetAddressRecordsInProbing,
+                    mIsExpiredServicesRemovalEnabled,
+                    mIsLabelCountLimitEnabled,
+                    mIsKnownAnswerSuppressionEnabled);
         }
     }
 }
