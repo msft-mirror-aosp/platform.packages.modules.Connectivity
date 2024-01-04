@@ -48,6 +48,7 @@ import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.eq
 import org.mockito.Mockito.mock
+import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 
@@ -59,7 +60,15 @@ private val TEST_BUFFER = ByteArray(1300)
 private val TEST_HOSTNAME = arrayOf("Android_test", "local")
 
 private const val TEST_SERVICE_ID_1 = 42
+private const val TEST_SERVICE_ID_DUPLICATE = 43
 private val TEST_SERVICE_1 = NsdServiceInfo().apply {
+    serviceType = "_testservice._tcp"
+    serviceName = "MyTestService"
+    port = 12345
+}
+
+private val TEST_SERVICE_1_SUBTYPE = NsdServiceInfo().apply {
+    subtypes = setOf("_sub")
     serviceType = "_testservice._tcp"
     serviceName = "MyTestService"
     port = 12345
@@ -117,7 +126,7 @@ class MdnsInterfaceAdvertiserTest {
             knownServices.add(inv.getArgument(0))
 
             -1
-        }.`when`(repository).addService(anyInt(), any(), any())
+        }.`when`(repository).addService(anyInt(), any())
         doAnswer { inv ->
             knownServices.remove(inv.getArgument(0))
             null
@@ -272,14 +281,35 @@ class MdnsInterfaceAdvertiserTest {
         verify(prober).restartForConflict(mockProbingInfo)
     }
 
+    @Test
+    fun testReplaceExitingService() {
+        doReturn(TEST_SERVICE_ID_DUPLICATE).`when`(repository)
+                .addService(eq(TEST_SERVICE_ID_DUPLICATE), any())
+        advertiser.addService(TEST_SERVICE_ID_DUPLICATE, TEST_SERVICE_1_SUBTYPE)
+        verify(repository).addService(eq(TEST_SERVICE_ID_DUPLICATE), any())
+        verify(announcer).stop(TEST_SERVICE_ID_DUPLICATE)
+        verify(prober).startProbing(any())
+    }
+
+    @Test
+    fun testUpdateExistingService() {
+        doReturn(TEST_SERVICE_ID_DUPLICATE).`when`(repository)
+                .addService(eq(TEST_SERVICE_ID_DUPLICATE), any())
+        val subTypes = setOf("_sub")
+        advertiser.updateService(TEST_SERVICE_ID_DUPLICATE, subTypes)
+        verify(repository).updateService(eq(TEST_SERVICE_ID_DUPLICATE), any())
+        verify(announcer, never()).stop(TEST_SERVICE_ID_DUPLICATE)
+        verify(prober, never()).startProbing(any())
+    }
+
     private fun addServiceAndFinishProbing(serviceId: Int, serviceInfo: NsdServiceInfo):
             AnnouncementInfo {
         val testProbingInfo = mock(ProbingInfo::class.java)
         doReturn(serviceId).`when`(testProbingInfo).serviceId
         doReturn(testProbingInfo).`when`(repository).setServiceProbing(serviceId)
 
-        advertiser.addService(serviceId, serviceInfo, null /* subtype */)
-        verify(repository).addService(serviceId, serviceInfo, null /* subtype */)
+        advertiser.addService(serviceId, serviceInfo)
+        verify(repository).addService(serviceId, serviceInfo)
         verify(prober).startProbing(testProbingInfo)
 
         // Simulate probing success: continues to announcing
