@@ -38,6 +38,7 @@ import static android.content.pm.PackageManager.GET_PERMISSIONS;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.EXTRA_NETWORK;
 import static android.net.ConnectivityManager.EXTRA_NETWORK_REQUEST;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
@@ -47,6 +48,7 @@ import static android.net.ConnectivityManager.FIREWALL_CHAIN_POWERSAVE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_RESTRICTED;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_STANDBY;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_RULE_DEFAULT;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.ConnectivityManager.PROFILE_NETWORK_PREFERENCE_ENTERPRISE;
 import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
@@ -197,6 +199,8 @@ import com.android.testutils.DeviceConfigRule;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.RecorderCallback.CallbackEntry;
+import com.android.testutils.SkipMainlinePresubmit;
+import com.android.testutils.SkipPresubmit;
 import com.android.testutils.TestHttpServer;
 import com.android.testutils.TestNetworkTracker;
 import com.android.testutils.TestableNetworkCallback;
@@ -274,9 +278,7 @@ public class ConnectivityManagerTest {
     private static final int MIN_KEEPALIVE_INTERVAL = 10;
 
     private static final int NETWORK_CALLBACK_TIMEOUT_MS = 30_000;
-    // Timeout for waiting network to be validated. Set the timeout to 30s, which is more than
-    // DNS timeout.
-    // TODO(b/252972908): reset the original timer when aosp/2188755 is ramped up.
+    // Timeout for waiting network to be validated.
     private static final int LISTEN_ACTIVITY_TIMEOUT_MS = 30_000;
     private static final int NO_CALLBACK_TIMEOUT_MS = 100;
     private static final int NETWORK_REQUEST_TIMEOUT_MS = 3000;
@@ -724,6 +726,7 @@ public class ConnectivityManagerTest {
         return mCm.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName);
     }
 
+    @ConnectivityModuleTest
     @DevSdkIgnoreRule.IgnoreUpTo(SC_V2)
     @AppModeFull(reason = "Cannot get installed packages in instant app mode")
     @Test
@@ -792,7 +795,7 @@ public class ConnectivityManagerTest {
             // Make sure that the NC is null if the package doesn't hold ACCESS_NETWORK_STATE.
             assertNull(redactNc(nc, groundedUid, groundedPkg));
 
-            // Uids, ssid, underlying networks & subscriptionIds will be redacted if the given uid
+            // Uids, ssid & underlying networks will be redacted if the given uid
             // doesn't hold the associated permissions. The wifi transport info is also suitably
             // redacted.
             final NetworkCapabilities redactedNormal = redactNc(nc, normalUid, normalPkg);
@@ -1017,16 +1020,19 @@ public class ConnectivityManagerTest {
 
     @AppModeFull(reason = "WRITE_SECURE_SETTINGS permission can't be granted to instant apps")
     @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testIsPrivateDnsBroken() throws InterruptedException {
         final String invalidPrivateDnsServer = "invalidhostname.example.com";
         final String goodPrivateDnsServer = "dns.google";
         mCtsNetUtils.storePrivateDnsSetting();
         final TestableNetworkCallback cb = new TestableNetworkCallback();
-        registerNetworkCallback(makeWifiNetworkRequest(), cb);
+        final NetworkRequest networkRequest = new NetworkRequest.Builder()
+                .addCapability(NET_CAPABILITY_INTERNET).build();
+        registerNetworkCallback(networkRequest, cb);
+        final Network networkForPrivateDns = mCm.getActiveNetwork();
         try {
             // Verifying the good private DNS sever
             mCtsNetUtils.setPrivateDnsStrictMode(goodPrivateDnsServer);
-            final Network networkForPrivateDns =  mCtsNetUtils.ensureWifiConnected();
             cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED, NETWORK_CALLBACK_TIMEOUT_MS,
                     entry -> hasPrivateDnsValidated(entry, networkForPrivateDns));
 
@@ -1037,8 +1043,11 @@ public class ConnectivityManagerTest {
                     .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         } finally {
             mCtsNetUtils.restorePrivateDnsSetting();
-            // Toggle wifi to make sure it is re-validated
-            reconnectWifi();
+            // Toggle network to make sure it is re-validated
+            mCm.reportNetworkConnectivity(networkForPrivateDns, true);
+            cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED, NETWORK_CALLBACK_TIMEOUT_MS,
+                    entry -> !(((CallbackEntry.CapabilitiesChanged) entry).getCaps()
+                    .isPrivateDnsBroken()) && networkForPrivateDns.equals(entry.getNetwork()));
         }
     }
 
@@ -1301,9 +1310,12 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testRequestNetworkCallback_onUnavailable() {
-        final boolean previousWifiEnabledState = mWifiManager.isWifiEnabled();
-        if (previousWifiEnabledState) {
-            mCtsNetUtils.ensureWifiDisconnected(null);
+        boolean previousWifiEnabledState = false;
+        if (mPackageManager.hasSystemFeature(FEATURE_WIFI)) {
+            previousWifiEnabledState = mWifiManager.isWifiEnabled();
+            if (previousWifiEnabledState) {
+                mCtsNetUtils.ensureWifiDisconnected(null);
+            }
         }
 
         final TestNetworkCallback callback = new TestNetworkCallback();
@@ -1339,6 +1351,8 @@ public class ConnectivityManagerTest {
     @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
     @Test
     public void testToggleWifiConnectivityAction() throws Exception {
+        assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
+
         // toggleWifi calls connectToWifi and disconnectFromWifi, which both wait for
         // CONNECTIVITY_ACTION broadcasts.
         mCtsNetUtils.toggleWifi();
@@ -2129,6 +2143,7 @@ public class ConnectivityManagerTest {
      */
     @AppModeFull(reason = "NETWORK_AIRPLANE_MODE permission can't be granted to instant apps")
     @Test
+    @SkipPresubmit(reason = "Out of SLO flakiness")
     public void testSetAirplaneMode() throws Exception{
         // Starting from T, wifi supports airplane mode enhancement which may not disconnect wifi
         // when airplane mode is on. The actual behavior that the device will have could only be
@@ -2560,10 +2575,9 @@ public class ConnectivityManagerTest {
         assertThrows(SecurityException.class, () -> mCm.factoryReset());
     }
 
-    // @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
-    // @Test
-    // Temporarily disable the unreliable test, which is blocked by b/254183718.
-    private void testFactoryReset() throws Exception {
+    @AppModeFull(reason = "Cannot get WifiManager in instant app mode")
+    @Test
+    public void testFactoryReset() throws Exception {
         assumeTrue(TestUtils.shouldTestSApis());
 
         // Store current settings.
@@ -2592,6 +2606,7 @@ public class ConnectivityManagerTest {
             // prevent the race condition between airplane mode enabled and the followed
             // up wifi tethering enabled.
             tetherEventCallback.expectNoTetheringActive();
+            tetherUtils.expectSoftApDisabled();
 
             // start wifi tethering
             tetherUtils.startWifiTethering(tetherEventCallback);
@@ -2709,7 +2724,8 @@ public class ConnectivityManagerTest {
             // the network with the TEST transport. Also wait for validation here, in case there
             // is a bug that's only visible when the network is validated.
             setWifiMeteredStatusAndWait(ssid, true /* isMetered */, true /* waitForValidation */);
-            defaultCallback.expect(CallbackEntry.LOST, wifiNetwork, NETWORK_CALLBACK_TIMEOUT_MS);
+            defaultCallback.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
+                    l -> l.getNetwork().equals(wifiNetwork));
             waitForAvailable(defaultCallback, tnt.getNetwork());
             // Depending on if this device has cellular connectivity or not, multiple available
             // callbacks may be received. Eventually, metered Wi-Fi should be the final available
@@ -2750,17 +2766,19 @@ public class ConnectivityManagerTest {
         final TestableNetworkCallback systemDefaultCallback = new TestableNetworkCallback();
 
         final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
+        final Network testNetwork = tnt.getNetwork();
 
         testAndCleanup(() -> {
             setOemNetworkPreferenceForMyPackage(
                     OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY);
             registerTestOemNetworkPreferenceCallbacks(defaultCallback, systemDefaultCallback);
-            waitForAvailable(defaultCallback, tnt.getNetwork());
+            waitForAvailable(defaultCallback, testNetwork);
             systemDefaultCallback.eventuallyExpect(CallbackEntry.AVAILABLE,
                     NETWORK_CALLBACK_TIMEOUT_MS, cb -> wifiNetwork.equals(cb.getNetwork()));
         }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(tnt::teardown);
-                defaultCallback.expect(CallbackEntry.LOST, tnt, NETWORK_CALLBACK_TIMEOUT_MS);
+                defaultCallback.eventuallyExpect(CallbackEntry.LOST, NETWORK_CALLBACK_TIMEOUT_MS,
+                        cb -> testNetwork.equals(cb.getNetwork()));
 
                 // This network preference should only ever use the test network therefore available
                 // should not trigger when the test network goes down (e.g. switch to cellular).
@@ -3520,6 +3538,12 @@ public class ConnectivityManagerTest {
         doTestFirewallBlocking(FIREWALL_CHAIN_DOZABLE, ALLOWLIST);
     }
 
+    @Test @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) @ConnectivityModuleTest
+    @AppModeFull(reason = "Socket cannot bind in instant app mode")
+    public void testFirewallBlockingBackground() {
+        doTestFirewallBlocking(FIREWALL_CHAIN_BACKGROUND, ALLOWLIST);
+    }
+
     @Test @IgnoreUpTo(SC_V2) @ConnectivityModuleTest
     @AppModeFull(reason = "Socket cannot bind in instant app mode")
     public void testFirewallBlockingPowersave() {
@@ -3574,6 +3598,15 @@ public class ConnectivityManagerTest {
         }
     }
 
+    private void setUidFirewallRule(final int chain, final int uid, final int rule) {
+        try {
+            mCm.setUidFirewallRule(chain, uid, rule);
+        } catch (IllegalStateException ignored) {
+            // Removing match causes an exception when the rule entry for the uid does
+            // not exist. But this is fine and can be ignored.
+        }
+    }
+
     private static final boolean EXPECT_OPEN = false;
     private static final boolean EXPECT_CLOSE = true;
 
@@ -3582,6 +3615,8 @@ public class ConnectivityManagerTest {
         runWithShellPermissionIdentity(() -> {
             // Firewall chain status will be restored after the test.
             final boolean wasChainEnabled = mCm.getFirewallChainEnabled(chain);
+            final int myUid = Process.myUid();
+            final int previousMyUidFirewallRule = mCm.getUidFirewallRule(chain, myUid);
             final int previousUidFirewallRule = mCm.getUidFirewallRule(chain, targetUid);
             final Socket socket = new Socket(TEST_HOST, HTTP_PORT);
             socket.setSoTimeout(NETWORK_REQUEST_TIMEOUT_MS);
@@ -3589,12 +3624,12 @@ public class ConnectivityManagerTest {
                 mCm.setFirewallChainEnabled(chain, false /* enable */);
                 assertSocketOpen(socket);
 
-                try {
-                    mCm.setUidFirewallRule(chain, targetUid, rule);
-                } catch (IllegalStateException ignored) {
-                    // Removing match causes an exception when the rule entry for the uid does
-                    // not exist. But this is fine and can be ignored.
+                setUidFirewallRule(chain, targetUid, rule);
+                if (targetUid != myUid) {
+                    // If this test does not set rule on myUid, remove existing rule on myUid
+                    setUidFirewallRule(chain, myUid, FIREWALL_RULE_DEFAULT);
                 }
+
                 mCm.setFirewallChainEnabled(chain, true /* enable */);
 
                 if (expectClose) {
@@ -3607,11 +3642,9 @@ public class ConnectivityManagerTest {
                     mCm.setFirewallChainEnabled(chain, wasChainEnabled);
                 }, /* cleanup */ () -> {
                     // Restore the uid firewall rule status
-                    try {
-                        mCm.setUidFirewallRule(chain, targetUid, previousUidFirewallRule);
-                    } catch (IllegalStateException ignored) {
-                        // Removing match causes an exception when the rule entry for the uid does
-                        // not exist. But this is fine and can be ignored.
+                    setUidFirewallRule(chain, targetUid, previousUidFirewallRule);
+                    if (targetUid != myUid) {
+                        setUidFirewallRule(chain, myUid, previousMyUidFirewallRule);
                     }
                 }, /* cleanup */ () -> {
                     socket.close();
