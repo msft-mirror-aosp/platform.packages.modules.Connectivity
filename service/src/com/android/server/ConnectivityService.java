@@ -281,7 +281,6 @@ import com.android.metrics.NetworkCountPerTransports;
 import com.android.metrics.NetworkDescription;
 import com.android.metrics.NetworkList;
 import com.android.metrics.NetworkRequestCount;
-import com.android.metrics.NetworkRequestStateStatsMetrics;
 import com.android.metrics.RequestCountForType;
 import com.android.modules.utils.BasicShellCommandHandler;
 import com.android.modules.utils.build.SdkLevel;
@@ -291,6 +290,7 @@ import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.BpfUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.LinkPropertiesUtils.CompareOrUpdateResult;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
@@ -315,7 +315,6 @@ import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
 import com.android.server.connectivity.DscpPolicyTracker;
 import com.android.server.connectivity.FullScore;
-import com.android.server.connectivity.HandlerUtils;
 import com.android.server.connectivity.InvalidTagException;
 import com.android.server.connectivity.KeepaliveResourceUtil;
 import com.android.server.connectivity.KeepaliveTracker;
@@ -942,8 +941,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private final IpConnectivityLog mMetricsLog;
 
-    private final NetworkRequestStateStatsMetrics mNetworkRequestStateStatsMetrics;
-
     @GuardedBy("mBandwidthRequests")
     private final SparseArray<Integer> mBandwidthRequests = new SparseArray<>(10);
 
@@ -1280,7 +1277,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         LocalPriorityDump() {}
 
         private void dumpHigh(FileDescriptor fd, PrintWriter pw) {
-            if (!HandlerUtils.runWithScissors(mHandler, () -> {
+            if (!HandlerUtils.runWithScissorsForDump(mHandler, () -> {
                 doDump(fd, pw, new String[]{DIAG_ARG});
                 doDump(fd, pw, new String[]{SHORT_ARG});
             }, DUMPSYS_DEFAULT_TIMEOUT_MS)) {
@@ -1289,7 +1286,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         private void dumpNormal(FileDescriptor fd, PrintWriter pw, String[] args) {
-            if (!HandlerUtils.runWithScissors(mHandler, () -> doDump(fd, pw, args),
+            if (!HandlerUtils.runWithScissorsForDump(mHandler, () -> doDump(fd, pw, args),
                     DUMPSYS_DEFAULT_TIMEOUT_MS)) {
                 pw.println("dumpNormal timeout");
             }
@@ -1422,19 +1419,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         public AutomaticOnOffKeepaliveTracker makeAutomaticOnOffKeepaliveTracker(
                 @NonNull Context c, @NonNull Handler h) {
             return new AutomaticOnOffKeepaliveTracker(c, h);
-        }
-
-        /**
-         * @see NetworkRequestStateStatsMetrics
-         */
-        public NetworkRequestStateStatsMetrics makeNetworkRequestStateStatsMetrics(
-                Context context) {
-            // We currently have network requests metric for Watch devices only
-            if (context.getPackageManager().hasSystemFeature(FEATURE_WATCH)) {
-                return  new NetworkRequestStateStatsMetrics();
-            } else {
-                return null;
-            }
         }
 
         /**
@@ -1670,7 +1654,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 new RequestInfoPerUidCounter(MAX_NETWORK_REQUESTS_PER_SYSTEM_UID - 1);
 
         mMetricsLog = logger;
-        mNetworkRequestStateStatsMetrics = mDeps.makeNetworkRequestStateStatsMetrics(mContext);
         final NetworkRequest defaultInternetRequest = createDefaultRequest();
         mDefaultRequest = new NetworkRequestInfo(
                 Process.myUid(), defaultInternetRequest, null,
@@ -5341,8 +5324,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             updateSignalStrengthThresholds(network, "REGISTER", req);
                         }
                     }
-                } else if (req.isRequest() && mNetworkRequestStateStatsMetrics != null) {
-                    mNetworkRequestStateStatsMetrics.onNetworkRequestReceived(req);
                 }
             }
 
@@ -5560,8 +5541,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             if (req.isListen()) {
                 removeListenRequestFromNetworks(req);
-            } else if (req.isRequest() && mNetworkRequestStateStatsMetrics != null) {
-                mNetworkRequestStateStatsMetrics.onNetworkRequestRemoved(req);
             }
         }
         nri.unlinkDeathRecipient();
