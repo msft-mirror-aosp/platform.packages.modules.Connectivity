@@ -326,6 +326,7 @@ import com.android.server.connectivity.NetworkNotificationManager.NotificationTy
 import com.android.server.connectivity.NetworkOffer;
 import com.android.server.connectivity.NetworkPreferenceList;
 import com.android.server.connectivity.NetworkRanker;
+import com.android.server.connectivity.NetworkRequestStateStatsMetrics;
 import com.android.server.connectivity.PermissionMonitor;
 import com.android.server.connectivity.ProfileNetworkPreferenceInfo;
 import com.android.server.connectivity.ProxyTracker;
@@ -939,6 +940,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private final IpConnectivityLog mMetricsLog;
 
+    @Nullable private final NetworkRequestStateStatsMetrics mNetworkRequestStateStatsMetrics;
+
     @GuardedBy("mBandwidthRequests")
     private final SparseArray<Integer> mBandwidthRequests = new SparseArray<>(10);
 
@@ -1417,6 +1420,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
+         * @see NetworkRequestStateStatsMetrics
+         */
+        public NetworkRequestStateStatsMetrics makeNetworkRequestStateStatsMetrics(
+                Context context) {
+            // We currently have network requests metric for Watch devices only
+            if (context.getPackageManager().hasSystemFeature(FEATURE_WATCH)) {
+                return new NetworkRequestStateStatsMetrics();
+            } else {
+                return null;
+            }
+        }
+
+        /**
          * @see BatteryStatsManager
          */
         public void reportNetworkInterfaceForTransports(Context context, String iface,
@@ -1649,6 +1665,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 new RequestInfoPerUidCounter(MAX_NETWORK_REQUESTS_PER_SYSTEM_UID - 1);
 
         mMetricsLog = logger;
+        mNetworkRequestStateStatsMetrics = mDeps.makeNetworkRequestStateStatsMetrics(mContext);
         final NetworkRequest defaultInternetRequest = createDefaultRequest();
         mDefaultRequest = new NetworkRequestInfo(
                 Process.myUid(), defaultInternetRequest, null,
@@ -5202,6 +5219,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                             updateSignalStrengthThresholds(network, "REGISTER", req);
                         }
                     }
+                } else if (req.isRequest() && mNetworkRequestStateStatsMetrics != null) {
+                    mNetworkRequestStateStatsMetrics.onNetworkRequestReceived(req);
                 }
             }
 
@@ -5419,6 +5438,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
             if (req.isListen()) {
                 removeListenRequestFromNetworks(req);
+            } else if (req.isRequest() && mNetworkRequestStateStatsMetrics != null) {
+                mNetworkRequestStateStatsMetrics.onNetworkRequestRemoved(req);
             }
         }
         nri.unlinkDeathRecipient();
