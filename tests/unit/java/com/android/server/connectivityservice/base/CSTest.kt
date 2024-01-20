@@ -63,12 +63,14 @@ import com.android.server.connectivity.ClatCoordinator
 import com.android.server.connectivity.ConnectivityFlags
 import com.android.server.connectivity.MultinetworkPolicyTracker
 import com.android.server.connectivity.MultinetworkPolicyTrackerTestDependencies
+import com.android.server.connectivity.NetworkRequestStateStatsMetrics
 import com.android.server.connectivity.ProxyTracker
 import com.android.testutils.visibleOnHandlerThread
 import com.android.testutils.waitForIdle
 import java.util.concurrent.Executors
 import kotlin.test.assertNull
 import kotlin.test.fail
+import org.junit.After
 import org.mockito.AdditionalAnswers.delegatesTo
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
@@ -157,8 +159,10 @@ open class CSTest {
     val netd = mock<INetd>()
     val bpfNetMaps = mock<BpfNetMaps>()
     val clatCoordinator = mock<ClatCoordinator>()
+    val networkRequestStateStatsMetrics = mock<NetworkRequestStateStatsMetrics>()
     val proxyTracker = ProxyTracker(context, mock<Handler>(), 16 /* EVENT_PROXY_HAS_CHANGED */)
-    val alarmManager = makeMockAlarmManager()
+    val alrmHandlerThread = HandlerThread("TestAlarmManager").also { it.start() }
+    val alarmManager = makeMockAlarmManager(alrmHandlerThread)
     val systemConfigManager = makeMockSystemConfigManager()
     val batteryStats = mock<IBatteryStats>()
     val batteryManager = BatteryStatsManager(batteryStats)
@@ -170,6 +174,14 @@ open class CSTest {
     val service = makeConnectivityService(context, netd, deps).also { it.systemReadyInternal() }
     val cm = ConnectivityManager(context, service)
     val csHandler = Handler(csHandlerThread.looper)
+
+    @After
+    fun tearDown() {
+        csHandlerThread.quitSafely()
+        csHandlerThread.join()
+        alrmHandlerThread.quitSafely()
+        alrmHandlerThread.join()
+    }
 
     inner class CSDeps : ConnectivityService.Dependencies() {
         override fun getResources(ctx: Context) = connResources
@@ -196,6 +208,9 @@ open class CSTest {
         override fun makeMultinetworkPolicyTracker(c: Context, h: Handler, r: Runnable) =
                 MultinetworkPolicyTracker(c, h, r,
                         MultinetworkPolicyTrackerTestDependencies(connResources.get()))
+
+        override fun makeNetworkRequestStateStatsMetrics(c: Context) =
+                this@CSTest.networkRequestStateStatsMetrics
 
         // All queried features must be mocked, because the test cannot hold the
         // READ_DEVICE_CONFIG permission and device config utils use static methods for
