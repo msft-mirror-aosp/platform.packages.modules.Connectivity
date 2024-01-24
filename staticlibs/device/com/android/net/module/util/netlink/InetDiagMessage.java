@@ -24,11 +24,9 @@ import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 import static android.system.OsConstants.NETLINK_INET_DIAG;
 
-import static com.android.net.module.util.netlink.NetlinkConstants.NLMSG_DONE;
 import static com.android.net.module.util.netlink.NetlinkConstants.SOCK_DESTROY;
 import static com.android.net.module.util.netlink.NetlinkConstants.SOCK_DIAG_BY_FAMILY;
 import static com.android.net.module.util.netlink.NetlinkConstants.SOCKDIAG_MSG_HEADER_SIZE;
-import static com.android.net.module.util.netlink.NetlinkConstants.hexify;
 import static com.android.net.module.util.netlink.NetlinkConstants.stringForAddressFamily;
 import static com.android.net.module.util.netlink.NetlinkConstants.stringForProtocol;
 import static com.android.net.module.util.netlink.NetlinkUtils.DEFAULT_RECV_BUFSIZE;
@@ -182,7 +180,10 @@ public class InetDiagMessage extends NetlinkMessage {
         while (payload.position() < payloadLength) {
             final StructNlAttr attr = StructNlAttr.parse(payload);
             // Stop parsing for truncated or malformed attribute
-            if (attr == null)  return null;
+            if (attr == null)  {
+                Log.wtf(TAG, "Got truncated or malformed attribute");
+                return null;
+            }
 
             msg.nlAttrs.add(attr);
         }

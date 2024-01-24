@@ -481,6 +481,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @Nullable
     private final SkDestroyListener mSkDestroyListener;
 
+    private static final int MAX_SOCKET_DESTROY_LISTENER_LOGS = 20;
+
     private static @NonNull Clock getDefaultClock() {
         return new BestClock(ZoneOffset.UTC, SystemClock.currentNetworkTimeClock(),
                 Clock.systemUTC());
@@ -492,9 +494,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     private static class OpenSessionKey {
         public final int uid;
+        @Nullable
         public final String packageName;
 
-        OpenSessionKey(int uid, @NonNull String packageName) {
+        OpenSessionKey(int uid, @Nullable String packageName) {
             this.uid = uid;
             this.packageName = packageName;
         }
@@ -880,7 +883,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Create a new SkDestroyListener. */
         public SkDestroyListener makeSkDestroyListener(
                 IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap, Handler handler) {
-            return new SkDestroyListener(cookieTagMap, handler, new SharedLog(TAG));
+            return new SkDestroyListener(
+                    cookieTagMap, handler, new SharedLog(MAX_SOCKET_DESTROY_LISTENER_LOGS, TAG));
         }
 
         /**
@@ -1461,7 +1465,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return now - lastCallTime < POLL_RATE_LIMIT_MS;
     }
 
-    private int restrictFlagsForCaller(int flags, @NonNull String callingPackage) {
+    private int restrictFlagsForCaller(int flags, @Nullable String callingPackage) {
         // All non-privileged callers are not allowed to turn off POLL_ON_OPEN.
         final boolean isPrivileged = PermissionUtils.checkAnyPermissionOf(mContext,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
@@ -1478,7 +1482,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return flags;
     }
 
-    private INetworkStatsSession openSessionInternal(final int flags, final String callingPackage) {
+    private INetworkStatsSession openSessionInternal(
+            final int flags, @Nullable final String callingPackage) {
         final int restrictedFlags = restrictFlagsForCaller(flags, callingPackage);
         if ((restrictedFlags & (NetworkStatsManager.FLAG_POLL_ON_OPEN
                 | NetworkStatsManager.FLAG_POLL_FORCE)) != 0) {
@@ -1495,6 +1500,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
         return new INetworkStatsSession.Stub() {
             private final int mCallingUid = Binder.getCallingUid();
+            @Nullable
             private final String mCallingPackage = callingPackage;
             private final @NetworkStatsAccess.Level int mAccessLevel = checkAccessLevel(
                     callingPackage);
@@ -1633,7 +1639,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     }
 
     private void enforceTemplatePermissions(@NonNull NetworkTemplate template,
-            @NonNull String callingPackage) {
+            @Nullable String callingPackage) {
         // For a template with wifi network keys, it is possible for a malicious
         // client to track the user locations via querying data usage. Thus, enforce
         // fine location permission check.
@@ -1654,7 +1660,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
     }
 
-    private @NetworkStatsAccess.Level int checkAccessLevel(String callingPackage) {
+    private @NetworkStatsAccess.Level int checkAccessLevel(@Nullable String callingPackage) {
         return NetworkStatsAccess.checkAccessLevel(
                 mContext, Binder.getCallingPid(), Binder.getCallingUid(), callingPackage);
     }
@@ -2908,6 +2914,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             dumpStatsMapLocked(mStatsMapA, pw, "mStatsMapA");
             dumpStatsMapLocked(mStatsMapB, pw, "mStatsMapB");
             dumpIfaceStatsMapLocked(pw);
+            pw.decreaseIndent();
+
+            pw.println();
+            pw.println("SkDestroyListener logs:");
+            pw.increaseIndent();
+            mSkDestroyListener.dump(pw);
             pw.decreaseIndent();
         }
     }
