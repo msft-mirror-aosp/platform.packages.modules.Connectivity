@@ -14,22 +14,9 @@
 // limitations under the License.
 //
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 aconfig_declarations {
-    name: "thread_aconfig_flags",
-    package: "com.android.net.thread.flags",
-    srcs: ["thread_base.aconfig"],
-}
-
-java_aconfig_library {
-    name: "thread_aconfig_flags_lib",
-    aconfig_declarations: "thread_aconfig_flags",
-    min_sdk_version: "30",
-    apex_available: [
-        "//apex_available:platform",
-        "com.android.tethering",
-    ],
+    name: "com.android.net.flags-aconfig",
+    package: "com.android.net.flags",
+    srcs: ["flags.aconfig"],
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
