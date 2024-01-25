@@ -24,6 +24,8 @@ import static android.net.thread.ThreadNetworkException.ERROR_REJECTED_BY_PEER;
 
 import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 
+import static com.android.testutils.TestPermissionUtil.runAsShell;
+
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
@@ -34,6 +36,10 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 import android.Manifest.permission;
 import android.content.Context;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.thread.ActiveOperationalDataset;
 import android.net.thread.OperationalDatasetTimestamp;
 import android.net.thread.PendingOperationalDataset;
@@ -74,6 +80,8 @@ import java.util.concurrent.Executors;
 @RunWith(DevSdkIgnoreRunner.class)
 @IgnoreUpTo(Build.VERSION_CODES.TIRAMISU) // Thread is available on only U+
 public class ThreadNetworkControllerTest {
+    private static final int JOIN_TIMEOUT_MILLIS = 30 * 1000;
+    private static final int NETWORK_CALLBACK_TIMEOUT_MILLIS = 10 * 1000;
     private static final int CALLBACK_TIMEOUT_MILLIS = 1000;
     private static final String PERMISSION_THREAD_NETWORK_PRIVILEGED =
             "android.permission.THREAD_NETWORK_PRIVILEGED";
@@ -521,7 +529,7 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
-    public void scheduleMigration_withPrivilegedPermission_success() throws Exception {
+    public void scheduleMigration_withPrivilegedPermission_newDatasetApplied() throws Exception {
         grantPermissions(permission.ACCESS_NETWORK_STATE, PERMISSION_THREAD_NETWORK_PRIVILEGED);
 
         for (ThreadNetworkController controller : getAllControllers()) {
@@ -548,11 +556,32 @@ public class ThreadNetworkControllerTest {
 
             controller.scheduleMigration(
                     pendingDataset2, mExecutor, newOutcomeReceiver(migrateFuture));
-
             migrateFuture.get();
-            Thread.sleep(35 * 1000);
-            assertThat(getActiveOperationalDataset(controller)).isEqualTo(activeDataset2);
-            assertThat(getPendingOperationalDataset(controller)).isNull();
+
+            SettableFuture<Boolean> dataset2IsApplied = SettableFuture.create();
+            SettableFuture<Boolean> pendingDatasetIsRemoved = SettableFuture.create();
+            OperationalDatasetCallback datasetCallback =
+                    new OperationalDatasetCallback() {
+                        @Override
+                        public void onActiveOperationalDatasetChanged(
+                                ActiveOperationalDataset activeDataset) {
+                            if (activeDataset.equals(activeDataset2)) {
+                                dataset2IsApplied.set(true);
+                            }
+                        }
+
+                        @Override
+                        public void onPendingOperationalDatasetChanged(
+                                PendingOperationalDataset pendingDataset) {
+                            if (pendingDataset == null) {
+                                pendingDatasetIsRemoved.set(true);
+                            }
+                        }
+                    };
+            controller.registerOperationalDatasetCallback(directExecutor(), datasetCallback);
+            assertThat(dataset2IsApplied.get()).isTrue();
+            assertThat(pendingDatasetIsRemoved.get()).isTrue();
+            controller.unregisterOperationalDatasetCallback(datasetCallback);
         }
     }
 
@@ -629,7 +658,8 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
-    public void scheduleMigration_secondRequestHasLargerTimestamp_success() throws Exception {
+    public void scheduleMigration_secondRequestHasLargerTimestamp_newDatasetApplied()
+            throws Exception {
         grantPermissions(permission.ACCESS_NETWORK_STATE, PERMISSION_THREAD_NETWORK_PRIVILEGED);
 
         for (ThreadNetworkController controller : getAllControllers()) {
@@ -669,11 +699,32 @@ public class ThreadNetworkControllerTest {
             migrateFuture1.get();
             controller.scheduleMigration(
                     pendingDataset2, mExecutor, newOutcomeReceiver(migrateFuture2));
-
             migrateFuture2.get();
-            Thread.sleep(35 * 1000);
-            assertThat(getActiveOperationalDataset(controller)).isEqualTo(activeDataset2);
-            assertThat(getPendingOperationalDataset(controller)).isNull();
+
+            SettableFuture<Boolean> dataset2IsApplied = SettableFuture.create();
+            SettableFuture<Boolean> pendingDatasetIsRemoved = SettableFuture.create();
+            OperationalDatasetCallback datasetCallback =
+                    new OperationalDatasetCallback() {
+                        @Override
+                        public void onActiveOperationalDatasetChanged(
+                                ActiveOperationalDataset activeDataset) {
+                            if (activeDataset.equals(activeDataset2)) {
+                                dataset2IsApplied.set(true);
+                            }
+                        }
+
+                        @Override
+                        public void onPendingOperationalDatasetChanged(
+                                PendingOperationalDataset pendingDataset) {
+                            if (pendingDataset == null) {
+                                pendingDatasetIsRemoved.set(true);
+                            }
+                        }
+                    };
+            controller.registerOperationalDatasetCallback(directExecutor(), datasetCallback);
+            assertThat(dataset2IsApplied.get()).isTrue();
+            assertThat(pendingDatasetIsRemoved.get()).isTrue();
+            controller.unregisterOperationalDatasetCallback(datasetCallback);
         }
     }
 
@@ -706,5 +757,37 @@ public class ThreadNetworkControllerTest {
             assertThat(dataset.getMeshLocalPrefix().getPrefixLength()).isEqualTo(64);
             assertThat(dataset.getMeshLocalPrefix().getRawAddress()[0]).isEqualTo((byte) 0xfd);
         }
+    }
+
+    @Test
+    public void threadNetworkCallback_deviceAttached_threadNetworkIsAvailable() throws Exception {
+        ThreadNetworkController controller = mManager.getAllThreadNetworkControllers().get(0);
+        ActiveOperationalDataset activeDataset = newRandomizedDataset("TestNet", controller);
+        SettableFuture<Void> joinFuture = SettableFuture.create();
+        SettableFuture<Network> networkFuture = SettableFuture.create();
+        ConnectivityManager cm = mContext.getSystemService(ConnectivityManager.class);
+        NetworkRequest networkRequest =
+                new NetworkRequest.Builder()
+                        .addTransportType(NetworkCapabilities.TRANSPORT_THREAD)
+                        .build();
+        ConnectivityManager.NetworkCallback networkCallback =
+                new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(Network network) {
+                        networkFuture.set(network);
+                    }
+                };
+
+        runAsShell(
+                PERMISSION_THREAD_NETWORK_PRIVILEGED,
+                () -> controller.join(activeDataset, mExecutor, newOutcomeReceiver(joinFuture)));
+        runAsShell(
+                permission.ACCESS_NETWORK_STATE,
+                () -> cm.registerNetworkCallback(networkRequest, networkCallback));
+
+        joinFuture.get(JOIN_TIMEOUT_MILLIS, MILLISECONDS);
+        runAsShell(
+                permission.ACCESS_NETWORK_STATE, () -> assertThat(isAttached(controller)).isTrue());
+        assertThat(networkFuture.get(NETWORK_CALLBACK_TIMEOUT_MILLIS, MILLISECONDS)).isNotNull();
     }
 }
