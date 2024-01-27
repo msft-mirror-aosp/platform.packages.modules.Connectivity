@@ -476,10 +476,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private final LocationPermissionChecker mLocationPermissionChecker;
 
     @NonNull
-    private final BpfInterfaceMapUpdater mInterfaceMapUpdater;
+    private final BpfInterfaceMapHelper mInterfaceMapHelper;
 
     @Nullable
     private final SkDestroyListener mSkDestroyListener;
+
+    private static final int MAX_SOCKET_DESTROY_LISTENER_LOGS = 20;
 
     private static @NonNull Clock getDefaultClock() {
         return new BestClock(ZoneOffset.UTC, SystemClock.currentNetworkTimeClock(),
@@ -626,8 +628,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mContentObserver = mDeps.makeContentObserver(mHandler, mSettings,
                 mNetworkStatsSubscriptionsMonitor);
         mLocationPermissionChecker = mDeps.makeLocationPermissionChecker(mContext);
-        mInterfaceMapUpdater = mDeps.makeBpfInterfaceMapUpdater(mContext, mHandler);
-        mInterfaceMapUpdater.start();
+        mInterfaceMapHelper = mDeps.makeBpfInterfaceMapHelper();
         mUidCounterSetMap = mDeps.getUidCounterSetMap();
         mCookieTagMap = mDeps.getCookieTagMap();
         mStatsMapA = mDeps.getStatsMapA();
@@ -796,18 +797,16 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             return new LocationPermissionChecker(context);
         }
 
-        /** Create BpfInterfaceMapUpdater to update bpf interface map. */
+        /** Create BpfInterfaceMapHelper to update bpf interface map. */
         @NonNull
-        public BpfInterfaceMapUpdater makeBpfInterfaceMapUpdater(
-                @NonNull Context ctx, @NonNull Handler handler) {
-            return new BpfInterfaceMapUpdater(ctx, handler);
+        public BpfInterfaceMapHelper makeBpfInterfaceMapHelper() {
+            return new BpfInterfaceMapHelper();
         }
 
         /** Get counter sets map for each UID. */
         public IBpfMap<S32, U8> getUidCounterSetMap() {
             try {
-                return new BpfMap<S32, U8>(UID_COUNTERSET_MAP_PATH, BpfMap.BPF_F_RDWR,
-                        S32.class, U8.class);
+                return new BpfMap<>(UID_COUNTERSET_MAP_PATH, S32.class, U8.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open uid counter set map: " + e);
                 return null;
@@ -817,8 +816,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets the cookie tag map */
         public IBpfMap<CookieTagMapKey, CookieTagMapValue> getCookieTagMap() {
             try {
-                return new BpfMap<CookieTagMapKey, CookieTagMapValue>(COOKIE_TAG_MAP_PATH,
-                        BpfMap.BPF_F_RDWR, CookieTagMapKey.class, CookieTagMapValue.class);
+                return new BpfMap<>(COOKIE_TAG_MAP_PATH,
+                        CookieTagMapKey.class, CookieTagMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open cookie tag map: " + e);
                 return null;
@@ -828,8 +827,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets stats map A */
         public IBpfMap<StatsMapKey, StatsMapValue> getStatsMapA() {
             try {
-                return new BpfMap<StatsMapKey, StatsMapValue>(STATS_MAP_A_PATH,
-                        BpfMap.BPF_F_RDWR, StatsMapKey.class, StatsMapValue.class);
+                return new BpfMap<>(STATS_MAP_A_PATH, StatsMapKey.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open stats map A: " + e);
                 return null;
@@ -839,8 +837,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets stats map B */
         public IBpfMap<StatsMapKey, StatsMapValue> getStatsMapB() {
             try {
-                return new BpfMap<StatsMapKey, StatsMapValue>(STATS_MAP_B_PATH,
-                        BpfMap.BPF_F_RDWR, StatsMapKey.class, StatsMapValue.class);
+                return new BpfMap<>(STATS_MAP_B_PATH, StatsMapKey.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open stats map B: " + e);
                 return null;
@@ -850,8 +847,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets the uid stats map */
         public IBpfMap<UidStatsMapKey, StatsMapValue> getAppUidStatsMap() {
             try {
-                return new BpfMap<UidStatsMapKey, StatsMapValue>(APP_UID_STATS_MAP_PATH,
-                        BpfMap.BPF_F_RDWR, UidStatsMapKey.class, StatsMapValue.class);
+                return new BpfMap<>(APP_UID_STATS_MAP_PATH,
+                        UidStatsMapKey.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open app uid stats map: " + e);
                 return null;
@@ -861,8 +858,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets interface stats map */
         public IBpfMap<S32, StatsMapValue> getIfaceStatsMap() {
             try {
-                return new BpfMap<S32, StatsMapValue>(IFACE_STATS_MAP_PATH,
-                        BpfMap.BPF_F_RDWR, S32.class, StatsMapValue.class);
+                return new BpfMap<>(IFACE_STATS_MAP_PATH, S32.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 throw new IllegalStateException("Failed to open interface stats map", e);
             }
@@ -881,7 +877,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Create a new SkDestroyListener. */
         public SkDestroyListener makeSkDestroyListener(
                 IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap, Handler handler) {
-            return new SkDestroyListener(cookieTagMap, handler, new SharedLog(TAG));
+            return new SkDestroyListener(
+                    cookieTagMap, handler, new SharedLog(MAX_SOCKET_DESTROY_LISTENER_LOGS, TAG));
         }
 
         /**
@@ -2212,6 +2209,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             // both total usage and UID details.
             final String baseIface = snapshot.getLinkProperties().getInterfaceName();
             if (baseIface != null) {
+                nativeRegisterIface(baseIface);
                 findOrCreateNetworkIdentitySet(mActiveIfaces, baseIface).add(ident);
                 findOrCreateNetworkIdentitySet(mActiveUidIfaces, baseIface).add(ident);
 
@@ -2283,6 +2281,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 // baseIface has been handled, so ignore it.
                 if (TextUtils.equals(baseIface, iface)) continue;
                 if (iface != null) {
+                    nativeRegisterIface(iface);
                     findOrCreateNetworkIdentitySet(mActiveIfaces, iface).add(ident);
                     findOrCreateNetworkIdentitySet(mActiveUidIfaces, iface).add(ident);
                     if (isMobile) {
@@ -2888,9 +2887,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             }
 
             pw.println();
-            pw.println("InterfaceMapUpdater:");
+            pw.println("InterfaceMapHelper:");
             pw.increaseIndent();
-            mInterfaceMapUpdater.dump(pw);
+            mInterfaceMapHelper.dump(pw);
             pw.decreaseIndent();
 
             pw.println();
@@ -2911,6 +2910,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             dumpStatsMapLocked(mStatsMapA, pw, "mStatsMapA");
             dumpStatsMapLocked(mStatsMapB, pw, "mStatsMapB");
             dumpIfaceStatsMapLocked(pw);
+            pw.decreaseIndent();
+
+            pw.println();
+            pw.println("SkDestroyListener logs:");
+            pw.increaseIndent();
+            mSkDestroyListener.dump(pw);
             pw.decreaseIndent();
         }
     }
@@ -3031,7 +3036,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         BpfDump.dumpMap(statsMap, pw, mapName,
                 "ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets",
                 (key, value) -> {
-                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.ifaceIndex);
+                    final String ifName = mInterfaceMapHelper.getIfNameByIndex(key.ifaceIndex);
                     return key.ifaceIndex + " "
                             + (ifName != null ? ifName : "unknown") + " "
                             + "0x" + Long.toHexString(key.tag) + " "
@@ -3049,7 +3054,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         BpfDump.dumpMap(mIfaceStatsMap, pw, "mIfaceStatsMap",
                 "ifaceIndex ifaceName rxBytes rxPackets txBytes txPackets",
                 (key, value) -> {
-                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.val);
+                    final String ifName = mInterfaceMapHelper.getIfNameByIndex(key.val);
                     return key.val + " "
                             + (ifName != null ? ifName : "unknown") + " "
                             + value.rxBytes + " "
@@ -3410,6 +3415,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     }
 
     // TODO: Read stats by using BpfNetMapsReader.
+    private static native void nativeRegisterIface(String iface);
     @Nullable
     private static native NetworkStats.Entry nativeGetTotalStat();
     @Nullable
