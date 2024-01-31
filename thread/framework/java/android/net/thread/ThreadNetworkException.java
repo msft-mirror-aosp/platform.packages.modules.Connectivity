@@ -48,6 +48,7 @@ public class ThreadNetworkException extends Exception {
         ERROR_RESPONSE_BAD_FORMAT,
         ERROR_RESOURCE_EXHAUSTED,
         ERROR_UNKNOWN,
+        ERROR_THREAD_DISABLED,
     })
     public @interface ErrorCode {}
 
@@ -124,10 +125,17 @@ public class ThreadNetworkException extends Exception {
     public static final int ERROR_RESOURCE_EXHAUSTED = 10;
 
     /**
-     * The operation failed because of an unknown error in the system. This typically indicates
-     * that the caller doesn't understand error codes added in newer Android versions.
+     * The operation failed because of an unknown error in the system. This typically indicates that
+     * the caller doesn't understand error codes added in newer Android versions.
      */
     public static final int ERROR_UNKNOWN = 11;
+
+    /**
+     * The operation failed because the Thread radio is disabled by {@link
+     * ThreadNetworkController#setEnabled}, airplane mode or device admin. The caller should retry
+     * only after Thread is enabled.
+     */
+    public static final int ERROR_THREAD_DISABLED = 12;
 
     private final int mErrorCode;
 
