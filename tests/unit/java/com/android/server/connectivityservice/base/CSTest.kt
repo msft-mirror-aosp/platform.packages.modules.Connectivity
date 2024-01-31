@@ -66,7 +66,7 @@ import com.android.server.connectivity.MultinetworkPolicyTracker
 import com.android.server.connectivity.MultinetworkPolicyTrackerTestDependencies
 import com.android.server.connectivity.NetworkRequestStateStatsMetrics
 import com.android.server.connectivity.ProxyTracker
-import com.android.server.connectivity.RoutingCoordinatorService
+import com.android.server.connectivity.SatelliteAccessController
 import com.android.testutils.visibleOnHandlerThread
 import com.android.testutils.waitForIdle
 import java.util.concurrent.Executors
@@ -77,6 +77,7 @@ import org.mockito.AdditionalAnswers.delegatesTo
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
+import java.util.function.Consumer
 
 internal const val HANDLER_TIMEOUT_MS = 2_000
 internal const val BROADCAST_TIMEOUT_MS = 3_000L
@@ -137,6 +138,7 @@ open class CSTest {
         it[ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS] = true
         it[ConnectivityService.LOG_BPF_RC] = true
+        it[ConnectivityService.ALLOW_SATALLITE_NETWORK_FALLBACK] = true
     }
     fun enableFeature(f: String) = enabledFeatures.set(f, true)
     fun disableFeature(f: String) = enabledFeatures.set(f, false)
@@ -173,6 +175,7 @@ open class CSTest {
     }
 
     val multicastRoutingCoordinatorService = mock<MulticastRoutingCoordinatorService>()
+    val satelliteAccessController = mock<SatelliteAccessController>()
 
     val deps = CSDeps()
     val service = makeConnectivityService(context, netd, deps).also { it.systemReadyInternal() }
@@ -202,6 +205,16 @@ open class CSTest {
                 context: Context,
                 tm: TelephonyManager
         ) = if (SdkLevel.isAtLeastT()) mock<CarrierPrivilegeAuthenticator>() else null
+
+        var satelliteNetworkFallbackUidUpdate: Consumer<Set<Int>>? = null
+        override fun makeSatelliteAccessController(
+            context: Context,
+            updateSatelliteNetworkFallackUid: Consumer<Set<Int>>?,
+            csHandlerThread: Handler
+        ): SatelliteAccessController? {
+            satelliteNetworkFallbackUidUpdate = updateSatelliteNetworkFallackUid
+            return satelliteAccessController
+        }
 
         private inner class AOOKTDeps(c: Context) : AutomaticOnOffKeepaliveTracker.Dependencies(c) {
             override fun isTetheringFeatureNotChickenedOut(name: String): Boolean {

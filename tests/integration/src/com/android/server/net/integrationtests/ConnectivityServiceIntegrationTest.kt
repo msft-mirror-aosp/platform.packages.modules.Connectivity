@@ -60,6 +60,7 @@ import com.android.server.connectivity.ConnectivityResources
 import com.android.server.connectivity.MockableSystemProperties
 import com.android.server.connectivity.MultinetworkPolicyTracker
 import com.android.server.connectivity.ProxyTracker
+import com.android.server.connectivity.SatelliteAccessController
 import com.android.testutils.DevSdkIgnoreRunner
 import com.android.testutils.DeviceInfoUtils
 import com.android.testutils.RecorderCallback.CallbackEntry.LinkPropertiesChanged
@@ -86,6 +87,7 @@ import org.mockito.Mockito.eq
 import org.mockito.Mockito.mock
 import org.mockito.MockitoAnnotations
 import org.mockito.Spy
+import java.util.function.Consumer
 
 const val SERVICE_BIND_TIMEOUT_MS = 5_000L
 const val TEST_TIMEOUT_MS = 10_000L
@@ -249,6 +251,13 @@ class ConnectivityServiceIntegrationTest {
                 },
                 tm, TelephonyManagerShimImpl.newInstance(tm))
         }
+
+        override fun makeSatelliteAccessController(
+            context: Context,
+            updateSatellitePreferredUid: Consumer<MutableSet<Int>>?,
+            connectivityServiceInternalHandler: Handler
+        ): SatelliteAccessController? = mock(
+            SatelliteAccessController::class.java)
     }
 
     @After
