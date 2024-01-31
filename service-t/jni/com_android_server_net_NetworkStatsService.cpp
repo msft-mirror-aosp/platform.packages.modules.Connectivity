@@ -34,9 +34,16 @@
 
 using android::bpf::bpfGetUidStats;
 using android::bpf::bpfGetIfaceStats;
+using android::bpf::bpfRegisterIface;
 using android::bpf::NetworkTraceHandler;
 
 namespace android {
+
+static void nativeRegisterIface(JNIEnv* env, jclass clazz, jstring iface) {
+    ScopedUtfChars iface8(env, iface);
+    if (iface8.c_str() == nullptr) return;
+    bpfRegisterIface(iface8.c_str());
+}
 
 static jobject statsValueToEntry(JNIEnv* env, StatsValue* stats) {
     // Find the Java class that represents the structure
@@ -45,8 +52,14 @@ static jobject statsValueToEntry(JNIEnv* env, StatsValue* stats) {
         return nullptr;
     }
 
+    // Find the constructor.
+    jmethodID constructorID = env->GetMethodID(gEntryClass, "<init>", "()V");
+    if (constructorID == nullptr) {
+        return nullptr;
+    }
+
     // Create a new instance of the Java class
-    jobject result = env->AllocObject(gEntryClass);
+    jobject result = env->NewObject(gEntryClass, constructorID);
     if (result == nullptr) {
         return nullptr;
     }
@@ -63,7 +76,7 @@ static jobject statsValueToEntry(JNIEnv* env, StatsValue* stats) {
 static jobject nativeGetTotalStat(JNIEnv* env, jclass clazz) {
     StatsValue stats = {};
 
-    if (bpfGetIfaceStats(NULL, &stats) == 0) {
+    if (bpfGetIfaceStats(nullptr, &stats) == 0) {
         return statsValueToEntry(env, &stats);
     } else {
         return nullptr;
@@ -72,7 +85,7 @@ static jobject nativeGetTotalStat(JNIEnv* env, jclass clazz) {
 
 static jobject nativeGetIfaceStat(JNIEnv* env, jclass clazz, jstring iface) {
     ScopedUtfChars iface8(env, iface);
-    if (iface8.c_str() == NULL) {
+    if (iface8.c_str() == nullptr) {
         return nullptr;
     }
 
@@ -100,6 +113,11 @@ static void nativeInitNetworkTracing(JNIEnv* env, jclass clazz) {
 }
 
 static const JNINativeMethod gMethods[] = {
+        {
+            "nativeRegisterIface",
+            "(Ljava/lang/String;)V",
+            (void*)nativeRegisterIface
+        },
         {
             "nativeGetTotalStat",
             "()Landroid/net/NetworkStats$Entry;",
