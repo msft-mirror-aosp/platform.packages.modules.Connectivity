@@ -20,6 +20,7 @@ import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIV
 import static com.android.net.module.util.BitUtils.appendStringRepresentationOfBitMaskToStringBuilder;
 import static com.android.net.module.util.BitUtils.describeDifferences;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.LongDef;
 import android.annotation.NonNull;
@@ -130,6 +131,8 @@ public final class NetworkCapabilities implements Parcelable {
     public static class Flags {
         static final String FLAG_FORBIDDEN_CAPABILITY =
                 "com.android.net.flags.forbidden_capability";
+        static final String SUPPORT_TRANSPORT_SATELLITE =
+                "com.android.net.flags.support_transport_satellite";
     }
 
     /**
@@ -1257,6 +1260,7 @@ public final class NetworkCapabilities implements Parcelable {
             TRANSPORT_TEST,
             TRANSPORT_USB,
             TRANSPORT_THREAD,
+            TRANSPORT_SATELLITE,
     })
     public @interface Transport { }
 
@@ -1313,10 +1317,16 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public static final int TRANSPORT_THREAD = 9;
 
+    /**
+     * Indicates this network uses a Satellite transport.
+     */
+    @FlaggedApi(Flags.SUPPORT_TRANSPORT_SATELLITE)
+    public static final int TRANSPORT_SATELLITE = 10;
+
     /** @hide */
     public static final int MIN_TRANSPORT = TRANSPORT_CELLULAR;
     /** @hide */
-    public static final int MAX_TRANSPORT = TRANSPORT_THREAD;
+    public static final int MAX_TRANSPORT = TRANSPORT_SATELLITE;
 
     private static final int ALL_VALID_TRANSPORTS;
     static {
@@ -1343,6 +1353,7 @@ public final class NetworkCapabilities implements Parcelable {
         "TEST",
         "USB",
         "THREAD",
+        "SATELLITE",
     };
 
     /**
