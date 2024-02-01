@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 The Android Open Source Project
+ * Copyright (C) 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.android.metrics;
+package com.android.server.connectivity;
 
 import static com.android.server.ConnectivityStatsLog.NETWORK_REQUEST_STATE_CHANGED;
 
@@ -31,6 +31,8 @@ import android.util.SparseArray;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.ConnectivityStatsLog;
 
+import java.util.ArrayDeque;
+
 /**
  * A Connectivity Service helper class to push atoms capturing network requests have been received
  * and removed and its metadata.
@@ -44,17 +46,21 @@ import com.android.server.ConnectivityStatsLog;
 public class NetworkRequestStateStatsMetrics {
 
     private static final String TAG = "NetworkRequestStateStatsMetrics";
-    private static final int MSG_NETWORK_REQUEST_STATE_CHANGED = 0;
+    private static final int CMD_SEND_PENDING_NETWORK_REQUEST_STATE_METRIC = 0;
+    private static final int CMD_SEND_MAYBE_ENQUEUE_NETWORK_REQUEST_STATE_METRIC = 1;
 
-    // 1 second internal is suggested by experiment team
-    private static final int ATOM_INTERVAL_MS = 1000;
-    private final SparseArray<NetworkRequestStateInfo> mNetworkRequestsActive;
+    @VisibleForTesting
+    static final int MAX_QUEUED_REQUESTS = 20;
 
-    private final Handler mStatsLoggingHandler;
+    // Stats logging frequency is limited to 10 ms at least, 500ms are taken as a safely margin
+    // for cases of longer periods of frequent network requests.
+    private static final int ATOM_INTERVAL_MS = 500;
+    private final StatsLoggingHandler mStatsLoggingHandler;
 
     private final Dependencies mDependencies;
 
     private final NetworkRequestStateInfo.Dependencies mNRStateInfoDeps;
+    private final SparseArray<NetworkRequestStateInfo> mNetworkRequestsActive;
 
     public NetworkRequestStateStatsMetrics() {
         this(new Dependencies(), new NetworkRequestStateInfo.Dependencies());
@@ -86,11 +92,10 @@ public class NetworkRequestStateStatsMetrics {
             NetworkRequestStateInfo networkRequestStateInfo = new NetworkRequestStateInfo(
                     networkRequest, mNRStateInfoDeps);
             mNetworkRequestsActive.put(networkRequest.requestId, networkRequestStateInfo);
-            mStatsLoggingHandler.sendMessage(
-                    Message.obtain(
-                            mStatsLoggingHandler,
-                            MSG_NETWORK_REQUEST_STATE_CHANGED,
-                            networkRequestStateInfo));
+            mStatsLoggingHandler.sendMessage(Message.obtain(
+                    mStatsLoggingHandler,
+                    CMD_SEND_MAYBE_ENQUEUE_NETWORK_REQUEST_STATE_METRIC,
+                    networkRequestStateInfo));
         }
     }
 
@@ -106,15 +111,13 @@ public class NetworkRequestStateStatsMetrics {
             Log.w(TAG, "This NR hasn't been registered. NR id = " + networkRequest.requestId);
         } else {
             Log.d(TAG, "Removed nr with ID = " + networkRequest.requestId);
-
             mNetworkRequestsActive.remove(networkRequest.requestId);
+            networkRequestStateInfo = new NetworkRequestStateInfo(networkRequestStateInfo);
             networkRequestStateInfo.setNetworkRequestRemoved();
-            mStatsLoggingHandler.sendMessage(
-                    Message.obtain(
-                            mStatsLoggingHandler,
-                            MSG_NETWORK_REQUEST_STATE_CHANGED,
-                            networkRequestStateInfo));
-
+            mStatsLoggingHandler.sendMessage(Message.obtain(
+                    mStatsLoggingHandler,
+                    CMD_SEND_MAYBE_ENQUEUE_NETWORK_REQUEST_STATE_METRIC,
+                    networkRequestStateInfo));
         }
     }
 
@@ -130,16 +133,19 @@ public class NetworkRequestStateStatsMetrics {
         }
 
         /**
-         * Sleeps the thread for provided intervalMs millis.
-         *
-         * @param intervalMs number of millis for the thread sleep.
+         * @see Handler#sendMessageDelayed(Message, long)
          */
-        public void threadSleep(int intervalMs) {
-            try {
-                Thread.sleep(intervalMs);
-            } catch (InterruptedException e) {
-                Log.w(TAG, "Cool down interrupted!", e);
-            }
+        public void sendMessageDelayed(@NonNull Handler handler, int what, long delayMillis) {
+            handler.sendMessageDelayed(Message.obtain(handler, what), delayMillis);
+        }
+
+        /**
+         * Gets number of millis since event.
+         *
+         * @param eventTimeMillis long timestamp in millis when the event occurred.
+         */
+        public long getMillisSinceEvent(long eventTimeMillis) {
+            return SystemClock.elapsedRealtime() - eventTimeMillis;
         }
 
         /**
@@ -161,29 +167,59 @@ public class NetworkRequestStateStatsMetrics {
 
     private class StatsLoggingHandler extends Handler {
         private static final String TAG = "NetworkRequestsStateStatsLoggingHandler";
+
+        private final ArrayDeque<NetworkRequestStateInfo> mPendingState = new ArrayDeque<>();
+
         private long mLastLogTime = 0;
 
         StatsLoggingHandler(Looper looper) {
             super(looper);
         }
 
-        private void checkStatsLoggingTimeout() {
-            // Cool down before next execution. Required by atom logging frequency.
-            long now = SystemClock.elapsedRealtime();
-            if (now - mLastLogTime < ATOM_INTERVAL_MS) {
-                mDependencies.threadSleep(ATOM_INTERVAL_MS);
+        private void maybeEnqueueStatsMessage(NetworkRequestStateInfo networkRequestStateInfo) {
+            if (mPendingState.size() < MAX_QUEUED_REQUESTS) {
+                mPendingState.add(networkRequestStateInfo);
+            } else {
+                Log.w(TAG, "Too many network requests received within last " + ATOM_INTERVAL_MS
+                        + " ms, dropping the last network request (id = "
+                        + networkRequestStateInfo.getRequestId() + ") event");
+                return;
             }
-            mLastLogTime = now;
+            if (hasMessages(CMD_SEND_PENDING_NETWORK_REQUEST_STATE_METRIC)) {
+                return;
+            }
+            long millisSinceLastLog = mDependencies.getMillisSinceEvent(mLastLogTime);
+
+            if (millisSinceLastLog >= ATOM_INTERVAL_MS) {
+                sendMessage(
+                        Message.obtain(this, CMD_SEND_PENDING_NETWORK_REQUEST_STATE_METRIC));
+            } else {
+                mDependencies.sendMessageDelayed(
+                        this,
+                        CMD_SEND_PENDING_NETWORK_REQUEST_STATE_METRIC,
+                        ATOM_INTERVAL_MS - millisSinceLastLog);
+            }
         }
 
         @Override
         public void handleMessage(Message msg) {
             NetworkRequestStateInfo loggingInfo;
             switch (msg.what) {
-                case MSG_NETWORK_REQUEST_STATE_CHANGED:
-                    checkStatsLoggingTimeout();
-                    loggingInfo = (NetworkRequestStateInfo) msg.obj;
-                    mDependencies.writeStats(loggingInfo);
+                case CMD_SEND_MAYBE_ENQUEUE_NETWORK_REQUEST_STATE_METRIC:
+                    maybeEnqueueStatsMessage((NetworkRequestStateInfo) msg.obj);
+                    break;
+                case CMD_SEND_PENDING_NETWORK_REQUEST_STATE_METRIC:
+                    mLastLogTime = SystemClock.elapsedRealtime();
+                    if (!mPendingState.isEmpty()) {
+                        loggingInfo = mPendingState.remove();
+                        mDependencies.writeStats(loggingInfo);
+                        if (!mPendingState.isEmpty()) {
+                            mDependencies.sendMessageDelayed(
+                                    this,
+                                    CMD_SEND_PENDING_NETWORK_REQUEST_STATE_METRIC,
+                                    ATOM_INTERVAL_MS);
+                        }
+                    }
                     break;
                 default: // fall out
             }
