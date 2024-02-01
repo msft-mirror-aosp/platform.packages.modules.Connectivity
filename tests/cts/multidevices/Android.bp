@@ -1,4 +1,4 @@
-// Copyright (C) 2016 The Android Open Source Project
+// Copyright (C) 2024 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,17 +13,30 @@
 // limitations under the License.
 
 package {
-    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-java_test_helper_library {
-    name: "CtsHostsideNetworkTestsAidl",
-    sdk_version: "current",
-    srcs: [
-        "com/android/cts/net/hostside/IMyService.aidl",
-        "com/android/cts/net/hostside/INetworkCallback.aidl",
-        "com/android/cts/net/hostside/INetworkStateObserver.aidl",
-        "com/android/cts/net/hostside/IRemoteSocketFactory.aidl",
+python_test_host {
+    name: "CtsConnectivityMultiDevicesTestCases",
+    main: "connectivity_multi_devices_test.py",
+    srcs: ["connectivity_multi_devices_test.py"],
+    libs: [
+        "mobly",
     ],
+    test_suites: [
+        "cts",
+        "general-tests",
+    ],
+    test_options: {
+        unit_test: false,
+    },
+    data: [
+        // Package the snippet with the mobly test
+        ":connectivity_multi_devices_snippet",
+    ],
+    version: {
+        py3: {
+            embedded_launcher: true,
+        },
+    },
 }
