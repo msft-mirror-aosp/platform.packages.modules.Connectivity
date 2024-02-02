@@ -66,7 +66,6 @@ import android.annotation.RequiresPermission;
 import android.annotation.TargetApi;
 import android.content.Context;
 import android.net.ConnectivityManager;
-import android.net.IpPrefix;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.LocalNetworkConfig;
@@ -79,7 +78,6 @@ import android.net.NetworkCapabilities;
 import android.net.NetworkProvider;
 import android.net.NetworkRequest;
 import android.net.NetworkScore;
-import android.net.RouteInfo;
 import android.net.TestNetworkSpecifier;
 import android.net.thread.ActiveOperationalDataset;
 import android.net.thread.ActiveOperationalDataset.SecurityPolicy;
@@ -151,7 +149,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private final ConnectivityManager mConnectivityManager;
     private final TunInterfaceController mTunIfController;
     private final InfraInterfaceController mInfraIfController;
-    private final LinkProperties mLinkProperties = new LinkProperties();
     private final OtDaemonCallbackProxy mOtDaemonCallbackProxy = new OtDaemonCallbackProxy();
 
     // TODO(b/308310823): read supported channel from Thread dameon
@@ -295,12 +292,16 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         return mOtDaemon;
     }
 
-    // TODO(b/309792480): restarts the OT daemon service
     private void onOtDaemonDied() {
-        Log.w(TAG, "OT daemon became dead, clean up...");
+        checkOnHandlerThread();
+        Log.w(TAG, "OT daemon is dead, clean up and restart it...");
+
         OperationReceiverWrapper.onOtDaemonDied();
         mOtDaemonCallbackProxy.onOtDaemonDied();
+        mTunIfController.onOtDaemonDied();
+
         mOtDaemon = null;
+        initializeOtDaemon();
     }
 
     public void initialize() {
@@ -313,8 +314,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                         throw new IllegalStateException(
                                 "Failed to create Thread tunnel interface", e);
                     }
-                    mLinkProperties.setInterfaceName(TUN_IF_NAME);
-                    mLinkProperties.setMtu(TunInterfaceController.MTU);
                     mConnectivityManager.registerNetworkProvider(mNetworkProvider);
                     requestUpstreamNetwork();
                     requestThreadNetwork();
@@ -365,25 +364,31 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         @Override
         public void onAvailable(@NonNull Network network) {
             checkOnHandlerThread();
-            Log.i(TAG, "onAvailable: " + network);
+            Log.i(TAG, "Upstream network available: " + network);
         }
 
         @Override
         public void onLost(@NonNull Network network) {
             checkOnHandlerThread();
-            Log.i(TAG, "onLost: " + network);
+            Log.i(TAG, "Upstream network lost: " + network);
+
+            // TODO: disable border routing when upsteam network disconnected
         }
 
         @Override
         public void onLinkPropertiesChanged(
                 @NonNull Network network, @NonNull LinkProperties linkProperties) {
             checkOnHandlerThread();
-            Log.i(
-                    TAG,
-                    String.format(
-                            "onLinkPropertiesChanged: {network: %s, interface: %s}",
-                            network, linkProperties.getInterfaceName()));
-            mNetworkToInterface.put(network, linkProperties.getInterfaceName());
+
+            String existingIfName = mNetworkToInterface.get(network);
+            String newIfName = linkProperties.getInterfaceName();
+            if (Objects.equals(existingIfName, newIfName)) {
+                return;
+            }
+            Log.i(TAG, "Upstream network changed: " + existingIfName + " -> " + newIfName);
+            mNetworkToInterface.put(network, newIfName);
+
+            // TODO: disable border routing if netIfName is null
             if (network.equals(mUpstreamNetwork)) {
                 enableBorderRouting(mNetworkToInterface.get(mUpstreamNetwork));
             }
@@ -394,14 +399,20 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         @Override
         public void onAvailable(@NonNull Network network) {
             checkOnHandlerThread();
-            Log.i(TAG, "onAvailable: Thread network Available");
+            Log.i(TAG, "Thread network available: " + network);
         }
 
         @Override
         public void onLocalNetworkInfoChanged(
                 @NonNull Network network, @NonNull LocalNetworkInfo localNetworkInfo) {
             checkOnHandlerThread();
-            Log.i(TAG, "onLocalNetworkInfoChanged: " + localNetworkInfo);
+            Log.i(
+                    TAG,
+                    "LocalNetworkInfo of Thread network changed: {threadNetwork: "
+                            + network
+                            + ", localNetworkInfo: "
+                            + localNetworkInfo
+                            + "}");
             if (localNetworkInfo.getUpstreamNetwork() == null) {
                 mUpstreamNetwork = null;
                 return;
@@ -453,7 +464,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 mHandler.getLooper(),
                 TAG,
                 netCaps,
-                mLinkProperties,
+                mTunIfController.getLinkProperties(),
                 newLocalNetworkConfig(),
                 score,
                 new NetworkAgentConfig.Builder().build(),
@@ -482,46 +493,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
         mNetworkAgent.unregister();
         mNetworkAgent = null;
-    }
-
-    private void updateTunInterfaceAddress(LinkAddress linkAddress, boolean isAdded) {
-        try {
-            if (isAdded) {
-                mTunIfController.addAddress(linkAddress);
-            } else {
-                mTunIfController.removeAddress(linkAddress);
-            }
-        } catch (IOException e) {
-            Log.e(
-                    TAG,
-                    String.format(
-                            "Failed to %s Thread tun interface address %s",
-                            (isAdded ? "add" : "remove"), linkAddress),
-                    e);
-        }
-    }
-
-    private void updateNetworkLinkProperties(LinkAddress linkAddress, boolean isAdded) {
-        RouteInfo routeInfo =
-                new RouteInfo(
-                        new IpPrefix(linkAddress.getAddress(), 64),
-                        null,
-                        TUN_IF_NAME,
-                        RouteInfo.RTN_UNICAST,
-                        TunInterfaceController.MTU);
-        if (isAdded) {
-            mLinkProperties.addLinkAddress(linkAddress);
-            mLinkProperties.addRoute(routeInfo);
-        } else {
-            mLinkProperties.removeLinkAddress(linkAddress);
-            mLinkProperties.removeRoute(routeInfo);
-        }
-
-        // The Thread daemon can send link property updates before the networkAgent is
-        // registered
-        if (mNetworkAgent != null) {
-            mNetworkAgent.sendLinkProperties(mLinkProperties);
-        }
     }
 
     @Override
@@ -829,7 +800,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 && infraIfName.equals(mBorderRouterConfig.infraInterfaceName)) {
             return;
         }
-        Log.i(TAG, "enableBorderRouting on AIL: " + infraIfName);
+        Log.i(TAG, "Enable border routing on AIL: " + infraIfName);
         try {
             mBorderRouterConfig.infraInterfaceName = infraIfName;
             mBorderRouterConfig.infraInterfaceIcmp6Socket =
@@ -860,7 +831,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private void handleThreadInterfaceStateChanged(boolean isUp) {
         try {
             mTunIfController.setInterfaceUp(isUp);
-            Log.d(TAG, "Thread network interface becomes " + (isUp ? "up" : "down"));
+            Log.i(TAG, "Thread TUN interface becomes " + (isUp ? "up" : "down"));
         } catch (IOException e) {
             Log.e(TAG, "Failed to handle Thread interface state changes", e);
         }
@@ -868,13 +839,13 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
     private void handleDeviceRoleChanged(@DeviceRole int deviceRole) {
         if (ThreadNetworkController.isAttached(deviceRole)) {
-            Log.d(TAG, "Attached to the Thread network");
+            Log.i(TAG, "Attached to the Thread network");
 
             // This is an idempotent method which can be called for multiple times when the device
             // is already attached (e.g. going from Child to Router)
             registerThreadNetwork();
         } else {
-            Log.d(TAG, "Detached from the Thread network");
+            Log.i(TAG, "Detached from the Thread network");
 
             // This is an idempotent method which can be called for multiple times when the device
             // is already detached or stopped
@@ -891,10 +862,17 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
 
         LinkAddress linkAddress = newLinkAddress(addressInfo);
-        Log.d(TAG, (isAdded ? "Adding" : "Removing") + " address " + linkAddress);
+        if (isAdded) {
+            mTunIfController.addAddress(linkAddress);
+        } else {
+            mTunIfController.removeAddress(linkAddress);
+        }
 
-        updateTunInterfaceAddress(linkAddress, isAdded);
-        updateNetworkLinkProperties(linkAddress, isAdded);
+        // The OT daemon can send link property updates before the networkAgent is
+        // registered
+        if (mNetworkAgent != null) {
+            mNetworkAgent.sendLinkProperties(mTunIfController.getLinkProperties());
+        }
     }
 
     private boolean isMulticastForwardingEnabled() {
@@ -915,6 +893,9 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         if (isMulticastForwardingEnabled() == isEnabled) {
             return;
         }
+
+        Log.i(TAG, "Multicast forwaring is " + (isEnabled ? "enabled" : "disabled"));
+
         if (isEnabled) {
             // When multicast forwarding is enabled, setup upstream forwarding to any address
             // with minimal scope 4
@@ -930,10 +911,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             mDownstreamMulticastRoutingConfig = CONFIG_FORWARD_NONE;
         }
         sendLocalNetworkConfig();
-        Log.d(
-                TAG,
-                "Sent updated localNetworkConfig with multicast forwarding "
-                        + (isEnabled ? "enabled" : "disabled"));
     }
 
     private void handleMulticastForwardingAddressChanged(byte[] addressBytes, boolean isAdded) {
