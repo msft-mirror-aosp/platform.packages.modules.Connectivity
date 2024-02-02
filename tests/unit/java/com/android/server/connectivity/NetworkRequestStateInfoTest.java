@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.android.metrics;
+package com.android.server.connectivity;
 
 import static com.android.server.ConnectivityStatsLog.NETWORK_REQUEST_STATE_CHANGED__STATE__NETWORK_REQUEST_STATE_RECEIVED;
 import static com.android.server.ConnectivityStatsLog.NETWORK_REQUEST_STATE_CHANGED__STATE__NETWORK_REQUEST_STATE_REMOVED;
@@ -60,25 +60,25 @@ public class NetworkRequestStateInfoTest {
 
         // This call will be used to calculate NR received time
         Mockito.when(mDependencies.getElapsedRealtime()).thenReturn(nrStartTime);
-        NetworkRequestStateInfo mNetworkRequestStateInfo = new NetworkRequestStateInfo(
+        NetworkRequestStateInfo networkRequestStateInfo = new NetworkRequestStateInfo(
                 notMeteredWifiNetworkRequest, mDependencies);
 
         // This call will be used to calculate NR removed time
         Mockito.when(mDependencies.getElapsedRealtime()).thenReturn(nrEndTime);
-        mNetworkRequestStateInfo.setNetworkRequestRemoved();
+        networkRequestStateInfo.setNetworkRequestRemoved();
         assertEquals(
                 nrEndTime - nrStartTime,
-                mNetworkRequestStateInfo.getNetworkRequestDurationMillis());
-        assertEquals(mNetworkRequestStateInfo.getNetworkRequestStateStatsType(),
+                networkRequestStateInfo.getNetworkRequestDurationMillis());
+        assertEquals(networkRequestStateInfo.getNetworkRequestStateStatsType(),
                 NETWORK_REQUEST_STATE_CHANGED__STATE__NETWORK_REQUEST_STATE_REMOVED);
     }
 
     @Test
     public void testCheckInitialState() {
-        NetworkRequestStateInfo mNetworkRequestStateInfo = new NetworkRequestStateInfo(
+        NetworkRequestStateInfo networkRequestStateInfo = new NetworkRequestStateInfo(
                 new NetworkRequest(new NetworkCapabilities(), 0, 1, NetworkRequest.Type.REQUEST),
                 mDependencies);
-        assertEquals(mNetworkRequestStateInfo.getNetworkRequestStateStatsType(),
+        assertEquals(networkRequestStateInfo.getNetworkRequestStateStatsType(),
                 NETWORK_REQUEST_STATE_CHANGED__STATE__NETWORK_REQUEST_STATE_RECEIVED);
     }
 }
