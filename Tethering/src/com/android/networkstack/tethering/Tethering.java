@@ -136,6 +136,7 @@ import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.SdkUtil.LateSdk;
 import com.android.net.module.util.SharedLog;
@@ -161,11 +162,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  *
@@ -303,9 +301,9 @@ public class Tethering {
         mContext = mDeps.getContext();
         mNetd = mDeps.getINetd(mContext);
         mRoutingCoordinator = mDeps.getRoutingCoordinator(mContext);
-        mLooper = mDeps.getTetheringLooper();
-        mNotificationUpdater = mDeps.getNotificationUpdater(mContext, mLooper);
-        mTetheringMetrics = mDeps.getTetheringMetrics();
+        mLooper = mDeps.makeTetheringLooper();
+        mNotificationUpdater = mDeps.makeNotificationUpdater(mContext, mLooper);
+        mTetheringMetrics = mDeps.makeTetheringMetrics();
 
         // This is intended to ensrure that if something calls startTethering(bluetooth) just after
         // bluetooth is enabled. Before onServiceConnected is called, store the calls into this
@@ -319,7 +317,7 @@ public class Tethering {
         mTetherMainSM.start();
 
         mHandler = mTetherMainSM.getHandler();
-        mOffloadController = mDeps.getOffloadController(mHandler, mLog,
+        mOffloadController = mDeps.makeOffloadController(mHandler, mLog,
                 new OffloadController.Dependencies() {
 
                     @Override
@@ -327,7 +325,7 @@ public class Tethering {
                         return mConfig;
                     }
                 });
-        mUpstreamNetworkMonitor = mDeps.getUpstreamNetworkMonitor(mContext, mHandler, mLog,
+        mUpstreamNetworkMonitor = mDeps.makeUpstreamNetworkMonitor(mContext, mHandler, mLog,
                 (what, obj) -> {
                     mTetherMainSM.sendMessage(TetherMainSM.EVENT_UPSTREAM_CALLBACK, what, 0, obj);
                 });
@@ -337,7 +335,7 @@ public class Tethering {
         filter.addAction(ACTION_CARRIER_CONFIG_CHANGED);
         // EntitlementManager will send EVENT_UPSTREAM_PERMISSION_CHANGED when cellular upstream
         // permission is changed according to entitlement check result.
-        mEntitlementMgr = mDeps.getEntitlementManager(mContext, mHandler, mLog,
+        mEntitlementMgr = mDeps.makeEntitlementManager(mContext, mHandler, mLog,
                 () -> mTetherMainSM.sendMessage(
                 TetherMainSM.EVENT_UPSTREAM_PERMISSION_CHANGED));
         mEntitlementMgr.setOnTetherProvisioningFailedListener((downstream, reason) -> {
@@ -370,14 +368,15 @@ public class Tethering {
 
         // Load tethering configuration.
         updateConfiguration();
+        mConfig.readEnableSyncSM(mContext);
         // It is OK for the configuration to be passed to the PrivateAddressCoordinator at
         // construction time because the only part of the configuration it uses is
         // shouldEnableWifiP2pDedicatedIp(), and currently do not support changing that.
-        mPrivateAddressCoordinator = mDeps.getPrivateAddressCoordinator(mContext, mConfig);
+        mPrivateAddressCoordinator = mDeps.makePrivateAddressCoordinator(mContext, mConfig);
 
         // Must be initialized after tethering configuration is loaded because BpfCoordinator
         // constructor needs to use the configuration.
-        mBpfCoordinator = mDeps.getBpfCoordinator(
+        mBpfCoordinator = mDeps.makeBpfCoordinator(
                 new BpfCoordinator.Dependencies() {
                     @NonNull
                     public Handler getHandler() {
@@ -406,7 +405,7 @@ public class Tethering {
                 });
 
         if (SdkLevel.isAtLeastT() && mConfig.isWearTetheringEnabled()) {
-            mWearableConnectionManager = mDeps.getWearableConnectionManager(mContext);
+            mWearableConnectionManager = mDeps.makeWearableConnectionManager(mContext);
         } else {
             mWearableConnectionManager = null;
         }
@@ -875,7 +874,7 @@ public class Tethering {
 
     private void changeBluetoothTetheringSettings(@NonNull final BluetoothPan bluetoothPan,
             final boolean enable) {
-        final BluetoothPanShim panShim = mDeps.getBluetoothPanShim(bluetoothPan);
+        final BluetoothPanShim panShim = mDeps.makeBluetoothPanShim(bluetoothPan);
         if (enable) {
             if (mBluetoothIfaceRequest != null) {
                 Log.d(TAG, "Bluetooth tethering settings already enabled");
@@ -1739,7 +1738,7 @@ public class Tethering {
             addState(mSetDnsForwardersErrorState);
 
             mNotifyList = new ArrayList<>();
-            mIPv6TetheringCoordinator = deps.getIPv6TetheringCoordinator(mNotifyList, mLog);
+            mIPv6TetheringCoordinator = deps.makeIPv6TetheringCoordinator(mNotifyList, mLog);
             mOffload = new OffloadWrapper();
 
             setInitialState(mInitialState);
@@ -2694,31 +2693,10 @@ public class Tethering {
             return;
         }
 
-        final CountDownLatch latch = new CountDownLatch(1);
-
-        // Don't crash the system if something in doDump throws an exception, but try to propagate
-        // the exception to the caller.
-        AtomicReference<RuntimeException> exceptionRef = new AtomicReference<>();
-        mHandler.post(() -> {
-            try {
-                doDump(fd, writer, args);
-            } catch (RuntimeException e) {
-                exceptionRef.set(e);
-            }
-            latch.countDown();
-        });
-
-        try {
-            if (!latch.await(DUMP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                writer.println("Dump timeout after " + DUMP_TIMEOUT_MS + "ms");
-                return;
-            }
-        } catch (InterruptedException e) {
-            exceptionRef.compareAndSet(null, new IllegalStateException("Dump interrupted", e));
+        if (!HandlerUtils.runWithScissorsForDump(mHandler, () -> doDump(fd, writer, args),
+                DUMP_TIMEOUT_MS)) {
+            writer.println("Dump timeout after " + DUMP_TIMEOUT_MS + "ms");
         }
-
-        final RuntimeException e = exceptionRef.get();
-        if (e != null) throw e;
     }
 
     private void maybeDhcpLeasesChanged() {
@@ -2844,7 +2822,7 @@ public class Tethering {
                 new IpServer(iface, mHandler, interfaceType, mLog, mNetd, mBpfCoordinator,
                         mRoutingCoordinator, new ControlCallback(), mConfig,
                         mPrivateAddressCoordinator, mTetheringMetrics,
-                        mDeps.getIpServerDependencies()), isNcm);
+                        mDeps.makeIpServerDependencies()), isNcm);
         mTetherStates.put(iface, tetherState);
         tetherState.ipServer.start();
     }

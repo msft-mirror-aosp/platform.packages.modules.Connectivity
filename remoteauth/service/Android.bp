@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -33,6 +34,7 @@ java_library {
     libs: [
         "androidx.annotation_annotation",
         "framework-bluetooth",
+        "framework-connectivity",
         "error_prone_annotations",
         "framework-configinfrastructure",
         "framework-connectivity-pre-jarjar",

@@ -15,18 +15,10 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
-
-// In the branch which does not support FlaggedAPI, use this default to ignore the annotated APIs.
-java_defaults {
-    name: "FlaggedApiDefaults",
-}
-
-// The above variables may have different values
-// depending on the branch, and this comment helps
-// separate them from the rest of the file to avoid merge conflicts
 
 filegroup {
     name: "framework-connectivity-internal-sources",
@@ -104,6 +96,7 @@ java_defaults {
     ],
     impl_only_static_libs: [
         "net-utils-device-common-bpf",
+        "net-utils-device-common-struct",
     ],
     libs: [
         "androidx.annotation_annotation",
@@ -114,7 +107,6 @@ java_defaults {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: { strict_updatability_linting: true },
 }
 
 java_library {
@@ -133,6 +125,7 @@ java_library {
         // Even if the library is included in "impl_only_static_libs" of defaults. This is still
         // needed because java_library which doesn't understand "impl_only_static_libs".
         "net-utils-device-common-bpf",
+        "net-utils-device-common-struct",
     ],
     libs: [
         // This cannot be in the defaults clause above because if it were, it would be used
@@ -143,7 +136,7 @@ java_library {
         "framework-tethering.impl",
         "framework-wifi.stubs.module_lib",
     ],
-    visibility: ["//packages/modules/Connectivity:__subpackages__"]
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
 java_defaults {
@@ -163,7 +156,6 @@ java_sdk_library {
     defaults: [
         "framework-connectivity-defaults",
         "CronetJavaDefaults",
-        "FlaggedApiDefaults",
     ],
     installable: true,
     jarjar_rules: ":framework-connectivity-jarjar-rules",
@@ -195,10 +187,14 @@ java_sdk_library {
         "//packages/modules/Connectivity/Cronet/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/thread/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
     ],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
 
 platform_compat_config {
@@ -303,9 +299,9 @@ droidstubs {
     ],
     flags: [
         "--show-for-stub-purposes-annotation android.annotation.SystemApi" +
-        "\\(client=android.annotation.SystemApi.Client.PRIVILEGED_APPS\\)",
+            "\\(client=android.annotation.SystemApi.Client.PRIVILEGED_APPS\\)",
         "--show-for-stub-purposes-annotation android.annotation.SystemApi" +
-        "\\(client=android.annotation.SystemApi.Client.MODULE_LIBRARIES\\)",
+            "\\(client=android.annotation.SystemApi.Client.MODULE_LIBRARIES\\)",
     ],
     aidl: {
         include_dirs: [

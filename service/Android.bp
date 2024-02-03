@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
@@ -200,7 +201,10 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+
+    },
     visibility: [
         "//packages/modules/Connectivity/service-t",
         "//packages/modules/Connectivity/tests:__subpackages__",
@@ -225,6 +229,7 @@ java_library {
     ],
     lint: {
         strict_updatability_linting: true,
+
     },
 }
 
@@ -267,9 +272,6 @@ java_defaults {
     ],
     optimize: {
         proguard_flags_files: ["proguard.flags"],
-    },
-    lint: {
-        strict_updatability_linting: true,
     },
 }
 

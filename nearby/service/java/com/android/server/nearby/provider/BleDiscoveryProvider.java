@@ -45,7 +45,6 @@ import com.android.server.nearby.injector.Injector;
 import com.android.server.nearby.presence.ExtendedAdvertisement;
 import com.android.server.nearby.util.ArrayUtils;
 import com.android.server.nearby.util.ForegroundThread;
-import com.android.server.nearby.util.encryption.CryptorImpIdentityV1;
 
 import com.google.common.annotations.VisibleForTesting;
 
@@ -69,15 +68,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
     @GuardedBy("mLock")
     @Nullable
     private List<android.nearby.ScanFilter> mScanFilters;
-    private android.bluetooth.le.ScanCallback mScanCallbackLegacy =
-            new android.bluetooth.le.ScanCallback() {
-                @Override
-                public void onScanResult(int callbackType, ScanResult scanResult) {
-                }
-                @Override
-                public void onScanFailed(int errorCode) {
-                }
-            };
     private android.bluetooth.le.ScanCallback mScanCallback =
             new android.bluetooth.le.ScanCallback() {
                 @Override
@@ -133,10 +123,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
                         .addMedium(NearbyDevice.Medium.BLE)
                         .setName(deviceName)
                         .setRssi(rssi);
-        for (int i : advertisement.getActions()) {
-            builder.addExtendedProperty(new DataElement(DataElement.DataType.ACTION,
-                    new byte[]{(byte) i}));
-        }
         for (DataElement dataElement : advertisement.getDataElements()) {
             builder.addExtendedProperty(dataElement);
         }
@@ -175,7 +161,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
         if (isBleAvailable()) {
             Log.d(TAG, "BleDiscoveryProvider started");
             startScan(getScanFilters(), getScanSettings(/* legacy= */ false), mScanCallback);
-            startScan(getScanFilters(), getScanSettings(/* legacy= */ true), mScanCallbackLegacy);
             return;
         }
         Log.w(TAG, "Cannot start BleDiscoveryProvider because Ble is not available.");
@@ -192,7 +177,6 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
         }
         Log.v(TAG, "Ble scan stopped.");
         bluetoothLeScanner.stopScan(mScanCallback);
-        bluetoothLeScanner.stopScan(mScanCallbackLegacy);
         synchronized (mLock) {
             if (mScanFilters != null) {
                 mScanFilters = null;
@@ -284,17 +268,13 @@ public class BleDiscoveryProvider extends AbstractDiscoveryProvider {
                         if (advertisement == null) {
                             continue;
                         }
-                        if (CryptorImpIdentityV1.getInstance().verify(
-                                advertisement.getIdentity(),
-                                credential.getEncryptedMetadataKeyTag())) {
-                            builder.setPresenceDevice(getPresenceDevice(advertisement, deviceName,
-                                    rssi));
-                            builder.setEncryptionKeyTag(credential.getEncryptedMetadataKeyTag());
-                            if (!ArrayUtils.isEmpty(credential.getSecretId())) {
-                                builder.setDeviceId(Arrays.hashCode(credential.getSecretId()));
-                            }
-                            return;
+                        builder.setPresenceDevice(getPresenceDevice(advertisement, deviceName,
+                                rssi));
+                        builder.setEncryptionKeyTag(credential.getEncryptedMetadataKeyTag());
+                        if (!ArrayUtils.isEmpty(credential.getSecretId())) {
+                            builder.setDeviceId(Arrays.hashCode(credential.getSecretId()));
                         }
+                        return;
                     }
                 }
             }

@@ -161,6 +161,7 @@ import static com.android.server.ConnectivityService.DELAY_DESTROY_FROZEN_SOCKET
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
 import static com.android.server.ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS;
 import static com.android.server.ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION;
+import static com.android.server.ConnectivityService.LOG_BPF_RC;
 import static com.android.server.ConnectivityService.MAX_NETWORK_REQUESTS_PER_SYSTEM_UID;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_OEM;
@@ -501,6 +502,7 @@ import java.util.stream.Collectors;
 // to enable faster testing of smaller groups of functionality.
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
+@DevSdkIgnoreRunner.MonitorThreadLeak
 @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 public class ConnectivityServiceTest {
     private static final String TAG = "ConnectivityServiceTest";
@@ -588,6 +590,7 @@ public class ConnectivityServiceTest {
     private TestNetworkAgentWrapper mWiFiAgent;
     private TestNetworkAgentWrapper mCellAgent;
     private TestNetworkAgentWrapper mEthernetAgent;
+    private final List<TestNetworkAgentWrapper> mCreatedAgents = new ArrayList<>();
     private MockVpn mMockVpn;
     private Context mContext;
     private NetworkPolicyCallback mPolicyCallback;
@@ -1091,6 +1094,7 @@ public class ConnectivityServiceTest {
                 NetworkCapabilities ncTemplate, NetworkProvider provider,
                 NetworkAgentWrapper.Callbacks callbacks) throws Exception {
             super(transport, linkProperties, ncTemplate, provider, callbacks, mServiceContext);
+            mCreatedAgents.add(this);
 
             // Waits for the NetworkAgent to be registered, which includes the creation of the
             // NetworkMonitor.
@@ -2157,6 +2161,8 @@ public class ConnectivityServiceTest {
             switch (name) {
                 case ALLOW_SYSUI_CONNECTIVITY_REPORTS:
                     return true;
+                case LOG_BPF_RC:
+                    return true;
                 default:
                     return super.isFeatureNotChickenedOut(context, name);
             }
@@ -2400,6 +2406,11 @@ public class ConnectivityServiceTest {
 
         FakeSettingsProvider.clearSettingsProvider();
         ConnectivityResources.setResourcesContextForTest(null);
+
+        for (TestNetworkAgentWrapper agent : mCreatedAgents) {
+            agent.destroy();
+        }
+        mCreatedAgents.clear();
 
         mCsHandlerThread.quitSafely();
         mCsHandlerThread.join();
@@ -12918,7 +12929,7 @@ public class ConnectivityServiceTest {
         mServiceContext.setPermission(NETWORK_STACK, PERMISSION_GRANTED);
         assertTrue(
                 "NetworkStack permission not applied",
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid(), Process.myUid(), naiWithoutUid,
                         mContext.getOpPackageName()));
     }
@@ -12930,7 +12941,7 @@ public class ConnectivityServiceTest {
         mServiceContext.setPermission(STATUS_BAR_SERVICE, PERMISSION_GRANTED);
         assertTrue(
                 "SysUi permission (STATUS_BAR_SERVICE) not applied",
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid(), Process.myUid(), naiWithoutUid,
                         mContext.getOpPackageName()));
     }
@@ -12947,7 +12958,7 @@ public class ConnectivityServiceTest {
 
         assertFalse(
                 "Mismatched uid/package name should not pass the location permission check",
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid() + 1, wrongUid, naiWithUid, mContext.getOpPackageName()));
     }
 
@@ -12958,7 +12969,7 @@ public class ConnectivityServiceTest {
         assertEquals(
                 "Unexpected ConnDiags permission",
                 expectPermission,
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid(), Process.myUid(), info, mContext.getOpPackageName()));
     }
 
@@ -13000,7 +13011,7 @@ public class ConnectivityServiceTest {
         waitForIdle();
         assertTrue(
                 "Active VPN permission not applied",
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid(), Process.myUid(), naiWithoutUid,
                         mContext.getOpPackageName()));
 
@@ -13008,7 +13019,7 @@ public class ConnectivityServiceTest {
         waitForIdle();
         assertFalse(
                 "VPN shouldn't receive callback on non-underlying network",
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid(), Process.myUid(), naiWithoutUid,
                         mContext.getOpPackageName()));
     }
@@ -13025,7 +13036,7 @@ public class ConnectivityServiceTest {
 
         assertTrue(
                 "NetworkCapabilities administrator uid permission not applied",
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid(), Process.myUid(), naiWithUid, mContext.getOpPackageName()));
     }
 
@@ -13043,7 +13054,7 @@ public class ConnectivityServiceTest {
         // Use wrong pid and uid
         assertFalse(
                 "Permissions allowed when they shouldn't be granted",
-                mService.checkConnectivityDiagnosticsPermissions(
+                mService.hasConnectivityDiagnosticsPermissions(
                         Process.myPid() + 1, Process.myUid() + 1, naiWithUid,
                         mContext.getOpPackageName()));
     }

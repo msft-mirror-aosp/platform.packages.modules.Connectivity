@@ -16,6 +16,7 @@
 
 package com.android.cts.net.hostside;
 
+import static android.app.ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
 import static android.net.NetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED;
 
@@ -203,6 +204,7 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         // Initial state
         setBatterySaverMode(false);
         setRestrictBackground(false);
+        setAppIdle(false);
 
         // Get transports of the active network, this has to be done before changing meteredness,
         // since wifi will be disconnected when changing from non-metered to metered.
@@ -312,7 +314,8 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
             // Enable Power Saver
             setBatterySaverMode(true);
             if (SdkLevel.isAtLeastT()) {
-                assertBackgroundNetworkAccess(false, "java.net.UnknownHostException");
+                assertProcessStateBelow(PROCESS_STATE_BOUND_FOREGROUND_SERVICE);
+                assertNetworkAccess(false, "java.net.UnknownHostException");
             } else {
                 assertBackgroundNetworkAccess(false);
             }
@@ -336,7 +339,8 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
             // Enable Power Saver
             setBatterySaverMode(true);
             if (SdkLevel.isAtLeastT()) {
-                assertBackgroundNetworkAccess(false, "java.net.UnknownHostException");
+                assertProcessStateBelow(PROCESS_STATE_BOUND_FOREGROUND_SERVICE);
+                assertNetworkAccess(false, "java.net.UnknownHostException");
             } else {
                 assertBackgroundNetworkAccess(false);
             }

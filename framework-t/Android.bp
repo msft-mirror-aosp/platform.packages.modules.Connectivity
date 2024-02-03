@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
@@ -34,6 +35,7 @@ java_defaults {
     name: "enable-framework-connectivity-t-targets",
     enabled: true,
 }
+
 // The above defaults can be used to disable framework-connectivity t
 // targets while minimizing merge conflicts in the build rules.
 
@@ -56,6 +58,10 @@ java_defaults {
         "unsupportedappusage",
         "app-compat-annotations",
         "androidx.annotation_annotation",
+    ],
+    static_libs: [
+        // Cannot go to framework-connectivity because mid_sdk checks require 31.
+        "modules-utils-binary-xml",
     ],
     impl_only_libs: [
         // The build system will use framework-bluetooth module_current stubs, because
@@ -124,7 +130,6 @@ java_sdk_library {
     defaults: [
         "framework-connectivity-t-defaults",
         "enable-framework-connectivity-t-targets",
-        "FlaggedApiDefaults",
     ],
     // Do not add static_libs to this library: put them in framework-connectivity instead.
     // The jarjar rules are only so that references to jarjared utils in
@@ -183,9 +188,13 @@ java_sdk_library {
         "//packages/modules/Connectivity/staticlibs/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/thread/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
+    ],
+    aconfig_declarations: [
+        "com.android.net.flags-aconfig",
     ],
 }
 
