@@ -18,28 +18,32 @@ package android.net.thread;
 
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
-import static android.net.thread.IntegrationTestUtils.isExpectedIcmpv6Packet;
-import static android.net.thread.IntegrationTestUtils.isSimulatedThreadRadioSupported;
-import static android.net.thread.IntegrationTestUtils.newPacketReader;
-import static android.net.thread.IntegrationTestUtils.readPacketFrom;
-import static android.net.thread.IntegrationTestUtils.waitFor;
-import static android.net.thread.IntegrationTestUtils.waitForStateAnyOf;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_LEADER;
 import static android.net.thread.ThreadNetworkManager.PERMISSION_THREAD_NETWORK_PRIVILEGED;
+import static android.net.thread.utils.IntegrationTestUtils.JOIN_TIMEOUT;
+import static android.net.thread.utils.IntegrationTestUtils.isExpectedIcmpv6Packet;
+import static android.net.thread.utils.IntegrationTestUtils.isSimulatedThreadRadioSupported;
+import static android.net.thread.utils.IntegrationTestUtils.newPacketReader;
+import static android.net.thread.utils.IntegrationTestUtils.readPacketFrom;
+import static android.net.thread.utils.IntegrationTestUtils.waitFor;
+import static android.net.thread.utils.IntegrationTestUtils.waitForStateAnyOf;
 
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ECHO_REPLY_TYPE;
 import static com.android.testutils.TestNetworkTrackerKt.initTestNetwork;
 import static com.android.testutils.TestPermissionUtil.runAsShell;
 
 import static com.google.common.io.BaseEncoding.base16;
+import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
-import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assume.assumeNotNull;
 import static org.junit.Assume.assumeTrue;
 
 import android.content.Context;
 import android.net.LinkProperties;
 import android.net.MacAddress;
+import android.net.thread.utils.FullThreadDevice;
+import android.net.thread.utils.InfraNetworkDevice;
 import android.os.Handler;
 import android.os.HandlerThread;
 
@@ -50,14 +54,13 @@ import androidx.test.runner.AndroidJUnit4;
 import com.android.testutils.TapPacketReader;
 import com.android.testutils.TestNetworkTracker;
 
-import com.google.common.util.concurrent.MoreExecutors;
-
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import java.net.Inet6Address;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -68,9 +71,7 @@ import java.util.concurrent.TimeUnit;
 public class BorderRoutingTest {
     private static final String TAG = BorderRoutingTest.class.getSimpleName();
     private final Context mContext = ApplicationProvider.getApplicationContext();
-    private final ThreadNetworkManager mThreadNetworkManager =
-            mContext.getSystemService(ThreadNetworkManager.class);
-    private ThreadNetworkController mThreadNetworkController;
+    private ThreadNetworkController mController;
     private HandlerThread mHandlerThread;
     private Handler mHandler;
     private TestNetworkTracker mInfraNetworkTracker;
@@ -88,12 +89,18 @@ public class BorderRoutingTest {
 
     @Before
     public void setUp() throws Exception {
+        final ThreadNetworkManager manager = mContext.getSystemService(ThreadNetworkManager.class);
+        if (manager != null) {
+            mController = manager.getAllThreadNetworkControllers().get(0);
+        }
+
+        // Run the tests on only devices where the Thread feature is available
+        assumeNotNull(mController);
+
         mHandlerThread = new HandlerThread(getClass().getSimpleName());
         mHandlerThread.start();
         mHandler = new Handler(mHandlerThread.getLooper());
-        var threadControllers = mThreadNetworkManager.getAllThreadNetworkControllers();
-        assertEquals(threadControllers.size(), 1);
-        mThreadNetworkController = threadControllers.get(0);
+
         mInfraNetworkTracker =
                 runAsShell(
                         MANAGE_TEST_NETWORKS,
@@ -105,27 +112,28 @@ public class BorderRoutingTest {
                 NETWORK_SETTINGS,
                 () -> {
                     CountDownLatch latch = new CountDownLatch(1);
-                    mThreadNetworkController.setTestNetworkAsUpstream(
+                    mController.setTestNetworkAsUpstream(
                             mInfraNetworkTracker.getTestIface().getInterfaceName(),
-                            MoreExecutors.directExecutor(),
-                            v -> {
-                                latch.countDown();
-                            });
+                            directExecutor(),
+                            v -> latch.countDown());
                     latch.await();
                 });
     }
 
     @After
     public void tearDown() throws Exception {
+        if (mController == null) {
+            return;
+        }
+
         runAsShell(
                 PERMISSION_THREAD_NETWORK_PRIVILEGED,
                 NETWORK_SETTINGS,
                 () -> {
                     CountDownLatch latch = new CountDownLatch(2);
-                    mThreadNetworkController.setTestNetworkAsUpstream(
-                            null, MoreExecutors.directExecutor(), v -> latch.countDown());
-                    mThreadNetworkController.leave(
-                            MoreExecutors.directExecutor(), v -> latch.countDown());
+                    mController.setTestNetworkAsUpstream(
+                            null, directExecutor(), v -> latch.countDown());
+                    mController.leave(directExecutor(), v -> latch.countDown());
                     latch.await(10, TimeUnit.SECONDS);
                 });
         runAsShell(MANAGE_TEST_NETWORKS, () -> mInfraNetworkTracker.teardown());
@@ -150,19 +158,15 @@ public class BorderRoutingTest {
         // BR forms a network.
         runAsShell(
                 PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                () -> {
-                    mThreadNetworkController.join(
-                            DEFAULT_DATASET, MoreExecutors.directExecutor(), result -> {});
-                });
-        waitForStateAnyOf(
-                mThreadNetworkController, List.of(DEVICE_ROLE_LEADER), 30 /* timeoutSeconds */);
+                () -> mController.join(DEFAULT_DATASET, directExecutor(), result -> {}));
+        waitForStateAnyOf(mController, List.of(DEVICE_ROLE_LEADER), JOIN_TIMEOUT);
 
         // Creates a Full Thread Device (FTD) and lets it join the network.
         FullThreadDevice ftd = new FullThreadDevice(5 /* node ID */);
         ftd.factoryReset();
         ftd.joinNetwork(DEFAULT_DATASET);
-        ftd.waitForStateAnyOf(List.of("router", "child"), 10 /* timeoutSeconds */);
-        waitFor(() -> ftd.getOmrAddress() != null, 60 /* timeoutSeconds */);
+        ftd.waitForStateAnyOf(List.of("router", "child"), JOIN_TIMEOUT);
+        waitFor(() -> ftd.getOmrAddress() != null, Duration.ofSeconds(60));
         Inet6Address ftdOmr = ftd.getOmrAddress();
         assertNotNull(ftdOmr);
 
@@ -171,7 +175,7 @@ public class BorderRoutingTest {
                 newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
         InfraNetworkDevice infraDevice =
                 new InfraNetworkDevice(MacAddress.fromString("1:2:3:4:5:6"), infraNetworkReader);
-        infraDevice.runSlaac(60 /* timeoutSeconds */);
+        infraDevice.runSlaac(Duration.ofSeconds(60));
         assertNotNull(infraDevice.ipv6Addr);
 
         // Infra device sends an echo request to FTD's OMR.

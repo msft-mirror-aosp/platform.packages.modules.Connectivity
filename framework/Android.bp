@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
@@ -106,9 +107,6 @@ java_defaults {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: {
-        strict_updatability_linting: true,
-    },
 }
 
 java_library {

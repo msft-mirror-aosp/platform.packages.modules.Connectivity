@@ -35,6 +35,8 @@ import static com.android.networkstack.apishim.ConstantsShim.REGISTER_NSD_OFFLOA
 import static com.android.server.connectivity.mdns.MdnsAdvertiser.AdvertiserMetrics;
 import static com.android.server.connectivity.mdns.MdnsConstants.NO_PACKET;
 import static com.android.server.connectivity.mdns.MdnsRecord.MAX_LABEL_LENGTH;
+import static com.android.server.connectivity.mdns.MdnsSearchOptions.AGGRESSIVE_QUERY_MODE;
+import static com.android.server.connectivity.mdns.MdnsSearchOptions.PASSIVE_QUERY_MODE;
 import static com.android.server.connectivity.mdns.util.MdnsUtils.Clock;
 
 import android.annotation.NonNull;
@@ -251,6 +253,8 @@ public class NsdService extends INsdManager.Stub {
 
     private final RemoteCallbackList<IOffloadEngine> mOffloadEngines =
             new RemoteCallbackList<>();
+    @NonNull
+    private final MdnsFeatureFlags mMdnsFeatureFlags;
 
     private static class OffloadEngineInfo {
         @NonNull final String mInterfaceName;
@@ -793,8 +797,10 @@ public class NsdService extends INsdManager.Stub {
                                     MdnsSearchOptions.newBuilder()
                                             .setNetwork(discoveryRequest.getNetwork())
                                             .setRemoveExpiredService(true)
-                                            .setIsPassiveMode(true);
-
+                                            .setQueryMode(
+                                                    mMdnsFeatureFlags.isAggressiveQueryModeEnabled()
+                                                            ? AGGRESSIVE_QUERY_MODE
+                                                            : PASSIVE_QUERY_MODE);
                             if (subtype != null) {
                                 // checkSubtypeLabels() ensures that subtypes start with '_' but
                                 // MdnsSearchOptions expects the underscore to not be present.
@@ -895,10 +901,18 @@ public class NsdService extends INsdManager.Stub {
                                 serviceType);
                         final String registerServiceType = typeSubtype == null
                                 ? null : typeSubtype.first;
+                        final String hostname = serviceInfo.getHostname();
+                        // Keep compatible with the legacy behavior: It's allowed to set host
+                        // addresses for a service registration although the host addresses
+                        // won't be registered. To register the addresses for a host, the
+                        // hostname must be specified.
+                        if (hostname == null) {
+                            serviceInfo.setHostAddresses(Collections.emptyList());
+                        }
                         if (clientInfo.mUseJavaBackend
                                 || mDeps.isMdnsAdvertiserEnabled(mContext)
                                 || useAdvertiserForType(registerServiceType)) {
-                            if (registerServiceType == null) {
+                            if (serviceType != null && registerServiceType == null) {
                                 Log.e(TAG, "Invalid service type: " + serviceType);
                                 clientInfo.onRegisterServiceFailedImmediately(clientRequestId,
                                         NsdManager.FAILURE_INTERNAL_ERROR, false /* isLegacy */);
@@ -921,14 +935,25 @@ public class NsdService extends INsdManager.Stub {
                             } else {
                                 transactionId = getUniqueId();
                             }
-                            serviceInfo.setServiceType(registerServiceType);
-                            serviceInfo.setServiceName(truncateServiceName(
-                                    serviceInfo.getServiceName()));
+
+                            if (registerServiceType != null) {
+                                serviceInfo.setServiceType(registerServiceType);
+                                serviceInfo.setServiceName(
+                                        truncateServiceName(serviceInfo.getServiceName()));
+                            }
+
+                            if (!checkHostname(hostname)) {
+                                clientInfo.onRegisterServiceFailedImmediately(clientRequestId,
+                                        NsdManager.FAILURE_BAD_PARAMETERS, false /* isLegacy */);
+                                break;
+                            }
 
                             Set<String> subtypes = new ArraySet<>(serviceInfo.getSubtypes());
-                            for (String subType: typeSubtype.second) {
-                                if (!TextUtils.isEmpty(subType)) {
-                                    subtypes.add(subType);
+                            if (typeSubtype != null && typeSubtype.second != null) {
+                                for (String subType : typeSubtype.second) {
+                                    if (!TextUtils.isEmpty(subType)) {
+                                        subtypes.add(subType);
+                                    }
                                 }
                             }
                             subtypes = dedupSubtypeLabels(subtypes);
@@ -945,7 +970,7 @@ public class NsdService extends INsdManager.Stub {
                                     MdnsAdvertisingOptions.newBuilder().setIsOnlyUpdate(
                                             isUpdateOnly).build();
                             mAdvertiser.addOrUpdateService(transactionId, serviceInfo,
-                                    mdnsAdvertisingOptions);
+                                    mdnsAdvertisingOptions, clientInfo.mUid);
                             storeAdvertiserRequestMap(clientRequestId, transactionId, clientInfo,
                                     serviceInfo.getNetwork());
                         } else {
@@ -1044,7 +1069,9 @@ public class NsdService extends INsdManager.Stub {
                                     transactionId, resolveServiceType);
                             final MdnsSearchOptions options = MdnsSearchOptions.newBuilder()
                                     .setNetwork(info.getNetwork())
-                                    .setIsPassiveMode(true)
+                                    .setQueryMode(mMdnsFeatureFlags.isAggressiveQueryModeEnabled()
+                                            ? AGGRESSIVE_QUERY_MODE
+                                            : PASSIVE_QUERY_MODE)
                                     .setResolveInstanceName(info.getServiceName())
                                     .setRemoveExpiredService(true)
                                     .build();
@@ -1142,7 +1169,9 @@ public class NsdService extends INsdManager.Stub {
                                 transactionId, resolveServiceType);
                         final MdnsSearchOptions options = MdnsSearchOptions.newBuilder()
                                 .setNetwork(info.getNetwork())
-                                .setIsPassiveMode(true)
+                                .setQueryMode(mMdnsFeatureFlags.isAggressiveQueryModeEnabled()
+                                        ? AGGRESSIVE_QUERY_MODE
+                                        : PASSIVE_QUERY_MODE)
                                 .setResolveInstanceName(info.getServiceName())
                                 .setRemoveExpiredService(true)
                                 .build();
@@ -1535,6 +1564,7 @@ public class NsdService extends INsdManager.Stub {
                                 Log.e(TAG, "Invalid attribute", e);
                             }
                         }
+                        info.setHostname(getHostname(serviceInfo));
                         final List<InetAddress> addresses = getInetAddresses(serviceInfo);
                         if (addresses.size() != 0) {
                             info.setHostAddresses(addresses);
@@ -1571,6 +1601,7 @@ public class NsdService extends INsdManager.Stub {
                             }
                         }
 
+                        info.setHostname(getHostname(serviceInfo));
                         final List<InetAddress> addresses = getInetAddresses(serviceInfo);
                         info.setHostAddresses(addresses);
                         clientInfo.onServiceUpdated(clientRequestId, info, request);
@@ -1615,6 +1646,16 @@ public class NsdService extends INsdManager.Stub {
             }
         }
         return addresses;
+    }
+
+    @NonNull
+    private static String getHostname(@NonNull MdnsServiceInfo serviceInfo) {
+        String[] hostname = serviceInfo.getHostName();
+        // Strip the "local" top-level domain.
+        if (hostname.length >= 2 && hostname[hostname.length - 1].equals("local")) {
+            hostname = Arrays.copyOf(hostname, hostname.length - 1);
+        }
+        return String.join(".", hostname);
     }
 
     private static void setServiceNetworkForCallback(NsdServiceInfo info, int netId, int ifaceIdx) {
@@ -1702,6 +1743,21 @@ public class NsdService extends INsdManager.Stub {
         return new Pair<>(queryType, Collections.emptyList());
     }
 
+    /**
+     * Checks if the hostname is valid.
+     *
+     * <p>For now NsdService only allows single-label hostnames conforming to RFC 1035. In other
+     * words, the hostname should be at most 63 characters long and it only contains letters, digits
+     * and hyphens.
+     */
+    public static boolean checkHostname(@Nullable String hostname) {
+        if (hostname == null) {
+            return true;
+        }
+        String HOSTNAME_REGEX = "^[a-zA-Z]([a-zA-Z0-9-_]{0,61}[a-zA-Z0-9])?$";
+        return Pattern.compile(HOSTNAME_REGEX).matcher(hostname).matches();
+    }
+
     /** Returns {@code true} if {@code subtype} is a valid DNS-SD subtype label. */
     private static boolean checkSubtypeLabel(String subtype) {
         return Pattern.compile("^" + TYPE_SUBTYPE_LABEL_REGEX + "$").matcher(subtype).matches();
@@ -1741,7 +1797,7 @@ public class NsdService extends INsdManager.Stub {
         am.addOnUidImportanceListener(new UidImportanceListener(handler),
                 mRunningAppActiveImportanceCutoff);
 
-        final MdnsFeatureFlags flags = new MdnsFeatureFlags.Builder()
+        mMdnsFeatureFlags = new MdnsFeatureFlags.Builder()
                 .setIsMdnsOffloadFeatureEnabled(mDeps.isTetheringFeatureNotChickenedOut(
                         mContext, MdnsFeatureFlags.NSD_FORCE_DISABLE_MDNS_OFFLOAD))
                 .setIncludeInetAddressRecordsInProbing(mDeps.isFeatureEnabled(
@@ -1754,18 +1810,21 @@ public class NsdService extends INsdManager.Stub {
                         mContext, MdnsFeatureFlags.NSD_KNOWN_ANSWER_SUPPRESSION))
                 .setIsUnicastReplyEnabled(mDeps.isFeatureEnabled(
                         mContext, MdnsFeatureFlags.NSD_UNICAST_REPLY_ENABLED))
+                .setIsAggressiveQueryModeEnabled(mDeps.isFeatureEnabled(
+                        mContext, MdnsFeatureFlags.NSD_AGGRESSIVE_QUERY_MODE))
                 .setOverrideProvider(flag -> mDeps.isFeatureEnabled(
                         mContext, FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag))
                 .build();
         mMdnsSocketClient =
                 new MdnsMultinetworkSocketClient(handler.getLooper(), mMdnsSocketProvider,
-                        LOGGER.forSubComponent("MdnsMultinetworkSocketClient"), flags);
+                        LOGGER.forSubComponent("MdnsMultinetworkSocketClient"), mMdnsFeatureFlags);
         mMdnsDiscoveryManager = deps.makeMdnsDiscoveryManager(new ExecutorProvider(),
-                mMdnsSocketClient, LOGGER.forSubComponent("MdnsDiscoveryManager"), flags);
+                mMdnsSocketClient, LOGGER.forSubComponent("MdnsDiscoveryManager"),
+                mMdnsFeatureFlags);
         handler.post(() -> mMdnsSocketClient.setCallback(mMdnsDiscoveryManager));
         mAdvertiser = deps.makeMdnsAdvertiser(handler.getLooper(), mMdnsSocketProvider,
-                new AdvertiserCallback(), LOGGER.forSubComponent("MdnsAdvertiser"), flags,
-                mContext);
+                new AdvertiserCallback(), LOGGER.forSubComponent("MdnsAdvertiser"),
+                mMdnsFeatureFlags, mContext);
         mClock = deps.makeClock();
     }
 
@@ -2031,9 +2090,10 @@ public class NsdService extends INsdManager.Stub {
             final int clientRequestId = getClientRequestIdOrLog(clientInfo, transactionId);
             if (clientRequestId < 0) return;
 
-            // onRegisterServiceSucceeded only has the service name in its info. This aligns with
-            // historical behavior.
+            // onRegisterServiceSucceeded only has the service name and hostname in its info. This
+            // aligns with historical behavior.
             final NsdServiceInfo cbInfo = new NsdServiceInfo(registeredInfo.getServiceName(), null);
+            cbInfo.setHostname(registeredInfo.getHostname());
             final ClientRequest request = clientInfo.mClientRequests.get(clientRequestId);
             clientInfo.onRegisterServiceSucceeded(clientRequestId, cbInfo, request);
         }
@@ -2143,6 +2203,7 @@ public class NsdService extends INsdManager.Stub {
         @Override
         public void registerService(int listenerKey, AdvertisingRequest advertisingRequest)
                 throws RemoteException {
+            NsdManager.checkServiceInfoForRegistration(advertisingRequest.getServiceInfo());
             mNsdStateMachine.sendMessage(mNsdStateMachine.obtainMessage(
                     NsdManager.REGISTER_SERVICE, 0, listenerKey,
                     new AdvertisingArgs(this, advertisingRequest)
@@ -2247,7 +2308,7 @@ public class NsdService extends INsdManager.Stub {
                 permissionsList.add(DEVICE_POWER);
             }
 
-            if (PermissionUtils.checkAnyPermissionOf(context,
+            if (PermissionUtils.hasAnyPermissionOf(context,
                     permissionsList.toArray(new String[0]))) {
                 return;
             }
@@ -2444,7 +2505,7 @@ public class NsdService extends INsdManager.Stub {
 
     @Override
     public void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
-        if (!PermissionUtils.checkDumpPermission(mContext, TAG, writer)) return;
+        if (!PermissionUtils.hasDumpPermission(mContext, TAG, writer)) return;
 
         final IndentingPrintWriter pw = new IndentingPrintWriter(writer, "  ");
         // Dump state machine logs
