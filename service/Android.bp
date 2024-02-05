@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
@@ -70,9 +71,6 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 // The library name match the service-connectivity jarjar rules that put the JNI utils in the
@@ -204,8 +202,8 @@ java_library {
         "com.android.tethering",
     ],
     lint: {
-        strict_updatability_linting: true,
         baseline_filename: "lint-baseline.xml",
+
     },
     visibility: [
         "//packages/modules/Connectivity/service-t",
@@ -231,7 +229,7 @@ java_library {
     ],
     lint: {
         strict_updatability_linting: true,
-        baseline_filename: "lint-baseline.xml",
+
     },
 }
 
@@ -275,9 +273,6 @@ java_defaults {
     optimize: {
         proguard_flags_files: ["proguard.flags"],
     },
-    lint: {
-        strict_updatability_linting: true,
-    },
 }
 
 // A special library created strictly for use by the tests as they need the
@@ -290,18 +285,12 @@ java_defaults {
 java_library {
     name: "service-connectivity-for-tests",
     defaults: ["service-connectivity-defaults"],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 java_library {
     name: "service-connectivity",
     defaults: ["service-connectivity-defaults"],
     installable: true,
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 java_library_static {
@@ -316,9 +305,6 @@ java_library_static {
     ],
     static_libs: ["ConnectivityServiceprotos"],
     apex_available: ["com.android.tethering"],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 genrule {
