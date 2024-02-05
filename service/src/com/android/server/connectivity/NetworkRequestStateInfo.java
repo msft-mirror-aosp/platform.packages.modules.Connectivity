@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2023 The Android Open Source Project
+ * Copyright (C) 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-package com.android.metrics;
+package com.android.server.connectivity;
 
 import static com.android.server.ConnectivityStatsLog.NETWORK_REQUEST_STATE_CHANGED__STATE__NETWORK_REQUEST_STATE_RECEIVED;
 import static com.android.server.ConnectivityStatsLog.NETWORK_REQUEST_STATE_CHANGED__STATE__NETWORK_REQUEST_STATE_REMOVED;
@@ -46,6 +46,15 @@ class NetworkRequestStateInfo {
         mNetworkRequestReceivedTime = mDependencies.getElapsedRealtime();
         mNetworkRequestDurationMillis = 0;
         mNetworkRequestState = NetworkRequestState.RECEIVED;
+    }
+
+    NetworkRequestStateInfo(NetworkRequestStateInfo anotherNetworkRequestStateInfo) {
+        mDependencies = anotherNetworkRequestStateInfo.mDependencies;
+        mNetworkRequest = new NetworkRequest(anotherNetworkRequestStateInfo.mNetworkRequest);
+        mNetworkRequestReceivedTime = anotherNetworkRequestStateInfo.mNetworkRequestReceivedTime;
+        mNetworkRequestDurationMillis =
+                anotherNetworkRequestStateInfo.mNetworkRequestDurationMillis;
+        mNetworkRequestState = anotherNetworkRequestStateInfo.mNetworkRequestState;
     }
 
     public void setNetworkRequestRemoved() {

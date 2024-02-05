@@ -15,9 +15,14 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
+
+// This is a placeholder comment to avoid merge conflicts
+// as the above target may not exist
+// depending on the branch
 
 // The library requires the final artifact to contain net-utils-device-common-struct.
 java_library {
@@ -43,5 +48,7 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        strict_updatability_linting: true,
+    },
 }
