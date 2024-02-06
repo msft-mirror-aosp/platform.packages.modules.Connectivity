@@ -24,6 +24,7 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 import static com.google.common.io.BaseEncoding.base16;
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -85,6 +86,8 @@ public final class ThreadNetworkControllerServiceTest {
     @Mock private TunInterfaceController mMockTunIfController;
     @Mock private ParcelFileDescriptor mMockTunFd;
     @Mock private InfraInterfaceController mMockInfraIfController;
+    @Mock private ThreadPersistentSettings mMockPersistentSettings;
+    @Mock private NsdPublisher mMockNsdPublisher;
     private Context mContext;
     private TestLooper mTestLooper;
     private FakeOtDaemon mFakeOtDaemon;
@@ -104,6 +107,8 @@ public final class ThreadNetworkControllerServiceTest {
 
         when(mMockTunIfController.getTunFd()).thenReturn(mMockTunFd);
 
+        when(mMockPersistentSettings.get(any())).thenReturn(true);
+
         mService =
                 new ThreadNetworkControllerService(
                         ApplicationProvider.getApplicationContext(),
@@ -112,12 +117,14 @@ public final class ThreadNetworkControllerServiceTest {
                         () -> mFakeOtDaemon,
                         mMockConnectivityManager,
                         mMockTunIfController,
-                        mMockInfraIfController);
+                        mMockInfraIfController,
+                        mMockPersistentSettings,
+                        mMockNsdPublisher);
         mService.setTestNetworkAgent(mMockNetworkAgent);
     }
 
     @Test
-    public void initialize_tunInterfaceSetToOtDaemon() throws Exception {
+    public void initialize_tunInterfaceAndNsdPublisherSetToOtDaemon() throws Exception {
         when(mMockTunIfController.getTunFd()).thenReturn(mMockTunFd);
 
         mService.initialize();
@@ -125,6 +132,7 @@ public final class ThreadNetworkControllerServiceTest {
 
         verify(mMockTunIfController, times(1)).createTunInterface();
         assertThat(mFakeOtDaemon.getTunFd()).isEqualTo(mMockTunFd);
+        assertThat(mFakeOtDaemon.getNsdPublisher()).isEqualTo(mMockNsdPublisher);
     }
 
     @Test
