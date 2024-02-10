@@ -16,6 +16,7 @@
 
 package com.android.server
 
+import android.app.AlarmManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -59,6 +60,7 @@ import com.android.net.module.util.ArrayTrackRecord
 import com.android.networkstack.apishim.common.UnsupportedApiLevelException
 import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator
+import com.android.server.connectivity.CarrierPrivilegeAuthenticator.CarrierPrivilegesLostListener
 import com.android.server.connectivity.ClatCoordinator
 import com.android.server.connectivity.ConnectivityFlags
 import com.android.server.connectivity.MulticastRoutingCoordinatorService
@@ -66,13 +68,15 @@ import com.android.server.connectivity.MultinetworkPolicyTracker
 import com.android.server.connectivity.MultinetworkPolicyTrackerTestDependencies
 import com.android.server.connectivity.NetworkRequestStateStatsMetrics
 import com.android.server.connectivity.ProxyTracker
-import com.android.server.connectivity.RoutingCoordinatorService
+import com.android.server.connectivity.SatelliteAccessController
 import com.android.testutils.visibleOnHandlerThread
 import com.android.testutils.waitForIdle
 import java.util.concurrent.Executors
+import java.util.function.Consumer
 import kotlin.test.assertNull
 import kotlin.test.fail
 import org.junit.After
+import org.junit.Before
 import org.mockito.AdditionalAnswers.delegatesTo
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
@@ -133,10 +137,12 @@ open class CSTest {
     // permissions using static contexts.
     val enabledFeatures = HashMap<String, Boolean>().also {
         it[ConnectivityFlags.NO_REMATCH_ALL_REQUESTS_ON_REGISTER] = true
+        it[ConnectivityFlags.REQUEST_RESTRICTED_WIFI] = true
         it[ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS] = true
         it[ConnectivityService.LOG_BPF_RC] = true
+        it[ConnectivityService.ALLOW_SATALLITE_NETWORK_FALLBACK] = true
     }
     fun enableFeature(f: String) = enabledFeatures.set(f, true)
     fun disableFeature(f: String) = enabledFeatures.set(f, false)
@@ -163,8 +169,6 @@ open class CSTest {
     val clatCoordinator = mock<ClatCoordinator>()
     val networkRequestStateStatsMetrics = mock<NetworkRequestStateStatsMetrics>()
     val proxyTracker = ProxyTracker(context, mock<Handler>(), 16 /* EVENT_PROXY_HAS_CHANGED */)
-    val alrmHandlerThread = HandlerThread("TestAlarmManager").also { it.start() }
-    val alarmManager = makeMockAlarmManager(alrmHandlerThread)
     val systemConfigManager = makeMockSystemConfigManager()
     val batteryStats = mock<IBatteryStats>()
     val batteryManager = BatteryStatsManager(batteryStats)
@@ -173,18 +177,34 @@ open class CSTest {
     }
 
     val multicastRoutingCoordinatorService = mock<MulticastRoutingCoordinatorService>()
+    val satelliteAccessController = mock<SatelliteAccessController>()
 
     val deps = CSDeps()
-    val service = makeConnectivityService(context, netd, deps).also { it.systemReadyInternal() }
-    val cm = ConnectivityManager(context, service)
-    val csHandler = Handler(csHandlerThread.looper)
+
+    // Initializations that start threads are done from setUp to avoid thread leak
+    lateinit var alarmHandlerThread: HandlerThread
+    lateinit var alarmManager: AlarmManager
+    lateinit var service: ConnectivityService
+    lateinit var cm: ConnectivityManager
+    lateinit var csHandler: Handler
+
+    @Before
+    fun setUp() {
+        alarmHandlerThread = HandlerThread("TestAlarmManager").also { it.start() }
+        alarmManager = makeMockAlarmManager(alarmHandlerThread)
+        service = makeConnectivityService(context, netd, deps).also { it.systemReadyInternal() }
+        cm = ConnectivityManager(context, service)
+        // csHandler initialization must be after makeConnectivityService since ConnectivityService
+        // constructor starts csHandlerThread
+        csHandler = Handler(csHandlerThread.looper)
+    }
 
     @After
     fun tearDown() {
         csHandlerThread.quitSafely()
         csHandlerThread.join()
-        alrmHandlerThread.quitSafely()
-        alrmHandlerThread.join()
+        alarmHandlerThread.quitSafely()
+        alarmHandlerThread.join()
     }
 
     inner class CSDeps : ConnectivityService.Dependencies() {
@@ -200,8 +220,20 @@ open class CSTest {
 
         override fun makeCarrierPrivilegeAuthenticator(
                 context: Context,
-                tm: TelephonyManager
+                tm: TelephonyManager,
+                requestRestrictedWifiEnabled: Boolean,
+                listener: CarrierPrivilegesLostListener
         ) = if (SdkLevel.isAtLeastT()) mock<CarrierPrivilegeAuthenticator>() else null
+
+        var satelliteNetworkFallbackUidUpdate: Consumer<Set<Int>>? = null
+        override fun makeSatelliteAccessController(
+            context: Context,
+            updateSatelliteNetworkFallackUid: Consumer<Set<Int>>?,
+            csHandlerThread: Handler
+        ): SatelliteAccessController? {
+            satelliteNetworkFallbackUidUpdate = updateSatelliteNetworkFallackUid
+            return satelliteAccessController
+        }
 
         private inner class AOOKTDeps(c: Context) : AutomaticOnOffKeepaliveTracker.Dependencies(c) {
             override fun isTetheringFeatureNotChickenedOut(name: String): Boolean {
