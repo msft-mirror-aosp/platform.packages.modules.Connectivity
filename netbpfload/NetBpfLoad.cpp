@@ -169,6 +169,63 @@ int writeProcSysFile(const char *filename, const char *value) {
     return 0;
 }
 
+#define APEX_MOUNT_POINT "/apex/com.android.tethering"
+const char * const platformBpfLoader = "/system/bin/bpfloader";
+const char * const platformNetBpfLoad = "/system/bin/netbpfload";
+const char * const apexNetBpfLoad = APEX_MOUNT_POINT "/bin/netbpfload";
+
+int logTetheringApexVersion(void) {
+    char * found_blockdev = NULL;
+    FILE * f = NULL;
+    char buf[4096];
+
+    f = fopen("/proc/mounts", "re");
+    if (!f) return 1;
+
+    // /proc/mounts format: block_device [space] mount_point [space] other stuff... newline
+    while (fgets(buf, sizeof(buf), f)) {
+        char * blockdev = buf;
+        char * space = strchr(blockdev, ' ');
+        if (!space) continue;
+        *space = '\0';
+        char * mntpath = space + 1;
+        space = strchr(mntpath, ' ');
+        if (!space) continue;
+        *space = '\0';
+        if (strcmp(mntpath, APEX_MOUNT_POINT)) continue;
+        found_blockdev = strdup(blockdev);
+        break;
+    }
+    fclose(f);
+    f = NULL;
+
+    if (!found_blockdev) return 2;
+    ALOGD("Found Tethering Apex mounted from blockdev %s", found_blockdev);
+
+    f = fopen("/proc/mounts", "re");
+    if (!f) { free(found_blockdev); return 3; }
+
+    while (fgets(buf, sizeof(buf), f)) {
+        char * blockdev = buf;
+        char * space = strchr(blockdev, ' ');
+        if (!space) continue;
+        *space = '\0';
+        char * mntpath = space + 1;
+        space = strchr(mntpath, ' ');
+        if (!space) continue;
+        *space = '\0';
+        if (strcmp(blockdev, found_blockdev)) continue;
+        if (strncmp(mntpath, APEX_MOUNT_POINT "@", strlen(APEX_MOUNT_POINT "@"))) continue;
+        char * at = strchr(mntpath, '@');
+        if (!at) continue;
+        char * ver = at + 1;
+        ALOGI("Tethering APEX version %s", ver);
+    }
+    fclose(f);
+    free(found_blockdev);
+    return 0;
+}
+
 int main(int argc, char** argv, char * const envp[]) {
     (void)argc;
     android::base::InitLogging(argv, &android::base::KernelLogger);
@@ -176,22 +233,56 @@ int main(int argc, char** argv, char * const envp[]) {
     ALOGI("NetBpfLoad '%s' starting...", argv[0]);
 
     // true iff we are running from the module
-    const bool is_mainline = !strcmp(argv[0], "/apex/com.android.tethering/bin/netbpfload");
+    const bool is_mainline = !strcmp(argv[0], apexNetBpfLoad);
 
     // true iff we are running from the platform
-    const bool is_platform = !strcmp(argv[0], "/system/bin/netbpfload");
+    const bool is_platform = !strcmp(argv[0], platformNetBpfLoad);
 
     const int device_api_level = android_get_device_api_level();
     const bool isAtLeastT = (device_api_level >= __ANDROID_API_T__);
     const bool isAtLeastU = (device_api_level >= __ANDROID_API_U__);
     const bool isAtLeastV = (device_api_level >= __ANDROID_API_V__);
 
-    ALOGI("NetBpfLoad api:%d/%d kver:%07x platform:%d mainline:%d",
+    // last in U QPR2 beta1
+    const bool has_platform_bpfloader_rc = exists("/system/etc/init/bpfloader.rc");
+    // first in U QPR2 beta~2
+    const bool has_platform_netbpfload_rc = exists("/system/etc/init/netbpfload.rc");
+
+    ALOGI("NetBpfLoad api:%d/%d kver:%07x platform:%d mainline:%d rc:%d%d",
           android_get_application_target_sdk_version(), device_api_level,
-          android::bpf::kernelVersion(), is_platform, is_mainline);
+          android::bpf::kernelVersion(), is_platform, is_mainline,
+          has_platform_bpfloader_rc, has_platform_netbpfload_rc);
 
     if (!is_platform && !is_mainline) {
         ALOGE("Unable to determine if we're platform or mainline netbpfload.");
+        return 1;
+    }
+
+    if (is_platform) {
+        const char * args[] = { apexNetBpfLoad, NULL, };
+        execve(args[0], (char**)args, envp);
+        ALOGW("exec '%s' fail: %d[%s]", apexNetBpfLoad, errno, strerror(errno));
+    }
+
+    if (!has_platform_bpfloader_rc && !has_platform_netbpfload_rc) {
+        ALOGE("Unable to find platform's bpfloader & netbpfload init scripts.");
+        return 1;
+    }
+
+    if (has_platform_bpfloader_rc && has_platform_netbpfload_rc) {
+        ALOGE("Platform has *both* bpfloader & netbpfload init scripts.");
+        return 1;
+    }
+
+    logTetheringApexVersion();
+
+    if (is_mainline && has_platform_bpfloader_rc && !has_platform_netbpfload_rc) {
+        // Tethering apex shipped initrc file causes us to reach here
+        // but we're not ready to correctly handle anything before U QPR2
+        // in which the 'bpfloader' vs 'netbpfload' split happened
+        const char * args[] = { platformBpfLoader, NULL, };
+        execve(args[0], (char**)args, envp);
+        ALOGE("exec '%s' fail: %d[%s]", platformBpfLoader, errno, strerror(errno));
         return 1;
     }
 
@@ -295,10 +386,8 @@ int main(int argc, char** argv, char * const envp[]) {
 
     ALOGI("done, transferring control to platform bpfloader.");
 
-    const char * args[] = { "/system/bin/bpfloader", NULL, };
-    if (execve(args[0], (char**)args, envp)) {
-        ALOGE("FATAL: execve('/system/bin/bpfloader'): %d[%s]", errno, strerror(errno));
-    }
-
+    const char * args[] = { platformBpfLoader, NULL, };
+    execve(args[0], (char**)args, envp);
+    ALOGE("FATAL: execve('%s'): %d[%s]", platformBpfLoader, errno, strerror(errno));
     return 1;
 }
