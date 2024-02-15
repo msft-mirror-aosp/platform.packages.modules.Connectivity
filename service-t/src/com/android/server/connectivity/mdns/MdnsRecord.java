@@ -24,6 +24,7 @@ import android.os.SystemClock;
 import android.text.TextUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -136,7 +137,7 @@ public abstract class MdnsRecord {
         }
 
         for (int i = 0; i < list1.length; ++i) {
-            if (!list1[i].equals(list2[i + offset])) {
+            if (!MdnsUtils.equalsIgnoreDnsCase(list1[i], list2[i + offset])) {
                 return false;
             }
         }
@@ -172,6 +173,16 @@ public abstract class MdnsRecord {
     /** Return whether the cache flush flag is set. */
     public final boolean getCacheFlush() {
         return (cls & FLAG_CACHE_FLUSH) != 0;
+    }
+
+    /**
+     * For questions, returns whether a unicast reply was requested.
+     *
+     * In practice this is identical to {@link #getCacheFlush()}, as the "cache flush" flag in
+     * replies is the same as "unicast reply requested" in questions.
+     */
+    public final boolean isUnicastReplyRequested() {
+        return (cls & MdnsConstants.QCLASS_UNICAST) != 0;
     }
 
     /**
@@ -271,12 +282,13 @@ public abstract class MdnsRecord {
 
         MdnsRecord otherRecord = (MdnsRecord) other;
 
-        return Arrays.equals(name, otherRecord.name) && (type == otherRecord.type);
+        return MdnsUtils.equalsDnsLabelIgnoreDnsCase(name, otherRecord.name) && (type
+                == otherRecord.type);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(Arrays.hashCode(name), type);
+        return Objects.hash(Arrays.hashCode(MdnsUtils.toDnsLabelsLowerCase(name)), type);
     }
 
     /**
@@ -297,7 +309,7 @@ public abstract class MdnsRecord {
 
         public Key(int recordType, String[] recordName) {
             this.recordType = recordType;
-            this.recordName = recordName;
+            this.recordName = MdnsUtils.toDnsLabelsLowerCase(recordName);
         }
 
         @Override

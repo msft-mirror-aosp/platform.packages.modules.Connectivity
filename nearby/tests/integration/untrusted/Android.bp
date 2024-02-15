@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -31,7 +32,7 @@ android_test {
         "androidx.test.uiautomator_uiautomator",
         "junit",
         "kotlin-test",
-        "truth-prebuilt",
+        "truth",
     ],
     test_suites: ["device-tests"],
 }

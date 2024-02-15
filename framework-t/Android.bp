@@ -15,8 +15,17 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+framework_remoteauth_srcs = [":framework-remoteauth-java-sources"]
+framework_remoteauth_api_srcs = []
+
+java_defaults {
+    name: "enable-remoteauth-targets",
+    enabled: true,
 }
 
 // Include build rules from Sources.bp
@@ -26,6 +35,7 @@ java_defaults {
     name: "enable-framework-connectivity-t-targets",
     enabled: true,
 }
+
 // The above defaults can be used to disable framework-connectivity t
 // targets while minimizing merge conflicts in the build rules.
 
@@ -42,11 +52,16 @@ java_defaults {
     srcs: [
         ":framework-connectivity-tiramisu-updatable-sources",
         ":framework-nearby-java-sources",
+        ":framework-thread-sources",
     ],
     libs: [
         "unsupportedappusage",
         "app-compat-annotations",
         "androidx.annotation_annotation",
+    ],
+    static_libs: [
+        // Cannot go to framework-connectivity because mid_sdk checks require 31.
+        "modules-utils-binary-xml",
     ],
     impl_only_libs: [
         // The build system will use framework-bluetooth module_current stubs, because
@@ -82,6 +97,20 @@ filegroup {
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
 
+// The filegroup lists files that are necessary for verifying building mdns as a standalone,
+// for use with service-connectivity-mdns-standalone-build-test
+// This filegroup should never be included in anywhere in the module build. It is only used for
+// building service-connectivity-mdns-standalone-build-test target. The files will be renamed by
+// copybara to prevent them from being shadowed by the bootclasspath copies.
+filegroup {
+    name: "framework-connectivity-t-mdns-standalone-build-sources",
+    srcs: [
+        "src/android/net/nsd/OffloadEngine.java",
+        "src/android/net/nsd/OffloadServiceInfo.java",
+    ],
+    visibility: ["//packages/modules/Connectivity:__subpackages__"],
+}
+
 java_library {
     name: "framework-connectivity-t-pre-jarjar",
     defaults: ["framework-connectivity-t-defaults"],
@@ -89,6 +118,7 @@ java_library {
         "framework-bluetooth",
         "framework-wifi",
         "framework-connectivity-pre-jarjar",
+        "framework-location.stubs.module_lib",
     ],
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
 }
@@ -111,6 +141,7 @@ java_sdk_library {
         "sdk_module-lib_current_framework-connectivity",
     ],
     libs: [
+        "framework-location.stubs.module_lib",
         "sdk_module-lib_current_framework-connectivity",
     ],
     permitted_packages: [
@@ -141,6 +172,7 @@ java_sdk_library {
         "//packages/modules/Connectivity/service", // For R8 only
         "//packages/modules/Connectivity/service-t",
         "//packages/modules/Connectivity/nearby:__subpackages__",
+        "//packages/modules/Connectivity/remoteauth:__subpackages__",
         "//frameworks/base",
 
         // Tests using hidden APIs
@@ -151,16 +183,20 @@ java_sdk_library {
         "//frameworks/base/core/tests/benchmarks",
         "//frameworks/base/core/tests/utillib",
         "//frameworks/base/tests/vcn",
-        "//frameworks/libs/net/common/testutils",
-        "//frameworks/libs/net/common/tests:__subpackages__",
         "//frameworks/opt/net/ethernet/tests:__subpackages__",
         "//frameworks/opt/telephony/tests/telephonytests",
         "//packages/modules/CaptivePortalLogin/tests",
+        "//packages/modules/Connectivity/staticlibs/testutils",
+        "//packages/modules/Connectivity/staticlibs/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/thread/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
+    ],
+    aconfig_declarations: [
+        "com.android.net.flags-aconfig",
     ],
 }
 

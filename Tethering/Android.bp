@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -81,7 +82,9 @@ java_defaults {
         "framework-tethering.impl",
     ],
     manifest: "AndroidManifestBase.xml",
-    lint: { strict_updatability_linting: true },
+    lint: {
+        error_checks: ["NewApi"],
+    },
 }
 
 // build tethering static library, used to compile both variants of the tethering.
@@ -91,13 +94,16 @@ android_library {
         "ConnectivityNextEnableDefaults",
         "TetheringAndroidLibraryDefaults",
         "TetheringApiLevel",
-        "TetheringReleaseTargetSdk"
+        "TetheringReleaseTargetSdk",
     ],
     static_libs: [
         "NetworkStackApiCurrentShims",
+        "net-utils-device-common-struct",
     ],
     apex_available: ["com.android.tethering"],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
 
 android_library {
@@ -105,13 +111,16 @@ android_library {
     defaults: [
         "TetheringAndroidLibraryDefaults",
         "TetheringApiLevel",
-        "TetheringReleaseTargetSdk"
+        "TetheringReleaseTargetSdk",
     ],
     static_libs: [
         "NetworkStackApiStableShims",
+        "net-utils-device-common-struct",
     ],
     apex_available: ["com.android.tethering"],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
 
 // Due to b/143733063, APK can't access a jni lib that is in APEX (but not in the APK).
@@ -184,24 +193,21 @@ java_defaults {
     optimize: {
         proguard_flags_files: ["proguard.flags"],
     },
-    lint: { strict_updatability_linting: true },
 }
 
 // Updatable tethering packaged for finalized API
 android_app {
     name: "Tethering",
-    defaults: ["TetheringAppDefaults", "TetheringApiLevel"],
+    defaults: [
+        "TetheringAppDefaults",
+        "TetheringApiLevel",
+    ],
     static_libs: ["TetheringApiStableLib"],
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The network stack *must* be included to ensure security of the device
-    required: [
-        "NetworkStack",
-        "privapp_allowlist_com.android.tethering",
-    ],
+    privapp_allowlist: ":privapp_allowlist_com.android.tethering",
     apex_available: ["com.android.tethering"],
-    lint: { strict_updatability_linting: true },
 }
 
 android_app {
@@ -215,13 +221,11 @@ android_app {
     certificate: "networkstack",
     manifest: "AndroidManifest.xml",
     use_embedded_native_libs: true,
-    // The network stack *must* be included to ensure security of the device
-    required: [
-        "NetworkStackNext",
-        "privapp_allowlist_com.android.tethering",
-    ],
+    privapp_allowlist: ":privapp_allowlist_com.android.tethering",
     apex_available: ["com.android.tethering"],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        error_checks: ["NewApi"],
+    },
 }
 
 sdk {
@@ -232,13 +236,16 @@ sdk {
         "com.android.tethering",
     ],
     native_shared_libs: [
+        "libcom.android.tethering.dns_helper",
         "libnetd_updatable",
     ],
 }
 
 java_library_static {
     name: "tetheringstatsprotos",
-    proto: {type: "lite"},
+    proto: {
+        type: "lite",
+    },
     srcs: [
         "src/com/android/networkstack/tethering/metrics/stats.proto",
     ],
@@ -251,6 +258,6 @@ genrule {
     name: "statslog-tethering-java-gen",
     tools: ["stats-log-api-gen"],
     cmd: "$(location stats-log-api-gen) --java $(out) --module network_tethering" +
-         " --javaPackage com.android.networkstack.tethering.metrics --javaClass TetheringStatsLog",
+        " --javaPackage com.android.networkstack.tethering.metrics --javaClass TetheringStatsLog",
     out: ["com/android/networkstack/tethering/metrics/TetheringStatsLog.java"],
 }

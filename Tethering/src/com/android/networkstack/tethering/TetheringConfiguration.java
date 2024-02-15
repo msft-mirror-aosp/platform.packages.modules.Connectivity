@@ -22,9 +22,7 @@ import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.ConnectivityManager.TYPE_MOBILE_DUN;
 import static android.net.ConnectivityManager.TYPE_MOBILE_HIPRI;
 import static android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 
-import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
 import static com.android.networkstack.apishim.ConstantsShim.KEY_CARRIER_SUPPORTS_TETHERING_BOOL;
 
 import android.content.ContentResolver;
@@ -112,8 +110,8 @@ public class TetheringConfiguration {
      * config_tether_upstream_automatic when set to true.
      *
      * This flag is enabled if !=0 and less than the module APEX version: see
-     * {@link DeviceConfigUtils#isFeatureEnabled}. It is also ignored after R, as later devices
-     * should just set config_tether_upstream_automatic to true instead.
+     * {@link DeviceConfigUtils#isTetheringFeatureEnabled}. It is also ignored after R, as later
+     * devices should just set config_tether_upstream_automatic to true instead.
      */
     public static final String TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION =
             "tether_force_upstream_automatic_version";
@@ -132,11 +130,19 @@ public class TetheringConfiguration {
     public static final String TETHER_ENABLE_WEAR_TETHERING =
             "tether_enable_wear_tethering";
 
+    public static final String TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION =
+            "tether_force_random_prefix_base_selection";
+
+    public static final String TETHER_ENABLE_SYNC_SM = "tether_enable_sync_sm";
+
     /**
      * Default value that used to periodic polls tether offload stats from tethering offload HAL
      * to make the data warnings work.
      */
     public static final int DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS = 5000;
+
+    /** A flag for using synchronous or asynchronous state machine. */
+    public static boolean USE_SYNC_SM = false;
 
     public final String[] tetherableUsbRegexs;
     public final String[] tetherableWifiRegexs;
@@ -170,6 +176,7 @@ public class TetheringConfiguration {
     private final int mP2pLeasesSubnetPrefixLength;
 
     private final boolean mEnableWearTethering;
+    private final boolean mRandomPrefixBase;
 
     private final int mUsbTetheringFunction;
     protected final ContentResolver mContentResolver;
@@ -179,15 +186,29 @@ public class TetheringConfiguration {
      */
     @VisibleForTesting
     public static class Dependencies {
-        boolean isFeatureEnabled(@NonNull Context context, @NonNull String namespace,
-                @NonNull String name, @NonNull String moduleName, boolean defaultEnabled) {
-            return DeviceConfigUtils.isFeatureEnabled(context, namespace, name,
-                    moduleName, defaultEnabled);
+        boolean isFeatureEnabled(@NonNull Context context, @NonNull String name) {
+            return DeviceConfigUtils.isTetheringFeatureEnabled(context, name);
         }
 
         boolean getDeviceConfigBoolean(@NonNull String namespace, @NonNull String name,
                 boolean defaultValue) {
             return DeviceConfig.getBoolean(namespace, name, defaultValue);
+        }
+
+        /**
+         * TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION is used to force enable the feature on specific
+         * R devices. Just checking the flag value is enough since the flag has been pushed to
+         * enable the feature on the old version and any new binary will always have a version
+         * number newer than the flag.
+         * This flag is wrongly configured in the connectivity namespace so this method reads the
+         * flag value from the connectivity namespace. But the tethering module should use the
+         * tethering namespace. This method can be removed after R EOL.
+         */
+        boolean isTetherForceUpstreamAutomaticFeatureEnabled() {
+            final int flagValue = DeviceConfigUtils.getDeviceConfigPropertyInt(
+                    NAMESPACE_CONNECTIVITY, TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION,
+                    0 /* defaultValue */);
+            return flagValue > 0;
         }
     }
 
@@ -237,7 +258,7 @@ public class TetheringConfiguration {
         // - S, T: can be enabled/disabled by resource config_tether_upstream_automatic.
         // - U+  : automatic mode only.
         final boolean forceAutomaticUpstream = SdkLevel.isAtLeastU() || (!SdkLevel.isAtLeastS()
-                && isConnectivityFeatureEnabled(ctx, TETHER_FORCE_UPSTREAM_AUTOMATIC_VERSION));
+                && mDeps.isTetherForceUpstreamAutomaticFeatureEnabled());
         chooseUpstreamAutomatically = forceAutomaticUpstream || getResourceBoolean(
                 res, R.bool.config_tether_upstream_automatic, false /** defaultValue */);
         preferredUpstreamIfaceTypes = getUpstreamIfaceTypes(res, isDunRequired);
@@ -272,6 +293,8 @@ public class TetheringConfiguration {
         mP2pLeasesSubnetPrefixLength = getP2pLeasesSubnetPrefixLengthFromRes(res, configLog);
 
         mEnableWearTethering = shouldEnableWearTethering(ctx);
+
+        mRandomPrefixBase = mDeps.isFeatureEnabled(ctx, TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION);
 
         configLog.log(toString());
     }
@@ -361,6 +384,20 @@ public class TetheringConfiguration {
         return mEnableWearTethering;
     }
 
+    public boolean isRandomPrefixBaseEnabled() {
+        return mRandomPrefixBase;
+    }
+
+    /**
+     * Check whether sync SM is enabled then set it to USE_SYNC_SM. This should be called once
+     * when tethering is created. Otherwise if the flag is pushed while tethering is enabled,
+     * then it's possible for some IpServer(s) running the new sync state machine while others
+     * use the async state machine.
+     */
+    public void readEnableSyncSM(final Context ctx) {
+        USE_SYNC_SM = mDeps.isFeatureEnabled(ctx, TETHER_ENABLE_SYNC_SM);
+    }
+
     /** Does the dumping.*/
     public void dump(PrintWriter pw) {
         pw.print("activeDataSubId: ");
@@ -411,6 +448,12 @@ public class TetheringConfiguration {
 
         pw.print("mUsbTetheringFunction: ");
         pw.println(isUsingNcm() ? "NCM" : "RNDIS");
+
+        pw.print("mRandomPrefixBase: ");
+        pw.println(mRandomPrefixBase);
+
+        pw.print("USE_SYNC_SM: ");
+        pw.println(USE_SYNC_SM);
     }
 
     /** Returns the string representation of this object.*/
@@ -607,30 +650,11 @@ public class TetheringConfiguration {
 
     private boolean shouldEnableWearTethering(Context context) {
         return SdkLevel.isAtLeastT()
-            && isTetheringFeatureEnabled(context, TETHER_ENABLE_WEAR_TETHERING);
+            && mDeps.isFeatureEnabled(context, TETHER_ENABLE_WEAR_TETHERING);
     }
 
     private boolean getDeviceConfigBoolean(final String name, final boolean defaultValue) {
         return mDeps.getDeviceConfigBoolean(NAMESPACE_CONNECTIVITY, name, defaultValue);
-    }
-
-    /**
-     * This is deprecated because connectivity namespace already be used for NetworkStack mainline
-     * module. Tethering should use its own namespace to roll out the feature flag.
-     * @deprecated new caller should use isTetheringFeatureEnabled instead.
-     */
-    @Deprecated
-    private boolean isConnectivityFeatureEnabled(Context ctx, String featureVersionFlag) {
-        return isFeatureEnabled(ctx, NAMESPACE_CONNECTIVITY, featureVersionFlag);
-    }
-
-    private boolean isTetheringFeatureEnabled(Context ctx, String featureVersionFlag) {
-        return isFeatureEnabled(ctx, NAMESPACE_TETHERING, featureVersionFlag);
-    }
-
-    private boolean isFeatureEnabled(Context ctx, String namespace, String featureVersionFlag) {
-        return mDeps.isFeatureEnabled(ctx, namespace, featureVersionFlag, TETHERING_MODULE_NAME,
-                false /* defaultEnabled */);
     }
 
     private Resources getResources(Context ctx, int subId) {

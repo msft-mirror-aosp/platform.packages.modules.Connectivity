@@ -16,8 +16,6 @@
 
 package android.net.ip;
 
-import static android.net.RouteInfo.RTN_UNICAST;
-
 import static com.android.net.module.util.NetworkStackConstants.ETHER_HEADER_LEN;
 import static com.android.net.module.util.NetworkStackConstants.ETHER_TYPE_IPV6;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ND_OPTION_MTU;
@@ -42,12 +40,14 @@ import android.content.Context;
 import android.net.INetd;
 import android.net.IpPrefix;
 import android.net.MacAddress;
-import android.net.RouteInfo;
 import android.net.ip.RouterAdvertisementDaemon.RaParams;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.RemoteException;
+import android.os.ServiceSpecificException;
+import android.util.ArraySet;
 
 import androidx.test.InstrumentationRegistry;
 import androidx.test.filters.SmallTest;
@@ -55,7 +55,6 @@ import androidx.test.runner.AndroidJUnit4;
 
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.Ipv6Utils;
-import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.EthernetHeader;
 import com.android.net.module.util.structs.Icmpv6Header;
@@ -79,8 +78,6 @@ import org.mockito.MockitoAnnotations;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.nio.ByteBuffer;
-import java.util.HashSet;
-import java.util.List;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
@@ -239,7 +236,7 @@ public final class RouterAdvertisementDaemonTest {
                         final RdnssOption rdnss = Struct.parse(RdnssOption.class, RdnssBuf);
                         final String msg =
                                 rdnss.lifetime > 0 ? "Unknown dns" : "Unknown deprecated dns";
-                        final HashSet<Inet6Address> dnses =
+                        final ArraySet<Inet6Address> dnses =
                                 rdnss.lifetime > 0 ? mNewParams.dnses : mOldParams.dnses;
                         assertNotNull(msg, dnses);
 
@@ -332,10 +329,12 @@ public final class RouterAdvertisementDaemonTest {
         // Add a default route "fe80::/64 -> ::" to local network, otherwise, device will fail to
         // send the unicast RA out due to the ENETUNREACH error(No route to the peer's link-local
         // address is present).
-        final String iface = mTetheredParams.name;
-        final RouteInfo linkLocalRoute =
-                new RouteInfo(new IpPrefix("fe80::/64"), null, iface, RTN_UNICAST);
-        NetdUtils.addRoutesToLocalNetwork(sNetd, iface, List.of(linkLocalRoute));
+        try {
+            sNetd.networkAddRoute(INetd.LOCAL_NET_ID, mTetheredParams.name,
+                    "fe80::/64", INetd.NEXTHOP_NONE);
+        } catch (RemoteException | ServiceSpecificException e) {
+            throw new IllegalStateException(e);
+        }
 
         final ByteBuffer rs = createRsPacket("fe80::1122:3344:5566:7788");
         mTetheredPacketReader.sendResponse(rs);

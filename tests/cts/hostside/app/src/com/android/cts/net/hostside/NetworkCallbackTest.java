@@ -16,6 +16,7 @@
 
 package com.android.cts.net.hostside;
 
+import static android.app.ActivityManager.PROCESS_STATE_BOUND_FOREGROUND_SERVICE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
 import static android.net.NetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED;
 
@@ -32,7 +33,10 @@ import static org.junit.Assume.assumeTrue;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
+import android.net.cts.util.CtsNetUtils;
 import android.util.Log;
+
+import com.android.modules.utils.build.SdkLevel;
 
 import org.junit.After;
 import org.junit.Before;
@@ -46,6 +50,9 @@ import java.util.concurrent.TimeUnit;
 public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCase {
     private Network mNetwork;
     private final TestNetworkCallback mTestNetworkCallback = new TestNetworkCallback();
+    private CtsNetUtils mCtsNetUtils;
+    private static final String GOOGLE_PRIVATE_DNS_SERVER = "dns.google";
+
     @Rule
     public final MeterednessConfigurationRule mMeterednessConfiguration
             = new MeterednessConfigurationRule();
@@ -197,6 +204,7 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         // Initial state
         setBatterySaverMode(false);
         setRestrictBackground(false);
+        setAppIdle(false);
 
         // Get transports of the active network, this has to be done before changing meteredness,
         // since wifi will be disconnected when changing from non-metered to metered.
@@ -218,6 +226,26 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         mTestNetworkCallback.expectCapabilitiesCallbackEventually(mNetwork,
                 false /* hasCapability */, NET_CAPABILITY_NOT_METERED);
         mTestNetworkCallback.expectBlockedStatusCallback(mNetwork, false);
+
+        // Before Android T, DNS queries over private DNS should be but are not restricted by Power
+        // Saver or Data Saver. The issue is fixed in mainline update and apps can no longer request
+        // DNS queries when its network is restricted by Power Saver. The fix takes effect backwards
+        // starting from Android T. But for Data Saver, the fix is not backward compatible since
+        // there are some platform changes involved. It is only available on devices that a specific
+        // trunk flag is enabled.
+        //
+        // This test can not only verify that the network traffic from apps is blocked at the right
+        // time, but also verify whether it is correctly blocked at the DNS stage, or at a later
+        // socket connection stage.
+        if (SdkLevel.isAtLeastT()) {
+            // Enable private DNS
+            mCtsNetUtils = new CtsNetUtils(mContext);
+            mCtsNetUtils.storePrivateDnsSetting();
+            mCtsNetUtils.setPrivateDnsStrictMode(GOOGLE_PRIVATE_DNS_SERVER);
+            mCtsNetUtils.awaitPrivateDnsSetting(
+                    "NetworkCallbackTest wait private DNS setting timeout", mNetwork,
+                    GOOGLE_PRIVATE_DNS_SERVER, true);
+        }
     }
 
     @After
@@ -227,6 +255,10 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         setRestrictBackground(false);
         setBatterySaverMode(false);
         unregisterNetworkCallback();
+
+        if (SdkLevel.isAtLeastT() && (mCtsNetUtils != null)) {
+            mCtsNetUtils.restorePrivateDnsSetting();
+        }
     }
 
     @RequiredProperties({DATA_SAVER_MODE})
@@ -235,17 +267,23 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         try {
             // Enable restrict background
             setRestrictBackground(true);
+            // TODO: Verify expectedUnavailableError when aconfig support mainline.
+            // (see go/aconfig-in-mainline-problems)
             assertBackgroundNetworkAccess(false);
+            assertNetworkAccessBlockedByBpf(true, mUid, true /* metered */);
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, true);
 
             // Add to whitelist
             addRestrictBackgroundWhitelist(mUid);
             assertBackgroundNetworkAccess(true);
+            assertNetworkAccessBlockedByBpf(false, mUid, true /* metered */);
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, false);
 
             // Remove from whitelist
             removeRestrictBackgroundWhitelist(mUid);
+            // TODO: Verify expectedUnavailableError when aconfig support mainline.
             assertBackgroundNetworkAccess(false);
+            assertNetworkAccessBlockedByBpf(true, mUid, true /* metered */);
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, true);
         } finally {
             mMeterednessConfiguration.resetNetworkMeteredness();
@@ -257,11 +295,13 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
                 true /* hasCapability */, NET_CAPABILITY_NOT_METERED);
         try {
             assertBackgroundNetworkAccess(true);
+            assertNetworkAccessBlockedByBpf(false, mUid, false /* metered */);
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, false);
 
             // Disable restrict background, should not trigger callback
             setRestrictBackground(false);
             assertBackgroundNetworkAccess(true);
+            assertNetworkAccessBlockedByBpf(false, mUid, false /* metered */);
         } finally {
             mMeterednessConfiguration.resetNetworkMeteredness();
         }
@@ -273,13 +313,20 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         try {
             // Enable Power Saver
             setBatterySaverMode(true);
-            assertBackgroundNetworkAccess(false);
+            if (SdkLevel.isAtLeastT()) {
+                assertProcessStateBelow(PROCESS_STATE_BOUND_FOREGROUND_SERVICE);
+                assertNetworkAccess(false, "java.net.UnknownHostException");
+            } else {
+                assertBackgroundNetworkAccess(false);
+            }
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, true);
+            assertNetworkAccessBlockedByBpf(true, mUid, true /* metered */);
 
             // Disable Power Saver
             setBatterySaverMode(false);
             assertBackgroundNetworkAccess(true);
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, false);
+            assertNetworkAccessBlockedByBpf(false, mUid, true /* metered */);
         } finally {
             mMeterednessConfiguration.resetNetworkMeteredness();
         }
@@ -291,13 +338,20 @@ public class NetworkCallbackTest extends AbstractRestrictBackgroundNetworkTestCa
         try {
             // Enable Power Saver
             setBatterySaverMode(true);
-            assertBackgroundNetworkAccess(false);
+            if (SdkLevel.isAtLeastT()) {
+                assertProcessStateBelow(PROCESS_STATE_BOUND_FOREGROUND_SERVICE);
+                assertNetworkAccess(false, "java.net.UnknownHostException");
+            } else {
+                assertBackgroundNetworkAccess(false);
+            }
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, true);
+            assertNetworkAccessBlockedByBpf(true, mUid, false /* metered */);
 
             // Disable Power Saver
             setBatterySaverMode(false);
             assertBackgroundNetworkAccess(true);
             mTestNetworkCallback.expectBlockedStatusCallbackEventually(mNetwork, false);
+            assertNetworkAccessBlockedByBpf(false, mUid, false /* metered */);
         } finally {
             mMeterednessConfiguration.resetNetworkMeteredness();
         }

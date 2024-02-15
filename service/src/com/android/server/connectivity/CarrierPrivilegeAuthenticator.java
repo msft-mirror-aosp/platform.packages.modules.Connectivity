@@ -16,10 +16,13 @@
 
 package com.android.server.connectivity;
 
-import static android.net.NetworkCapabilities.NET_CAPABILITY_CBS;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
+import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
+
+import static com.android.server.connectivity.ConnectivityFlags.CARRIER_SERVICE_CHANGED_USE_CALLBACK;
 
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -29,16 +32,21 @@ import android.content.pm.PackageManager;
 import android.net.NetworkCapabilities;
 import android.net.NetworkSpecifier;
 import android.net.TelephonyNetworkSpecifier;
+import android.net.TransportInfo;
+import android.net.wifi.WifiInfo;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Process;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.util.Log;
+import android.util.SparseIntArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.HandlerExecutor;
+import com.android.net.module.util.DeviceConfigUtils;
 import com.android.networkstack.apishim.TelephonyManagerShimImpl;
 import com.android.networkstack.apishim.common.TelephonyManagerShim;
 import com.android.networkstack.apishim.common.TelephonyManagerShim.CarrierPrivilegesListenerShim;
@@ -54,7 +62,7 @@ import java.util.concurrent.Executor;
  * carrier privileged app that provides the carrier config
  * @hide
  */
-public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
+public class CarrierPrivilegeAuthenticator {
     private static final String TAG = CarrierPrivilegeAuthenticator.class.getSimpleName();
     private static final boolean DBG = true;
 
@@ -63,100 +71,142 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
     private final TelephonyManagerShim mTelephonyManagerShim;
     private final TelephonyManager mTelephonyManager;
     @GuardedBy("mLock")
-    private int[] mCarrierServiceUid;
+    private final SparseIntArray mCarrierServiceUid = new SparseIntArray(2 /* initialCapacity */);
     @GuardedBy("mLock")
     private int mModemCount = 0;
     private final Object mLock = new Object();
-    private final HandlerThread mThread;
     private final Handler mHandler;
     @NonNull
-    private final List<CarrierPrivilegesListenerShim> mCarrierPrivilegesChangedListeners =
-            new ArrayList<>();
+    private final List<PrivilegeListener> mCarrierPrivilegesChangedListeners = new ArrayList<>();
+    private final boolean mUseCallbacksForServiceChanged;
+    private final boolean mRequestRestrictedWifiEnabled;
+    @NonNull
+    private final CarrierPrivilegesLostListener mListener;
 
     public CarrierPrivilegeAuthenticator(@NonNull final Context c,
+            @NonNull final Dependencies deps,
             @NonNull final TelephonyManager t,
-            @NonNull final TelephonyManagerShimImpl telephonyManagerShim) {
+            @NonNull final TelephonyManagerShim telephonyManagerShim,
+            final boolean requestRestrictedWifiEnabled,
+            @NonNull CarrierPrivilegesLostListener listener) {
         mContext = c;
         mTelephonyManager = t;
         mTelephonyManagerShim = telephonyManagerShim;
-        mThread = new HandlerThread(TAG);
-        mThread.start();
-        mHandler = new Handler(mThread.getLooper()) {};
+        final HandlerThread thread = deps.makeHandlerThread();
+        thread.start();
+        mHandler = new Handler(thread.getLooper());
+        mUseCallbacksForServiceChanged = deps.isFeatureEnabled(
+                c, CARRIER_SERVICE_CHANGED_USE_CALLBACK);
+        mRequestRestrictedWifiEnabled = requestRestrictedWifiEnabled;
+        mListener = listener;
+        final IntentFilter filter = new IntentFilter();
+        filter.addAction(TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED);
         synchronized (mLock) {
-            mModemCount = mTelephonyManager.getActiveModemCount();
-            registerForCarrierChanges();
-            updateCarrierServiceUid();
+            // Never unregistered because the system server never stops
+            c.registerReceiver(new BroadcastReceiver() {
+                @Override
+                public void onReceive(final Context context, final Intent intent) {
+                    switch (intent.getAction()) {
+                        case TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED:
+                            simConfigChanged();
+                            break;
+                        default:
+                            Log.d(TAG, "Unknown intent received, action: " + intent.getAction());
+                    }
+                }
+            }, filter, null, mHandler);
+            simConfigChanged();
         }
     }
 
     public CarrierPrivilegeAuthenticator(@NonNull final Context c,
-            @NonNull final TelephonyManager t) {
-        mContext = c;
-        mTelephonyManager = t;
-        mTelephonyManagerShim = TelephonyManagerShimImpl.newInstance(mTelephonyManager);
-        mThread = new HandlerThread(TAG);
-        mThread.start();
-        mHandler = new Handler(mThread.getLooper()) {};
-        synchronized (mLock) {
-            mModemCount = mTelephonyManager.getActiveModemCount();
-            registerForCarrierChanges();
-            updateCarrierServiceUid();
+            @NonNull final TelephonyManager t, final boolean requestRestrictedWifiEnabled,
+            @NonNull CarrierPrivilegesLostListener listener) {
+        this(c, new Dependencies(), t, TelephonyManagerShimImpl.newInstance(t),
+                requestRestrictedWifiEnabled, listener);
+    }
+
+    public static class Dependencies {
+        /**
+         * Create a HandlerThread to use in CarrierPrivilegeAuthenticator.
+         */
+        public HandlerThread makeHandlerThread() {
+            return new HandlerThread(TAG);
+        }
+
+        /**
+         * @see DeviceConfigUtils#isTetheringFeatureEnabled
+         */
+        public boolean isFeatureEnabled(Context context, String name) {
+            return DeviceConfigUtils.isTetheringFeatureEnabled(context, name);
         }
     }
 
     /**
-     * Broadcast receiver for ACTION_MULTI_SIM_CONFIG_CHANGED
-     *
-     * <p>The broadcast receiver is registered with mHandler
+     * Listener interface to get a notification when the carrier App lost its privileges.
      */
-    @Override
-    public void onReceive(Context context, Intent intent) {
-        switch (intent.getAction()) {
-            case TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED:
-                handleActionMultiSimConfigChanged(context, intent);
-                break;
-            default:
-                Log.d(TAG, "Unknown intent received with action: " + intent.getAction());
-        }
+    public interface CarrierPrivilegesLostListener {
+        /**
+         * Called when the carrier App lost its privileges.
+         *
+         * @param uid  The uid of the carrier app which has lost its privileges.
+         */
+        void onCarrierPrivilegesLost(int uid);
     }
 
-    private void handleActionMultiSimConfigChanged(Context context, Intent intent) {
-        unregisterCarrierPrivilegesListeners();
+    private void simConfigChanged() {
         synchronized (mLock) {
+            unregisterCarrierPrivilegesListeners();
             mModemCount = mTelephonyManager.getActiveModemCount();
+            registerCarrierPrivilegesListeners(mModemCount);
+            if (!mUseCallbacksForServiceChanged) updateCarrierServiceUid();
         }
-        registerCarrierPrivilegesListeners();
-        updateCarrierServiceUid();
     }
 
-    private void registerForCarrierChanges() {
-        final IntentFilter filter = new IntentFilter();
-        filter.addAction(TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED);
-        mContext.registerReceiver(this, filter, null, mHandler);
-        registerCarrierPrivilegesListeners();
+    private class PrivilegeListener implements CarrierPrivilegesListenerShim {
+        public final int mLogicalSlot;
+
+        PrivilegeListener(final int logicalSlot) {
+            mLogicalSlot = logicalSlot;
+        }
+
+        @Override
+        public void onCarrierPrivilegesChanged(
+                @NonNull List<String> privilegedPackageNames,
+                @NonNull int[] privilegedUids) {
+            if (mUseCallbacksForServiceChanged) return;
+            // Re-trigger the synchronous check (which is also very cheap due
+            // to caching in CarrierPrivilegesTracker). This allows consistency
+            // with the onSubscriptionsChangedListener and broadcasts.
+            updateCarrierServiceUid();
+        }
+
+        @Override
+        public void onCarrierServiceChanged(@Nullable final String carrierServicePackageName,
+                final int carrierServiceUid) {
+            if (!mUseCallbacksForServiceChanged) {
+                // Re-trigger the synchronous check (which is also very cheap due
+                // to caching in CarrierPrivilegesTracker). This allows consistency
+                // with the onSubscriptionsChangedListener and broadcasts.
+                updateCarrierServiceUid();
+                return;
+            }
+            synchronized (mLock) {
+                int oldUid = mCarrierServiceUid.get(mLogicalSlot);
+                mCarrierServiceUid.put(mLogicalSlot, carrierServiceUid);
+                if (oldUid != 0 && oldUid != carrierServiceUid) {
+                    mListener.onCarrierPrivilegesLost(oldUid);
+                }
+            }
+        }
     }
 
-    private void registerCarrierPrivilegesListeners() {
+    private void registerCarrierPrivilegesListeners(final int modemCount) {
         final HandlerExecutor executor = new HandlerExecutor(mHandler);
-        int modemCount;
-        synchronized (mLock) {
-            modemCount = mModemCount;
-        }
         try {
             for (int i = 0; i < modemCount; i++) {
-                CarrierPrivilegesListenerShim carrierPrivilegesListener =
-                        new CarrierPrivilegesListenerShim() {
-                            @Override
-                            public void onCarrierPrivilegesChanged(
-                                    @NonNull List<String> privilegedPackageNames,
-                                    @NonNull int[] privilegedUids) {
-                                // Re-trigger the synchronous check (which is also very cheap due
-                                // to caching in CarrierPrivilegesTracker). This allows consistency
-                                // with the onSubscriptionsChangedListener and broadcasts.
-                                updateCarrierServiceUid();
-                            }
-                        };
-                addCarrierPrivilegesListener(i, executor, carrierPrivilegesListener);
+                PrivilegeListener carrierPrivilegesListener = new PrivilegeListener(i);
+                addCarrierPrivilegesListener(executor, carrierPrivilegesListener);
                 mCarrierPrivilegesChangedListeners.add(carrierPrivilegesListener);
             }
         } catch (IllegalArgumentException e) {
@@ -164,24 +214,17 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
         }
     }
 
-    private void addCarrierPrivilegesListener(int logicalSlotIndex, Executor executor,
-            CarrierPrivilegesListenerShim listener) {
-        try {
-            mTelephonyManagerShim.addCarrierPrivilegesListener(
-                    logicalSlotIndex, executor, listener);
-        } catch (UnsupportedApiLevelException unsupportedApiLevelException) {
-            // Should not happen since CarrierPrivilegeAuthenticator is only used on T+
-            Log.e(TAG, "addCarrierPrivilegesListener API is not available");
+    @GuardedBy("mLock")
+    private void unregisterCarrierPrivilegesListeners() {
+        for (PrivilegeListener carrierPrivilegesListener : mCarrierPrivilegesChangedListeners) {
+            removeCarrierPrivilegesListener(carrierPrivilegesListener);
+            int oldUid = mCarrierServiceUid.get(carrierPrivilegesListener.mLogicalSlot);
+            mCarrierServiceUid.delete(carrierPrivilegesListener.mLogicalSlot);
+            if (oldUid != 0) {
+                mListener.onCarrierPrivilegesLost(oldUid);
+            }
         }
-    }
-
-    private void removeCarrierPrivilegesListener(CarrierPrivilegesListenerShim listener) {
-        try {
-            mTelephonyManagerShim.removeCarrierPrivilegesListener(listener);
-        } catch (UnsupportedApiLevelException unsupportedApiLevelException) {
-            // Should not happen since CarrierPrivilegeAuthenticator is only used on T+
-            Log.e(TAG, "removeCarrierPrivilegesListener API is not available");
-        }
+        mCarrierPrivilegesChangedListeners.clear();
     }
 
     private String getCarrierServicePackageNameForLogicalSlot(int logicalSlotIndex) {
@@ -195,25 +238,18 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
         return null;
     }
 
-    private void unregisterCarrierPrivilegesListeners() {
-        for (CarrierPrivilegesListenerShim carrierPrivilegesListener :
-                mCarrierPrivilegesChangedListeners) {
-            removeCarrierPrivilegesListener(carrierPrivilegesListener);
-        }
-        mCarrierPrivilegesChangedListeners.clear();
-    }
-
     /**
      * Check if a UID is the carrier service app of the subscription ID in the provided capabilities
      *
      * This returns whether the passed UID is the carrier service package for the subscription ID
      * stored in the telephony network specifier in the passed network capabilities.
-     * If the capabilities don't code for a cellular network, or if they don't have the
+     * If the capabilities don't code for a cellular or Wi-Fi network, or if they don't have the
      * subscription ID in their specifier, this returns false.
      *
-     * This method can be used to check that a network request for {@link NET_CAPABILITY_CBS} is
-     * allowed for the UID of a caller, which must hold carrier privilege and provide the carrier
-     * config.
+     * This method can be used to check that a network request that requires the UID to be
+     * the carrier service UID is indeed called by such a UID. An example of such a network could
+     * be a network with the  {@link android.net.NetworkCapabilities#NET_CAPABILITY_CBS}
+     * capability.
      * It can also be used to check that a factory is entitled to grant access to a given network
      * to a given UID on grounds that it is the carrier service package.
      *
@@ -221,11 +257,34 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
      * @param networkCapabilities the network capabilities for which carrier privilege is checked.
      * @return true if uid provides the relevant carrier config else false.
      */
-    public boolean hasCarrierPrivilegeForNetworkCapabilities(int callingUid,
+    public boolean isCarrierServiceUidForNetworkCapabilities(int callingUid,
             @NonNull NetworkCapabilities networkCapabilities) {
         if (callingUid == Process.INVALID_UID) return false;
-        if (!networkCapabilities.hasSingleTransport(TRANSPORT_CELLULAR)) return false;
-        final int subId = getSubIdFromNetworkSpecifier(networkCapabilities.getNetworkSpecifier());
+        int subId;
+        if (networkCapabilities.hasSingleTransportBesidesTest(TRANSPORT_CELLULAR)) {
+            subId = getSubIdFromTelephonySpecifier(networkCapabilities.getNetworkSpecifier());
+        } else if (networkCapabilities.hasSingleTransportBesidesTest(TRANSPORT_WIFI)) {
+            subId = getSubIdFromWifiTransportInfo(networkCapabilities.getTransportInfo());
+        } else {
+            subId = SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+        }
+        if (subId == SubscriptionManager.INVALID_SUBSCRIPTION_ID
+                && mRequestRestrictedWifiEnabled
+                && networkCapabilities.getSubscriptionIds().size() == 1) {
+            subId = networkCapabilities.getSubscriptionIds().toArray(new Integer[0])[0];
+        }
+
+        if (subId != SubscriptionManager.INVALID_SUBSCRIPTION_ID
+                && !networkCapabilities.getSubscriptionIds().contains(subId)) {
+            // Ideally, the code above should just use networkCapabilities.getSubscriptionIds()
+            // for simplicity and future-proofing. However, this is not the historical behavior,
+            // and there is no enforcement that they do not differ, so log a terrible failure if
+            // they do not match to gain confidence this never happens.
+            // TODO : when there is confidence that this never happens, rewrite the code above
+            // with NetworkCapabilities#getSubscriptionIds.
+            Log.wtf(TAG, "NetworkCapabilities subIds are inconsistent between "
+                    + "specifier/transportInfo and mSubIds : " + networkCapabilities);
+        }
         if (SubscriptionManager.INVALID_SUBSCRIPTION_ID == subId) return false;
         return callingUid == getCarrierServiceUidForSubId(subId);
     }
@@ -233,9 +292,15 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
     @VisibleForTesting
     void updateCarrierServiceUid() {
         synchronized (mLock) {
-            mCarrierServiceUid = new int[mModemCount];
+            SparseIntArray oldCarrierServiceUid = mCarrierServiceUid.clone();
+            mCarrierServiceUid.clear();
             for (int i = 0; i < mModemCount; i++) {
-                mCarrierServiceUid[i] = getCarrierServicePackageUidForSlot(i);
+                mCarrierServiceUid.put(i, getCarrierServicePackageUidForSlot(i));
+            }
+            for (int i = 0; i < oldCarrierServiceUid.size(); i++) {
+                if (mCarrierServiceUid.indexOfValue(oldCarrierServiceUid.valueAt(i)) < 0) {
+                    mListener.onCarrierPrivilegesLost(oldCarrierServiceUid.valueAt(i));
+                }
             }
         }
     }
@@ -244,24 +309,13 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
     int getCarrierServiceUidForSubId(int subId) {
         final int slotId = getSlotIndex(subId);
         synchronized (mLock) {
-            if (slotId != SubscriptionManager.INVALID_SIM_SLOT_INDEX && slotId < mModemCount) {
-                return mCarrierServiceUid[slotId];
-            }
+            return mCarrierServiceUid.get(slotId, Process.INVALID_UID);
         }
-        return Process.INVALID_UID;
     }
 
     @VisibleForTesting
     protected int getSlotIndex(int subId) {
         return SubscriptionManager.getSlotIndex(subId);
-    }
-
-    @VisibleForTesting
-    int getSubIdFromNetworkSpecifier(NetworkSpecifier specifier) {
-        if (specifier instanceof TelephonyNetworkSpecifier) {
-            return ((TelephonyNetworkSpecifier) specifier).getSubscriptionId();
-        }
-        return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
     }
 
     @VisibleForTesting
@@ -287,5 +341,54 @@ public class CarrierPrivilegeAuthenticator extends BroadcastReceiver {
     @VisibleForTesting
     int getCarrierServicePackageUidForSlot(int slotId) {
         return getUidForPackage(getCarrierServicePackageNameForLogicalSlot(slotId));
+    }
+
+    @VisibleForTesting
+    int getSubIdFromTelephonySpecifier(@Nullable final NetworkSpecifier specifier) {
+        if (specifier instanceof TelephonyNetworkSpecifier) {
+            return ((TelephonyNetworkSpecifier) specifier).getSubscriptionId();
+        }
+        return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+    }
+
+    int getSubIdFromWifiTransportInfo(@Nullable final TransportInfo info) {
+        if (info instanceof WifiInfo) {
+            return ((WifiInfo) info).getSubscriptionId();
+        }
+        return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+    }
+
+    // Helper methods to avoid having to deal with UnsupportedApiLevelException.
+    private void addCarrierPrivilegesListener(@NonNull final Executor executor,
+            @NonNull final PrivilegeListener listener) {
+        try {
+            mTelephonyManagerShim.addCarrierPrivilegesListener(listener.mLogicalSlot, executor,
+                    listener);
+        } catch (UnsupportedApiLevelException unsupportedApiLevelException) {
+            // Should not happen since CarrierPrivilegeAuthenticator is only used on T+
+            Log.e(TAG, "addCarrierPrivilegesListener API is not available");
+        }
+    }
+
+    private void removeCarrierPrivilegesListener(PrivilegeListener listener) {
+        try {
+            mTelephonyManagerShim.removeCarrierPrivilegesListener(listener);
+        } catch (UnsupportedApiLevelException unsupportedApiLevelException) {
+            // Should not happen since CarrierPrivilegeAuthenticator is only used on T+
+            Log.e(TAG, "removeCarrierPrivilegesListener API is not available");
+        }
+    }
+
+    public void dump(IndentingPrintWriter pw) {
+        pw.println("CarrierPrivilegeAuthenticator:");
+        pw.println("mRequestRestrictedWifiEnabled = " + mRequestRestrictedWifiEnabled);
+        synchronized (mLock) {
+            final int size = mCarrierServiceUid.size();
+            for (int i = 0; i < size; ++i) {
+                final int logicalSlot = mCarrierServiceUid.keyAt(i);
+                final int serviceUid = mCarrierServiceUid.valueAt(i);
+                pw.println("Logical slot = " + logicalSlot + " : uid = " + serviceUid);
+            }
+        }
     }
 }

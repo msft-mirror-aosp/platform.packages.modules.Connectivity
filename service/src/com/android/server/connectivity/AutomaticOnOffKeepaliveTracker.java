@@ -20,15 +20,11 @@ import static android.net.SocketKeepalive.ERROR_INVALID_SOCKET;
 import static android.net.SocketKeepalive.MIN_INTERVAL_SEC;
 import static android.net.SocketKeepalive.SUCCESS;
 import static android.net.SocketKeepalive.SUCCESS_PAUSED;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 import static android.system.OsConstants.AF_INET;
 import static android.system.OsConstants.AF_INET6;
 import static android.system.OsConstants.SOL_SOCKET;
 import static android.system.OsConstants.SO_SNDTIMEO;
 
-import static com.android.net.module.util.netlink.NetlinkConstants.NLMSG_DONE;
-import static com.android.net.module.util.netlink.NetlinkConstants.SOCKDIAG_MSG_HEADER_SIZE;
-import static com.android.net.module.util.netlink.NetlinkConstants.SOCK_DIAG_BY_FAMILY;
 import static com.android.net.module.util.netlink.NetlinkUtils.IO_TIMEOUT_MS;
 
 import android.annotation.IntDef;
@@ -89,11 +85,12 @@ import java.util.Objects;
  */
 public class AutomaticOnOffKeepaliveTracker {
     private static final String TAG = "AutomaticOnOffKeepaliveTracker";
+    private static final boolean DBG = Log.isLoggable(TAG, Log.DEBUG);
     private static final int[] ADDRESS_FAMILIES = new int[] {AF_INET6, AF_INET};
     private static final long LOW_TCP_POLLING_INTERVAL_MS = 1_000L;
     private static final int ADJUST_TCP_POLLING_DELAY_MS = 2000;
-    private static final String AUTOMATIC_ON_OFF_KEEPALIVE_VERSION =
-            "automatic_on_off_keepalive_version";
+    private static final String AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG =
+            "automatic_on_off_keepalive_disable_flag";
     public static final long METRICS_COLLECTION_DURATION_MS = 24 * 60 * 60 * 1_000L;
 
     // ConnectivityService parses message constants from itself and AutomaticOnOffKeepaliveTracker
@@ -216,29 +213,38 @@ public class AutomaticOnOffKeepaliveTracker {
             this.mKi = Objects.requireNonNull(ki);
             mCallback = ki.mCallback;
             mUnderpinnedNetwork = underpinnedNetwork;
-            if (autoOnOff && mDependencies.isFeatureEnabled(AUTOMATIC_ON_OFF_KEEPALIVE_VERSION,
-                    true /* defaultEnabled */)) {
+            // Reading DeviceConfig will check if the calling uid and calling package name are the
+            // same. Clear calling identity to align the calling uid and package
+            final boolean enabled = BinderUtils.withCleanCallingIdentity(
+                    () -> mDependencies.isTetheringFeatureNotChickenedOut(
+                            AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG));
+            if (autoOnOff && enabled) {
                 mAutomaticOnOffState = STATE_ENABLED;
                 if (null == ki.mFd) {
                     throw new IllegalArgumentException("fd can't be null with automatic "
                             + "on/off keepalives");
-                }
-                try {
-                    mFd = Os.dup(ki.mFd);
-                } catch (ErrnoException e) {
-                    Log.e(TAG, "Cannot dup fd: ", e);
-                    throw new InvalidSocketException(ERROR_INVALID_SOCKET, e);
                 }
                 mAlarmListener = () -> mConnectivityServiceHandler.obtainMessage(
                         CMD_MONITOR_AUTOMATIC_KEEPALIVE, mCallback.asBinder())
                         .sendToTarget();
             } else {
                 mAutomaticOnOffState = STATE_ALWAYS_ON;
-                // A null fd is acceptable in KeepaliveInfo for backward compatibility of
-                // PacketKeepalive API, but it must never happen with automatic keepalives.
-                // TODO : remove mFd from KeepaliveInfo or from this class.
-                mFd = ki.mFd;
                 mAlarmListener = null;
+            }
+
+            // A null fd is acceptable in KeepaliveInfo for backward compatibility of
+            // PacketKeepalive API, but it must never happen with automatic keepalives.
+            // TODO : remove mFd from KeepaliveInfo.
+            mFd = dupFd(ki.mFd);
+        }
+
+        private FileDescriptor dupFd(FileDescriptor fd) throws InvalidSocketException {
+            try {
+                if (fd == null) return null;
+                return Os.dup(fd);
+            } catch (ErrnoException e) {
+                Log.e(TAG, "Cannot dup fd: ", e);
+                throw new InvalidSocketException(ERROR_INVALID_SOCKET, e);
             }
         }
 
@@ -287,6 +293,18 @@ public class AutomaticOnOffKeepaliveTracker {
             }
         }
 
+        /**
+         * Construct a new AutomaticOnOffKeepalive from existing AutomaticOnOffKeepalive with a
+         * new KeepaliveInfo.
+         */
+        public AutomaticOnOffKeepalive withKeepaliveInfo(KeepaliveTracker.KeepaliveInfo ki)
+                throws InvalidSocketException {
+            return new AutomaticOnOffKeepalive(
+                    ki,
+                    mAutomaticOnOffState != STATE_ALWAYS_ON /* autoOnOff */,
+                    mUnderpinnedNetwork);
+        }
+
         @Override
         public String toString() {
             return "AutomaticOnOffKeepalive [ "
@@ -316,12 +334,18 @@ public class AutomaticOnOffKeepaliveTracker {
 
         final long time = mDependencies.getElapsedRealtime();
         mMetricsWriteTimeBase = time % METRICS_COLLECTION_DURATION_MS;
-        final long triggerAtMillis = mMetricsWriteTimeBase + METRICS_COLLECTION_DURATION_MS;
-        mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtMillis, TAG,
-                this::writeMetricsAndRescheduleAlarm, handler);
+        if (mKeepaliveStatsTracker.isEnabled()) {
+            final long triggerAtMillis = mMetricsWriteTimeBase + METRICS_COLLECTION_DURATION_MS;
+            mAlarmManager.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAtMillis, TAG,
+                    this::writeMetricsAndRescheduleAlarm, handler);
+        }
     }
 
     private void writeMetricsAndRescheduleAlarm() {
+        // If the metrics is disabled, skip writing and scheduling the next alarm.
+        if (!mKeepaliveStatsTracker.isEnabled()) {
+            return;
+        }
         mKeepaliveStatsTracker.writeAndResetMetrics();
 
         final long time = mDependencies.getElapsedRealtime();
@@ -466,13 +490,25 @@ public class AutomaticOnOffKeepaliveTracker {
      * The message is expected to contain a KeepaliveTracker.KeepaliveInfo.
      */
     public void handleStartKeepalive(Message message) {
-        final AutomaticOnOffKeepalive autoKi = (AutomaticOnOffKeepalive) message.obj;
-        final int error = mKeepaliveTracker.handleStartKeepalive(autoKi.mKi);
+        final AutomaticOnOffKeepalive target = (AutomaticOnOffKeepalive) message.obj;
+        final Pair<Integer, KeepaliveTracker.KeepaliveInfo> res =
+                mKeepaliveTracker.handleStartKeepalive(target.mKi);
+        final int error = res.first;
         if (error != SUCCESS) {
-            mEventLog.log("Failed to start keepalive " + autoKi.mCallback + " on "
-                    + autoKi.getNetwork() + " with error " + error);
+            mEventLog.log("Failed to start keepalive " + target.mCallback + " on "
+                    + target.getNetwork() + " with error " + error);
             return;
         }
+        // Generate a new auto ki with the started keepalive info.
+        final AutomaticOnOffKeepalive autoKi;
+        try {
+            autoKi = target.withKeepaliveInfo(res.second);
+            target.close();
+        } catch (InvalidSocketException e) {
+            Log.wtf(TAG, "Fail to create AutomaticOnOffKeepalive", e);
+            return;
+        }
+
         mEventLog.log("Start keepalive " + autoKi.mCallback + " on " + autoKi.getNetwork());
         mKeepaliveStatsTracker.onStartKeepalive(
                 autoKi.getNetwork(),
@@ -502,14 +538,19 @@ public class AutomaticOnOffKeepaliveTracker {
      * @return SUCCESS if the keepalive is successfully starting and the error reason otherwise.
      */
     private int handleResumeKeepalive(@NonNull final KeepaliveTracker.KeepaliveInfo ki) {
-        final int error = mKeepaliveTracker.handleStartKeepalive(ki);
+        final Pair<Integer, KeepaliveTracker.KeepaliveInfo> res =
+                mKeepaliveTracker.handleStartKeepalive(ki);
+        final KeepaliveTracker.KeepaliveInfo startedKi = res.second;
+        final int error = res.first;
         if (error != SUCCESS) {
-            mEventLog.log("Failed to resume keepalive " + ki.mCallback + " on " + ki.mNai
-                    + " with error " + error);
+            mEventLog.log("Failed to resume keepalive " + startedKi.mCallback + " on "
+                    + startedKi.mNai + " with error " + error);
             return error;
         }
-        mKeepaliveStatsTracker.onResumeKeepalive(ki.getNai().network(), ki.getSlot());
-        mEventLog.log("Resumed successfully keepalive " + ki.mCallback + " on " + ki.mNai);
+
+        mKeepaliveStatsTracker.onResumeKeepalive(startedKi.getNai().network(), startedKi.getSlot());
+        mEventLog.log("Resumed successfully keepalive " + startedKi.mCallback
+                + " on " + startedKi.mNai);
 
         return SUCCESS;
     }
@@ -649,11 +690,17 @@ public class AutomaticOnOffKeepaliveTracker {
 
     /**
      * Dump AutomaticOnOffKeepaliveTracker state.
+     * This should be only be called in ConnectivityService handler thread.
      */
     public void dump(IndentingPrintWriter pw) {
+        ensureRunningOnHandlerThread();
         mKeepaliveTracker.dump(pw);
-        final boolean featureEnabled = mDependencies.isFeatureEnabled(
-                AUTOMATIC_ON_OFF_KEEPALIVE_VERSION, true /* defaultEnabled */);
+        // Reading DeviceConfig will check if the calling uid and calling package name are the same.
+        // Clear calling identity to align the calling uid and package so that it won't fail if cts
+        // would like to call dump()
+        final boolean featureEnabled = BinderUtils.withCleanCallingIdentity(
+                () -> mDependencies.isTetheringFeatureNotChickenedOut(
+                        AUTOMATIC_ON_OFF_KEEPALIVE_DISABLE_FLAG));
         pw.println("AutomaticOnOff enabled: " + featureEnabled);
         pw.increaseIndent();
         for (AutomaticOnOffKeepalive autoKi : mAutomaticOnOffKeepalives) {
@@ -665,6 +712,9 @@ public class AutomaticOnOffKeepaliveTracker {
         pw.increaseIndent();
         mEventLog.reverseDump(pw);
         pw.decreaseIndent();
+
+        pw.println();
+        mKeepaliveStatsTracker.dump(pw);
     }
 
     /**
@@ -719,7 +769,8 @@ public class AutomaticOnOffKeepaliveTracker {
     }
 
     private boolean isAnyTcpSocketConnectedForFamily(FileDescriptor fd, int family, int networkMark,
-            int networkMask) throws ErrnoException, InterruptedIOException {
+            int networkMask)
+            throws ErrnoException, InterruptedIOException {
         ensureRunningOnHandlerThread();
         // Build SocketDiag messages and cache it.
         if (mSockDiagMsg.get(family) == null) {
@@ -737,22 +788,18 @@ public class AutomaticOnOffKeepaliveTracker {
 
             try {
                 while (NetlinkUtils.enoughBytesRemainForValidNlMsg(bytes)) {
-                    final int startPos = bytes.position();
+                    // NetlinkMessage.parse() will move the byte buffer position.
+                    // TODO: Parse dst address information to filter socket.
+                    final NetlinkMessage nlMsg = NetlinkMessage.parse(
+                            bytes, OsConstants.NETLINK_INET_DIAG);
+                    if (!(nlMsg instanceof InetDiagMessage)) {
+                        if (DBG) Log.e(TAG, "Not a SOCK_DIAG_BY_FAMILY msg");
+                        return false;
+                    }
 
-                    final int nlmsgLen = bytes.getInt();
-                    final int nlmsgType = bytes.getShort();
-                    if (isEndOfMessageOrError(nlmsgType)) return false;
-                    // TODO: Parse InetDiagMessage to get uid and dst address information to filter
-                    //  socket via NetlinkMessage.parse.
-
-                    // Skip the header to move to data part.
-                    bytes.position(startPos + SOCKDIAG_MSG_HEADER_SIZE);
-
-                    if (isTargetTcpSocket(bytes, nlmsgLen, networkMark, networkMask)) {
-                        if (Log.isLoggable(TAG, Log.DEBUG)) {
-                            bytes.position(startPos);
-                            final InetDiagMessage diagMsg = (InetDiagMessage) NetlinkMessage.parse(
-                                    bytes, OsConstants.NETLINK_INET_DIAG);
+                    final InetDiagMessage diagMsg = (InetDiagMessage) nlMsg;
+                    if (isTargetTcpSocket(diagMsg, networkMark, networkMask)) {
+                        if (DBG) {
                             Log.d(TAG, String.format("Found open TCP connection by uid %d to %s"
                                             + " cookie %d",
                                     diagMsg.inetDiagMsg.idiag_uid,
@@ -777,26 +824,20 @@ public class AutomaticOnOffKeepaliveTracker {
         return false;
     }
 
-    private boolean isEndOfMessageOrError(int nlmsgType) {
-        return nlmsgType == NLMSG_DONE || nlmsgType != SOCK_DIAG_BY_FAMILY;
-    }
-
-    private boolean isTargetTcpSocket(@NonNull ByteBuffer bytes, int nlmsgLen, int networkMark,
-            int networkMask) {
-        final int mark = readSocketDataAndReturnMark(bytes, nlmsgLen);
+    private boolean isTargetTcpSocket(@NonNull InetDiagMessage diagMsg,
+            int networkMark, int networkMask) {
+        final int mark = readSocketDataAndReturnMark(diagMsg);
         return (mark & networkMask) == networkMark;
     }
 
-    private int readSocketDataAndReturnMark(@NonNull ByteBuffer bytes, int nlmsgLen) {
-        final int nextMsgOffset = bytes.position() + nlmsgLen - SOCKDIAG_MSG_HEADER_SIZE;
+    private int readSocketDataAndReturnMark(@NonNull InetDiagMessage diagMsg) {
         int mark = NetlinkUtils.INIT_MARK_VALUE;
         // Get socket mark
-        // TODO: Add a parsing method in NetlinkMessage.parse to support this to skip the remaining
-        //  data.
-        while (bytes.position() < nextMsgOffset) {
-            final StructNlAttr nlattr = StructNlAttr.parse(bytes);
-            if (nlattr != null && nlattr.nla_type == NetlinkUtils.INET_DIAG_MARK) {
-                mark = nlattr.getValueAsInteger();
+        for (StructNlAttr attr : diagMsg.nlAttrs) {
+            if (attr.nla_type == NetlinkUtils.INET_DIAG_MARK) {
+                // The netlink attributes should contain only one INET_DIAG_MARK for each socket.
+                mark = attr.getValueAsInteger();
+                break;
             }
         }
         return mark;
@@ -848,7 +889,7 @@ public class AutomaticOnOffKeepaliveTracker {
         public FileDescriptor createConnectedNetlinkSocket()
                 throws ErrnoException, SocketException {
             final FileDescriptor fd = NetlinkUtils.createNetLinkInetDiagSocket();
-            NetlinkUtils.connectSocketToNetlink(fd);
+            NetlinkUtils.connectToKernel(fd);
             Os.setsockoptTimeval(fd, SOL_SOCKET, SO_SNDTIMEO,
                     StructTimeval.fromMillis(IO_TIMEOUT_MS));
             return fd;
@@ -921,20 +962,13 @@ public class AutomaticOnOffKeepaliveTracker {
         }
 
         /**
-         * Find out if a feature is enabled from DeviceConfig.
+         * Find out if a feature is not disabled from DeviceConfig.
          *
          * @param name The name of the property to look up.
-         * @param defaultEnabled whether to consider the feature enabled in the absence of
-         *                       the flag. This MUST be a statically-known constant.
          * @return whether the feature is enabled
          */
-        public boolean isFeatureEnabled(@NonNull final String name, final boolean defaultEnabled) {
-            // Reading DeviceConfig will check if the calling uid and calling package name are the
-            // same. Clear calling identity to align the calling uid and package so that it won't
-            // fail if cts would like to do the dump()
-            return BinderUtils.withCleanCallingIdentity(() ->
-                    DeviceConfigUtils.isFeatureEnabled(mContext, NAMESPACE_TETHERING, name,
-                    DeviceConfigUtils.TETHERING_MODULE_NAME, defaultEnabled));
+        public boolean isTetheringFeatureNotChickenedOut(@NonNull final String name) {
+            return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(mContext, name);
         }
 
         /**

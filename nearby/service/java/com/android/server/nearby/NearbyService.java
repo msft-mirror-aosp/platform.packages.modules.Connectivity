@@ -18,7 +18,6 @@ package com.android.server.nearby;
 
 import static com.android.server.SystemService.PHASE_BOOT_COMPLETED;
 import static com.android.server.SystemService.PHASE_SYSTEM_SERVICES_READY;
-import static com.android.server.SystemService.PHASE_THIRD_PARTY_APPS_CAN_START;
 
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
@@ -36,23 +35,24 @@ import android.nearby.IBroadcastListener;
 import android.nearby.INearbyManager;
 import android.nearby.IScanListener;
 import android.nearby.NearbyManager;
+import android.nearby.PoweredOffFindingEphemeralId;
 import android.nearby.ScanRequest;
 import android.nearby.aidl.IOffloadCallback;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.server.nearby.common.locator.LocatorContextWrapper;
-import com.android.server.nearby.fastpair.FastPairManager;
 import com.android.server.nearby.injector.Injector;
+import com.android.server.nearby.managers.BluetoothFinderManager;
 import com.android.server.nearby.managers.BroadcastProviderManager;
 import com.android.server.nearby.managers.DiscoveryManager;
 import com.android.server.nearby.managers.DiscoveryProviderManager;
 import com.android.server.nearby.managers.DiscoveryProviderManagerLegacy;
 import com.android.server.nearby.presence.PresenceManager;
-import com.android.server.nearby.provider.FastPairDataProvider;
 import com.android.server.nearby.util.identity.CallerIdentity;
 import com.android.server.nearby.util.permissions.BroadcastPermissions;
 import com.android.server.nearby.util.permissions.DiscoveryPermissions;
+
+import java.util.List;
 
 /** Service implementing nearby functionality. */
 public class NearbyService extends INearbyManager.Stub {
@@ -61,7 +61,6 @@ public class NearbyService extends INearbyManager.Stub {
     public static final Boolean MANUAL_TEST = false;
 
     private final Context mContext;
-    private final FastPairManager mFastPairManager;
     private final PresenceManager mPresenceManager;
     private final NearbyConfiguration mNearbyConfiguration;
     private Injector mInjector;
@@ -84,19 +83,19 @@ public class NearbyService extends INearbyManager.Stub {
             };
     private final DiscoveryManager mDiscoveryProviderManager;
     private final BroadcastProviderManager mBroadcastProviderManager;
+    private final BluetoothFinderManager mBluetoothFinderManager;
 
     public NearbyService(Context context) {
         mContext = context;
         mInjector = new SystemInjector(context);
         mBroadcastProviderManager = new BroadcastProviderManager(context, mInjector);
-        final LocatorContextWrapper lcw = new LocatorContextWrapper(context, null);
-        mFastPairManager = new FastPairManager(lcw);
-        mPresenceManager = new PresenceManager(lcw);
+        mPresenceManager = new PresenceManager(context);
         mNearbyConfiguration = new NearbyConfiguration();
         mDiscoveryProviderManager =
                 mNearbyConfiguration.refactorDiscoveryManager()
                         ? new DiscoveryProviderManager(context, mInjector)
                         : new DiscoveryProviderManagerLegacy(context, mInjector);
+        mBluetoothFinderManager = new BluetoothFinderManager();
     }
 
     @VisibleForTesting
@@ -155,6 +154,30 @@ public class NearbyService extends INearbyManager.Stub {
         mDiscoveryProviderManager.queryOffloadCapability(callback);
     }
 
+    @Override
+    public void setPoweredOffFindingEphemeralIds(List<PoweredOffFindingEphemeralId> eids) {
+        // Permissions check
+        enforceBluetoothPrivilegedPermission(mContext);
+
+        mBluetoothFinderManager.sendEids(eids);
+    }
+
+    @Override
+    public void setPoweredOffModeEnabled(boolean enabled) {
+        // Permissions check
+        enforceBluetoothPrivilegedPermission(mContext);
+
+        mBluetoothFinderManager.setPoweredOffFinderMode(enabled);
+    }
+
+    @Override
+    public boolean getPoweredOffModeEnabled() {
+        // Permissions check
+        enforceBluetoothPrivilegedPermission(mContext);
+
+        return mBluetoothFinderManager.getPoweredOffFinderMode();
+    }
+
     /**
      * Called by the service initializer.
      *
@@ -166,10 +189,6 @@ public class NearbyService extends INearbyManager.Stub {
                 if (mInjector instanceof SystemInjector) {
                     ((SystemInjector) mInjector).initializeAppOpsManager();
                 }
-                break;
-            case PHASE_THIRD_PARTY_APPS_CAN_START:
-                // Ensures that a fast pair data provider exists which will work in direct boot.
-                FastPairDataProvider.init(mContext);
                 break;
             case PHASE_BOOT_COMPLETED:
                 // mInjector needs to be initialized before mProviderManager.
@@ -183,7 +202,6 @@ public class NearbyService extends INearbyManager.Stub {
                 mContext.registerReceiver(
                         mBluetoothReceiver,
                         new IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED));
-                mFastPairManager.initiate();
                 // Only enable for manual Presence test on device.
                 if (MANUAL_TEST) {
                     mPresenceManager.initiate();
