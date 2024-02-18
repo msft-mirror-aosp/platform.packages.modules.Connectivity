@@ -39,3 +39,16 @@ flag {
   bug: "294777050"
 }
 
+flag {
+  name: "ipsec_transform_state"
+  namespace: "android_core_networking_ipsec"
+  description: "The flag controls the access for getIpSecTransformState and IpSecTransformState"
+  bug: "308011229"
+}
+
+flag {
+  name: "tethering_request_with_soft_ap_config"
+  namespace: "android_core_networking"
+  description: "The flag controls the access for the parcelable TetheringRequest with getSoftApConfiguration/setSoftApConfiguration API"
+  bug: "216524590"
+}
