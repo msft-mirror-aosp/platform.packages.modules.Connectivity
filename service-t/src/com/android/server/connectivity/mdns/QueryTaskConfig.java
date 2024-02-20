@@ -24,10 +24,6 @@ import android.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.List;
-
 /**
  * A configuration for the PeriodicalQueryTask that contains parameters to build a query packet.
  * Call to getConfigForNextRun returns a config that can be used to build the next query task.
@@ -53,9 +49,6 @@ public class QueryTaskConfig {
     // they only listen once every [multiplier] DTIM intervals).
     static final int TIME_BETWEEN_RETRANSMISSION_QUERIES_IN_BURST_MS = 100;
     static final int MAX_TIME_BETWEEN_AGGRESSIVE_BURSTS_MS = 60000;
-    // The following fields are used by QueryTask so we need to test them.
-    @VisibleForTesting
-    final List<String> subtypes;
     private final boolean alwaysAskForUnicastResponse =
             MdnsConfigs.alwaysAskForUnicastResponseInEachBurst();
     private final int queryMode;
@@ -78,7 +71,6 @@ public class QueryTaskConfig {
             boolean expectUnicastResponse, boolean isFirstBurst, int burstCounter,
             int queriesPerBurst, int timeBetweenBurstsInMs,
             long delayUntilNextTaskWithoutBackoffMs) {
-        this.subtypes = new ArrayList<>(other.subtypes);
         this.queryMode = other.queryMode;
         this.onlyUseIpv6OnIpv6OnlyNetworks = other.onlyUseIpv6OnIpv6OnlyNetworks;
         this.numOfQueriesBeforeBackoff = other.numOfQueriesBeforeBackoff;
@@ -93,15 +85,13 @@ public class QueryTaskConfig {
         this.socketKey = other.socketKey;
     }
 
-    QueryTaskConfig(@NonNull Collection<String> subtypes,
-            int queryMode,
+    QueryTaskConfig(int queryMode,
             boolean onlyUseIpv6OnIpv6OnlyNetworks,
             int numOfQueriesBeforeBackoff,
             @Nullable SocketKey socketKey) {
         this.queryMode = queryMode;
         this.onlyUseIpv6OnIpv6OnlyNetworks = onlyUseIpv6OnIpv6OnlyNetworks;
         this.numOfQueriesBeforeBackoff = numOfQueriesBeforeBackoff;
-        this.subtypes = new ArrayList<>(subtypes);
         this.queriesPerBurst = QUERIES_PER_BURST;
         this.burstCounter = 0;
         this.transactionId = 1;
@@ -159,8 +149,7 @@ public class QueryTaskConfig {
         }
         final int maxTimeBetweenBursts = queryMode == AGGRESSIVE_QUERY_MODE
                 ? MAX_TIME_BETWEEN_AGGRESSIVE_BURSTS_MS : MAX_TIME_BETWEEN_ACTIVE_PASSIVE_BURSTS_MS;
-        return timeBetweenBurstsInMs < maxTimeBetweenBursts
-                ? Math.min(timeBetweenBurstsInMs * 2, maxTimeBetweenBursts) : timeBetweenBurstsInMs;
+        return Math.min(timeBetweenBurstsInMs * 2, maxTimeBetweenBursts);
     }
 
     /**
@@ -172,21 +161,19 @@ public class QueryTaskConfig {
         if (newTransactionId > UNSIGNED_SHORT_MAX_VALUE) {
             newTransactionId = 1;
         }
-        boolean newIsFirstBurst = isFirstBurst;
+
         int newQueriesPerBurst = queriesPerBurst;
         int newBurstCounter = burstCounter + 1;
         final boolean isFirstQueryInBurst = newBurstCounter == 1;
         final boolean isLastQueryInBurst = newBurstCounter == queriesPerBurst;
+        boolean newIsFirstBurst = isFirstBurst && !isLastQueryInBurst;
         if (isLastQueryInBurst) {
             newBurstCounter = 0;
-            if (isFirstBurst) {
-                newIsFirstBurst = false;
-                // In passive scan mode, sends a single burst of QUERIES_PER_BURST queries, and
-                // then in each TIME_BETWEEN_BURSTS interval, sends QUERIES_PER_BURST_PASSIVE_MODE
-                // queries.
-                if (queryMode == PASSIVE_QUERY_MODE) {
-                    newQueriesPerBurst = QUERIES_PER_BURST_PASSIVE_MODE;
-                }
+            // In passive scan mode, sends a single burst of QUERIES_PER_BURST queries, and
+            // then in each TIME_BETWEEN_BURSTS interval, sends QUERIES_PER_BURST_PASSIVE_MODE
+            // queries.
+            if (isFirstBurst && queryMode == PASSIVE_QUERY_MODE) {
+                newQueriesPerBurst = QUERIES_PER_BURST_PASSIVE_MODE;
             }
         }
 
