@@ -23,6 +23,7 @@ next_app_data = []
 
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -30,7 +31,10 @@ java_test_host {
     name: "CtsHostsideNetworkTests",
     defaults: ["cts_defaults"],
     // Only compile source java files in this apk.
-    srcs: ["src/**/*.java"],
+    srcs: [
+        "src/**/*.java",
+        ":ArgumentConstants",
+    ],
     libs: [
         "net-tests-utils-host-device-common",
         "cts-tradefed",
@@ -45,7 +49,7 @@ java_test_host {
         "general-tests",
         "mcts-tethering",
         "mts-tethering",
-        "sts"
+        "sts",
     ],
     data: [
         ":CtsHostsideNetworkTestsApp",

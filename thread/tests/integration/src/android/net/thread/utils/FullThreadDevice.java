@@ -13,9 +13,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package android.net.thread;
+package android.net.thread.utils;
 
-import static android.net.thread.IntegrationTestUtils.waitFor;
+import static android.net.thread.utils.IntegrationTestUtils.waitFor;
 
 import static com.google.common.io.BaseEncoding.base16;
 
@@ -23,6 +23,7 @@ import static org.junit.Assert.fail;
 
 import android.net.InetAddresses;
 import android.net.IpPrefix;
+import android.net.thread.ActiveOperationalDataset;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -30,9 +31,12 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.Inet6Address;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * A class that launches and controls a simulation Full Thread Device (FTD).
@@ -92,6 +96,12 @@ public final class FullThreadDevice {
         return null;
     }
 
+    /** Returns the Mesh-local EID address on this device if any. */
+    public Inet6Address getMlEid() {
+        List<String> addresses = executeCommand("ipaddr mleid");
+        return (Inet6Address) InetAddresses.parseNumericAddress(addresses.get(0));
+    }
+
     /**
      * Joins the Thread network using the given {@link ActiveOperationalDataset}.
      *
@@ -115,10 +125,10 @@ public final class FullThreadDevice {
      *
      * @param states the list of states to wait for. Valid states are "disabled", "detached",
      *     "child", "router" and "leader".
-     * @param timeoutSeconds the number of seconds to wait for.
+     * @param timeout the time to wait for the expected state before throwing
      */
-    public void waitForStateAnyOf(List<String> states, int timeoutSeconds) throws TimeoutException {
-        waitFor(() -> states.contains(getState()), timeoutSeconds);
+    public void waitForStateAnyOf(List<String> states, Duration timeout) throws TimeoutException {
+        waitFor(() -> states.contains(getState()), timeout);
     }
 
     /**
@@ -128,6 +138,33 @@ public final class FullThreadDevice {
      */
     public String getState() {
         return executeCommand("state").get(0);
+    }
+
+    /** Closes the UDP socket. */
+    public void udpClose() {
+        executeCommand("udp close");
+    }
+
+    /** Opens the UDP socket. */
+    public void udpOpen() {
+        executeCommand("udp open");
+    }
+
+    /** Opens the UDP socket and binds it to a specific address and port. */
+    public void udpBind(Inet6Address address, int port) {
+        udpClose();
+        udpOpen();
+        executeCommand(String.format("udp bind %s %d", address.getHostAddress(), port));
+    }
+
+    /** Returns the message received on the UDP socket. */
+    public String udpReceive() throws IOException {
+        Pattern pattern =
+                Pattern.compile("> (\\d+) bytes from ([\\da-f:]+) (\\d+) ([\\x00-\\x7F]+)");
+        Matcher matcher = pattern.matcher(mReader.readLine());
+        matcher.matches();
+
+        return matcher.group(4);
     }
 
     /** Runs the "factoryreset" command on the device. */

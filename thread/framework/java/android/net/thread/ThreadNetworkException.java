@@ -89,8 +89,9 @@ public class ThreadNetworkException extends Exception {
 
     /**
      * The operation failed because required preconditions were not satisfied. For example, trying
-     * to schedule a network migration when this device is not attached will receive this error. The
-     * caller should not retry the same operation before the precondition is satisfied.
+     * to schedule a network migration when this device is not attached will receive this error or
+     * enable Thread while User Resitration has disabled it. The caller should not retry the same
+     * operation before the precondition is satisfied.
      */
     public static final int ERROR_FAILED_PRECONDITION = 6;
 
@@ -137,11 +138,29 @@ public class ThreadNetworkException extends Exception {
      */
     public static final int ERROR_THREAD_DISABLED = 12;
 
+    private static final int ERROR_MIN = ERROR_INTERNAL_ERROR;
+    private static final int ERROR_MAX = ERROR_THREAD_DISABLED;
+
     private final int mErrorCode;
 
-    /** Creates a new {@link ThreadNetworkException} object with given error code and message. */
-    public ThreadNetworkException(@ErrorCode int errorCode, @NonNull String errorMessage) {
-        super(requireNonNull(errorMessage, "errorMessage cannot be null"));
+    /**
+     * Creates a new {@link ThreadNetworkException} object with given error code and message.
+     *
+     * @throws IllegalArgumentException if {@code errorCode} is not a value in {@link #ERROR_}
+     * @throws NullPointerException if {@code message} is {@code null}
+     */
+    public ThreadNetworkException(@ErrorCode int errorCode, @NonNull String message) {
+        super(requireNonNull(message, "message cannot be null"));
+        if (errorCode < ERROR_MIN || errorCode > ERROR_MAX) {
+            throw new IllegalArgumentException(
+                    "errorCode cannot be "
+                            + errorCode
+                            + " (allowedRange = ["
+                            + ERROR_MIN
+                            + ", "
+                            + ERROR_MAX
+                            + "])");
+        }
         this.mErrorCode = errorCode;
     }
 
