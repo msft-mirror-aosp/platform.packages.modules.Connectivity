@@ -1353,9 +1353,7 @@ public class ConnectivityManagerTest {
     public void testToggleWifiConnectivityAction() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
 
-        // toggleWifi calls connectToWifi and disconnectFromWifi, which both wait for
-        // CONNECTIVITY_ACTION broadcasts.
-        mCtsNetUtils.toggleWifi();
+        mCtsNetUtils.reconnectWifiAndWaitForConnectivityAction();
     }
 
     /** Verify restricted networks cannot be requested. */
@@ -1552,6 +1550,40 @@ public class ConnectivityManagerTest {
                     oldMeteredMultipathPreference);
             setWifiMeteredStatus(ssid, oldMeteredSetting);
         }
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) @ConnectivityModuleTest
+    public void testSetBackgroundNetworkingShellCommand() {
+        final int testUid = 54352;
+        runShellCommand("cmd connectivity set-background-networking-enabled-for-uid " + testUid
+                + " true");
+        int rule = runAsShell(NETWORK_SETTINGS,
+                () -> mCm.getUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, testUid));
+        assertEquals(rule, FIREWALL_RULE_ALLOW);
+
+        runShellCommand("cmd connectivity set-background-networking-enabled-for-uid " + testUid
+                + " false");
+        rule = runAsShell(NETWORK_SETTINGS,
+                () -> mCm.getUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, testUid));
+        assertEquals(rule, FIREWALL_RULE_DENY);
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) @ConnectivityModuleTest
+    public void testGetBackgroundNetworkingShellCommand() {
+        final int testUid = 54312;
+        runAsShell(NETWORK_SETTINGS,
+                () -> mCm.setUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, testUid,
+                        FIREWALL_RULE_ALLOW));
+        String output = runShellCommand(
+                "cmd connectivity get-background-networking-enabled-for-uid " + testUid);
+        assertTrue(output.contains("allow"));
+
+        runAsShell(NETWORK_SETTINGS,
+                () -> mCm.setUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, testUid,
+                        FIREWALL_RULE_DEFAULT));
+        output = runShellCommand(
+                "cmd connectivity get-background-networking-enabled-for-uid " + testUid);
+        assertTrue(output.contains("deny"));
     }
 
     // TODO: move the following socket keep alive test to dedicated test class.

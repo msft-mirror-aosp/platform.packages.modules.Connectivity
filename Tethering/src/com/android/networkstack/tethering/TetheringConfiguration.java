@@ -141,6 +141,9 @@ public class TetheringConfiguration {
      */
     public static final int DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS = 5000;
 
+    /** A flag for using synchronous or asynchronous state machine. */
+    public static boolean USE_SYNC_SM = false;
+
     public final String[] tetherableUsbRegexs;
     public final String[] tetherableWifiRegexs;
     public final String[] tetherableWigigRegexs;
@@ -174,7 +177,6 @@ public class TetheringConfiguration {
 
     private final boolean mEnableWearTethering;
     private final boolean mRandomPrefixBase;
-    private final boolean mEnableSyncSm;
 
     private final int mUsbTetheringFunction;
     protected final ContentResolver mContentResolver;
@@ -293,7 +295,6 @@ public class TetheringConfiguration {
         mEnableWearTethering = shouldEnableWearTethering(ctx);
 
         mRandomPrefixBase = mDeps.isFeatureEnabled(ctx, TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION);
-        mEnableSyncSm = mDeps.isFeatureEnabled(ctx, TETHER_ENABLE_SYNC_SM);
 
         configLog.log(toString());
     }
@@ -387,8 +388,14 @@ public class TetheringConfiguration {
         return mRandomPrefixBase;
     }
 
-    public boolean isSyncSM() {
-        return mEnableSyncSm;
+    /**
+     * Check whether sync SM is enabled then set it to USE_SYNC_SM. This should be called once
+     * when tethering is created. Otherwise if the flag is pushed while tethering is enabled,
+     * then it's possible for some IpServer(s) running the new sync state machine while others
+     * use the async state machine.
+     */
+    public void readEnableSyncSM(final Context ctx) {
+        USE_SYNC_SM = mDeps.isFeatureEnabled(ctx, TETHER_ENABLE_SYNC_SM);
     }
 
     /** Does the dumping.*/
@@ -445,8 +452,8 @@ public class TetheringConfiguration {
         pw.print("mRandomPrefixBase: ");
         pw.println(mRandomPrefixBase);
 
-        pw.print("mEnableSyncSm: ");
-        pw.println(mEnableSyncSm);
+        pw.print("USE_SYNC_SM: ");
+        pw.println(USE_SYNC_SM);
     }
 
     /** Returns the string representation of this object.*/
