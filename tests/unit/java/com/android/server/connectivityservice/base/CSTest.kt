@@ -16,6 +16,7 @@
 
 package com.android.server
 
+import android.app.AlarmManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -46,8 +47,10 @@ import android.os.BatteryStatsManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
+import android.permission.PermissionManager.PermissionResult
 import android.telephony.TelephonyManager
 import android.testing.TestableContext
 import android.util.ArraySet
@@ -59,7 +62,6 @@ import com.android.net.module.util.ArrayTrackRecord
 import com.android.networkstack.apishim.common.UnsupportedApiLevelException
 import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker
 import com.android.server.connectivity.CarrierPrivilegeAuthenticator
-import com.android.server.connectivity.CarrierPrivilegeAuthenticator.CarrierPrivilegesLostListener
 import com.android.server.connectivity.ClatCoordinator
 import com.android.server.connectivity.ConnectivityFlags
 import com.android.server.connectivity.MulticastRoutingCoordinatorService
@@ -71,16 +73,21 @@ import com.android.server.connectivity.SatelliteAccessController
 import com.android.testutils.visibleOnHandlerThread
 import com.android.testutils.waitForIdle
 import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.function.Consumer
+import java.util.function.BiConsumer
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.fail
 import org.junit.After
+import org.junit.Before
 import org.mockito.AdditionalAnswers.delegatesTo
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
-import java.util.function.Consumer
 
-internal const val HANDLER_TIMEOUT_MS = 2_000
+internal const val HANDLER_TIMEOUT_MS = 2_000L
 internal const val BROADCAST_TIMEOUT_MS = 3_000L
 internal const val TEST_PACKAGE_NAME = "com.android.test.package"
 internal const val WIFI_WOL_IFNAME = "test_wlan_wol"
@@ -167,8 +174,6 @@ open class CSTest {
     val clatCoordinator = mock<ClatCoordinator>()
     val networkRequestStateStatsMetrics = mock<NetworkRequestStateStatsMetrics>()
     val proxyTracker = ProxyTracker(context, mock<Handler>(), 16 /* EVENT_PROXY_HAS_CHANGED */)
-    val alrmHandlerThread = HandlerThread("TestAlarmManager").also { it.start() }
-    val alarmManager = makeMockAlarmManager(alrmHandlerThread)
     val systemConfigManager = makeMockSystemConfigManager()
     val batteryStats = mock<IBatteryStats>()
     val batteryManager = BatteryStatsManager(batteryStats)
@@ -180,16 +185,31 @@ open class CSTest {
     val satelliteAccessController = mock<SatelliteAccessController>()
 
     val deps = CSDeps()
-    val service = makeConnectivityService(context, netd, deps).also { it.systemReadyInternal() }
-    val cm = ConnectivityManager(context, service)
-    val csHandler = Handler(csHandlerThread.looper)
+
+    // Initializations that start threads are done from setUp to avoid thread leak
+    lateinit var alarmHandlerThread: HandlerThread
+    lateinit var alarmManager: AlarmManager
+    lateinit var service: ConnectivityService
+    lateinit var cm: ConnectivityManager
+    lateinit var csHandler: Handler
+
+    @Before
+    fun setUp() {
+        alarmHandlerThread = HandlerThread("TestAlarmManager").also { it.start() }
+        alarmManager = makeMockAlarmManager(alarmHandlerThread)
+        service = makeConnectivityService(context, netd, deps).also { it.systemReadyInternal() }
+        cm = ConnectivityManager(context, service)
+        // csHandler initialization must be after makeConnectivityService since ConnectivityService
+        // constructor starts csHandlerThread
+        csHandler = Handler(csHandlerThread.looper)
+    }
 
     @After
     fun tearDown() {
         csHandlerThread.quitSafely()
         csHandlerThread.join()
-        alrmHandlerThread.quitSafely()
-        alrmHandlerThread.join()
+        alarmHandlerThread.quitSafely()
+        alarmHandlerThread.join()
     }
 
     inner class CSDeps : ConnectivityService.Dependencies() {
@@ -207,7 +227,7 @@ open class CSTest {
                 context: Context,
                 tm: TelephonyManager,
                 requestRestrictedWifiEnabled: Boolean,
-                listener: CarrierPrivilegesLostListener
+                listener: BiConsumer<Int, Int>
         ) = if (SdkLevel.isAtLeastT()) mock<CarrierPrivilegeAuthenticator>() else null
 
         var satelliteNetworkFallbackUidUpdate: Consumer<Set<Int>>? = null
@@ -285,13 +305,65 @@ open class CSTest {
         val pacProxyManager = mock<PacProxyManager>()
         val networkPolicyManager = mock<NetworkPolicyManager>()
 
+        // Map of permission name -> PermissionManager.Permission_{GRANTED|DENIED} constant
+        // For permissions granted across the board, the key is only the permission name.
+        // For permissions only granted to a combination of uid/pid, the key
+        // is "<permission name>,<pid>,<uid>". PID+UID permissions have priority over generic ones.
+        private val mMockedPermissions: HashMap<String, Int> = HashMap()
+        private val mStartedActivities = LinkedBlockingQueue<Intent>()
         override fun getPackageManager() = this@CSTest.packageManager
         override fun getContentResolver() = this@CSTest.contentResolver
 
-        // TODO : buff up the capabilities of this permission scheme to allow checking for
-        // permission rejections
-        override fun checkPermission(permission: String, pid: Int, uid: Int) = PERMISSION_GRANTED
-        override fun checkCallingOrSelfPermission(permission: String) = PERMISSION_GRANTED
+        // If the permission result does not set in the mMockedPermissions, it will be
+        // considered as PERMISSION_GRANTED as existing design to prevent breaking other tests.
+        override fun checkPermission(permission: String, pid: Int, uid: Int) =
+            checkMockedPermission(permission, pid, uid, PERMISSION_GRANTED)
+
+        override fun enforceCallingOrSelfPermission(permission: String, message: String?) {
+            // If the permission result does not set in the mMockedPermissions, it will be
+            // considered as PERMISSION_GRANTED as existing design to prevent breaking other tests.
+            val granted = checkMockedPermission(permission, Process.myPid(), Process.myUid(),
+                PERMISSION_GRANTED)
+            if (!granted.equals(PERMISSION_GRANTED)) {
+                throw SecurityException("[Test] permission denied: " + permission)
+            }
+        }
+
+        // If the permission result does not set in the mMockedPermissions, it will be
+        // considered as PERMISSION_GRANTED as existing design to prevent breaking other tests.
+        override fun checkCallingOrSelfPermission(permission: String) =
+            checkMockedPermission(permission, Process.myPid(), Process.myUid(), PERMISSION_GRANTED)
+
+        private fun checkMockedPermission(permission: String, pid: Int, uid: Int, default: Int):
+                Int {
+            val processSpecificKey = "$permission,$pid,$uid"
+            return mMockedPermissions[processSpecificKey]
+                    ?: mMockedPermissions[permission] ?: default
+        }
+
+        /**
+         * Mock checks for the specified permission, and have them behave as per `granted` or
+         * `denied`.
+         *
+         * This will apply to all calls no matter what the checked UID and PID are.
+         *
+         * @param granted One of {@link PackageManager#PermissionResult}.
+         */
+        fun setPermission(permission: String, @PermissionResult granted: Int) {
+            mMockedPermissions.put(permission, granted)
+        }
+
+        /**
+         * Mock checks for the specified permission, and have them behave as per `granted` or
+         * `denied`.
+         *
+         * This will only apply to the passed UID and PID.
+         *
+         * @param granted One of {@link PackageManager#PermissionResult}.
+         */
+        fun setPermission(permission: String, pid: Int, uid: Int, @PermissionResult granted: Int) {
+            mMockedPermissions.put("$permission,$pid,$uid", granted)
+        }
 
         // Necessary for MultinetworkPolicyTracker, which tries to register a receiver for
         // all users. The test can't do that since it doesn't hold INTERACT_ACROSS_USERS.
@@ -348,6 +420,16 @@ open class CSTest {
                 initialExtras: Bundle?
         ) {
             orderedBroadcastAsUserHistory.add(intent)
+        }
+
+        override fun startActivityAsUser(intent: Intent, handle: UserHandle) {
+            mStartedActivities.put(intent)
+        }
+
+        fun expectStartActivityIntent(timeoutMs: Long = HANDLER_TIMEOUT_MS): Intent {
+            val intent = mStartedActivities.poll(timeoutMs, TimeUnit.MILLISECONDS)
+            assertNotNull(intent, "Did not receive sign-in intent after " + timeoutMs + "ms")
+            return intent
         }
     }
 
