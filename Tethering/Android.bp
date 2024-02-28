@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -82,7 +83,6 @@ java_defaults {
     ],
     manifest: "AndroidManifestBase.xml",
     lint: {
-        strict_updatability_linting: true,
         error_checks: ["NewApi"],
     },
 }
@@ -102,7 +102,6 @@ android_library {
     ],
     apex_available: ["com.android.tethering"],
     lint: {
-        strict_updatability_linting: true,
         baseline_filename: "lint-baseline.xml",
     },
 }
@@ -120,7 +119,6 @@ android_library {
     ],
     apex_available: ["com.android.tethering"],
     lint: {
-        strict_updatability_linting: true,
         baseline_filename: "lint-baseline.xml",
     },
 }
@@ -195,9 +193,6 @@ java_defaults {
     optimize: {
         proguard_flags_files: ["proguard.flags"],
     },
-    lint: {
-        strict_updatability_linting: true,
-    },
 }
 
 // Updatable tethering packaged for finalized API
@@ -213,10 +208,6 @@ android_app {
     use_embedded_native_libs: true,
     privapp_allowlist: ":privapp_allowlist_com.android.tethering",
     apex_available: ["com.android.tethering"],
-    lint: {
-        strict_updatability_linting: true,
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 android_app {
@@ -233,9 +224,7 @@ android_app {
     privapp_allowlist: ":privapp_allowlist_com.android.tethering",
     apex_available: ["com.android.tethering"],
     lint: {
-        strict_updatability_linting: true,
         error_checks: ["NewApi"],
-        baseline_filename: "lint-baseline.xml",
     },
 }
 
@@ -263,9 +252,6 @@ java_library_static {
     static_libs: ["tetheringprotos"],
     apex_available: ["com.android.tethering"],
     min_sdk_version: "30",
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 genrule {

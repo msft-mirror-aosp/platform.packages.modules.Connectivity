@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_thread_network",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -47,9 +48,6 @@ java_library {
         "ot-daemon-aidl-java",
     ],
     apex_available: ["com.android.tethering"],
-    optimize: {
-        proguard_flags_files: ["proguard.flags"],
-    },
 }
 
 cc_library_shared {
