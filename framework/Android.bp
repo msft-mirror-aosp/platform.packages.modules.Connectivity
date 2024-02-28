@@ -107,9 +107,6 @@ java_defaults {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: {
-        strict_updatability_linting: true,
-    },
 }
 
 java_library {
@@ -198,6 +195,9 @@ java_sdk_library {
     lint: {
         baseline_filename: "lint-baseline.xml",
     },
+    aconfig_declarations: [
+        "com.android.net.flags-aconfig",
+    ],
 }
 
 platform_compat_config {
