@@ -32,6 +32,7 @@ android_test {
     test_suites: [
         "cts",
         "general-tests",
+        "mcts-tethering",
         "mts-tethering",
     ],
     static_libs: [
@@ -51,4 +52,5 @@ android_test {
     // Test coverage system runs on different devices. Need to
     // compile for all architectures.
     compile_multilib: "both",
+    platform_apis: true,
 }
