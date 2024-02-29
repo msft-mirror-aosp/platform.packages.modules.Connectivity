@@ -16,7 +16,6 @@ package com.android.server.thread;
 
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.net.MulticastRoutingConfig.CONFIG_FORWARD_NONE;
-import static android.net.MulticastRoutingConfig.FORWARD_NONE;
 import static android.net.MulticastRoutingConfig.FORWARD_SELECTED;
 import static android.net.MulticastRoutingConfig.FORWARD_WITH_MIN_SCOPE;
 import static android.net.thread.ActiveOperationalDataset.CHANNEL_PAGE_24_GHZ;
@@ -46,7 +45,7 @@ import static android.net.thread.ThreadNetworkManager.PERMISSION_THREAD_NETWORK_
 
 import static com.android.server.thread.openthread.IOtDaemon.ErrorCode.OT_ERROR_ABORT;
 import static com.android.server.thread.openthread.IOtDaemon.ErrorCode.OT_ERROR_BUSY;
-import static com.android.server.thread.openthread.IOtDaemon.ErrorCode.OT_ERROR_DETACHED;
+import static com.android.server.thread.openthread.IOtDaemon.ErrorCode.OT_ERROR_FAILED_PRECONDITION;
 import static com.android.server.thread.openthread.IOtDaemon.ErrorCode.OT_ERROR_INVALID_STATE;
 import static com.android.server.thread.openthread.IOtDaemon.ErrorCode.OT_ERROR_NO_BUFS;
 import static com.android.server.thread.openthread.IOtDaemon.ErrorCode.OT_ERROR_PARSE;
@@ -70,6 +69,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.ConnectivityManager;
+import android.net.InetAddresses;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.LocalNetworkConfig;
@@ -108,7 +108,9 @@ import android.util.SparseArray;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.ServiceManagerWrapper;
+import com.android.server.thread.openthread.BackboneRouterState;
 import com.android.server.thread.openthread.BorderRouterConfigurationParcel;
+import com.android.server.thread.openthread.IChannelMasksReceiver;
 import com.android.server.thread.openthread.IOtDaemon;
 import com.android.server.thread.openthread.IOtDaemonCallback;
 import com.android.server.thread.openthread.IOtStatusReceiver;
@@ -122,6 +124,7 @@ import java.net.UnknownHostException;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
@@ -156,9 +159,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private final InfraInterfaceController mInfraIfController;
     private final NsdPublisher mNsdPublisher;
     private final OtDaemonCallbackProxy mOtDaemonCallbackProxy = new OtDaemonCallbackProxy();
-
-    // TODO(b/308310823): read supported channel from Thread dameon
-    private final int mSupportedChannelMask = 0x07FFF800; // from channel 11 to 26
 
     @Nullable private IOtDaemon mOtDaemon;
     @Nullable private NetworkAgent mNetworkAgent;
@@ -593,26 +593,51 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     @Override
     public void createRandomizedDataset(
             String networkName, IActiveOperationalDatasetReceiver receiver) {
-        mHandler.post(
-                () -> {
-                    ActiveOperationalDataset dataset =
-                            createRandomizedDatasetInternal(
-                                    networkName,
-                                    mSupportedChannelMask,
-                                    Instant.now(),
-                                    new Random(),
-                                    new SecureRandom());
-                    try {
-                        receiver.onSuccess(dataset);
-                    } catch (RemoteException e) {
-                        // The client is dead, do nothing
-                    }
-                });
+        ActiveOperationalDatasetReceiverWrapper receiverWrapper =
+                new ActiveOperationalDatasetReceiverWrapper(receiver);
+        mHandler.post(() -> createRandomizedDatasetInternal(networkName, receiverWrapper));
     }
 
-    private static ActiveOperationalDataset createRandomizedDatasetInternal(
+    private void createRandomizedDatasetInternal(
+            String networkName, @NonNull ActiveOperationalDatasetReceiverWrapper receiver) {
+        checkOnHandlerThread();
+
+        try {
+            getOtDaemon().getChannelMasks(newChannelMasksReceiver(networkName, receiver));
+        } catch (RemoteException e) {
+            Log.e(TAG, "otDaemon.getChannelMasks failed", e);
+            receiver.onError(ERROR_INTERNAL_ERROR, "Thread stack error");
+        }
+    }
+
+    private IChannelMasksReceiver newChannelMasksReceiver(
+            String networkName, ActiveOperationalDatasetReceiverWrapper receiver) {
+        return new IChannelMasksReceiver.Stub() {
+            @Override
+            public void onSuccess(int supportedChannelMask, int preferredChannelMask) {
+                ActiveOperationalDataset dataset =
+                        createRandomizedDataset(
+                                networkName,
+                                supportedChannelMask,
+                                preferredChannelMask,
+                                Instant.now(),
+                                new Random(),
+                                new SecureRandom());
+
+                receiver.onSuccess(dataset);
+            }
+
+            @Override
+            public void onError(int errorCode, String errorMessage) {
+                receiver.onError(otErrorToAndroidError(errorCode), errorMessage);
+            }
+        };
+    }
+
+    private static ActiveOperationalDataset createRandomizedDataset(
             String networkName,
             int supportedChannelMask,
+            int preferredChannelMask,
             Instant now,
             Random random,
             SecureRandom secureRandom) {
@@ -622,6 +647,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
         final SparseArray<byte[]> channelMask = new SparseArray<>(1);
         channelMask.put(CHANNEL_PAGE_24_GHZ, channelMaskToByteArray(supportedChannelMask));
+        final int channel = selectChannel(supportedChannelMask, preferredChannelMask, random);
 
         final byte[] securityFlags = new byte[] {(byte) 0xff, (byte) 0xf8};
 
@@ -632,13 +658,25 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 .setExtendedPanId(newRandomBytes(random, LENGTH_EXTENDED_PAN_ID))
                 .setPanId(panId)
                 .setNetworkName(networkName)
-                .setChannel(CHANNEL_PAGE_24_GHZ, selectRandomChannel(supportedChannelMask, random))
+                .setChannel(CHANNEL_PAGE_24_GHZ, channel)
                 .setChannelMask(channelMask)
                 .setPskc(newRandomBytes(secureRandom, LENGTH_PSKC))
                 .setNetworkKey(newRandomBytes(secureRandom, LENGTH_NETWORK_KEY))
                 .setMeshLocalPrefix(meshLocalPrefix)
                 .setSecurityPolicy(new SecurityPolicy(DEFAULT_ROTATION_TIME_HOURS, securityFlags))
                 .build();
+    }
+
+    private static int selectChannel(
+            int supportedChannelMask, int preferredChannelMask, Random random) {
+        // If the preferred channel mask is not empty, select a random channel from it, otherwise
+        // choose one from the supported channel mask.
+        preferredChannelMask = preferredChannelMask & supportedChannelMask;
+        if (preferredChannelMask == 0) {
+            preferredChannelMask = supportedChannelMask;
+        }
+
+        return selectRandomChannel(preferredChannelMask, random);
     }
 
     private static byte[] newRandomBytes(Random random, int length) {
@@ -740,9 +778,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 return ERROR_ABORTED;
             case OT_ERROR_BUSY:
                 return ERROR_BUSY;
-            case OT_ERROR_DETACHED:
-            case OT_ERROR_INVALID_STATE:
-                return ERROR_FAILED_PRECONDITION;
             case OT_ERROR_NO_BUFS:
                 return ERROR_RESOURCE_EXHAUSTED;
             case OT_ERROR_PARSE:
@@ -756,6 +791,9 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 return ERROR_UNSUPPORTED_CHANNEL;
             case OT_ERROR_THREAD_DISABLED:
                 return ERROR_THREAD_DISABLED;
+            case OT_ERROR_FAILED_PRECONDITION:
+                return ERROR_FAILED_PRECONDITION;
+            case OT_ERROR_INVALID_STATE:
             default:
                 return ERROR_INTERNAL_ERROR;
         }
@@ -965,11 +1003,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
     }
 
-    private boolean isMulticastForwardingEnabled() {
-        return !(mUpstreamMulticastRoutingConfig.getForwardingMode() == FORWARD_NONE
-                && mDownstreamMulticastRoutingConfig.getForwardingMode() == FORWARD_NONE);
-    }
-
     private void sendLocalNetworkConfig() {
         if (mNetworkAgent == null) {
             return;
@@ -979,72 +1012,44 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         Log.d(TAG, "Sent localNetworkConfig: " + localNetworkConfig);
     }
 
-    private void handleMulticastForwardingStateChanged(boolean isEnabled) {
-        if (isMulticastForwardingEnabled() == isEnabled) {
-            return;
-        }
+    private void handleMulticastForwardingChanged(BackboneRouterState state) {
+        MulticastRoutingConfig upstreamMulticastRoutingConfig;
+        MulticastRoutingConfig downstreamMulticastRoutingConfig;
 
-        Log.i(TAG, "Multicast forwaring is " + (isEnabled ? "enabled" : "disabled"));
-
-        if (isEnabled) {
+        if (state.multicastForwardingEnabled) {
             // When multicast forwarding is enabled, setup upstream forwarding to any address
             // with minimal scope 4
             // setup downstream forwarding with addresses subscribed from Thread network
-            mUpstreamMulticastRoutingConfig =
+            upstreamMulticastRoutingConfig =
                     new MulticastRoutingConfig.Builder(FORWARD_WITH_MIN_SCOPE, 4).build();
-            mDownstreamMulticastRoutingConfig =
-                    new MulticastRoutingConfig.Builder(FORWARD_SELECTED).build();
+            downstreamMulticastRoutingConfig =
+                    buildDownstreamMulticastRoutingConfigSelected(state.listeningAddresses);
         } else {
             // When multicast forwarding is disabled, set both upstream and downstream
             // forwarding config to FORWARD_NONE.
-            mUpstreamMulticastRoutingConfig = CONFIG_FORWARD_NONE;
-            mDownstreamMulticastRoutingConfig = CONFIG_FORWARD_NONE;
+            upstreamMulticastRoutingConfig = CONFIG_FORWARD_NONE;
+            downstreamMulticastRoutingConfig = CONFIG_FORWARD_NONE;
         }
+
+        if (upstreamMulticastRoutingConfig.equals(mUpstreamMulticastRoutingConfig)
+                && downstreamMulticastRoutingConfig.equals(mDownstreamMulticastRoutingConfig)) {
+            return;
+        }
+
+        mUpstreamMulticastRoutingConfig = upstreamMulticastRoutingConfig;
+        mDownstreamMulticastRoutingConfig = downstreamMulticastRoutingConfig;
         sendLocalNetworkConfig();
     }
 
-    private void handleMulticastForwardingAddressChanged(byte[] addressBytes, boolean isAdded) {
-        Inet6Address address = bytesToInet6Address(addressBytes);
-        MulticastRoutingConfig newDownstreamConfig;
-        MulticastRoutingConfig.Builder builder;
-
-        if (mDownstreamMulticastRoutingConfig.getForwardingMode()
-                != MulticastRoutingConfig.FORWARD_SELECTED) {
-            Log.e(
-                    TAG,
-                    "Ignore multicast listening address updates when downstream multicast "
-                            + "forwarding mode is not FORWARD_SELECTED");
-            // Don't update the address set if downstream multicast forwarding is disabled.
-            return;
-        }
-        if (isAdded
-                == mDownstreamMulticastRoutingConfig.getListeningAddresses().contains(address)) {
-            return;
-        }
-
-        builder = new MulticastRoutingConfig.Builder(FORWARD_SELECTED);
-        for (Inet6Address listeningAddress :
-                mDownstreamMulticastRoutingConfig.getListeningAddresses()) {
-            builder.addListeningAddress(listeningAddress);
-        }
-
-        if (isAdded) {
+    private MulticastRoutingConfig buildDownstreamMulticastRoutingConfigSelected(
+            List<String> listeningAddresses) {
+        MulticastRoutingConfig.Builder builder =
+                new MulticastRoutingConfig.Builder(FORWARD_SELECTED);
+        for (String addressStr : listeningAddresses) {
+            Inet6Address address = (Inet6Address) InetAddresses.parseNumericAddress(addressStr);
             builder.addListeningAddress(address);
-        } else {
-            builder.clearListeningAddress(address);
         }
-
-        newDownstreamConfig = builder.build();
-        if (!newDownstreamConfig.equals(mDownstreamMulticastRoutingConfig)) {
-            Log.d(
-                    TAG,
-                    "Multicast listening address "
-                            + address.getHostAddress()
-                            + " is "
-                            + (isAdded ? "added" : "removed"));
-            mDownstreamMulticastRoutingConfig = newDownstreamConfig;
-            sendLocalNetworkConfig();
-        }
+        return builder.build();
     }
 
     private static final class CallbackMetadata {
@@ -1212,7 +1217,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             onInterfaceStateChanged(newState.isInterfaceUp);
             onDeviceRoleChanged(newState.deviceRole, listenerId);
             onPartitionIdChanged(newState.partitionId, listenerId);
-            onMulticastForwardingStateChanged(newState.multicastForwardingEnabled);
             mState = newState;
 
             ActiveOperationalDataset newActiveDataset;
@@ -1321,19 +1325,14 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             }
         }
 
-        private void onMulticastForwardingStateChanged(boolean isEnabled) {
-            checkOnHandlerThread();
-            handleMulticastForwardingStateChanged(isEnabled);
-        }
-
         @Override
         public void onAddressChanged(Ipv6AddressInfo addressInfo, boolean isAdded) {
             mHandler.post(() -> handleAddressChanged(addressInfo, isAdded));
         }
 
         @Override
-        public void onMulticastForwardingAddressChanged(byte[] address, boolean isAdded) {
-            mHandler.post(() -> handleMulticastForwardingAddressChanged(address, isAdded));
+        public void onBackboneRouterStateChanged(BackboneRouterState state) {
+            mHandler.post(() -> handleMulticastForwardingChanged(state));
         }
     }
 }
