@@ -49,6 +49,8 @@ import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
+import android.net.nsd.NsdManager;
+import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ActiveOperationalDataset;
 import android.net.thread.OperationalDatasetTimestamp;
 import android.net.thread.PendingOperationalDataset;
@@ -57,9 +59,12 @@ import android.net.thread.ThreadNetworkController.OperationalDatasetCallback;
 import android.net.thread.ThreadNetworkController.StateCallback;
 import android.net.thread.ThreadNetworkException;
 import android.net.thread.ThreadNetworkManager;
+import android.net.thread.utils.TapTestNetworkTracker;
 import android.os.Build;
+import android.os.HandlerThread;
 import android.os.OutcomeReceiver;
 
+import androidx.annotation.NonNull;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.LargeTest;
 
@@ -75,16 +80,22 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
 
 /** CTS tests for {@link ThreadNetworkController}. */
 @LargeTest
@@ -97,6 +108,8 @@ public class ThreadNetworkControllerTest {
     private static final int NETWORK_CALLBACK_TIMEOUT_MILLIS = 10 * 1000;
     private static final int CALLBACK_TIMEOUT_MILLIS = 1_000;
     private static final int ENABLED_TIMEOUT_MILLIS = 2_000;
+    private static final int SERVICE_DISCOVERY_TIMEOUT_MILLIS = 30_000;
+    private static final String MESHCOP_SERVICE_TYPE = "_meshcop._udp";
     private static final String THREAD_NETWORK_PRIVILEGED =
             "android.permission.THREAD_NETWORK_PRIVILEGED";
 
@@ -105,14 +118,14 @@ public class ThreadNetworkControllerTest {
     private final Context mContext = ApplicationProvider.getApplicationContext();
     private ExecutorService mExecutor;
     private ThreadNetworkController mController;
+    private NsdManager mNsdManager;
 
     private Set<String> mGrantedPermissions;
+    private HandlerThread mHandlerThread;
+    private TapTestNetworkTracker mTestNetworkTracker;
 
     @Before
     public void setUp() throws Exception {
-
-        mGrantedPermissions = new HashSet<String>();
-        mExecutor = Executors.newSingleThreadExecutor();
         ThreadNetworkManager manager = mContext.getSystemService(ThreadNetworkManager.class);
         if (manager != null) {
             mController = manager.getAllThreadNetworkControllers().get(0);
@@ -122,18 +135,23 @@ public class ThreadNetworkControllerTest {
         // tests if a feature is not available.
         assumeNotNull(mController);
 
+        mGrantedPermissions = new HashSet<String>();
+        mExecutor = Executors.newSingleThreadExecutor();
+        mNsdManager = mContext.getSystemService(NsdManager.class);
+        mHandlerThread = new HandlerThread(this.getClass().getSimpleName());
+        mHandlerThread.start();
+
         setEnabledAndWait(mController, true);
     }
 
     @After
     public void tearDown() throws Exception {
-        if (mController != null) {
-            grantPermissions(THREAD_NETWORK_PRIVILEGED);
-            CompletableFuture<Void> future = new CompletableFuture<>();
-            mController.leave(mExecutor, future::complete);
-            future.get(LEAVE_TIMEOUT_MILLIS, MILLISECONDS);
+        if (mController == null) {
+            return;
         }
         dropAllPermissions();
+        leaveAndWait(mController);
+        tearDownTestNetwork();
     }
 
     @Test
@@ -809,6 +827,71 @@ public class ThreadNetworkControllerTest {
         getInstrumentation().getUiAutomation().adoptShellPermissionIdentity(allPermissions);
     }
 
+    @Test
+    public void meshcopService_threadEnabledButNotJoined_discoveredButNoNetwork() throws Exception {
+        setUpTestNetwork();
+
+        setEnabledAndWait(mController, true);
+        leaveAndWait(mController);
+
+        NsdServiceInfo serviceInfo =
+                expectServiceResolved(
+                        MESHCOP_SERVICE_TYPE,
+                        SERVICE_DISCOVERY_TIMEOUT_MILLIS,
+                        s -> s.getAttributes().get("at") == null);
+
+        Map<String, byte[]> txtMap = serviceInfo.getAttributes();
+
+        assertThat(txtMap.get("rv")).isNotNull();
+        assertThat(txtMap.get("tv")).isNotNull();
+        assertThat(txtMap.get("sb")).isNotNull();
+    }
+
+    @Test
+    public void meshcopService_joinedNetwork_discoveredHasNetwork() throws Exception {
+        setUpTestNetwork();
+
+        String networkName = "TestNet" + new Random().nextInt(10_000);
+        joinRandomizedDatasetAndWait(mController, networkName);
+
+        Predicate<NsdServiceInfo> predicate =
+                serviceInfo ->
+                        serviceInfo.getAttributes().get("at") != null
+                                && Arrays.equals(
+                                        serviceInfo.getAttributes().get("nn"),
+                                        networkName.getBytes(StandardCharsets.UTF_8));
+
+        NsdServiceInfo resolvedService =
+                expectServiceResolved(
+                        MESHCOP_SERVICE_TYPE, SERVICE_DISCOVERY_TIMEOUT_MILLIS, predicate);
+
+        Map<String, byte[]> txtMap = resolvedService.getAttributes();
+        assertThat(txtMap.get("rv")).isNotNull();
+        assertThat(txtMap.get("tv")).isNotNull();
+        assertThat(txtMap.get("sb")).isNotNull();
+        assertThat(txtMap.get("id").length).isEqualTo(16);
+    }
+
+    @Test
+    public void meshcopService_threadDisabled_notDiscovered() throws Exception {
+        setUpTestNetwork();
+
+        CompletableFuture<NsdServiceInfo> serviceLostFuture = new CompletableFuture<>();
+        NsdManager.DiscoveryListener listener =
+                discoverForServiceLost(MESHCOP_SERVICE_TYPE, serviceLostFuture);
+        setEnabledAndWait(mController, false);
+        try {
+            serviceLostFuture.get(SERVICE_DISCOVERY_TIMEOUT_MILLIS, MILLISECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException ignored) {
+            // It's fine if the service lost event didn't show up. The service may not ever be
+            // advertised.
+        } finally {
+            mNsdManager.stopServiceDiscovery(listener);
+        }
+
+        assertThrows(TimeoutException.class, () -> discoverService(MESHCOP_SERVICE_TYPE));
+    }
+
     private static void dropAllPermissions() {
         getInstrumentation().getUiAutomation().dropShellPermissionIdentity();
     }
@@ -888,6 +971,12 @@ public class ThreadNetworkControllerTest {
         runAsShell(THREAD_NETWORK_PRIVILEGED, () -> controller.leave(mExecutor, receiver));
     }
 
+    private void leaveAndWait(ThreadNetworkController controller) throws Exception {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        leave(controller, future::complete);
+        future.get(LEAVE_TIMEOUT_MILLIS, MILLISECONDS);
+    }
+
     private void scheduleMigration(
             ThreadNetworkController controller,
             PendingOperationalDataset pendingDataset,
@@ -942,9 +1031,9 @@ public class ThreadNetworkControllerTest {
         waitForEnabledState(controller, booleanToEnabledState(enabled));
     }
 
-    private CompletableFuture joinRandomizedDataset(ThreadNetworkController controller)
-            throws Exception {
-        ActiveOperationalDataset activeDataset = newRandomizedDataset("TestNet", controller);
+    private CompletableFuture joinRandomizedDataset(
+            ThreadNetworkController controller, String networkName) throws Exception {
+        ActiveOperationalDataset activeDataset = newRandomizedDataset(networkName, controller);
         CompletableFuture<Void> joinFuture = new CompletableFuture<>();
         runAsShell(
                 THREAD_NETWORK_PRIVILEGED,
@@ -953,7 +1042,12 @@ public class ThreadNetworkControllerTest {
     }
 
     private void joinRandomizedDatasetAndWait(ThreadNetworkController controller) throws Exception {
-        CompletableFuture<Void> joinFuture = joinRandomizedDataset(controller);
+        joinRandomizedDatasetAndWait(controller, "TestNet");
+    }
+
+    private void joinRandomizedDatasetAndWait(
+            ThreadNetworkController controller, String networkName) throws Exception {
+        CompletableFuture<Void> joinFuture = joinRandomizedDataset(controller, networkName);
         joinFuture.get(JOIN_TIMEOUT_MILLIS, MILLISECONDS);
         assertThat(isAttached(controller)).isTrue();
     }
@@ -1009,5 +1103,107 @@ public class ThreadNetworkControllerTest {
         } catch (Throwable e) {
             fail("Should not have thrown " + e);
         }
+    }
+
+    // Return the first discovered service instance.
+    private NsdServiceInfo discoverService(String serviceType) throws Exception {
+        CompletableFuture<NsdServiceInfo> serviceInfoFuture = new CompletableFuture<>();
+        NsdManager.DiscoveryListener listener =
+                new DefaultDiscoveryListener() {
+                    @Override
+                    public void onServiceFound(NsdServiceInfo serviceInfo) {
+                        serviceInfoFuture.complete(serviceInfo);
+                    }
+                };
+        mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        try {
+            serviceInfoFuture.get(SERVICE_DISCOVERY_TIMEOUT_MILLIS, MILLISECONDS);
+        } finally {
+            mNsdManager.stopServiceDiscovery(listener);
+        }
+
+        return serviceInfoFuture.get();
+    }
+
+    private NsdManager.DiscoveryListener discoverForServiceLost(
+            String serviceType, CompletableFuture<NsdServiceInfo> serviceInfoFuture) {
+        NsdManager.DiscoveryListener listener =
+                new DefaultDiscoveryListener() {
+                    @Override
+                    public void onServiceLost(NsdServiceInfo serviceInfo) {
+                        serviceInfoFuture.complete(serviceInfo);
+                    }
+                };
+        mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        return listener;
+    }
+
+    private NsdServiceInfo expectServiceResolved(
+            String serviceType, int timeoutMilliseconds, Predicate<NsdServiceInfo> predicate)
+            throws Exception {
+        NsdServiceInfo discoveredServiceInfo = discoverService(serviceType);
+        CompletableFuture<NsdServiceInfo> future = new CompletableFuture<>();
+        NsdManager.ServiceInfoCallback callback =
+                new DefaultServiceInfoCallback() {
+                    @Override
+                    public void onServiceUpdated(@NonNull NsdServiceInfo serviceInfo) {
+                        if (predicate.test(serviceInfo)) {
+                            future.complete(serviceInfo);
+                        }
+                    }
+                };
+        mNsdManager.registerServiceInfoCallback(discoveredServiceInfo, mExecutor, callback);
+        try {
+            return future.get(timeoutMilliseconds, MILLISECONDS);
+        } finally {
+            mNsdManager.unregisterServiceInfoCallback(callback);
+        }
+    }
+
+    private void setUpTestNetwork() {
+        assertThat(mTestNetworkTracker).isNull();
+        mTestNetworkTracker = new TapTestNetworkTracker(mContext, mHandlerThread.getLooper());
+    }
+
+    private void tearDownTestNetwork() throws InterruptedException {
+        if (mTestNetworkTracker != null) {
+            mTestNetworkTracker.tearDown();
+        }
+        mHandlerThread.quitSafely();
+        mHandlerThread.join();
+    }
+
+    private static class DefaultDiscoveryListener implements NsdManager.DiscoveryListener {
+        @Override
+        public void onStartDiscoveryFailed(String serviceType, int errorCode) {}
+
+        @Override
+        public void onStopDiscoveryFailed(String serviceType, int errorCode) {}
+
+        @Override
+        public void onDiscoveryStarted(String serviceType) {}
+
+        @Override
+        public void onDiscoveryStopped(String serviceType) {}
+
+        @Override
+        public void onServiceFound(NsdServiceInfo serviceInfo) {}
+
+        @Override
+        public void onServiceLost(NsdServiceInfo serviceInfo) {}
+    }
+
+    private static class DefaultServiceInfoCallback implements NsdManager.ServiceInfoCallback {
+        @Override
+        public void onServiceInfoCallbackRegistrationFailed(int errorCode) {}
+
+        @Override
+        public void onServiceUpdated(@NonNull NsdServiceInfo serviceInfo) {}
+
+        @Override
+        public void onServiceLost() {}
+
+        @Override
+        public void onServiceInfoCallbackUnregistered() {}
     }
 }

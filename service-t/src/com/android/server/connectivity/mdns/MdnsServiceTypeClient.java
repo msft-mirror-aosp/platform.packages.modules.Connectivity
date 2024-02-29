@@ -35,6 +35,7 @@ import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
+import java.io.PrintWriter;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.util.ArrayList;
@@ -140,8 +141,7 @@ public class MdnsServiceTypeClient {
                     // before sending the query, it needs to be called just before sending it.
                     final List<MdnsResponse> servicesToResolve = makeResponsesForResolve(socketKey);
                     final QueryTask queryTask = new QueryTask(taskArgs, servicesToResolve,
-                            getAllDiscoverySubtypes(),
-                            servicesToResolve.size() < listeners.size() /* sendDiscoveryQueries */);
+                            getAllDiscoverySubtypes(), needSendDiscoveryQueries(listeners));
                     executor.submit(queryTask);
                     break;
                 }
@@ -388,8 +388,7 @@ public class MdnsServiceTypeClient {
             final QueryTask queryTask = new QueryTask(
                     mdnsQueryScheduler.scheduleFirstRun(taskConfig, now,
                             minRemainingTtl, currentSessionId), servicesToResolve,
-                    getAllDiscoverySubtypes(),
-                    servicesToResolve.size() < listeners.size() /* sendDiscoveryQueries */);
+                    getAllDiscoverySubtypes(), needSendDiscoveryQueries(listeners));
             executor.submit(queryTask);
         }
 
@@ -627,6 +626,10 @@ public class MdnsServiceTypeClient {
             if (resolveName == null) {
                 continue;
             }
+            if (CollectionUtils.any(resolveResponses,
+                    r -> MdnsUtils.equalsIgnoreDnsCase(resolveName, r.getServiceInstanceName()))) {
+                continue;
+            }
             MdnsResponse knownResponse =
                     serviceCache.getCachedService(resolveName, cacheKey);
             if (knownResponse == null) {
@@ -641,6 +644,17 @@ public class MdnsServiceTypeClient {
             resolveResponses.add(knownResponse);
         }
         return resolveResponses;
+    }
+
+    private static boolean needSendDiscoveryQueries(
+            @NonNull ArrayMap<MdnsServiceBrowserListener, ListenerInfo> listeners) {
+        // Note iterators are discouraged on ArrayMap as per its documentation
+        for (int i = 0; i < listeners.size(); i++) {
+            if (listeners.valueAt(i).searchOptions.getResolveInstanceName() == null) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void tryRemoveServiceAfterTtlExpires() {
@@ -742,5 +756,14 @@ public class MdnsServiceTypeClient {
         sharedLog.log(String.format("Next run: sessionId: %d, in %d ms",
                 args.sessionId, timeToNextTasksWithBackoffInMs));
         return timeToNextTasksWithBackoffInMs;
+    }
+
+    /**
+     * Dump ServiceTypeClient state.
+     */
+    public void dump(PrintWriter pw) {
+        ensureRunningOnHandlerThread(handler);
+        pw.println("ServiceTypeClient: Type{" + serviceType + "} " + socketKey + " with "
+                + listeners.size() + " listeners.");
     }
 }

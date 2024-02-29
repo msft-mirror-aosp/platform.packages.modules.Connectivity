@@ -26,8 +26,8 @@ import static android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK;
 import static android.net.nsd.NsdManager.MDNS_DISCOVERY_MANAGER_EVENT;
 import static android.net.nsd.NsdManager.MDNS_SERVICE_EVENT;
 import static android.net.nsd.NsdManager.RESOLVE_SERVICE_SUCCEEDED;
+import static android.net.nsd.NsdManager.SUBTYPE_LABEL_REGEX;
 import static android.net.nsd.NsdManager.TYPE_REGEX;
-import static android.net.nsd.NsdManager.TYPE_SUBTYPE_LABEL_REGEX;
 import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
 
 import static com.android.modules.utils.build.SdkLevel.isAtLeastU;
@@ -92,6 +92,7 @@ import com.android.metrics.NetworkNsdReportedMetrics;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.InetAddressUtils;
 import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.SharedLog;
@@ -1760,7 +1761,7 @@ public class NsdService extends INsdManager.Stub {
 
     /** Returns {@code true} if {@code subtype} is a valid DNS-SD subtype label. */
     private static boolean checkSubtypeLabel(String subtype) {
-        return Pattern.compile("^" + TYPE_SUBTYPE_LABEL_REGEX + "$").matcher(subtype).matches();
+        return Pattern.compile("^" + SUBTYPE_LABEL_REGEX + "$").matcher(subtype).matches();
     }
 
     @VisibleForTesting
@@ -1877,13 +1878,6 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isTetheringFeatureNotChickenedOut(Context context, String feature) {
             return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(context, feature);
-        }
-
-        /**
-         * @see DeviceConfigUtils#isTrunkStableFeatureEnabled
-         */
-        public boolean isTrunkStableFeatureEnabled(String feature) {
-            return DeviceConfigUtils.isTrunkStableFeatureEnabled(feature);
         }
 
         /**
@@ -2308,7 +2302,7 @@ public class NsdService extends INsdManager.Stub {
                 permissionsList.add(DEVICE_POWER);
             }
 
-            if (PermissionUtils.checkAnyPermissionOf(context,
+            if (PermissionUtils.hasAnyPermissionOf(context,
                     permissionsList.toArray(new String[0]))) {
                 return;
             }
@@ -2505,7 +2499,7 @@ public class NsdService extends INsdManager.Stub {
 
     @Override
     public void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
-        if (!PermissionUtils.checkDumpPermission(mContext, TAG, writer)) return;
+        if (!PermissionUtils.hasDumpPermission(mContext, TAG, writer)) return;
 
         final IndentingPrintWriter pw = new IndentingPrintWriter(writer, "  ");
         // Dump state machine logs
@@ -2516,6 +2510,14 @@ public class NsdService extends INsdManager.Stub {
         pw.println("Logs:");
         pw.increaseIndent();
         mServiceLogs.reverseDump(pw);
+        pw.decreaseIndent();
+
+        //Dump DiscoveryManager
+        pw.println();
+        pw.println("DiscoveryManager:");
+        pw.increaseIndent();
+        HandlerUtils.runWithScissorsForDump(
+                mNsdStateMachine.getHandler(), () -> mMdnsDiscoveryManager.dump(pw), 10_000);
         pw.decreaseIndent();
     }
 
@@ -2623,7 +2625,15 @@ public class NsdService extends INsdManager.Stub {
     /* Information tracked per client */
     private class ClientInfo {
 
-        private static final int MAX_LIMIT = 10;
+        /**
+         * Maximum number of requests (callbacks) for a client.
+         *
+         * 200 listeners should be more than enough for most use-cases: even if a client tries to
+         * file callbacks for every service on a local network, there are generally much less than
+         * 200 devices on a local network (a /24 only allows 255 IPv4 devices), and while some
+         * devices may have multiple services, many devices do not advertise any.
+         */
+        private static final int MAX_LIMIT = 200;
         private final INsdManagerCallback mCb;
         /* Remembers a resolved service until getaddrinfo completes */
         private NsdServiceInfo mResolvedService;

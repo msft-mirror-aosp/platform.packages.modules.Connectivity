@@ -13,16 +13,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package android.net.thread;
+package android.net.thread.utils;
 
 import static android.system.OsConstants.IPPROTO_ICMPV6;
 
+import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ND_OPTION_PIO;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ROUTER_ADVERTISEMENT;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
 import android.net.TestNetworkInterface;
+import android.net.thread.ThreadNetworkController;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.os.SystemProperties;
@@ -38,7 +40,15 @@ import com.android.testutils.TapPacketReader;
 import com.google.common.util.concurrent.SettableFuture;
 
 import java.io.FileDescriptor;
+import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
@@ -49,6 +59,14 @@ import java.util.function.Supplier;
 
 /** Static utility methods relating to Thread integration tests. */
 public final class IntegrationTestUtils {
+    // The timeout of join() after restarting ot-daemon. The device needs to send 6 Link Request
+    // every 5 seconds, followed by 4 Parent Request every second. So this value needs to be 40
+    // seconds to be safe
+    public static final Duration RESTART_JOIN_TIMEOUT = Duration.ofSeconds(40);
+    public static final Duration JOIN_TIMEOUT = Duration.ofSeconds(30);
+    public static final Duration LEAVE_TIMEOUT = Duration.ofSeconds(2);
+    public static final Duration CALLBACK_TIMEOUT = Duration.ofSeconds(1);
+
     private IntegrationTestUtils() {}
 
     /** Returns whether the device supports simulated Thread radio. */
@@ -60,49 +78,33 @@ public final class IntegrationTestUtils {
     /**
      * Waits for the given {@link Supplier} to be true until given timeout.
      *
-     * <p>It checks the condition once every second.
-     *
-     * @param condition the condition to check.
-     * @param timeoutSeconds the number of seconds to wait for.
-     * @throws TimeoutException if the condition is not met after the timeout.
+     * @param condition the condition to check
+     * @param timeout the time to wait for the condition before throwing
+     * @throws TimeoutException if the condition is still not met when the timeout expires
      */
-    public static void waitFor(Supplier<Boolean> condition, int timeoutSeconds)
+    public static void waitFor(Supplier<Boolean> condition, Duration timeout)
             throws TimeoutException {
-        waitFor(condition, timeoutSeconds, 1);
-    }
+        final long intervalMills = 1000;
+        final long timeoutMills = timeout.toMillis();
 
-    /**
-     * Waits for the given {@link Supplier} to be true until given timeout.
-     *
-     * <p>It checks the condition once every {@code intervalSeconds}.
-     *
-     * @param condition the condition to check.
-     * @param timeoutSeconds the number of seconds to wait for.
-     * @param intervalSeconds the period to check the {@code condition}.
-     * @throws TimeoutException if the condition is still not met when the timeout expires.
-     */
-    public static void waitFor(Supplier<Boolean> condition, int timeoutSeconds, int intervalSeconds)
-            throws TimeoutException {
-        for (int i = 0; i < timeoutSeconds; i += intervalSeconds) {
+        for (long i = 0; i < timeoutMills; i += intervalMills) {
             if (condition.get()) {
                 return;
             }
-            SystemClock.sleep(intervalSeconds * 1000L);
+            SystemClock.sleep(intervalMills);
         }
         if (condition.get()) {
             return;
         }
-        throw new TimeoutException(
-                String.format(
-                        "The condition failed to become true in %d seconds.", timeoutSeconds));
+        throw new TimeoutException("The condition failed to become true in " + timeout);
     }
 
     /**
      * Creates a {@link TapPacketReader} given the {@link TestNetworkInterface} and {@link Handler}.
      *
-     * @param testNetworkInterface the TUN interface of the test network.
-     * @param handler the handler to process the packets.
-     * @return the {@link TapPacketReader}.
+     * @param testNetworkInterface the TUN interface of the test network
+     * @param handler the handler to process the packets
+     * @return the {@link TapPacketReader}
      */
     public static TapPacketReader newPacketReader(
             TestNetworkInterface testNetworkInterface, Handler handler) {
@@ -117,16 +119,16 @@ public final class IntegrationTestUtils {
     /**
      * Waits for the Thread module to enter any state of the given {@code deviceRoles}.
      *
-     * @param controller the {@link ThreadNetworkController}.
+     * @param controller the {@link ThreadNetworkController}
      * @param deviceRoles the desired device roles. See also {@link
-     *     ThreadNetworkController.DeviceRole}.
-     * @param timeoutSeconds the number of seconds ot wait for.
-     * @return the {@link ThreadNetworkController.DeviceRole} after waiting.
+     *     ThreadNetworkController.DeviceRole}
+     * @param timeout the time to wait for the expected state before throwing
+     * @return the {@link ThreadNetworkController.DeviceRole} after waiting
      * @throws TimeoutException if the device hasn't become any of expected roles until the timeout
-     *     expires.
+     *     expires
      */
     public static int waitForStateAnyOf(
-            ThreadNetworkController controller, List<Integer> deviceRoles, int timeoutSeconds)
+            ThreadNetworkController controller, List<Integer> deviceRoles, Duration timeout)
             throws TimeoutException {
         SettableFuture<Integer> future = SettableFuture.create();
         ThreadNetworkController.StateCallback callback =
@@ -137,29 +139,29 @@ public final class IntegrationTestUtils {
                 };
         controller.registerStateCallback(directExecutor(), callback);
         try {
-            int role = future.get(timeoutSeconds, TimeUnit.SECONDS);
-            controller.unregisterStateCallback(callback);
-            return role;
+            return future.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException | ExecutionException e) {
             throw new TimeoutException(
                     String.format(
-                            "The device didn't become an expected role in %d seconds.",
-                            timeoutSeconds));
+                            "The device didn't become an expected role in %s: %s",
+                            timeout, e.getMessage()));
+        } finally {
+            controller.unregisterStateCallback(callback);
         }
     }
 
     /**
-     * Reads a packet from a given {@link TapPacketReader} that satisfies the {@code filter}.
+     * Polls for a packet from a given {@link TapPacketReader} that satisfies the {@code filter}.
      *
-     * @param packetReader a TUN packet reader.
-     * @param filter the filter to be applied on the packet.
+     * @param packetReader a TUN packet reader
+     * @param filter the filter to be applied on the packet
      * @return the first IPv6 packet that satisfies the {@code filter}. If it has waited for more
-     *     than 3000ms to read the next packet, the method will return null.
+     *     than 3000ms to read the next packet, the method will return null
      */
-    public static byte[] readPacketFrom(TapPacketReader packetReader, Predicate<byte[]> filter) {
+    public static byte[] pollForPacket(TapPacketReader packetReader, Predicate<byte[]> filter) {
         byte[] packet;
-        while ((packet = packetReader.poll(3000 /* timeoutMs */)) != null) {
-            if (filter.test(packet)) return packet;
+        while ((packet = packetReader.poll(3000 /* timeoutMs */, filter)) != null) {
+            return packet;
         }
         return null;
     }
@@ -175,6 +177,34 @@ public final class IntegrationTestUtils {
                 return false;
             }
             return Struct.parse(Icmpv6Header.class, buf).type == (short) type;
+        } catch (IllegalArgumentException ignored) {
+            // It's fine that the passed in packet is malformed because it's could be sent
+            // by anybody.
+        }
+        return false;
+    }
+
+    public static boolean isFromIpv6Source(byte[] packet, Inet6Address src) {
+        if (packet == null) {
+            return false;
+        }
+        ByteBuffer buf = ByteBuffer.wrap(packet);
+        try {
+            return Struct.parse(Ipv6Header.class, buf).srcIp.equals(src);
+        } catch (IllegalArgumentException ignored) {
+            // It's fine that the passed in packet is malformed because it's could be sent
+            // by anybody.
+        }
+        return false;
+    }
+
+    public static boolean isToIpv6Destination(byte[] packet, Inet6Address dest) {
+        if (packet == null) {
+            return false;
+        }
+        ByteBuffer buf = ByteBuffer.wrap(packet);
+        try {
+            return Struct.parse(Ipv6Header.class, buf).dstIp.equals(dest);
         } catch (IllegalArgumentException ignored) {
             // It's fine that the passed in packet is malformed because it's could be sent
             // by anybody.
@@ -224,5 +254,39 @@ public final class IntegrationTestUtils {
             }
         }
         return pioList;
+    }
+
+    /**
+     * Sends a UDP message to a destination.
+     *
+     * @param dstAddress the IP address of the destination
+     * @param dstPort the port of the destination
+     * @param message the message in UDP payload
+     * @throws IOException if failed to send the message
+     */
+    public static void sendUdpMessage(InetAddress dstAddress, int dstPort, String message)
+            throws IOException {
+        SocketAddress dstSockAddr = new InetSocketAddress(dstAddress, dstPort);
+
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.connect(dstSockAddr);
+
+            byte[] msgBytes = message.getBytes();
+            DatagramPacket packet = new DatagramPacket(msgBytes, msgBytes.length);
+
+            socket.send(packet);
+        }
+    }
+
+    public static boolean isInMulticastGroup(String interfaceName, Inet6Address address) {
+        final String cmd = "ip -6 maddr show dev " + interfaceName;
+        final String output = runShellCommandOrThrow(cmd);
+        final String addressStr = address.getHostAddress();
+        for (final String line : output.split("\\n")) {
+            if (line.contains(addressStr)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
