@@ -96,7 +96,6 @@ java_defaults {
     ],
     impl_only_static_libs: [
         "net-utils-device-common-bpf",
-        "net-utils-device-common-struct",
     ],
     libs: [
         "androidx.annotation_annotation",
@@ -107,9 +106,6 @@ java_defaults {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: {
-        strict_updatability_linting: true,
-    },
 }
 
 java_library {
@@ -128,7 +124,6 @@ java_library {
         // Even if the library is included in "impl_only_static_libs" of defaults. This is still
         // needed because java_library which doesn't understand "impl_only_static_libs".
         "net-utils-device-common-bpf",
-        "net-utils-device-common-struct",
     ],
     libs: [
         // This cannot be in the defaults clause above because if it were, it would be used
@@ -198,6 +193,9 @@ java_sdk_library {
     lint: {
         baseline_filename: "lint-baseline.xml",
     },
+    aconfig_declarations: [
+        "com.android.net.flags-aconfig",
+    ],
 }
 
 platform_compat_config {
