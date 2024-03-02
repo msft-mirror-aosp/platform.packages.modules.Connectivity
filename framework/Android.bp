@@ -96,7 +96,6 @@ java_defaults {
     ],
     impl_only_static_libs: [
         "net-utils-device-common-bpf",
-        "net-utils-device-common-struct",
     ],
     libs: [
         "androidx.annotation_annotation",
@@ -125,7 +124,6 @@ java_library {
         // Even if the library is included in "impl_only_static_libs" of defaults. This is still
         // needed because java_library which doesn't understand "impl_only_static_libs".
         "net-utils-device-common-bpf",
-        "net-utils-device-common-struct",
     ],
     libs: [
         // This cannot be in the defaults clause above because if it were, it would be used
@@ -178,6 +176,7 @@ java_sdk_library {
         "//frameworks/base/core/tests/bandwidthtests",
         "//frameworks/base/core/tests/benchmarks",
         "//frameworks/base/core/tests/utillib",
+        "//frameworks/base/services/tests/VpnTests",
         "//frameworks/base/tests/vcn",
         "//frameworks/opt/net/ethernet/tests:__subpackages__",
         "//frameworks/opt/telephony/tests/telephonytests",
@@ -195,6 +194,9 @@ java_sdk_library {
     lint: {
         baseline_filename: "lint-baseline.xml",
     },
+    aconfig_declarations: [
+        "com.android.net.flags-aconfig",
+    ],
 }
 
 platform_compat_config {
