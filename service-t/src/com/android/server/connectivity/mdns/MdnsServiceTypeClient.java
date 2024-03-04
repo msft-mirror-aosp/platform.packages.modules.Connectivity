@@ -35,8 +35,10 @@ import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
+import java.io.PrintWriter;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -308,6 +310,7 @@ public class MdnsServiceTypeClient {
             textStrings = response.getTextRecord().getStrings();
             textEntries = response.getTextRecord().getEntries();
         }
+        Instant now = Instant.now();
         // TODO: Throw an error message if response doesn't have Inet6 or Inet4 address.
         return new MdnsServiceInfo(
                 serviceInstanceName,
@@ -320,7 +323,8 @@ public class MdnsServiceTypeClient {
                 textStrings,
                 textEntries,
                 response.getInterfaceIndex(),
-                response.getNetwork());
+                response.getNetwork(),
+                now.plusMillis(response.getMinRemainingTtl(now.toEpochMilli())));
     }
 
     /**
@@ -755,5 +759,14 @@ public class MdnsServiceTypeClient {
         sharedLog.log(String.format("Next run: sessionId: %d, in %d ms",
                 args.sessionId, timeToNextTasksWithBackoffInMs));
         return timeToNextTasksWithBackoffInMs;
+    }
+
+    /**
+     * Dump ServiceTypeClient state.
+     */
+    public void dump(PrintWriter pw) {
+        ensureRunningOnHandlerThread(handler);
+        pw.println("ServiceTypeClient: Type{" + serviceType + "} " + socketKey + " with "
+                + listeners.size() + " listeners.");
     }
 }
