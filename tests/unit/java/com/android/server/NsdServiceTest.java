@@ -34,6 +34,7 @@ import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_PLATFORM
 import static android.net.connectivity.ConnectivityCompatChanges.RUN_NATIVE_NSD_ONLY_IF_LEGACY_APPS_T_AND_LATER;
 import static android.net.nsd.NsdManager.FAILURE_BAD_PARAMETERS;
 import static android.net.nsd.NsdManager.FAILURE_INTERNAL_ERROR;
+import static android.net.nsd.NsdManager.FAILURE_MAX_LIMIT;
 import static android.net.nsd.NsdManager.FAILURE_OPERATION_NOT_RUNNING;
 
 import static com.android.networkstack.apishim.api33.ConstantsShim.REGISTER_NSD_OFFLOAD_ENGINE;
@@ -82,6 +83,7 @@ import android.net.mdns.aidl.GetAddressInfo;
 import android.net.mdns.aidl.IMDnsEventListener;
 import android.net.mdns.aidl.RegistrationInfo;
 import android.net.mdns.aidl.ResolutionInfo;
+import android.net.nsd.AdvertisingRequest;
 import android.net.nsd.INsdManagerCallback;
 import android.net.nsd.INsdServiceConnector;
 import android.net.nsd.MDnsManager;
@@ -100,6 +102,7 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.Process;
 import android.os.RemoteException;
 import android.util.Pair;
 
@@ -109,6 +112,7 @@ import androidx.test.filters.SmallTest;
 import com.android.metrics.NetworkNsdReportedMetrics;
 import com.android.server.NsdService.Dependencies;
 import com.android.server.connectivity.mdns.MdnsAdvertiser;
+import com.android.server.connectivity.mdns.MdnsAdvertisingOptions;
 import com.android.server.connectivity.mdns.MdnsDiscoveryManager;
 import com.android.server.connectivity.mdns.MdnsInterfaceSocket;
 import com.android.server.connectivity.mdns.MdnsSearchOptions;
@@ -131,10 +135,14 @@ import org.mockito.AdditionalAnswers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
+import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
@@ -257,6 +265,10 @@ public class NsdServiceTest {
             mThread.quitSafely();
             mThread.join();
         }
+
+        // Clear inline mocks as there are possible memory leaks if not done (see mockito
+        // doc for clearInlineMocks), and some tests create many of them.
+        Mockito.framework().clearInlineMocks();
     }
 
     // Native mdns provided by Netd is removed after U.
@@ -717,6 +729,86 @@ public class NsdServiceTest {
                 true /* isLegacy */, getAddrId, 10L /* durationMs */);
     }
 
+    @EnableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    @Test
+    public void testPerClientListenerLimit() throws Exception {
+        final NsdManager client1 = connectClient(mService);
+        final NsdManager client2 = connectClient(mService);
+
+        final String testType1 = "_testtype1._tcp";
+        final NsdServiceInfo testServiceInfo1 = new NsdServiceInfo("MyTestService1", testType1);
+        testServiceInfo1.setPort(12345);
+        final String testType2 = "_testtype2._tcp";
+        final NsdServiceInfo testServiceInfo2 = new NsdServiceInfo("MyTestService2", testType2);
+        testServiceInfo2.setPort(12345);
+
+        // Each client can register 200 requests (for example 100 discover and 100 register).
+        final int numEachListener = 100;
+        final ArrayList<DiscoveryListener> discListeners = new ArrayList<>(numEachListener);
+        final ArrayList<RegistrationListener> regListeners = new ArrayList<>(numEachListener);
+        for (int i = 0; i < numEachListener; i++) {
+            final DiscoveryListener discListener1 = mock(DiscoveryListener.class);
+            discListeners.add(discListener1);
+            final RegistrationListener regListener1 = mock(RegistrationListener.class);
+            regListeners.add(regListener1);
+            final DiscoveryListener discListener2 = mock(DiscoveryListener.class);
+            discListeners.add(discListener2);
+            final RegistrationListener regListener2 = mock(RegistrationListener.class);
+            regListeners.add(regListener2);
+            client1.discoverServices(testType1, NsdManager.PROTOCOL_DNS_SD,
+                    (Network) null, Runnable::run, discListener1);
+            client1.registerService(testServiceInfo1, NsdManager.PROTOCOL_DNS_SD, Runnable::run,
+                    regListener1);
+
+            client2.registerService(testServiceInfo2, NsdManager.PROTOCOL_DNS_SD, Runnable::run,
+                    regListener2);
+            client2.discoverServices(testType2, NsdManager.PROTOCOL_DNS_SD,
+                    (Network) null, Runnable::run, discListener2);
+        }
+
+        // Use a longer timeout than usual for the handler to process all the events. The
+        // registrations take about 1s on a high-end 2013 device.
+        HandlerUtils.waitForIdle(mHandler, 30_000L);
+        for (int i = 0; i < discListeners.size(); i++) {
+            // Callbacks are sent on the manager handler which is different from mHandler, so use
+            // a short timeout (each callback should come quickly after the previous one).
+            verify(discListeners.get(i), timeout(TEST_TIME_MS))
+                    .onDiscoveryStarted(i % 2 == 0 ? testType1 : testType2);
+
+            // registerService does not get a callback before probing finishes (will not happen as
+            // this is mocked)
+            verifyNoMoreInteractions(regListeners.get(i));
+        }
+
+        // The next registrations should fail
+        final DiscoveryListener failDiscListener1 = mock(DiscoveryListener.class);
+        final RegistrationListener failRegListener1 = mock(RegistrationListener.class);
+        final DiscoveryListener failDiscListener2 = mock(DiscoveryListener.class);
+        final RegistrationListener failRegListener2 = mock(RegistrationListener.class);
+
+        client1.discoverServices(testType1, NsdManager.PROTOCOL_DNS_SD,
+                (Network) null, Runnable::run, failDiscListener1);
+        verify(failDiscListener1, timeout(TEST_TIME_MS))
+                .onStartDiscoveryFailed(testType1, FAILURE_MAX_LIMIT);
+
+        client1.registerService(testServiceInfo1, NsdManager.PROTOCOL_DNS_SD, Runnable::run,
+                failRegListener1);
+        verify(failRegListener1, timeout(TEST_TIME_MS)).onRegistrationFailed(
+                argThat(a -> testServiceInfo1.getServiceName().equals(a.getServiceName())),
+                eq(FAILURE_MAX_LIMIT));
+
+        client1.discoverServices(testType2, NsdManager.PROTOCOL_DNS_SD,
+                (Network) null, Runnable::run, failDiscListener2);
+        verify(failDiscListener2, timeout(TEST_TIME_MS))
+                .onStartDiscoveryFailed(testType2, FAILURE_MAX_LIMIT);
+
+        client1.registerService(testServiceInfo2, NsdManager.PROTOCOL_DNS_SD, Runnable::run,
+                failRegListener2);
+        verify(failRegListener2, timeout(TEST_TIME_MS)).onRegistrationFailed(
+                argThat(a -> testServiceInfo2.getServiceName().equals(a.getServiceName())),
+                eq(FAILURE_MAX_LIMIT));
+    }
+
     @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
     @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
@@ -884,7 +976,8 @@ public class NsdServiceTest {
                 List.of() /* textStrings */,
                 List.of() /* textEntries */,
                 1234,
-                network);
+                network,
+                Instant.MAX /* expirationTime */);
 
         // Callbacks for query sent.
         listener.onDiscoveryQuerySent(Collections.emptyList(), 1 /* transactionId */);
@@ -914,7 +1007,8 @@ public class NsdServiceTest {
                 List.of() /* textStrings */,
                 List.of() /* textEntries */,
                 1234,
-                network);
+                network,
+                Instant.MAX /* expirationTime */);
 
         // Verify onServiceUpdated callback.
         listener.onServiceUpdated(updatedServiceInfo);
@@ -1046,7 +1140,8 @@ public class NsdServiceTest {
                 List.of(), /* textStrings */
                 List.of(), /* textEntries */
                 1234, /* interfaceIndex */
-                network);
+                network,
+                Instant.MAX /* expirationTime */);
 
         // Verify onServiceNameDiscovered callback
         listener.onServiceNameDiscovered(foundInfo, false /* isServiceFromCache */);
@@ -1067,7 +1162,8 @@ public class NsdServiceTest {
                 null, /* textStrings */
                 null, /* textEntries */
                 1234, /* interfaceIndex */
-                network);
+                network,
+                Instant.MAX /* expirationTime */);
         // Verify onServiceNameRemoved callback
         listener.onServiceNameRemoved(removedInfo);
         verify(discListener, timeout(TIMEOUT_MS)).onServiceLost(argThat(info ->
@@ -1189,7 +1285,8 @@ public class NsdServiceTest {
                 List.of(MdnsServiceInfo.TextEntry.fromBytes(new byte[]{
                         'k', 'e', 'y', '=', (byte) 0xFF, (byte) 0xFE})) /* textEntries */,
                 1234,
-                network);
+                network,
+                Instant.ofEpochSecond(1000_000L) /* expirationTime */);
 
         // Verify onServiceFound callback
         doReturn(TEST_TIME_MS + 10L).when(mClock).elapsedRealtime();
@@ -1214,6 +1311,7 @@ public class NsdServiceTest {
         assertTrue(info.getHostAddresses().stream().anyMatch(
                 address -> address.equals(parseNumericAddress("2001:db8::2"))));
         assertEquals(network, info.getNetwork());
+        assertEquals(Instant.ofEpochSecond(1000_000L), info.getExpirationTime());
 
         // Verify the listener has been unregistered.
         verify(mDiscoveryManager, timeout(TIMEOUT_MS))
@@ -1428,6 +1526,82 @@ public class NsdServiceTest {
                 argThat(info -> matches(info, new NsdServiceInfo(regInfo.getServiceName(), null))));
         verify(mMetrics).reportServiceRegistrationSucceeded(
                 false /* isLegacy */, regId, 10L /* durationMs */);
+    }
+
+    @Test
+    public void testAdvertiseCustomTtl_validTtl_success() {
+        runValidTtlAdvertisingTest(30L);
+        runValidTtlAdvertisingTest(10 * 3600L);
+    }
+
+    @Test
+    public void testAdvertiseCustomTtl_ttlSmallerThan30SecondsButClientIsSystemServer_success() {
+        when(mDeps.getCallingUid()).thenReturn(Process.SYSTEM_UID);
+
+        runValidTtlAdvertisingTest(29L);
+    }
+
+    @Test
+    public void testAdvertiseCustomTtl_ttlLargerThan10HoursButClientIsSystemServer_success() {
+        when(mDeps.getCallingUid()).thenReturn(Process.SYSTEM_UID);
+
+        runValidTtlAdvertisingTest(10 * 3600L + 1);
+        runValidTtlAdvertisingTest(0xffffffffL);
+    }
+
+    private void runValidTtlAdvertisingTest(long validTtlSeconds) {
+        setMdnsAdvertiserEnabled();
+
+        final NsdManager client = connectClient(mService);
+        final RegistrationListener regListener = mock(RegistrationListener.class);
+        final ArgumentCaptor<MdnsAdvertiser.AdvertiserCallback> cbCaptor =
+                ArgumentCaptor.forClass(MdnsAdvertiser.AdvertiserCallback.class);
+        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any(), any(), any());
+
+        final NsdServiceInfo regInfo = new NsdServiceInfo("Service custom TTL", SERVICE_TYPE);
+        regInfo.setPort(1234);
+        final AdvertisingRequest request =
+                new AdvertisingRequest.Builder(regInfo, NsdManager.PROTOCOL_DNS_SD)
+                    .setTtl(Duration.ofSeconds(validTtlSeconds)).build();
+
+        client.registerService(request, Runnable::run, regListener);
+        waitForIdle();
+
+        final ArgumentCaptor<Integer> idCaptor = ArgumentCaptor.forClass(Integer.class);
+        final MdnsAdvertisingOptions expectedAdverstingOptions =
+                MdnsAdvertisingOptions.newBuilder().setTtl(request.getTtl()).build();
+        verify(mAdvertiser).addOrUpdateService(idCaptor.capture(), any(),
+                eq(expectedAdverstingOptions), anyInt());
+
+        // Verify onServiceRegistered callback
+        final MdnsAdvertiser.AdvertiserCallback cb = cbCaptor.getValue();
+        final int regId = idCaptor.getValue();
+        cb.onRegisterServiceSucceeded(regId, regInfo);
+
+        verify(regListener, timeout(TIMEOUT_MS)).onServiceRegistered(
+                argThat(info -> matches(info, new NsdServiceInfo(regInfo.getServiceName(), null))));
+    }
+
+    @Test
+    public void testAdvertiseCustomTtl_invalidTtl_FailsWithBadParameters() {
+        setMdnsAdvertiserEnabled();
+        final long invalidTtlSeconds = 29L;
+        final NsdManager client = connectClient(mService);
+        final RegistrationListener regListener = mock(RegistrationListener.class);
+        final ArgumentCaptor<MdnsAdvertiser.AdvertiserCallback> cbCaptor =
+                ArgumentCaptor.forClass(MdnsAdvertiser.AdvertiserCallback.class);
+        verify(mDeps).makeMdnsAdvertiser(any(), any(), cbCaptor.capture(), any(), any(), any());
+
+        final NsdServiceInfo regInfo = new NsdServiceInfo("Service custom TTL", SERVICE_TYPE);
+        regInfo.setPort(1234);
+        final AdvertisingRequest request =
+                new AdvertisingRequest.Builder(regInfo, NsdManager.PROTOCOL_DNS_SD)
+                    .setTtl(Duration.ofSeconds(invalidTtlSeconds)).build();
+        client.registerService(request, Runnable::run, regListener);
+        waitForIdle();
+
+        verify(regListener, timeout(TIMEOUT_MS))
+                .onRegistrationFailed(any(), eq(FAILURE_BAD_PARAMETERS));
     }
 
     @Test
