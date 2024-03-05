@@ -476,10 +476,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     private final LocationPermissionChecker mLocationPermissionChecker;
 
     @NonNull
-    private final BpfInterfaceMapUpdater mInterfaceMapUpdater;
+    private final BpfInterfaceMapHelper mInterfaceMapHelper;
 
     @Nullable
     private final SkDestroyListener mSkDestroyListener;
+
+    private static final int MAX_SOCKET_DESTROY_LISTENER_LOGS = 20;
 
     private static @NonNull Clock getDefaultClock() {
         return new BestClock(ZoneOffset.UTC, SystemClock.currentNetworkTimeClock(),
@@ -492,9 +494,10 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
      */
     private static class OpenSessionKey {
         public final int uid;
+        @Nullable
         public final String packageName;
 
-        OpenSessionKey(int uid, @NonNull String packageName) {
+        OpenSessionKey(int uid, @Nullable String packageName) {
             this.uid = uid;
             this.packageName = packageName;
         }
@@ -625,8 +628,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mContentObserver = mDeps.makeContentObserver(mHandler, mSettings,
                 mNetworkStatsSubscriptionsMonitor);
         mLocationPermissionChecker = mDeps.makeLocationPermissionChecker(mContext);
-        mInterfaceMapUpdater = mDeps.makeBpfInterfaceMapUpdater(mContext, mHandler);
-        mInterfaceMapUpdater.start();
+        mInterfaceMapHelper = mDeps.makeBpfInterfaceMapHelper();
         mUidCounterSetMap = mDeps.getUidCounterSetMap();
         mCookieTagMap = mDeps.getCookieTagMap();
         mStatsMapA = mDeps.getStatsMapA();
@@ -795,18 +797,16 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             return new LocationPermissionChecker(context);
         }
 
-        /** Create BpfInterfaceMapUpdater to update bpf interface map. */
+        /** Create BpfInterfaceMapHelper to update bpf interface map. */
         @NonNull
-        public BpfInterfaceMapUpdater makeBpfInterfaceMapUpdater(
-                @NonNull Context ctx, @NonNull Handler handler) {
-            return new BpfInterfaceMapUpdater(ctx, handler);
+        public BpfInterfaceMapHelper makeBpfInterfaceMapHelper() {
+            return new BpfInterfaceMapHelper();
         }
 
         /** Get counter sets map for each UID. */
         public IBpfMap<S32, U8> getUidCounterSetMap() {
             try {
-                return new BpfMap<S32, U8>(UID_COUNTERSET_MAP_PATH, BpfMap.BPF_F_RDWR,
-                        S32.class, U8.class);
+                return new BpfMap<>(UID_COUNTERSET_MAP_PATH, S32.class, U8.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open uid counter set map: " + e);
                 return null;
@@ -816,8 +816,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets the cookie tag map */
         public IBpfMap<CookieTagMapKey, CookieTagMapValue> getCookieTagMap() {
             try {
-                return new BpfMap<CookieTagMapKey, CookieTagMapValue>(COOKIE_TAG_MAP_PATH,
-                        BpfMap.BPF_F_RDWR, CookieTagMapKey.class, CookieTagMapValue.class);
+                return new BpfMap<>(COOKIE_TAG_MAP_PATH,
+                        CookieTagMapKey.class, CookieTagMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open cookie tag map: " + e);
                 return null;
@@ -827,8 +827,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets stats map A */
         public IBpfMap<StatsMapKey, StatsMapValue> getStatsMapA() {
             try {
-                return new BpfMap<StatsMapKey, StatsMapValue>(STATS_MAP_A_PATH,
-                        BpfMap.BPF_F_RDWR, StatsMapKey.class, StatsMapValue.class);
+                return new BpfMap<>(STATS_MAP_A_PATH, StatsMapKey.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open stats map A: " + e);
                 return null;
@@ -838,8 +837,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets stats map B */
         public IBpfMap<StatsMapKey, StatsMapValue> getStatsMapB() {
             try {
-                return new BpfMap<StatsMapKey, StatsMapValue>(STATS_MAP_B_PATH,
-                        BpfMap.BPF_F_RDWR, StatsMapKey.class, StatsMapValue.class);
+                return new BpfMap<>(STATS_MAP_B_PATH, StatsMapKey.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open stats map B: " + e);
                 return null;
@@ -849,8 +847,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets the uid stats map */
         public IBpfMap<UidStatsMapKey, StatsMapValue> getAppUidStatsMap() {
             try {
-                return new BpfMap<UidStatsMapKey, StatsMapValue>(APP_UID_STATS_MAP_PATH,
-                        BpfMap.BPF_F_RDWR, UidStatsMapKey.class, StatsMapValue.class);
+                return new BpfMap<>(APP_UID_STATS_MAP_PATH,
+                        UidStatsMapKey.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open app uid stats map: " + e);
                 return null;
@@ -860,8 +858,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Gets interface stats map */
         public IBpfMap<S32, StatsMapValue> getIfaceStatsMap() {
             try {
-                return new BpfMap<S32, StatsMapValue>(IFACE_STATS_MAP_PATH,
-                        BpfMap.BPF_F_RDWR, S32.class, StatsMapValue.class);
+                return new BpfMap<>(IFACE_STATS_MAP_PATH, S32.class, StatsMapValue.class);
             } catch (ErrnoException e) {
                 throw new IllegalStateException("Failed to open interface stats map", e);
             }
@@ -880,7 +877,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         /** Create a new SkDestroyListener. */
         public SkDestroyListener makeSkDestroyListener(
                 IBpfMap<CookieTagMapKey, CookieTagMapValue> cookieTagMap, Handler handler) {
-            return new SkDestroyListener(cookieTagMap, handler, new SharedLog(TAG));
+            return new SkDestroyListener(
+                    cookieTagMap, handler, new SharedLog(MAX_SOCKET_DESTROY_LISTENER_LOGS, TAG));
         }
 
         /**
@@ -1432,7 +1430,11 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     }
 
     @Override
-    public INetworkStatsSession openSessionForUsageStats(int flags, String callingPackage) {
+    public INetworkStatsSession openSessionForUsageStats(
+            int flags, @NonNull String callingPackage) {
+        Objects.requireNonNull(callingPackage);
+        PermissionUtils.enforcePackageNameMatchesUid(
+                mContext, Binder.getCallingUid(), callingPackage);
         return openSessionInternal(flags, callingPackage);
     }
 
@@ -1461,9 +1463,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return now - lastCallTime < POLL_RATE_LIMIT_MS;
     }
 
-    private int restrictFlagsForCaller(int flags, @NonNull String callingPackage) {
+    private int restrictFlagsForCaller(int flags, @Nullable String callingPackage) {
         // All non-privileged callers are not allowed to turn off POLL_ON_OPEN.
-        final boolean isPrivileged = PermissionUtils.checkAnyPermissionOf(mContext,
+        final boolean isPrivileged = PermissionUtils.hasAnyPermissionOf(mContext,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
                 android.Manifest.permission.NETWORK_STACK);
         if (!isPrivileged) {
@@ -1478,7 +1480,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         return flags;
     }
 
-    private INetworkStatsSession openSessionInternal(final int flags, final String callingPackage) {
+    private INetworkStatsSession openSessionInternal(
+            final int flags, @Nullable final String callingPackage) {
         final int restrictedFlags = restrictFlagsForCaller(flags, callingPackage);
         if ((restrictedFlags & (NetworkStatsManager.FLAG_POLL_ON_OPEN
                 | NetworkStatsManager.FLAG_POLL_FORCE)) != 0) {
@@ -1495,6 +1498,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
         return new INetworkStatsSession.Stub() {
             private final int mCallingUid = Binder.getCallingUid();
+            @Nullable
             private final String mCallingPackage = callingPackage;
             private final @NetworkStatsAccess.Level int mAccessLevel = checkAccessLevel(
                     callingPackage);
@@ -1633,7 +1637,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     }
 
     private void enforceTemplatePermissions(@NonNull NetworkTemplate template,
-            @NonNull String callingPackage) {
+            @Nullable String callingPackage) {
         // For a template with wifi network keys, it is possible for a malicious
         // client to track the user locations via querying data usage. Thus, enforce
         // fine location permission check.
@@ -1654,7 +1658,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
     }
 
-    private @NetworkStatsAccess.Level int checkAccessLevel(String callingPackage) {
+    private @NetworkStatsAccess.Level int checkAccessLevel(@Nullable String callingPackage) {
         return NetworkStatsAccess.checkAccessLevel(
                 mContext, Binder.getCallingPid(), Binder.getCallingUid(), callingPackage);
     }
@@ -1945,6 +1949,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
         final int callingPid = Binder.getCallingPid();
         final int callingUid = Binder.getCallingUid();
+        PermissionUtils.enforcePackageNameMatchesUid(mContext, callingUid, callingPackage);
         @NetworkStatsAccess.Level int accessLevel = checkAccessLevel(callingPackage);
         DataUsageRequest normalizedRequest;
         final long token = Binder.clearCallingIdentity();
@@ -1981,36 +1986,56 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         if (callingUid != android.os.Process.SYSTEM_UID && callingUid != uid) {
             return UNSUPPORTED;
         }
-        return nativeGetUidStat(uid, type);
+        return getEntryValueForType(nativeGetUidStat(uid), type);
     }
 
     @Override
     public long getIfaceStats(@NonNull String iface, int type) {
         Objects.requireNonNull(iface);
-        long nativeIfaceStats = nativeGetIfaceStat(iface, type);
-        if (nativeIfaceStats == -1) {
-            return nativeIfaceStats;
+        final NetworkStats.Entry entry = nativeGetIfaceStat(iface);
+        final long value = getEntryValueForType(entry, type);
+        if (value == UNSUPPORTED) {
+            return UNSUPPORTED;
         } else {
             // When tethering offload is in use, nativeIfaceStats does not contain usage from
             // offload, add it back here. Note that the included statistics might be stale
             // since polling newest stats from hardware might impact system health and not
             // suitable for TrafficStats API use cases.
-            return nativeIfaceStats + getProviderIfaceStats(iface, type);
+            entry.add(getProviderIfaceStats(iface));
+            return getEntryValueForType(entry, type);
+        }
+    }
+
+    private long getEntryValueForType(@Nullable NetworkStats.Entry entry, int type) {
+        if (entry == null) return UNSUPPORTED;
+        switch (type) {
+            case TrafficStats.TYPE_RX_BYTES:
+                return entry.rxBytes;
+            case TrafficStats.TYPE_TX_BYTES:
+                return entry.txBytes;
+            case TrafficStats.TYPE_RX_PACKETS:
+                return entry.rxPackets;
+            case TrafficStats.TYPE_TX_PACKETS:
+                return entry.txPackets;
+            default:
+                return UNSUPPORTED;
         }
     }
 
     @Override
     public long getTotalStats(int type) {
-        long nativeTotalStats = nativeGetTotalStat(type);
-        if (nativeTotalStats == -1) {
-            return nativeTotalStats;
+        final NetworkStats.Entry entry = nativeGetTotalStat();
+        final long value = getEntryValueForType(entry, type);
+        if (value == UNSUPPORTED) {
+            return UNSUPPORTED;
         } else {
             // Refer to comment in getIfaceStats
-            return nativeTotalStats + getProviderIfaceStats(IFACE_ALL, type);
+            entry.add(getProviderIfaceStats(IFACE_ALL));
+            return getEntryValueForType(entry, type);
         }
     }
 
-    private long getProviderIfaceStats(@Nullable String iface, int type) {
+    private NetworkStats.Entry getProviderIfaceStats(@Nullable String iface) {
         final NetworkStats providerSnapshot = getNetworkStatsFromProviders(STATS_PER_IFACE);
         final HashSet<String> limitIfaces;
         if (iface == IFACE_ALL) {
@@ -2019,19 +2044,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             limitIfaces = new HashSet<>();
             limitIfaces.add(iface);
         }
-        final NetworkStats.Entry entry = providerSnapshot.getTotal(null, limitIfaces);
-        switch (type) {
-            case TrafficStats.TYPE_RX_BYTES:
-                return entry.rxBytes;
-            case TrafficStats.TYPE_RX_PACKETS:
-                return entry.rxPackets;
-            case TrafficStats.TYPE_TX_BYTES:
-                return entry.txBytes;
-            case TrafficStats.TYPE_TX_PACKETS:
-                return entry.txPackets;
-            default:
-                return 0;
-        }
+        return providerSnapshot.getTotal(null, limitIfaces);
     }
 
     /**
@@ -2201,6 +2214,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             // both total usage and UID details.
             final String baseIface = snapshot.getLinkProperties().getInterfaceName();
             if (baseIface != null) {
+                nativeRegisterIface(baseIface);
                 findOrCreateNetworkIdentitySet(mActiveIfaces, baseIface).add(ident);
                 findOrCreateNetworkIdentitySet(mActiveUidIfaces, baseIface).add(ident);
 
@@ -2222,7 +2236,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                             .setDefaultNetwork(true)
                             .setOemManaged(ident.getOemManaged())
                             .setSubId(ident.getSubId()).build();
-                    final String ifaceVt = IFACE_VT + getSubIdForMobile(snapshot);
+                    final String ifaceVt = IFACE_VT + getSubIdForCellularOrSatellite(snapshot);
                     findOrCreateNetworkIdentitySet(mActiveIfaces, ifaceVt).add(vtIdent);
                     findOrCreateNetworkIdentitySet(mActiveUidIfaces, ifaceVt).add(vtIdent);
                 }
@@ -2272,6 +2286,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 // baseIface has been handled, so ignore it.
                 if (TextUtils.equals(baseIface, iface)) continue;
                 if (iface != null) {
+                    nativeRegisterIface(iface);
                     findOrCreateNetworkIdentitySet(mActiveIfaces, iface).add(ident);
                     findOrCreateNetworkIdentitySet(mActiveUidIfaces, iface).add(ident);
                     if (isMobile) {
@@ -2290,9 +2305,15 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mMobileIfaces = mobileIfaces.toArray(new String[0]);
     }
 
-    private static int getSubIdForMobile(@NonNull NetworkStateSnapshot state) {
-        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-            throw new IllegalArgumentException("Mobile state need capability TRANSPORT_CELLULAR");
+    private static int getSubIdForCellularOrSatellite(@NonNull NetworkStateSnapshot state) {
+        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                // Both cellular and satellite are 2 different network transport at Mobile using
+                // same telephony network specifier. So adding satellite transport to consider
+                // for, when satellite network is active at mobile.
+                && !state.getNetworkCapabilities().hasTransport(
+                NetworkCapabilities.TRANSPORT_SATELLITE)) {
+            throw new IllegalArgumentException(
+                    "Mobile state need capability TRANSPORT_CELLULAR or TRANSPORT_SATELLITE");
         }
 
         final NetworkSpecifier spec = state.getNetworkCapabilities().getNetworkSpecifier();
@@ -2657,7 +2678,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
 
     @Override
     protected void dump(FileDescriptor fd, PrintWriter rawWriter, String[] args) {
-        if (!PermissionUtils.checkDumpPermission(mContext, TAG, rawWriter)) return;
+        if (!PermissionUtils.hasDumpPermission(mContext, TAG, rawWriter)) return;
 
         long duration = DateUtils.DAY_IN_MILLIS;
         final HashSet<String> argSet = new HashSet<String>();
@@ -2877,9 +2898,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             }
 
             pw.println();
-            pw.println("InterfaceMapUpdater:");
+            pw.println("InterfaceMapHelper:");
             pw.increaseIndent();
-            mInterfaceMapUpdater.dump(pw);
+            mInterfaceMapHelper.dump(pw);
             pw.decreaseIndent();
 
             pw.println();
@@ -2900,6 +2921,12 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             dumpStatsMapLocked(mStatsMapA, pw, "mStatsMapA");
             dumpStatsMapLocked(mStatsMapB, pw, "mStatsMapB");
             dumpIfaceStatsMapLocked(pw);
+            pw.decreaseIndent();
+
+            pw.println();
+            pw.println("SkDestroyListener logs:");
+            pw.increaseIndent();
+            mSkDestroyListener.dump(pw);
             pw.decreaseIndent();
         }
     }
@@ -3020,7 +3047,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         BpfDump.dumpMap(statsMap, pw, mapName,
                 "ifaceIndex ifaceName tag_hex uid_int cnt_set rxBytes rxPackets txBytes txPackets",
                 (key, value) -> {
-                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.ifaceIndex);
+                    final String ifName = mInterfaceMapHelper.getIfNameByIndex(key.ifaceIndex);
                     return key.ifaceIndex + " "
                             + (ifName != null ? ifName : "unknown") + " "
                             + "0x" + Long.toHexString(key.tag) + " "
@@ -3038,7 +3065,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         BpfDump.dumpMap(mIfaceStatsMap, pw, "mIfaceStatsMap",
                 "ifaceIndex ifaceName rxBytes rxPackets txBytes txPackets",
                 (key, value) -> {
-                    final String ifName = mInterfaceMapUpdater.getIfNameByIndex(key.val);
+                    final String ifName = mInterfaceMapHelper.getIfNameByIndex(key.val);
                     return key.val + " "
                             + (ifName != null ? ifName : "unknown") + " "
                             + value.rxBytes + " "
@@ -3398,10 +3425,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         }
     }
 
-    private static native long nativeGetTotalStat(int type);
-    private static native long nativeGetIfaceStat(String iface, int type);
-    private static native long nativeGetIfIndexStat(int ifindex, int type);
-    private static native long nativeGetUidStat(int uid, int type);
+    // TODO: Read stats by using BpfNetMapsReader.
+    private static native void nativeRegisterIface(String iface);
+    @Nullable
+    private static native NetworkStats.Entry nativeGetTotalStat();
+    @Nullable
+    private static native NetworkStats.Entry nativeGetIfaceStat(String iface);
+    @Nullable
+    private static native NetworkStats.Entry nativeGetUidStat(int uid);
 
     /** Initializes and registers the Perfetto Network Trace data source */
     public static native void nativeInitNetworkTracing();

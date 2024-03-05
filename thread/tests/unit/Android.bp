@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_thread_network",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -29,6 +30,7 @@ android_test {
     ],
     test_suites: [
         "general-tests",
+        "mts-tethering",
     ],
     static_libs: [
         "frameworks-base-testutils",
@@ -44,6 +46,7 @@ android_test {
         "service-connectivity-pre-jarjar",
         "service-thread-pre-jarjar",
         "truth",
+        "service-thread-pre-jarjar",
     ],
     libs: [
         "android.test.base",

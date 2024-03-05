@@ -20,10 +20,8 @@ import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
 import static android.net.NetworkAgent.CMD_STOP_SOCKET_KEEPALIVE;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
-
 import static com.android.server.connectivity.AutomaticOnOffKeepaliveTracker.METRICS_COLLECTION_DURATION_MS;
 import static com.android.testutils.HandlerUtils.visibleOnHandlerThread;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
@@ -71,31 +69,16 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
 import android.telephony.SubscriptionManager;
-import android.test.suitebuilder.annotation.SmallTest;
-import android.util.ArraySet;
 import android.util.Log;
-import android.util.Range;
-
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-
+import androidx.test.filters.SmallTest;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.connectivity.AutomaticOnOffKeepaliveTracker.AutomaticOnOffKeepalive;
 import com.android.server.connectivity.KeepaliveTracker.KeepaliveInfo;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.HandlerUtils;
-
-import libcore.util.HexEncoding;
-
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
-import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
-
 import java.io.FileDescriptor;
 import java.io.StringWriter;
 import java.net.Inet4Address;
@@ -104,9 +87,15 @@ import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
-import java.util.Set;
+import libcore.util.HexEncoding;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Mock;
+import org.mockito.MockitoAnnotations;
 
 @RunWith(DevSdkIgnoreRunner.class)
 @SmallTest
@@ -235,9 +224,6 @@ public class AutomaticOnOffKeepaliveTrackerTest {
             SOCK_DIAG_TCP_INET_HEX + SOCK_DIAG_NO_TCP_INET_HEX;
     private static final byte[] TEST_RESPONSE_BYTES =
             HexEncoding.decode(TEST_RESPONSE_HEX.toCharArray(), false);
-
-    private static final Set<Range<Integer>> TEST_UID_RANGES =
-            new ArraySet<>(Arrays.asList(new Range<>(10000, 99999)));
 
     private static class TestKeepaliveInfo {
         private static List<Socket> sOpenSockets = new ArrayList<>();
@@ -416,38 +402,28 @@ public class AutomaticOnOffKeepaliveTrackerTest {
     public void testIsAnyTcpSocketConnected_runOnNonHandlerThread() throws Exception {
         setupResponseWithSocketExisting();
         assertThrows(IllegalStateException.class,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID, TEST_UID_RANGES));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID));
     }
 
     @Test
     public void testIsAnyTcpSocketConnected_withTargetNetId() throws Exception {
         setupResponseWithSocketExisting();
         assertTrue(visibleOnHandlerThread(mTestHandler,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID, TEST_UID_RANGES)));
-    }
-
-    @Test
-    public void testIsAnyTcpSocketConnected_noTargetUidSocket() throws Exception {
-        setupResponseWithSocketExisting();
-        // Configured uid(12345) is not in the VPN range.
-        assertFalse(visibleOnHandlerThread(mTestHandler,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(
-                        TEST_NETID,
-                        new ArraySet<>(Arrays.asList(new Range<>(99999, 99999))))));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID)));
     }
 
     @Test
     public void testIsAnyTcpSocketConnected_withIncorrectNetId() throws Exception {
         setupResponseWithSocketExisting();
         assertFalse(visibleOnHandlerThread(mTestHandler,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(OTHER_NETID, TEST_UID_RANGES)));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(OTHER_NETID)));
     }
 
     @Test
     public void testIsAnyTcpSocketConnected_noSocketExists() throws Exception {
         setupResponseWithoutSocketExisting();
         assertFalse(visibleOnHandlerThread(mTestHandler,
-                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID, TEST_UID_RANGES)));
+                () -> mAOOKeepaliveTracker.isAnyTcpSocketConnected(TEST_NETID)));
     }
 
     private void triggerEventKeepalive(int slot, int reason) {
@@ -491,16 +467,14 @@ public class AutomaticOnOffKeepaliveTrackerTest {
         setupResponseWithoutSocketExisting();
         visibleOnHandlerThread(
                 mTestHandler,
-                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(
-                        autoKi, TEST_NETID, TEST_UID_RANGES));
+                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(autoKi, TEST_NETID));
     }
 
     private void doResumeKeepalive(AutomaticOnOffKeepalive autoKi) throws Exception {
         setupResponseWithSocketExisting();
         visibleOnHandlerThread(
                 mTestHandler,
-                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(
-                        autoKi, TEST_NETID, TEST_UID_RANGES));
+                () -> mAOOKeepaliveTracker.handleMonitorAutomaticKeepalive(autoKi, TEST_NETID));
     }
 
     private void doStopKeepalive(AutomaticOnOffKeepalive autoKi) throws Exception {

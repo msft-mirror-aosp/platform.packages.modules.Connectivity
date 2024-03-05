@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
@@ -105,9 +106,6 @@ java_defaults {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: {
-        strict_updatability_linting: true,
-    },
 }
 
 java_library {
@@ -137,9 +135,6 @@ java_library {
         "framework-wifi.stubs.module_lib",
     ],
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 java_defaults {
@@ -170,17 +165,16 @@ java_sdk_library {
         "//packages/modules/Connectivity/framework-t",
         "//packages/modules/Connectivity/service",
         "//packages/modules/Connectivity/service-t",
-        "//frameworks/base/packages/Connectivity/service",
         "//frameworks/base",
 
         // Tests using hidden APIs
         "//cts/tests/netlegacy22.api",
         "//cts/tests/tests/app.usage", // NetworkUsageStatsTest
         "//external/sl4a:__subpackages__",
-        "//frameworks/base/packages/Connectivity/tests:__subpackages__",
         "//frameworks/base/core/tests/bandwidthtests",
         "//frameworks/base/core/tests/benchmarks",
         "//frameworks/base/core/tests/utillib",
+        "//frameworks/base/services/tests/VpnTests",
         "//frameworks/base/tests/vcn",
         "//frameworks/opt/net/ethernet/tests:__subpackages__",
         "//frameworks/opt/telephony/tests/telephonytests",
@@ -198,6 +192,9 @@ java_sdk_library {
     lint: {
         baseline_filename: "lint-baseline.xml",
     },
+    aconfig_declarations: [
+        "com.android.net.flags-aconfig",
+    ],
 }
 
 platform_compat_config {
@@ -257,9 +254,6 @@ java_library {
     apex_available: [
         "com.android.tethering",
     ],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 java_genrule {
@@ -320,9 +314,6 @@ droidstubs {
 java_library {
     name: "framework-connectivity-module-api-stubs-including-flagged",
     srcs: [":framework-connectivity-module-api-stubs-including-flagged-droidstubs"],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }
 
 // Library providing limited APIs within the connectivity module, so that R+ components like
@@ -347,7 +338,4 @@ java_library {
     visibility: [
         "//packages/modules/Connectivity/Tethering:__subpackages__",
     ],
-    lint: {
-        baseline_filename: "lint-baseline.xml",
-    },
 }

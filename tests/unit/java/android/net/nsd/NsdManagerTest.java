@@ -23,6 +23,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyInt;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -51,6 +52,10 @@ import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+
+import java.net.InetAddress;
+import java.util.List;
+import java.time.Duration;
 
 @DevSdkIgnoreRunner.MonitorThreadLeak
 @RunWith(DevSdkIgnoreRunner.class)
@@ -221,6 +226,23 @@ public class NsdManagerTest {
         verify(listener, timeout(mTimeoutMs).times(1)).onServiceRegistered(request);
     }
 
+    @Test
+    public void testRegisterServiceWithCustomTtl() throws Exception {
+        final NsdManager manager = mManager;
+        final NsdServiceInfo info = new NsdServiceInfo("another_name2", "another_type2");
+        info.setPort(2203);
+        final AdvertisingRequest request = new AdvertisingRequest.Builder(info, PROTOCOL)
+                .setTtl(Duration.ofSeconds(30)).build();
+        final NsdManager.RegistrationListener listener = mock(
+                NsdManager.RegistrationListener.class);
+
+        manager.registerService(request, Runnable::run, listener);
+
+        AdvertisingRequest capturedRequest = getAdvertisingRequest(
+                req -> verify(mServiceConn).registerService(anyInt(), req.capture()));
+        assertEquals(request, capturedRequest);
+    }
+
     private void doTestRegisterService() throws Exception {
         NsdManager manager = mManager;
 
@@ -285,6 +307,7 @@ public class NsdManagerTest {
     private void doTestDiscoverService() throws Exception {
         NsdManager manager = mManager;
 
+        DiscoveryRequest request1 = new DiscoveryRequest.Builder("a_type").build();
         NsdServiceInfo reply1 = new NsdServiceInfo("a_name", "a_type");
         NsdServiceInfo reply2 = new NsdServiceInfo("another_name", "a_type");
         NsdServiceInfo reply3 = new NsdServiceInfo("a_third_name", "a_type");
@@ -305,7 +328,7 @@ public class NsdManagerTest {
         int key2 = getRequestKey(req ->
                 verify(mServiceConn, times(2)).discoverServices(req.capture(), any()));
 
-        mCallback.onDiscoverServicesStarted(key2, reply1);
+        mCallback.onDiscoverServicesStarted(key2, request1);
         verify(listener, timeout(mTimeoutMs).times(1)).onDiscoveryStarted("a_type");
 
 
@@ -345,7 +368,7 @@ public class NsdManagerTest {
         int key3 = getRequestKey(req ->
                 verify(mServiceConn, times(3)).discoverServices(req.capture(), any()));
 
-        mCallback.onDiscoverServicesStarted(key3, reply1);
+        mCallback.onDiscoverServicesStarted(key3, request1);
         verify(listener, timeout(mTimeoutMs).times(1)).onDiscoveryStarted("a_type");
 
         // Client unregisters immediately, it fails
@@ -369,6 +392,9 @@ public class NsdManagerTest {
         NsdManager.RegistrationListener listener1 = mock(NsdManager.RegistrationListener.class);
         NsdManager.DiscoveryListener listener2 = mock(NsdManager.DiscoveryListener.class);
         NsdManager.ResolveListener listener3 = mock(NsdManager.ResolveListener.class);
+        NsdManager.RegistrationListener listener4 = mock(NsdManager.RegistrationListener.class);
+        NsdManager.RegistrationListener listener5 = mock(NsdManager.RegistrationListener.class);
+        NsdManager.RegistrationListener listener6 = mock(NsdManager.RegistrationListener.class);
 
         NsdServiceInfo invalidService = new NsdServiceInfo(null, null);
         NsdServiceInfo validService = new NsdServiceInfo("a_name", "_a_type._tcp");
@@ -378,12 +404,40 @@ public class NsdManagerTest {
                 "_a_type._tcp,_sub1,_s2");
         NsdServiceInfo otherSubtypeUpdate = new NsdServiceInfo("a_name", "_a_type._tcp,_sub1,_s3");
         NsdServiceInfo dotSyntaxSubtypeUpdate = new NsdServiceInfo("a_name", "_sub1._a_type._tcp");
+
         validService.setPort(2222);
         otherServiceWithSubtype.setPort(2222);
         validServiceDuplicate.setPort(2222);
         validServiceSubtypeUpdate.setPort(2222);
         otherSubtypeUpdate.setPort(2222);
         dotSyntaxSubtypeUpdate.setPort(2222);
+
+        NsdServiceInfo invalidMissingHostnameWithAddresses = new NsdServiceInfo(null, null);
+        invalidMissingHostnameWithAddresses.setHostAddresses(
+                List.of(
+                        InetAddress.parseNumericAddress("192.168.82.14"),
+                        InetAddress.parseNumericAddress("2001::1")));
+
+        NsdServiceInfo validCustomHostWithAddresses = new NsdServiceInfo(null, null);
+        validCustomHostWithAddresses.setHostname("a_host");
+        validCustomHostWithAddresses.setHostAddresses(
+                List.of(
+                        InetAddress.parseNumericAddress("192.168.82.14"),
+                        InetAddress.parseNumericAddress("2001::1")));
+
+        NsdServiceInfo validServiceWithCustomHostAndAddresses =
+                new NsdServiceInfo("a_name", "_a_type._tcp");
+        validServiceWithCustomHostAndAddresses.setPort(2222);
+        validServiceWithCustomHostAndAddresses.setHostname("a_host");
+        validServiceWithCustomHostAndAddresses.setHostAddresses(
+                List.of(
+                        InetAddress.parseNumericAddress("192.168.82.14"),
+                        InetAddress.parseNumericAddress("2001::1")));
+
+        NsdServiceInfo validServiceWithCustomHostNoAddresses =
+                new NsdServiceInfo("a_name", "_a_type._tcp");
+        validServiceWithCustomHostNoAddresses.setPort(2222);
+        validServiceWithCustomHostNoAddresses.setHostname("a_host");
 
         // Service registration
         //  - invalid arguments
@@ -393,6 +447,8 @@ public class NsdManagerTest {
         mustFail(() -> { manager.registerService(invalidService, PROTOCOL, listener1); });
         mustFail(() -> { manager.registerService(validService, -1, listener1); });
         mustFail(() -> { manager.registerService(validService, PROTOCOL, null); });
+        mustFail(() -> {
+            manager.registerService(invalidMissingHostnameWithAddresses, PROTOCOL, listener1); });
         manager.registerService(validService, PROTOCOL, listener1);
         //  - update without subtype is not allowed
         mustFail(() -> { manager.registerService(validServiceDuplicate, PROTOCOL, listener1); });
@@ -414,6 +470,15 @@ public class NsdManagerTest {
         // TODO: make listener immediately reusable
         //mustFail(() -> { manager.unregisterService(listener1); });
         //manager.registerService(validService, PROTOCOL, listener1);
+        //  - registering a custom host without a service is valid
+        manager.registerService(validCustomHostWithAddresses, PROTOCOL, listener4);
+        manager.unregisterService(listener4);
+        //  - registering a service with a custom host is valid
+        manager.registerService(validServiceWithCustomHostAndAddresses, PROTOCOL, listener5);
+        manager.unregisterService(listener5);
+        //  - registering a service with a custom host with no addresses is valid
+        manager.registerService(validServiceWithCustomHostNoAddresses, PROTOCOL, listener6);
+        manager.unregisterService(listener6);
 
         // Discover service
         //  - invalid arguments
@@ -452,6 +517,14 @@ public class NsdManagerTest {
     int getRequestKey(ThrowingConsumer<ArgumentCaptor<Integer>> verifier)
             throws Exception {
         final ArgumentCaptor<Integer> captor = ArgumentCaptor.forClass(Integer.class);
+        verifier.accept(captor);
+        return captor.getValue();
+    }
+
+    AdvertisingRequest getAdvertisingRequest(
+            ThrowingConsumer<ArgumentCaptor<AdvertisingRequest>> verifier) throws Exception {
+        final ArgumentCaptor<AdvertisingRequest> captor =
+                ArgumentCaptor.forClass(AdvertisingRequest.class);
         verifier.accept(captor);
         return captor.getValue();
     }

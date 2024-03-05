@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -42,6 +43,7 @@ java_library {
     ],
     static_libs: [
         "androidx.core_core",
+        "android.hardware.bluetooth.finder-V1-java",
         "guava",
         "libprotobuf-java-lite",
         "modules-utils-build",
