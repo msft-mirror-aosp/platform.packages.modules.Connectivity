@@ -20,14 +20,22 @@ import static android.system.OsConstants.IPPROTO_ICMPV6;
 import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ND_OPTION_PIO;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ROUTER_ADVERTISEMENT;
+import static com.android.testutils.DeviceInfoUtils.isKernelVersionAtLeast;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+
 import android.net.TestNetworkInterface;
+import android.net.nsd.NsdManager;
+import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ThreadNetworkController;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.os.SystemProperties;
+import android.os.VintfRuntimeInfo;
+
+import androidx.annotation.NonNull;
 
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.Icmpv6Header;
@@ -51,11 +59,14 @@ import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /** Static utility methods relating to Thread integration tests. */
 public final class IntegrationTestUtils {
@@ -66,6 +77,10 @@ public final class IntegrationTestUtils {
     public static final Duration JOIN_TIMEOUT = Duration.ofSeconds(30);
     public static final Duration LEAVE_TIMEOUT = Duration.ofSeconds(2);
     public static final Duration CALLBACK_TIMEOUT = Duration.ofSeconds(1);
+    public static final Duration SERVICE_DISCOVERY_TIMEOUT = Duration.ofSeconds(20);
+
+    private static final String KERNEL_VERSION_MULTICAST_ROUTING_SUPPORTED = "5.15.0";
+    private static final int KERNEL_ANDROID_VERSION_MULTICAST_ROUTING_SUPPORTED = 14;
 
     private IntegrationTestUtils() {}
 
@@ -73,6 +88,24 @@ public final class IntegrationTestUtils {
     public static boolean isSimulatedThreadRadioSupported() {
         // The integration test uses SIMULATION Thread radio so that it only supports CuttleFish.
         return SystemProperties.get("ro.product.model").startsWith("Cuttlefish");
+    }
+
+    public static boolean isMulticastRoutingSupported() {
+        return isKernelVersionAtLeast(KERNEL_VERSION_MULTICAST_ROUTING_SUPPORTED)
+                && isKernelAndroidVersionAtLeast(
+                        KERNEL_ANDROID_VERSION_MULTICAST_ROUTING_SUPPORTED);
+    }
+
+    private static boolean isKernelAndroidVersionAtLeast(int n) {
+        final String osRelease = VintfRuntimeInfo.getOsRelease();
+        final Pattern pattern = Pattern.compile("android(\\d+)");
+        Matcher matcher = pattern.matcher(osRelease);
+
+        if (matcher.find()) {
+            int version = Integer.parseInt(matcher.group(1));
+            return (version >= n);
+        }
+        return false;
     }
 
     /**
@@ -288,5 +321,107 @@ public final class IntegrationTestUtils {
             }
         }
         return false;
+    }
+
+    /** Return the first discovered service of {@code serviceType}. */
+    public static NsdServiceInfo discoverService(NsdManager nsdManager, String serviceType)
+            throws Exception {
+        CompletableFuture<NsdServiceInfo> serviceInfoFuture = new CompletableFuture<>();
+        NsdManager.DiscoveryListener listener =
+                new DefaultDiscoveryListener() {
+                    @Override
+                    public void onServiceFound(NsdServiceInfo serviceInfo) {
+                        serviceInfoFuture.complete(serviceInfo);
+                    }
+                };
+        nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        try {
+            serviceInfoFuture.get(SERVICE_DISCOVERY_TIMEOUT.toMillis(), MILLISECONDS);
+        } finally {
+            nsdManager.stopServiceDiscovery(listener);
+        }
+
+        return serviceInfoFuture.get();
+    }
+
+    /**
+     * Returns the {@link NsdServiceInfo} when a service instance of {@code serviceType} gets lost.
+     */
+    public static NsdManager.DiscoveryListener discoverForServiceLost(
+            NsdManager nsdManager,
+            String serviceType,
+            CompletableFuture<NsdServiceInfo> serviceInfoFuture) {
+        NsdManager.DiscoveryListener listener =
+                new DefaultDiscoveryListener() {
+                    @Override
+                    public void onServiceLost(NsdServiceInfo serviceInfo) {
+                        serviceInfoFuture.complete(serviceInfo);
+                    }
+                };
+        nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        return listener;
+    }
+
+    /** Resolves the service. */
+    public static NsdServiceInfo resolveService(NsdManager nsdManager, NsdServiceInfo serviceInfo)
+            throws Exception {
+        return resolveServiceUntil(nsdManager, serviceInfo, s -> true);
+    }
+
+    /** Returns the first resolved service that satisfies the {@code predicate}. */
+    public static NsdServiceInfo resolveServiceUntil(
+            NsdManager nsdManager, NsdServiceInfo serviceInfo, Predicate<NsdServiceInfo> predicate)
+            throws Exception {
+        CompletableFuture<NsdServiceInfo> resolvedServiceInfoFuture = new CompletableFuture<>();
+        NsdManager.ServiceInfoCallback callback =
+                new DefaultServiceInfoCallback() {
+                    @Override
+                    public void onServiceUpdated(@NonNull NsdServiceInfo serviceInfo) {
+                        if (predicate.test(serviceInfo)) {
+                            resolvedServiceInfoFuture.complete(serviceInfo);
+                        }
+                    }
+                };
+        nsdManager.registerServiceInfoCallback(serviceInfo, directExecutor(), callback);
+        try {
+            return resolvedServiceInfoFuture.get(
+                    SERVICE_DISCOVERY_TIMEOUT.toMillis(), MILLISECONDS);
+        } finally {
+            nsdManager.unregisterServiceInfoCallback(callback);
+        }
+    }
+
+    private static class DefaultDiscoveryListener implements NsdManager.DiscoveryListener {
+        @Override
+        public void onStartDiscoveryFailed(String serviceType, int errorCode) {}
+
+        @Override
+        public void onStopDiscoveryFailed(String serviceType, int errorCode) {}
+
+        @Override
+        public void onDiscoveryStarted(String serviceType) {}
+
+        @Override
+        public void onDiscoveryStopped(String serviceType) {}
+
+        @Override
+        public void onServiceFound(NsdServiceInfo serviceInfo) {}
+
+        @Override
+        public void onServiceLost(NsdServiceInfo serviceInfo) {}
+    }
+
+    private static class DefaultServiceInfoCallback implements NsdManager.ServiceInfoCallback {
+        @Override
+        public void onServiceInfoCallbackRegistrationFailed(int errorCode) {}
+
+        @Override
+        public void onServiceUpdated(@NonNull NsdServiceInfo serviceInfo) {}
+
+        @Override
+        public void onServiceLost() {}
+
+        @Override
+        public void onServiceInfoCallbackUnregistered() {}
     }
 }

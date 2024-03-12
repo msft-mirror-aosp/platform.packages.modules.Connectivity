@@ -19,19 +19,15 @@ package {
 }
 
 install_symlink {
-    name: "platform_ethtool_symlink",
+    name: "mainline_tethering_platform_components",
+
     symlink_target: "/apex/com.android.tethering/bin/ethtool",
     // installed_location is relative to /system because that's the default partition for soong
     // modules, unless we add something like `system_ext_specific: true` like in hwservicemanager.
     installed_location: "bin/ethtool",
-}
 
-phony {
-    name: "mainline_tethering_platform_components",
-    required: [
-        "netbpfload",
-        "platform_ethtool_symlink",
-    ],
+    init_rc: ["netbpfload.rc"],
+    required: ["bpfloader"],
 }
 
 cc_binary {
@@ -65,9 +61,7 @@ cc_binary {
     // module "netbpfload" variant "android_x86_apex30": should support
     // min_sdk_version(30) for "com.android.tethering": newer SDK(34).
     min_sdk_version: "30",
-
-    init_rc: ["netbpfload.rc"],
-    required: ["bpfloader"],
+    installable: false,
 }
 
 // Versioned netbpfload init rc: init system will process it only on api T/33+ devices

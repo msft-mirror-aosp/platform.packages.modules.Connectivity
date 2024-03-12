@@ -39,6 +39,9 @@
 // Android U / 14 (api level 34) - various new program types added
 #define BPFLOADER_U_VERSION 37u
 
+// Android V / 15 (api level 35) - this bpfloader should eventually go back to T
+#define BPFLOADER_MAINLINE_VERSION 42u
+
 /* For mainline module use, you can #define BPFLOADER_{MIN/MAX}_VER
  * before #include "bpf_helpers.h" to change which bpfloaders will
  * process the resulting .o file.
@@ -111,10 +114,12 @@ struct kver_uint { unsigned int kver; };
 #define KVER_NONE KVER_(0)
 #define KVER_4_14 KVER(4, 14, 0)
 #define KVER_4_19 KVER(4, 19, 0)
-#define KVER_5_4 KVER(5, 4, 0)
-#define KVER_5_8 KVER(5, 8, 0)
-#define KVER_5_9 KVER(5, 9, 0)
+#define KVER_5_4  KVER(5, 4, 0)
+#define KVER_5_8  KVER(5, 8, 0)
+#define KVER_5_9  KVER(5, 9, 0)
 #define KVER_5_15 KVER(5, 15, 0)
+#define KVER_6_1  KVER(6, 1, 0)
+#define KVER_6_6  KVER(6, 6, 0)
 #define KVER_INF KVER_(0xFFFFFFFFu)
 
 #define KVER_IS_AT_LEAST(kver, a, b, c) ((kver).kver >= KVER(a, b, c).kver)
