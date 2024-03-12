@@ -31,13 +31,13 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// This is BpfLoader v0.41
+// This is Network BpfLoader v0.42
 // WARNING: If you ever hit cherrypick conflicts here you're doing it wrong:
 // You are NOT allowed to cherrypick bpfloader related patches out of order.
 // (indeed: cherrypicking is probably a bad idea and you should merge instead)
 // Mainline supports ONLY the published versions of the bpfloader for each Android release.
 #define BPFLOADER_VERSION_MAJOR 0u
-#define BPFLOADER_VERSION_MINOR 41u
+#define BPFLOADER_VERSION_MINOR 42u
 #define BPFLOADER_VERSION ((BPFLOADER_VERSION_MAJOR << 16) | BPFLOADER_VERSION_MINOR)
 
 #include "BpfSyscallWrappers.h"
@@ -413,9 +413,6 @@ static int readProgDefs(ifstream& elfFile, vector<struct bpf_prog_def>& pd,
                         size_t sizeOfBpfProgDef) {
     vector<char> pdData;
     int ret = readSectionByName("progs", elfFile, pdData);
-    // Older file formats do not require a 'progs' section at all.
-    // (We should probably figure out whether this is behaviour which is safe to remove now.)
-    if (ret == -2) return 0;
     if (ret) return ret;
 
     if (pdData.size() % sizeOfBpfProgDef) {

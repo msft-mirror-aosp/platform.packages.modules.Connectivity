@@ -31,9 +31,9 @@ import static org.mockito.Mockito.when;
 
 import android.content.res.Resources;
 import android.os.PersistableBundle;
-import android.test.suitebuilder.annotation.SmallTest;
 import android.util.AtomicFile;
 
+import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.connectivity.resources.R;

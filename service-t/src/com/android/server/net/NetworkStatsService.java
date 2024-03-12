@@ -593,7 +593,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                 INetd.Stub.asInterface((IBinder) context.getSystemService(Context.NETD_SERVICE)),
                 alarmManager, wakeLock, getDefaultClock(),
                 new DefaultNetworkStatsSettings(), new NetworkStatsFactory(context),
-                new NetworkStatsObservers(), new Dependencies());
+                new Dependencies());
 
         return service;
     }
@@ -603,8 +603,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     @VisibleForTesting
     NetworkStatsService(Context context, INetd netd, AlarmManager alarmManager,
             PowerManager.WakeLock wakeLock, Clock clock, NetworkStatsSettings settings,
-            NetworkStatsFactory factory, NetworkStatsObservers statsObservers,
-            @NonNull Dependencies deps) {
+            NetworkStatsFactory factory, @NonNull Dependencies deps) {
         mContext = Objects.requireNonNull(context, "missing Context");
         mNetd = Objects.requireNonNull(netd, "missing Netd");
         mAlarmManager = Objects.requireNonNull(alarmManager, "missing AlarmManager");
@@ -612,7 +611,6 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mSettings = Objects.requireNonNull(settings, "missing NetworkStatsSettings");
         mWakeLock = Objects.requireNonNull(wakeLock, "missing WakeLock");
         mStatsFactory = Objects.requireNonNull(factory, "missing factory");
-        mStatsObservers = Objects.requireNonNull(statsObservers, "missing NetworkStatsObservers");
         mDeps = Objects.requireNonNull(deps, "missing Dependencies");
         mStatsDir = mDeps.getOrCreateStatsDir();
         if (!mStatsDir.exists()) {
@@ -622,6 +620,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         final HandlerThread handlerThread = mDeps.makeHandlerThread();
         handlerThread.start();
         mHandler = new NetworkStatsHandler(handlerThread.getLooper());
+        mStatsObservers = new NetworkStatsObservers(handlerThread.getLooper());
         mNetworkStatsSubscriptionsMonitor = deps.makeSubscriptionsMonitor(mContext,
                 (command) -> mHandler.post(command) , this);
         mContentResolver = mContext.getContentResolver();
@@ -2236,7 +2235,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                             .setDefaultNetwork(true)
                             .setOemManaged(ident.getOemManaged())
                             .setSubId(ident.getSubId()).build();
-                    final String ifaceVt = IFACE_VT + getSubIdForMobile(snapshot);
+                    final String ifaceVt = IFACE_VT + getSubIdForCellularOrSatellite(snapshot);
                     findOrCreateNetworkIdentitySet(mActiveIfaces, ifaceVt).add(vtIdent);
                     findOrCreateNetworkIdentitySet(mActiveUidIfaces, ifaceVt).add(vtIdent);
                 }
@@ -2305,9 +2304,15 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mMobileIfaces = mobileIfaces.toArray(new String[0]);
     }
 
-    private static int getSubIdForMobile(@NonNull NetworkStateSnapshot state) {
-        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-            throw new IllegalArgumentException("Mobile state need capability TRANSPORT_CELLULAR");
+    private static int getSubIdForCellularOrSatellite(@NonNull NetworkStateSnapshot state) {
+        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                // Both cellular and satellite are 2 different network transport at Mobile using
+                // same telephony network specifier. So adding satellite transport to consider
+                // for, when satellite network is active at mobile.
+                && !state.getNetworkCapabilities().hasTransport(
+                NetworkCapabilities.TRANSPORT_SATELLITE)) {
+            throw new IllegalArgumentException(
+                    "Mobile state need capability TRANSPORT_CELLULAR or TRANSPORT_SATELLITE");
         }
 
         final NetworkSpecifier spec = state.getNetworkCapabilities().getNetworkSpecifier();
