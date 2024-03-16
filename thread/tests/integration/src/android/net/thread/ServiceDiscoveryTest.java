@@ -46,7 +46,6 @@ import android.content.Context;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.thread.utils.FullThreadDevice;
-import android.net.thread.utils.OtDaemonController;
 import android.net.thread.utils.TapTestNetworkTracker;
 import android.os.HandlerThread;
 
@@ -58,6 +57,7 @@ import com.google.common.truth.Correspondence;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -74,6 +74,7 @@ import java.util.concurrent.TimeoutException;
 /** Integration test cases for Service Discovery feature. */
 @RunWith(AndroidJUnit4.class)
 @LargeTest
+@Ignore("TODO: b/328527773 - enable the test when it's stable")
 public class ServiceDiscoveryTest {
     private static final String TAG = ServiceDiscoveryTest.class.getSimpleName();
     private static final int NUM_FTD = 3;
