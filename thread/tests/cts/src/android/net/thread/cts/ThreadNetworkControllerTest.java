@@ -40,7 +40,6 @@ import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
-import static org.junit.Assume.assumeNotNull;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
@@ -60,7 +59,8 @@ import android.net.thread.ThreadNetworkController.StateCallback;
 import android.net.thread.ThreadNetworkException;
 import android.net.thread.ThreadNetworkManager;
 import android.net.thread.utils.TapTestNetworkTracker;
-import android.os.Build;
+import android.net.thread.utils.ThreadFeatureCheckerRule;
+import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresThreadFeature;
 import android.os.HandlerThread;
 import android.os.OutcomeReceiver;
 
@@ -69,16 +69,12 @@ import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.LargeTest;
 
 import com.android.net.module.util.ArrayTrackRecord;
-import com.android.testutils.DevSdkIgnoreRule;
-import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
-import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.FunctionalUtils.ThrowingRunnable;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.runner.RunWith;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -99,8 +95,7 @@ import java.util.function.Predicate;
 
 /** CTS tests for {@link ThreadNetworkController}. */
 @LargeTest
-@RunWith(DevSdkIgnoreRunner.class)
-@IgnoreUpTo(Build.VERSION_CODES.TIRAMISU) // Thread is available on only U+
+@RequiresThreadFeature
 public class ThreadNetworkControllerTest {
     private static final int JOIN_TIMEOUT_MILLIS = 30 * 1000;
     private static final int LEAVE_TIMEOUT_MILLIS = 2_000;
@@ -109,11 +104,12 @@ public class ThreadNetworkControllerTest {
     private static final int CALLBACK_TIMEOUT_MILLIS = 1_000;
     private static final int ENABLED_TIMEOUT_MILLIS = 2_000;
     private static final int SERVICE_DISCOVERY_TIMEOUT_MILLIS = 30_000;
+    private static final int SERVICE_LOST_TIMEOUT_MILLIS = 20_000;
     private static final String MESHCOP_SERVICE_TYPE = "_meshcop._udp";
     private static final String THREAD_NETWORK_PRIVILEGED =
             "android.permission.THREAD_NETWORK_PRIVILEGED";
 
-    @Rule public DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
+    @Rule public final ThreadFeatureCheckerRule mThreadRule = new ThreadFeatureCheckerRule();
 
     private final Context mContext = ApplicationProvider.getApplicationContext();
     private ExecutorService mExecutor;
@@ -126,14 +122,10 @@ public class ThreadNetworkControllerTest {
 
     @Before
     public void setUp() throws Exception {
-        ThreadNetworkManager manager = mContext.getSystemService(ThreadNetworkManager.class);
-        if (manager != null) {
-            mController = manager.getAllThreadNetworkControllers().get(0);
-        }
-
-        // TODO: we will also need it in tearDown(), it's better to have a Rule to skip
-        // tests if a feature is not available.
-        assumeNotNull(mController);
+        mController =
+                mContext.getSystemService(ThreadNetworkManager.class)
+                        .getAllThreadNetworkControllers()
+                        .get(0);
 
         mGrantedPermissions = new HashSet<String>();
         mExecutor = Executors.newSingleThreadExecutor();
@@ -146,9 +138,6 @@ public class ThreadNetworkControllerTest {
 
     @After
     public void tearDown() throws Exception {
-        if (mController == null) {
-            return;
-        }
         dropAllPermissions();
         leaveAndWait(mController);
         tearDownTestNetwork();
@@ -881,7 +870,7 @@ public class ThreadNetworkControllerTest {
                 discoverForServiceLost(MESHCOP_SERVICE_TYPE, serviceLostFuture);
         setEnabledAndWait(mController, false);
         try {
-            serviceLostFuture.get(SERVICE_DISCOVERY_TIMEOUT_MILLIS, MILLISECONDS);
+            serviceLostFuture.get(SERVICE_LOST_TIMEOUT_MILLIS, MILLISECONDS);
         } catch (InterruptedException | ExecutionException | TimeoutException ignored) {
             // It's fine if the service lost event didn't show up. The service may not ever be
             // advertised.
@@ -889,7 +878,9 @@ public class ThreadNetworkControllerTest {
             mNsdManager.stopServiceDiscovery(listener);
         }
 
-        assertThrows(TimeoutException.class, () -> discoverService(MESHCOP_SERVICE_TYPE));
+        assertThrows(
+                TimeoutException.class,
+                () -> discoverService(MESHCOP_SERVICE_TYPE, SERVICE_LOST_TIMEOUT_MILLIS));
     }
 
     private static void dropAllPermissions() {
@@ -1107,6 +1098,12 @@ public class ThreadNetworkControllerTest {
 
     // Return the first discovered service instance.
     private NsdServiceInfo discoverService(String serviceType) throws Exception {
+        return discoverService(serviceType, SERVICE_DISCOVERY_TIMEOUT_MILLIS);
+    }
+
+    // Return the first discovered service instance.
+    private NsdServiceInfo discoverService(String serviceType, int timeoutMilliseconds)
+            throws Exception {
         CompletableFuture<NsdServiceInfo> serviceInfoFuture = new CompletableFuture<>();
         NsdManager.DiscoveryListener listener =
                 new DefaultDiscoveryListener() {
@@ -1117,7 +1114,7 @@ public class ThreadNetworkControllerTest {
                 };
         mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
         try {
-            serviceInfoFuture.get(SERVICE_DISCOVERY_TIMEOUT_MILLIS, MILLISECONDS);
+            serviceInfoFuture.get(timeoutMilliseconds, MILLISECONDS);
         } finally {
             mNsdManager.stopServiceDiscovery(listener);
         }
