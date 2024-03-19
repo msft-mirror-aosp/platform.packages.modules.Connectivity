@@ -16,37 +16,31 @@
 
 package android.net.thread;
 
-import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.net.InetAddresses.parseNumericAddress;
-import static android.net.thread.ThreadNetworkManager.PERMISSION_THREAD_NETWORK_PRIVILEGED;
 import static android.net.thread.utils.IntegrationTestUtils.JOIN_TIMEOUT;
-import static android.net.thread.utils.IntegrationTestUtils.RESTART_JOIN_TIMEOUT;
 import static android.net.thread.utils.IntegrationTestUtils.SERVICE_DISCOVERY_TIMEOUT;
 import static android.net.thread.utils.IntegrationTestUtils.discoverForServiceLost;
 import static android.net.thread.utils.IntegrationTestUtils.discoverService;
-import static android.net.thread.utils.IntegrationTestUtils.isSimulatedThreadRadioSupported;
 import static android.net.thread.utils.IntegrationTestUtils.resolveService;
 import static android.net.thread.utils.IntegrationTestUtils.resolveServiceUntil;
 import static android.net.thread.utils.IntegrationTestUtils.waitFor;
 
-import static com.android.testutils.TestPermissionUtil.runAsShell;
-
 import static com.google.common.io.BaseEncoding.base16;
 import static com.google.common.truth.Truth.assertThat;
-import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
 import static org.junit.Assert.assertThrows;
-import static org.junit.Assume.assumeNotNull;
-import static org.junit.Assume.assumeTrue;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
-import static java.util.concurrent.TimeUnit.SECONDS;
 
 import android.content.Context;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.thread.utils.FullThreadDevice;
 import android.net.thread.utils.TapTestNetworkTracker;
+import android.net.thread.utils.ThreadFeatureCheckerRule;
+import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresSimulationThreadDevice;
+import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresThreadFeature;
+import android.net.thread.utils.ThreadNetworkControllerWrapper;
 import android.os.HandlerThread;
 
 import androidx.test.core.app.ApplicationProvider;
@@ -58,6 +52,7 @@ import com.google.common.truth.Correspondence;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Ignore;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -73,18 +68,13 @@ import java.util.concurrent.TimeoutException;
 
 /** Integration test cases for Service Discovery feature. */
 @RunWith(AndroidJUnit4.class)
+@RequiresThreadFeature
+@RequiresSimulationThreadDevice
 @LargeTest
 @Ignore("TODO: b/328527773 - enable the test when it's stable")
 public class ServiceDiscoveryTest {
     private static final String TAG = ServiceDiscoveryTest.class.getSimpleName();
     private static final int NUM_FTD = 3;
-    private final Context mContext = ApplicationProvider.getApplicationContext();
-
-    private HandlerThread mHandlerThread;
-    private ThreadNetworkController mController;
-    private NsdManager mNsdManager;
-    private TapTestNetworkTracker mTestNetworkTracker;
-    private List<FullThreadDevice> mFtds;
 
     // A valid Thread Active Operational Dataset generated from OpenThread CLI "dataset init new".
     private static final byte[] DEFAULT_DATASET_TLVS =
@@ -100,26 +90,21 @@ public class ServiceDiscoveryTest {
     private static final Correspondence<byte[], byte[]> BYTE_ARRAY_EQUALITY =
             Correspondence.from(Arrays::equals, "is equivalent to");
 
+    @Rule public final ThreadFeatureCheckerRule mThreadRule = new ThreadFeatureCheckerRule();
+
+    private final Context mContext = ApplicationProvider.getApplicationContext();
+    private final ThreadNetworkControllerWrapper mController =
+            ThreadNetworkControllerWrapper.newInstance(mContext);
+
+    private HandlerThread mHandlerThread;
+    private NsdManager mNsdManager;
+    private TapTestNetworkTracker mTestNetworkTracker;
+    private List<FullThreadDevice> mFtds;
+
     @Before
     public void setUp() throws Exception {
-        final ThreadNetworkManager manager = mContext.getSystemService(ThreadNetworkManager.class);
-        if (manager != null) {
-            mController = manager.getAllThreadNetworkControllers().get(0);
-        }
 
-        // Run the tests on only devices where the Thread feature is available.
-        assumeNotNull(mController);
-
-        // Run the tests only when the device uses simulated Thread radio.
-        assumeTrue(isSimulatedThreadRadioSupported());
-
-        // BR forms a network.
-        CompletableFuture<Void> joinFuture = new CompletableFuture<>();
-        runAsShell(
-                PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                () -> mController.join(DEFAULT_DATASET, directExecutor(), joinFuture::complete));
-        joinFuture.get(RESTART_JOIN_TIMEOUT.toMillis(), MILLISECONDS);
-
+        mController.joinAndWait(DEFAULT_DATASET);
         mNsdManager = mContext.getSystemService(NsdManager.class);
 
         mHandlerThread = new HandlerThread(TAG);
@@ -127,17 +112,8 @@ public class ServiceDiscoveryTest {
 
         mTestNetworkTracker = new TapTestNetworkTracker(mContext, mHandlerThread.getLooper());
         assertThat(mTestNetworkTracker).isNotNull();
-        runAsShell(
-                PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                NETWORK_SETTINGS,
-                () -> {
-                    CompletableFuture<Void> future = new CompletableFuture<>();
-                    mController.setTestNetworkAsUpstream(
-                            mTestNetworkTracker.getInterfaceName(),
-                            directExecutor(),
-                            v -> future.complete(null));
-                    future.get(5, SECONDS);
-                });
+        mController.setTestNetworkAsUpstreamAndWait(mTestNetworkTracker.getInterfaceName());
+
         // Create the FTDs in setUp() so that the FTDs can be safely released in tearDown().
         // Don't create new FTDs in test cases.
         mFtds = new ArrayList<>();
@@ -150,12 +126,6 @@ public class ServiceDiscoveryTest {
 
     @After
     public void tearDown() throws Exception {
-        if (mController == null) {
-            return;
-        }
-        if (!isSimulatedThreadRadioSupported()) {
-            return;
-        }
         for (FullThreadDevice ftd : mFtds) {
             // Clear registered SRP hosts and services
             if (ftd.isSrpHostRegistered()) {
@@ -170,18 +140,8 @@ public class ServiceDiscoveryTest {
             mHandlerThread.quitSafely();
             mHandlerThread.join();
         }
-        runAsShell(
-                PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                NETWORK_SETTINGS,
-                () -> {
-                    CompletableFuture<Void> setUpstreamFuture = new CompletableFuture<>();
-                    CompletableFuture<Void> leaveFuture = new CompletableFuture<>();
-                    mController.setTestNetworkAsUpstream(
-                            null, directExecutor(), v -> setUpstreamFuture.complete(null));
-                    mController.leave(directExecutor(), v -> leaveFuture.complete(null));
-                    setUpstreamFuture.get(5, SECONDS);
-                    leaveFuture.get(5, SECONDS);
-                });
+        mController.setTestNetworkAsUpstreamAndWait(null);
+        mController.leaveAndWait();
     }
 
     @Test
