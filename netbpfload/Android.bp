@@ -62,6 +62,6 @@ cc_binary {
 prebuilt_etc {
     name: "netbpfload.mainline.rc",
     src: "netbpfload.mainline.rc",
-    filename: "netbpfload.33rc",
+    filename: "netbpfload.35rc",
     installable: false,
 }
