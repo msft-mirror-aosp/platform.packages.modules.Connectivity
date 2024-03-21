@@ -46,10 +46,13 @@ import java.io.InputStream;
  */
 public class ThreadPersistentSettings {
     private static final String TAG = "ThreadPersistentSettings";
+
     /** File name used for storing settings. */
     private static final String FILE_NAME = "ThreadPersistentSettings.xml";
+
     /** Current config store data version. This will be incremented for any additions. */
     private static final int CURRENT_SETTINGS_STORE_DATA_VERSION = 1;
+
     /**
      * Stores the version of the data. This can be used to handle migration of data if some
      * non-backward compatible change introduced.
@@ -210,7 +213,7 @@ public class ThreadPersistentSettings {
                 mSettings.putAll(bundleRead);
             }
         } catch (FileNotFoundException e) {
-            Log.e(TAG, "No store file to read", e);
+            Log.w(TAG, "No store file to read", e);
         } catch (IOException e) {
             Log.e(TAG, "Read from store file failed", e);
         }

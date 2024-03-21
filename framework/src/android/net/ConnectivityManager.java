@@ -6284,15 +6284,16 @@ public class ConnectivityManager {
     @RequiresPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
     public boolean isUidNetworkingBlocked(int uid, boolean isNetworkMetered) {
         if (!SdkLevel.isAtLeastU()) {
-            Log.wtf(TAG, "isUidNetworkingBlocked is not supported on pre-U devices");
+            throw new IllegalStateException(
+                    "isUidNetworkingBlocked is not supported on pre-U devices");
         }
-        final BpfNetMapsReader reader = BpfNetMapsReader.getInstance();
+        final NetworkStackBpfNetMaps reader = NetworkStackBpfNetMaps.getInstance();
         // Note that before V, the data saver status in bpf is written by ConnectivityService
         // when receiving {@link #ACTION_RESTRICT_BACKGROUND_CHANGED}. Thus,
         // the status is not synchronized.
         // On V+, the data saver status is set by platform code when enabling/disabling
         // data saver, which is synchronized.
-        return reader.isUidNetworkingBlocked(uid, isNetworkMetered, reader.getDataSaverEnabled());
+        return reader.isUidNetworkingBlocked(uid, isNetworkMetered);
     }
 
     /** @hide */
