@@ -17,15 +17,10 @@
 package android.net.thread;
 
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
-import static android.Manifest.permission.NETWORK_SETTINGS;
-import static android.net.thread.ThreadNetworkManager.PERMISSION_THREAD_NETWORK_PRIVILEGED;
 import static android.net.thread.utils.IntegrationTestUtils.JOIN_TIMEOUT;
-import static android.net.thread.utils.IntegrationTestUtils.RESTART_JOIN_TIMEOUT;
 import static android.net.thread.utils.IntegrationTestUtils.isExpectedIcmpv6Packet;
 import static android.net.thread.utils.IntegrationTestUtils.isFromIpv6Source;
 import static android.net.thread.utils.IntegrationTestUtils.isInMulticastGroup;
-import static android.net.thread.utils.IntegrationTestUtils.isMulticastRoutingSupported;
-import static android.net.thread.utils.IntegrationTestUtils.isSimulatedThreadRadioSupported;
 import static android.net.thread.utils.IntegrationTestUtils.isToIpv6Destination;
 import static android.net.thread.utils.IntegrationTestUtils.newPacketReader;
 import static android.net.thread.utils.IntegrationTestUtils.pollForPacket;
@@ -38,16 +33,13 @@ import static com.android.testutils.TestNetworkTrackerKt.initTestNetwork;
 import static com.android.testutils.TestPermissionUtil.runAsShell;
 
 import static com.google.common.io.BaseEncoding.base16;
-import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assume.assumeNotNull;
-import static org.junit.Assume.assumeTrue;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.Objects.requireNonNull;
 
 import android.content.Context;
 import android.net.InetAddresses;
@@ -56,6 +48,11 @@ import android.net.MacAddress;
 import android.net.thread.utils.FullThreadDevice;
 import android.net.thread.utils.InfraNetworkDevice;
 import android.net.thread.utils.OtDaemonController;
+import android.net.thread.utils.ThreadFeatureCheckerRule;
+import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresIpv6MulticastRouting;
+import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresSimulationThreadDevice;
+import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresThreadFeature;
+import android.net.thread.utils.ThreadNetworkControllerWrapper;
 import android.os.Handler;
 import android.os.HandlerThread;
 
@@ -68,6 +65,7 @@ import com.android.testutils.TestNetworkTracker;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -75,26 +73,15 @@ import java.net.Inet6Address;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
 
 /** Integration test cases for Thread Border Routing feature. */
 @RunWith(AndroidJUnit4.class)
+@RequiresThreadFeature
+@RequiresSimulationThreadDevice
 @LargeTest
 public class BorderRoutingTest {
     private static final String TAG = BorderRoutingTest.class.getSimpleName();
-    private final Context mContext = ApplicationProvider.getApplicationContext();
-    private ThreadNetworkController mController;
-    private OtDaemonController mOtCtl;
-    private HandlerThread mHandlerThread;
-    private Handler mHandler;
-    private TestNetworkTracker mInfraNetworkTracker;
-    private List<FullThreadDevice> mFtds;
-    private TapPacketReader mInfraNetworkReader;
-    private InfraNetworkDevice mInfraDevice;
-
     private static final int NUM_FTD = 2;
     private static final Inet6Address GROUP_ADDR_SCOPE_5 =
             (Inet6Address) InetAddresses.parseNumericAddress("ff05::1234");
@@ -114,17 +101,21 @@ public class BorderRoutingTest {
     private static final ActiveOperationalDataset DEFAULT_DATASET =
             ActiveOperationalDataset.fromThreadTlvs(DEFAULT_DATASET_TLVS);
 
+    @Rule public final ThreadFeatureCheckerRule mThreadRule = new ThreadFeatureCheckerRule();
+
+    private final Context mContext = ApplicationProvider.getApplicationContext();
+    private final ThreadNetworkControllerWrapper mController =
+            ThreadNetworkControllerWrapper.newInstance(mContext);
+    private OtDaemonController mOtCtl;
+    private HandlerThread mHandlerThread;
+    private Handler mHandler;
+    private TestNetworkTracker mInfraNetworkTracker;
+    private List<FullThreadDevice> mFtds;
+    private TapPacketReader mInfraNetworkReader;
+    private InfraNetworkDevice mInfraDevice;
+
     @Before
     public void setUp() throws Exception {
-        assumeTrue(isSimulatedThreadRadioSupported());
-        final ThreadNetworkManager manager = mContext.getSystemService(ThreadNetworkManager.class);
-        if (manager != null) {
-            mController = manager.getAllThreadNetworkControllers().get(0);
-        }
-
-        // Run the tests on only devices where the Thread feature is available
-        assumeNotNull(mController);
-
         // TODO: b/323301831 - This is a workaround to avoid unnecessary delay to re-form a network
         mOtCtl = new OtDaemonController();
         mOtCtl.factoryReset();
@@ -135,9 +126,7 @@ public class BorderRoutingTest {
         mFtds = new ArrayList<>();
 
         setUpInfraNetwork();
-
-        // BR forms a network.
-        startBrLeader();
+        mController.joinAndWait(DEFAULT_DATASET);
 
         // Creates a infra network device.
         mInfraNetworkReader = newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
@@ -151,20 +140,8 @@ public class BorderRoutingTest {
 
     @After
     public void tearDown() throws Exception {
-        if (mController == null) {
-            return;
-        }
-
-        runAsShell(
-                PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                NETWORK_SETTINGS,
-                () -> {
-                    CountDownLatch latch = new CountDownLatch(2);
-                    mController.setTestNetworkAsUpstream(
-                            null, directExecutor(), v -> latch.countDown());
-                    mController.leave(directExecutor(), v -> latch.countDown());
-                    latch.await(10, TimeUnit.SECONDS);
-                });
+        mController.setTestNetworkAsUpstreamAndWait(null);
+        mController.leaveAndWait();
         tearDownInfraNetwork();
 
         mHandlerThread.quitSafely();
@@ -187,15 +164,13 @@ public class BorderRoutingTest {
          * </pre>
          */
 
-        // Let ftd join the network.
         FullThreadDevice ftd = mFtds.get(0);
         startFtdChild(ftd);
 
-        // Infra device sends an echo request to FTD's OMR.
         mInfraDevice.sendEchoRequest(ftd.getOmrAddress());
 
         // Infra device receives an echo reply sent by FTD.
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, null /* srcAddress */));
+        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
     }
 
     @Test
@@ -210,9 +185,6 @@ public class BorderRoutingTest {
          * </pre>
          */
 
-        // Form the network.
-        mOtCtl.factoryReset();
-        startBrLeader();
         startInfraDevice();
         FullThreadDevice ftd = mFtds.get(0);
         startFtdChild(ftd);
@@ -225,8 +197,6 @@ public class BorderRoutingTest {
     @Test
     public void unicastRouting_borderRouterSendsUdpToThreadDevice_datagramReceived()
             throws Exception {
-        assumeTrue(isSimulatedThreadRadioSupported());
-
         /*
          * <pre>
          * Topology:
@@ -236,19 +206,10 @@ public class BorderRoutingTest {
          * </pre>
          */
 
-        // BR forms a network.
-        CompletableFuture<Void> joinFuture = new CompletableFuture<>();
-        runAsShell(
-                PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                () -> mController.join(DEFAULT_DATASET, directExecutor(), joinFuture::complete));
-        joinFuture.get(RESTART_JOIN_TIMEOUT.toMillis(), MILLISECONDS);
-
-        // Creates a Full Thread Device (FTD) and lets it join the network.
         FullThreadDevice ftd = mFtds.get(0);
         startFtdChild(ftd);
-        Inet6Address ftdOmr = ftd.getOmrAddress();
-        Inet6Address ftdMlEid = ftd.getMlEid();
-        assertNotNull(ftdMlEid);
+        Inet6Address ftdOmr = requireNonNull(ftd.getOmrAddress());
+        Inet6Address ftdMlEid = requireNonNull(ftd.getMlEid());
 
         ftd.udpBind(ftdOmr, 12345);
         sendUdpMessage(ftdOmr, 12345, "aaaaaaaa");
@@ -260,9 +221,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_ftdSubscribedMulticastAddress_infraLinkJoinsMulticastGroup()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -281,10 +242,10 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void
             multicastRouting_ftdSubscribedScope3MulticastAddress_infraLinkNotJoinMulticastGroup()
                     throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -303,9 +264,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_ftdSubscribedMulticastAddress_canPingfromInfraLink()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -325,9 +286,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_inboundForwarding_afterBrRejoinFtdRepliesSubscribedAddress()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
 
         // TODO (b/327311034): Testing bbr state switch from primary mode to secondary mode and back
         // to primary mode requires an additional BR in the Thread network. This is not currently
@@ -335,9 +296,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_ftdSubscribedScope3MulticastAddress_cannotPingfromInfraLink()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -357,9 +318,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_ftdNotSubscribedMulticastAddress_cannotPingFromInfraDevice()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -378,9 +339,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_multipleFtdsSubscribedDifferentAddresses_canPingFromInfraDevice()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -414,9 +375,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_multipleFtdsSubscribedSameAddress_canPingFromInfraDevice()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -449,8 +410,8 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_outboundForwarding_scopeLargerThan3IsForwarded() throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -474,9 +435,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_outboundForwarding_scopeSmallerThan4IsNotForwarded()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -497,8 +458,8 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_outboundForwarding_llaToScope4IsNotForwarded() throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -513,15 +474,15 @@ public class BorderRoutingTest {
         Inet6Address ftdLla = ftd.getLinkLocalAddress();
         assertNotNull(ftdLla);
 
-        ftd.ping(GROUP_ADDR_SCOPE_4, ftdLla, 100 /* size */, 1 /* count */);
+        ftd.ping(GROUP_ADDR_SCOPE_4, ftdLla);
 
         assertNull(
                 pollForPacketOnInfraNetwork(ICMPV6_ECHO_REQUEST_TYPE, ftdLla, GROUP_ADDR_SCOPE_4));
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_outboundForwarding_mlaToScope4IsNotForwarded() throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -537,7 +498,7 @@ public class BorderRoutingTest {
         assertFalse(ftdMlas.isEmpty());
 
         for (Inet6Address ftdMla : ftdMlas) {
-            ftd.ping(GROUP_ADDR_SCOPE_4, ftdMla, 100 /* size */, 1 /* count */);
+            ftd.ping(GROUP_ADDR_SCOPE_4, ftdMla);
 
             assertNull(
                     pollForPacketOnInfraNetwork(
@@ -546,9 +507,9 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_infraNetworkSwitch_ftdRepliesToSubscribedAddress()
             throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -575,8 +536,8 @@ public class BorderRoutingTest {
     }
 
     @Test
+    @RequiresIpv6MulticastRouting
     public void multicastRouting_infraNetworkSwitch_outboundPacketIsForwarded() throws Exception {
-        assumeTrue(isMulticastRoutingSupported());
         /*
          * <pre>
          * Topology:
@@ -602,36 +563,19 @@ public class BorderRoutingTest {
                 pollForPacketOnInfraNetwork(ICMPV6_ECHO_REQUEST_TYPE, ftdOmr, GROUP_ADDR_SCOPE_4));
     }
 
-    private void setUpInfraNetwork() {
+    private void setUpInfraNetwork() throws Exception {
         mInfraNetworkTracker =
                 runAsShell(
                         MANAGE_TEST_NETWORKS,
                         () ->
                                 initTestNetwork(
                                         mContext, new LinkProperties(), 5000 /* timeoutMs */));
-        runAsShell(
-                PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                NETWORK_SETTINGS,
-                () -> {
-                    CompletableFuture<Void> future = new CompletableFuture<>();
-                    mController.setTestNetworkAsUpstream(
-                            mInfraNetworkTracker.getTestIface().getInterfaceName(),
-                            directExecutor(),
-                            future::complete);
-                    future.get(5, TimeUnit.SECONDS);
-                });
+        mController.setTestNetworkAsUpstreamAndWait(
+                mInfraNetworkTracker.getTestIface().getInterfaceName());
     }
 
     private void tearDownInfraNetwork() {
         runAsShell(MANAGE_TEST_NETWORKS, () -> mInfraNetworkTracker.teardown());
-    }
-
-    private void startBrLeader() throws Exception {
-        CompletableFuture<Void> joinFuture = new CompletableFuture<>();
-        runAsShell(
-                PERMISSION_THREAD_NETWORK_PRIVILEGED,
-                () -> mController.join(DEFAULT_DATASET, directExecutor(), joinFuture::complete));
-        joinFuture.get(RESTART_JOIN_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
     }
 
     private void startFtdChild(FullThreadDevice ftd) throws Exception {
