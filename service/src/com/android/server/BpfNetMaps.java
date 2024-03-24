@@ -49,7 +49,7 @@ import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
 
 import android.app.StatsManager;
 import android.content.Context;
-import android.net.BpfNetMapsReader;
+import android.net.BpfNetMapsUtils;
 import android.net.INetd;
 import android.net.UidOwnerValue;
 import android.os.Build;
@@ -535,14 +535,11 @@ public class BpfNetMaps {
      * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
-     *
-     * @deprecated Use {@link BpfNetMapsReader#isChainEnabled} instead.
      */
-    // TODO: Migrate the callers to use {@link BpfNetMapsReader#isChainEnabled} instead.
     @Deprecated
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public boolean isChainEnabled(final int childChain) {
-        return BpfNetMapsReader.isChainEnabled(sConfigurationMap, childChain);
+        return BpfNetMapsUtils.isChainEnabled(sConfigurationMap, childChain);
     }
 
     private Set<Integer> asSet(final int[] uids) {
@@ -635,12 +632,9 @@ public class BpfNetMaps {
      * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
-     *
-     * @deprecated use {@link BpfNetMapsReader#getUidRule} instead.
      */
-    // TODO: Migrate the callers to use {@link BpfNetMapsReader#getUidRule} instead.
     public int getUidRule(final int childChain, final int uid) {
-        return BpfNetMapsReader.getUidRule(sUidOwnerMap, childChain, uid);
+        return BpfNetMapsUtils.getUidRule(sUidOwnerMap, childChain, uid);
     }
 
     private Set<Integer> getUidsMatchEnabled(final int childChain) throws ErrnoException {
