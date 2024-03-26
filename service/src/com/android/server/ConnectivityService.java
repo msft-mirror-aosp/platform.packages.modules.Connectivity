@@ -844,11 +844,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final int EVENT_UID_FROZEN_STATE_CHANGED = 61;
 
     /**
-     * Event to inform the ConnectivityService handler when a uid has lost carrier privileges.
-     */
-    private static final int EVENT_UID_CARRIER_PRIVILEGES_LOST = 62;
-
-    /**
      * Argument for {@link #EVENT_PROVISIONING_NOTIFICATION} to indicate that the notification
      * should be shown.
      */
@@ -1288,14 +1283,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
     private final LegacyTypeTracker mLegacyTypeTracker = new LegacyTypeTracker(this);
 
-    @VisibleForTesting
-    void onCarrierPrivilegesLost(Integer uid, Integer subId) {
-        if (mRequestRestrictedWifiEnabled) {
-            mHandler.sendMessage(mHandler.obtainMessage(
-                    EVENT_UID_CARRIER_PRIVILEGES_LOST, uid, subId));
-        }
-    }
-
     final LocalPriorityDump mPriorityDumper = new LocalPriorityDump();
     /**
      * Helper class which parses out priority arguments and dumps sections according to their
@@ -1517,10 +1504,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 @NonNull final Context context,
                 @NonNull final TelephonyManager tm,
                 boolean requestRestrictedWifiEnabled,
-                @NonNull BiConsumer<Integer, Integer> listener) {
+                @NonNull BiConsumer<Integer, Integer> listener,
+                @NonNull final Handler connectivityServiceHandler) {
             if (isAtLeastT()) {
-                return new CarrierPrivilegeAuthenticator(
-                        context, tm, requestRestrictedWifiEnabled, listener);
+                return new CarrierPrivilegeAuthenticator(context, tm, requestRestrictedWifiEnabled,
+                        listener, connectivityServiceHandler);
             } else {
                 return null;
             }
@@ -1805,7 +1793,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 && mDeps.isFeatureEnabled(context, REQUEST_RESTRICTED_WIFI);
         mCarrierPrivilegeAuthenticator = mDeps.makeCarrierPrivilegeAuthenticator(
                 mContext, mTelephonyManager, mRequestRestrictedWifiEnabled,
-                this::onCarrierPrivilegesLost);
+                this::handleUidCarrierPrivilegesLost, mHandler);
 
         if (mDeps.isAtLeastU()
                 && mDeps
@@ -3809,6 +3797,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         if (mSatelliteAccessController != null) {
             mSatelliteAccessController.start();
+        }
+
+        if (mCarrierPrivilegeAuthenticator != null) {
+            mCarrierPrivilegeAuthenticator.start();
         }
 
         // On T+ devices, register callback for statsd to pull NETWORK_BPF_MAP_INFO atom
@@ -6490,9 +6482,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     UidFrozenStateChangedArgs args = (UidFrozenStateChangedArgs) msg.obj;
                     handleFrozenUids(args.mUids, args.mFrozenStates);
                     break;
-                case EVENT_UID_CARRIER_PRIVILEGES_LOST:
-                    handleUidCarrierPrivilegesLost(msg.arg1, msg.arg2);
-                    break;
             }
         }
     }
@@ -9155,6 +9144,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private void handleUidCarrierPrivilegesLost(int uid, int subId) {
+        if (!mRequestRestrictedWifiEnabled) {
+            return;
+        }
         ensureRunningOnConnectivityServiceThread();
         // A NetworkRequest needs to be revoked when all the conditions are met
         //   1. It requests restricted network
