@@ -348,7 +348,9 @@ class EthernetManagerTest {
         }
     }
 
-    private fun isEthernetSupported() = em != null
+    private fun isEthernetSupported() : Boolean {
+        return context.getSystemService(EthernetManager::class.java) != null
+    }
 
     @Before
     fun setUp() {
@@ -896,6 +898,20 @@ class EthernetManagerTest {
         // Interface does not exist, enable/disableInterface() should both return an error.
         enableInterface(iface).expectError()
         disableInterface(iface).expectError()
+    }
+
+    @Test
+    fun testEnableDisableInterface_callbacks() {
+        val iface = createInterface()
+        val listener = EthernetStateListener()
+        addInterfaceStateListener(listener)
+        listener.expectCallback(iface, STATE_LINK_UP, ROLE_CLIENT)
+
+        disableInterface(iface).expectResult(iface.name)
+        listener.expectCallback(iface, STATE_LINK_DOWN, ROLE_CLIENT)
+
+        enableInterface(iface).expectResult(iface.name)
+        listener.expectCallback(iface, STATE_LINK_UP, ROLE_CLIENT)
     }
 
     @Test

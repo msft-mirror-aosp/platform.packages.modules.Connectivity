@@ -28,6 +28,7 @@ import android.text.TextUtils;
 import com.android.net.module.util.ByteUtils;
 
 import java.nio.charset.Charset;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -62,7 +63,8 @@ public class MdnsServiceInfo implements Parcelable {
                             source.createStringArrayList(),
                             source.createTypedArrayList(TextEntry.CREATOR),
                             source.readInt(),
-                            source.readParcelable(null));
+                            source.readParcelable(Network.class.getClassLoader()),
+                            Instant.ofEpochSecond(source.readLong()));
                 }
 
                 @Override
@@ -89,54 +91,8 @@ public class MdnsServiceInfo implements Parcelable {
     @Nullable
     private final Network network;
 
-    /** Constructs a {@link MdnsServiceInfo} object with default values. */
-    public MdnsServiceInfo(
-            String serviceInstanceName,
-            String[] serviceType,
-            @Nullable List<String> subtypes,
-            String[] hostName,
-            int port,
-            @Nullable String ipv4Address,
-            @Nullable String ipv6Address,
-            @Nullable List<String> textStrings) {
-        this(
-                serviceInstanceName,
-                serviceType,
-                subtypes,
-                hostName,
-                port,
-                List.of(ipv4Address),
-                List.of(ipv6Address),
-                textStrings,
-                /* textEntries= */ null,
-                /* interfaceIndex= */ INTERFACE_INDEX_UNSPECIFIED,
-                /* network= */ null);
-    }
-
-    /** Constructs a {@link MdnsServiceInfo} object with default values. */
-    public MdnsServiceInfo(
-            String serviceInstanceName,
-            String[] serviceType,
-            List<String> subtypes,
-            String[] hostName,
-            int port,
-            @Nullable String ipv4Address,
-            @Nullable String ipv6Address,
-            @Nullable List<String> textStrings,
-            @Nullable List<TextEntry> textEntries) {
-        this(
-                serviceInstanceName,
-                serviceType,
-                subtypes,
-                hostName,
-                port,
-                List.of(ipv4Address),
-                List.of(ipv6Address),
-                textStrings,
-                textEntries,
-                /* interfaceIndex= */ INTERFACE_INDEX_UNSPECIFIED,
-                /* network= */ null);
-    }
+    @NonNull
+    private final Instant expirationTime;
 
     /**
      * Constructs a {@link MdnsServiceInfo} object with default values.
@@ -165,7 +121,8 @@ public class MdnsServiceInfo implements Parcelable {
                 textStrings,
                 textEntries,
                 interfaceIndex,
-                /* network= */ null);
+                /* network= */ null,
+                /* expirationTime= */ Instant.MAX);
     }
 
     /**
@@ -184,7 +141,8 @@ public class MdnsServiceInfo implements Parcelable {
             @Nullable List<String> textStrings,
             @Nullable List<TextEntry> textEntries,
             int interfaceIndex,
-            @Nullable Network network) {
+            @Nullable Network network,
+            @NonNull Instant expirationTime) {
         this.serviceInstanceName = serviceInstanceName;
         this.serviceType = serviceType;
         this.subtypes = new ArrayList<>();
@@ -217,6 +175,7 @@ public class MdnsServiceInfo implements Parcelable {
         this.attributes = Collections.unmodifiableMap(attributes);
         this.interfaceIndex = interfaceIndex;
         this.network = network;
+        this.expirationTime = Instant.ofEpochSecond(expirationTime.getEpochSecond());
     }
 
     private static List<TextEntry> parseTextStrings(List<String> textStrings) {
@@ -314,6 +273,17 @@ public class MdnsServiceInfo implements Parcelable {
     }
 
     /**
+     * Returns the timestamp after when this service is expired or {@code null} if the expiration
+     * time is unknown.
+     *
+     * A service is considered expired if any of its DNS record is expired.
+     */
+    @NonNull
+    public Instant getExpirationTime() {
+        return expirationTime;
+    }
+
+    /**
      * Returns attribute value for {@code key} as a UTF-8 string. It's the caller who must make sure
      * that the value of {@code key} is indeed a UTF-8 string. {@code null} will be returned if no
      * attribute value exists for {@code key}.
@@ -364,6 +334,7 @@ public class MdnsServiceInfo implements Parcelable {
         out.writeTypedList(textEntries);
         out.writeInt(interfaceIndex);
         out.writeParcelable(network, 0);
+        out.writeLong(expirationTime.getEpochSecond());
     }
 
     @Override
@@ -377,7 +348,8 @@ public class MdnsServiceInfo implements Parcelable {
                 + ", interfaceIndex: " + interfaceIndex
                 + ", network: " + network
                 + ", textStrings: " + textStrings
-                + ", textEntries: " + textEntries;
+                + ", textEntries: " + textEntries
+                + ", expirationTime: " + expirationTime;
     }
 
 
