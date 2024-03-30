@@ -18,7 +18,6 @@ package com.android.server.connectivity.mdns
 
 import android.net.InetAddresses.parseNumericAddress
 import android.net.LinkAddress
-import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.os.HandlerThread
@@ -55,6 +54,7 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import org.mockito.Mockito.inOrder
 
 private const val LOG_TAG = "testlogtag"
 private const val TIMEOUT_MS = 10_000L
@@ -65,6 +65,7 @@ private val TEST_HOSTNAME = arrayOf("Android_test", "local")
 
 private const val TEST_SERVICE_ID_1 = 42
 private const val TEST_SERVICE_ID_DUPLICATE = 43
+private const val TEST_SERVICE_ID_2 = 44
 private val TEST_SERVICE_1 = NsdServiceInfo().apply {
     serviceType = "_testservice._tcp"
     serviceName = "MyTestService"
@@ -75,6 +76,13 @@ private val TEST_SERVICE_1_SUBTYPE = NsdServiceInfo().apply {
     subtypes = setOf("_sub")
     serviceType = "_testservice._tcp"
     serviceName = "MyTestService"
+    port = 12345
+}
+
+private val TEST_SERVICE_1_CUSTOM_HOST = NsdServiceInfo().apply {
+    serviceType = "_testservice._tcp"
+    serviceName = "MyTestService"
+    hostname = "MyTestHost"
     port = 12345
 }
 
@@ -180,6 +188,93 @@ class MdnsInterfaceAdvertiserTest {
         announceCb.onFinished(testExitInfo)
         thread.waitForIdle(TIMEOUT_MS)
         verify(cb).onAllServicesRemoved(socket)
+    }
+
+    @Test
+    fun testAddRemoveServiceWithCustomHost_restartProbingForProbingServices() {
+        val customHost1 = NsdServiceInfo().apply {
+            hostname = "MyTestHost"
+            hostAddresses = listOf(
+                    parseNumericAddress("192.0.2.23"),
+                    parseNumericAddress("2001:db8::1"))
+        }
+        addServiceAndFinishProbing(TEST_SERVICE_ID_1, customHost1)
+        addServiceAndFinishProbing(TEST_SERVICE_ID_2, TEST_SERVICE_1_CUSTOM_HOST)
+        repository.setServiceProbing(TEST_SERVICE_ID_2)
+        val probingInfo = mock(ProbingInfo::class.java)
+        doReturn("MyTestHost")
+                .`when`(repository).getHostnameForServiceId(TEST_SERVICE_ID_1)
+        doReturn(TEST_SERVICE_ID_2).`when`(probingInfo).serviceId
+        doReturn(listOf(probingInfo))
+                .`when`(repository).restartProbingForHostname("MyTestHost")
+        val inOrder = inOrder(prober, announcer)
+
+        // Remove the custom host: the custom host's announcement is stopped and the probing
+        // services which use that hostname are re-announced.
+        advertiser.removeService(TEST_SERVICE_ID_1)
+
+        inOrder.verify(prober).stop(TEST_SERVICE_ID_1)
+        inOrder.verify(announcer).stop(TEST_SERVICE_ID_1)
+        inOrder.verify(prober).stop(TEST_SERVICE_ID_2)
+        inOrder.verify(prober).startProbing(probingInfo)
+    }
+
+    @Test
+    fun testAddRemoveServiceWithCustomHost_restartAnnouncingForProbedServices() {
+        val customHost1 = NsdServiceInfo().apply {
+            hostname = "MyTestHost"
+            hostAddresses = listOf(
+                    parseNumericAddress("192.0.2.23"),
+                    parseNumericAddress("2001:db8::1"))
+        }
+        addServiceAndFinishProbing(TEST_SERVICE_ID_1, customHost1)
+        val announcementInfo =
+                addServiceAndFinishProbing(TEST_SERVICE_ID_2, TEST_SERVICE_1_CUSTOM_HOST)
+        doReturn("MyTestHost")
+                .`when`(repository).getHostnameForServiceId(TEST_SERVICE_ID_1)
+        doReturn(listOf(announcementInfo))
+                .`when`(repository).restartAnnouncingForHostname("MyTestHost")
+        val inOrder = inOrder(prober, announcer)
+
+        // Remove the custom host: the custom host's announcement is stopped and the probed services
+        // which use that hostname are re-announced.
+        advertiser.removeService(TEST_SERVICE_ID_1)
+
+        inOrder.verify(prober).stop(TEST_SERVICE_ID_1)
+        inOrder.verify(announcer).stop(TEST_SERVICE_ID_1)
+        inOrder.verify(announcer).stop(TEST_SERVICE_ID_2)
+        inOrder.verify(announcer).startSending(TEST_SERVICE_ID_2, announcementInfo, 0L /* initialDelayMs */)
+    }
+
+    @Test
+    fun testAddMoreAddressesForCustomHost_restartAnnouncingForProbedServices() {
+        val customHost = NsdServiceInfo().apply {
+            hostname = "MyTestHost"
+            hostAddresses = listOf(
+                parseNumericAddress("192.0.2.23"),
+                parseNumericAddress("2001:db8::1"))
+        }
+        doReturn("MyTestHost")
+            .`when`(repository).getHostnameForServiceId(TEST_SERVICE_ID_1)
+        doReturn("MyTestHost")
+            .`when`(repository).getHostnameForServiceId(TEST_SERVICE_ID_2)
+        val announcementInfo1 =
+            addServiceAndFinishProbing(TEST_SERVICE_ID_1, TEST_SERVICE_1_CUSTOM_HOST)
+
+        val probingInfo2 = addServiceAndStartProbing(TEST_SERVICE_ID_2, customHost)
+        val announcementInfo2 = AnnouncementInfo(TEST_SERVICE_ID_2, emptyList(), emptyList())
+        doReturn(announcementInfo2).`when`(repository).onProbingSucceeded(probingInfo2)
+        doReturn(listOf(announcementInfo1, announcementInfo2))
+            .`when`(repository).restartAnnouncingForHostname("MyTestHost")
+        probeCb.onFinished(probingInfo2)
+
+        val inOrder = inOrder(prober, announcer)
+
+        inOrder.verify(announcer)
+            .startSending(TEST_SERVICE_ID_2, announcementInfo2, 0L /* initialDelayMs */)
+        inOrder.verify(announcer).stop(TEST_SERVICE_ID_1)
+        inOrder.verify(announcer)
+            .startSending(TEST_SERVICE_ID_1, announcementInfo1, 0L /* initialDelayMs */)
     }
 
     @Test
@@ -422,8 +517,8 @@ class MdnsInterfaceAdvertiserTest {
         verify(prober, never()).startProbing(any())
     }
 
-    private fun addServiceAndFinishProbing(serviceId: Int, serviceInfo: NsdServiceInfo):
-            AnnouncementInfo {
+    private fun addServiceAndStartProbing(serviceId: Int, serviceInfo: NsdServiceInfo):
+            ProbingInfo {
         val testProbingInfo = mock(ProbingInfo::class.java)
         doReturn(serviceId).`when`(testProbingInfo).serviceId
         doReturn(testProbingInfo).`when`(repository).setServiceProbing(serviceId)
@@ -432,8 +527,15 @@ class MdnsInterfaceAdvertiserTest {
         verify(repository).addService(serviceId, serviceInfo, null /* ttl */)
         verify(prober).startProbing(testProbingInfo)
 
+        return testProbingInfo
+    }
+
+    private fun addServiceAndFinishProbing(serviceId: Int, serviceInfo: NsdServiceInfo):
+            AnnouncementInfo {
+        val testProbingInfo = addServiceAndStartProbing(serviceId, serviceInfo)
+
         // Simulate probing success: continues to announcing
-        val testAnnouncementInfo = mock(AnnouncementInfo::class.java)
+        val testAnnouncementInfo = AnnouncementInfo(serviceId, emptyList(), emptyList())
         doReturn(testAnnouncementInfo).`when`(repository).onProbingSucceeded(testProbingInfo)
         probeCb.onFinished(testProbingInfo)
         return testAnnouncementInfo
