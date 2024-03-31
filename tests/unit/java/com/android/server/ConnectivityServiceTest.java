@@ -1719,6 +1719,8 @@ public class ConnectivityServiceTest {
     private void mockUidNetworkingBlocked() {
         doAnswer(i -> isUidBlocked(mBlockedReasons, i.getArgument(1))
         ).when(mNetworkPolicyManager).isUidNetworkingBlocked(anyInt(), anyBoolean());
+        doAnswer(i -> isUidBlocked(mBlockedReasons, i.getArgument(1))
+        ).when(mBpfNetMaps).isUidNetworkingBlocked(anyInt(), anyBoolean());
     }
 
     private boolean isUidBlocked(int blockedReasons, boolean meteredNetwork) {
@@ -17434,11 +17436,12 @@ public class ConnectivityServiceTest {
         }
 
         mWiFiAgent.disconnect();
-        waitForIdle();
 
         if (expectUnavailable) {
+            testFactory.expectRequestRemove();
             testFactory.assertRequestCountEquals(0);
         } else {
+            testFactory.expectRequestAdd();
             testFactory.assertRequestCountEquals(1);
         }
 
