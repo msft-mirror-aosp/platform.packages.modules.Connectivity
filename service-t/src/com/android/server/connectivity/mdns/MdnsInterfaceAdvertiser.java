@@ -22,12 +22,10 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresApi;
 import android.net.LinkAddress;
-import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.ArraySet;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.net.module.util.HexDump;
@@ -38,6 +36,7 @@ import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -136,6 +135,15 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
 
             mAnnouncer.startSending(info.getServiceId(), announcementInfo,
                     0L /* initialDelayMs */);
+
+            // Re-announce the services which have the same custom hostname.
+            final String hostname = mRecordRepository.getHostnameForServiceId(info.getServiceId());
+            if (hostname != null) {
+                final List<MdnsAnnouncer.AnnouncementInfo> announcementInfos =
+                        new ArrayList<>(mRecordRepository.restartAnnouncingForHostname(hostname));
+                announcementInfos.removeIf((i) -> i.getServiceId() == info.getServiceId());
+                reannounceServices(announcementInfos);
+            }
         }
     }
 
@@ -284,6 +292,7 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         if (!mRecordRepository.hasActiveService(id)) return;
         mProber.stop(id);
         mAnnouncer.stop(id);
+        final String hostname = mRecordRepository.getHostnameForServiceId(id);
         final MdnsAnnouncer.ExitAnnouncementInfo exitInfo = mRecordRepository.exitService(id);
         if (exitInfo != null) {
             // This effectively schedules onAllServicesRemoved(), as it is to be called when the
@@ -302,6 +311,17 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
                     mCb.onAllServicesRemoved(mSocket);
                 }
             });
+        }
+        // Re-probe/re-announce the services which have the same custom hostname. These services
+        // were probed/announced using host addresses which were just removed so they should be
+        // re-probed/re-announced without those addresses.
+        if (hostname != null) {
+            final List<MdnsProber.ProbingInfo> probingInfos =
+                    mRecordRepository.restartProbingForHostname(hostname);
+            reprobeServices(probingInfos);
+            final List<MdnsAnnouncer.AnnouncementInfo> announcementInfos =
+                    mRecordRepository.restartAnnouncingForHostname(hostname);
+            reannounceServices(announcementInfos);
         }
     }
 
@@ -445,6 +465,21 @@ public class MdnsInterfaceAdvertiser implements MulticastPacketReader.PacketHand
         } catch (IOException | IllegalArgumentException e) {
             mSharedLog.wtf("Cannot create rawOffloadPacket: ", e);
             return new byte[0];
+        }
+    }
+
+    private void reprobeServices(List<MdnsProber.ProbingInfo> probingInfos) {
+        for (MdnsProber.ProbingInfo probingInfo : probingInfos) {
+            mProber.stop(probingInfo.getServiceId());
+            mProber.startProbing(probingInfo);
+        }
+    }
+
+    private void reannounceServices(List<MdnsAnnouncer.AnnouncementInfo> announcementInfos) {
+        for (MdnsAnnouncer.AnnouncementInfo announcementInfo : announcementInfos) {
+            mAnnouncer.stop(announcementInfo.getServiceId());
+            mAnnouncer.startSending(
+                    announcementInfo.getServiceId(), announcementInfo, 0 /* initialDelayMs */);
         }
     }
 }
