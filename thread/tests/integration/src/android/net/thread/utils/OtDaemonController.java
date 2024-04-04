@@ -62,6 +62,24 @@ public final class OtDaemonController {
                 .toList();
     }
 
+    /** Returns {@code true} if the Thread interface is up. */
+    public boolean isInterfaceUp() {
+        String output = executeCommand("ifconfig");
+        return output.contains("up");
+    }
+
+    /** Returns the ML-EID of the device. */
+    public Inet6Address getMlEid() {
+        String addressStr = executeCommand("ipaddr mleid").split("\n")[0].trim();
+        return (Inet6Address) InetAddresses.parseNumericAddress(addressStr);
+    }
+
+    /** Returns the country code on ot-daemon. */
+    public String getCountryCode() {
+        String countryCodeStr = executeCommand("region").split("\n")[0].trim();
+        return countryCodeStr;
+    }
+
     public String executeCommand(String cmd) {
         return SystemUtil.runShellCommand(OT_CTL + " " + cmd);
     }

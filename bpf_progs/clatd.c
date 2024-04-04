@@ -30,8 +30,8 @@
 #define __kernel_udphdr udphdr
 #include <linux/udp.h>
 
-// The resulting .o needs to load on the Android T bpfloader
-#define BPFLOADER_MIN_VER BPFLOADER_T_VERSION
+// The resulting .o needs to load on Android T+
+#define BPFLOADER_MIN_VER BPFLOADER_MAINLINE_T_VERSION
 
 #include "bpf_helpers.h"
 #include "bpf_net_helpers.h"
@@ -265,6 +265,10 @@ static inline __always_inline int nat64(struct __sk_buff* skb,
         *(struct iphdr*)data = ip;
     }
 
+    // Count successfully translated packet
+    __sync_fetch_and_add(&v->packets, 1);
+    __sync_fetch_and_add(&v->bytes, skb->len - l2_header_size);
+
     // Redirect, possibly back to same interface, so tcpdump sees packet twice.
     if (v->oif) return bpf_redirect(v->oif, BPF_F_INGRESS);
 
@@ -415,6 +419,10 @@ DEFINE_BPF_PROG("schedcls/egress4/clat_rawip", AID_ROOT, AID_SYSTEM, sched_cls_e
 
     // Copy over the new ipv6 header without an ethernet header.
     *(struct ipv6hdr*)data = ip6;
+
+    // Count successfully translated packet
+    __sync_fetch_and_add(&v->packets, 1);
+    __sync_fetch_and_add(&v->bytes, skb->len);
 
     // Redirect to non v4-* interface.  Tcpdump only sees packet after this redirect.
     return bpf_redirect(v->oif, 0 /* this is effectively BPF_F_EGRESS */);
