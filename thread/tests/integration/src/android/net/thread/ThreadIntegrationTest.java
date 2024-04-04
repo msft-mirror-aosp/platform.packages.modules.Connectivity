@@ -23,6 +23,7 @@ import static android.net.thread.utils.IntegrationTestUtils.CALLBACK_TIMEOUT;
 import static android.net.thread.utils.IntegrationTestUtils.RESTART_JOIN_TIMEOUT;
 
 import static com.android.compatibility.common.util.SystemUtil.runShellCommand;
+import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
 
 import static com.google.common.io.BaseEncoding.base16;
 import static com.google.common.truth.Truth.assertThat;
@@ -97,13 +98,16 @@ public class ThreadIntegrationTest {
     }
 
     @Test
-    public void otDaemonRestart_JoinedNetworkAndStopped_autoRejoined() throws Exception {
+    public void otDaemonRestart_JoinedNetworkAndStopped_autoRejoinedAndTunIfStateConsistent()
+            throws Exception {
         mController.joinAndWait(DEFAULT_DATASET);
 
         runShellCommand("stop ot-daemon");
 
         mController.waitForRole(DEVICE_ROLE_DETACHED, CALLBACK_TIMEOUT);
         mController.waitForRole(DEVICE_ROLE_LEADER, RESTART_JOIN_TIMEOUT);
+        assertThat(mOtCtl.isInterfaceUp()).isTrue();
+        assertThat(runShellCommand("ifconfig thread-wpan")).contains("UP POINTOPOINT RUNNING");
     }
 
     @Test
@@ -120,8 +124,8 @@ public class ThreadIntegrationTest {
         mController.joinAndWait(DEFAULT_DATASET);
 
         mOtCtl.factoryReset();
-        String ifconfig = runShellCommand("ifconfig thread-wpan");
 
+        String ifconfig = runShellCommand("ifconfig thread-wpan");
         assertThat(ifconfig).doesNotContain("inet6 addr");
     }
 
@@ -135,6 +139,22 @@ public class ThreadIntegrationTest {
         for (Inet6Address otAddress : otAddresses) {
             assertThat(ifconfig).contains(otAddress.getHostAddress());
         }
+    }
+
+    @Test
+    public void otDaemonRestart_latestCountryCodeIsSetToOtDaemon() throws Exception {
+        runThreadCommand("force-country-code enabled CN");
+
+        runShellCommand("stop ot-daemon");
+        // TODO(b/323331973): the sleep is needed to workaround the race conditions
+        SystemClock.sleep(200);
+        mController.waitForRole(DEVICE_ROLE_STOPPED, CALLBACK_TIMEOUT);
+
+        assertThat(mOtCtl.getCountryCode()).isEqualTo("CN");
+    }
+
+    private static String runThreadCommand(String cmd) {
+        return runShellCommandOrThrow("cmd thread_network " + cmd);
     }
 
     // TODO (b/323300829): add more tests for integration with linux platform and
