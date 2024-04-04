@@ -31,23 +31,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// This is BpfLoader v0.41
-// WARNING: If you ever hit cherrypick conflicts here you're doing it wrong:
-// You are NOT allowed to cherrypick bpfloader related patches out of order.
-// (indeed: cherrypicking is probably a bad idea and you should merge instead)
-// Mainline supports ONLY the published versions of the bpfloader for each Android release.
-#define BPFLOADER_VERSION_MAJOR 0u
-#define BPFLOADER_VERSION_MINOR 41u
-#define BPFLOADER_VERSION ((BPFLOADER_VERSION_MAJOR << 16) | BPFLOADER_VERSION_MINOR)
-
 #include "BpfSyscallWrappers.h"
 #include "bpf/BpfUtils.h"
 #include "bpf/bpf_map_def.h"
 #include "loader.h"
-
-#if BPFLOADER_VERSION < COMPILE_FOR_BPFLOADER_VERSION
-#error "BPFLOADER_VERSION is less than COMPILE_FOR_BPFLOADER_VERSION"
-#endif
 
 #include <cstdlib>
 #include <fstream>
@@ -413,9 +400,6 @@ static int readProgDefs(ifstream& elfFile, vector<struct bpf_prog_def>& pd,
                         size_t sizeOfBpfProgDef) {
     vector<char> pdData;
     int ret = readSectionByName("progs", elfFile, pdData);
-    // Older file formats do not require a 'progs' section at all.
-    // (We should probably figure out whether this is behaviour which is safe to remove now.)
-    if (ret == -2) return 0;
     if (ret) return ret;
 
     if (pdData.size() % sizeOfBpfProgDef) {
@@ -574,6 +558,14 @@ static int getSymNameByIdx(ifstream& elfFile, int index, string& name) {
 
 static bool mapMatchesExpectations(const unique_fd& fd, const string& mapName,
                                    const struct bpf_map_def& mapDef, const enum bpf_map_type type) {
+    // bpfGetFd... family of functions require at minimum a 4.14 kernel,
+    // so on 4.9-T kernels just pretend the map matches our expectations.
+    // Additionally we'll get almost equivalent test coverage on newer devices/kernels.
+    // This is because the primary failure mode we're trying to detect here
+    // is either a source code misconfiguration (which is likely kernel independent)
+    // or a newly introduced kernel feature/bug (which is unlikely to get backported to 4.9).
+    if (!isAtLeastKernelVersion(4, 14, 0)) return true;
+
     // Assuming fd is a valid Bpf Map file descriptor then
     // all the following should always succeed on a 4.14+ kernel.
     // If they somehow do fail, they'll return -1 (and set errno),
@@ -621,7 +613,8 @@ static bool mapMatchesExpectations(const unique_fd& fd, const string& mapName,
 }
 
 static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>& mapFds,
-                      const char* prefix, const size_t sizeOfBpfMapDef) {
+                      const char* prefix, const size_t sizeOfBpfMapDef,
+                      const unsigned int bpfloader_ver) {
     int ret;
     vector<char> mdData;
     vector<struct bpf_map_def> md;
@@ -663,14 +656,14 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
     for (int i = 0; i < (int)mapNames.size(); i++) {
         if (md[i].zero != 0) abort();
 
-        if (BPFLOADER_VERSION < md[i].bpfloader_min_ver) {
+        if (bpfloader_ver < md[i].bpfloader_min_ver) {
             ALOGI("skipping map %s which requires bpfloader min ver 0x%05x", mapNames[i].c_str(),
                   md[i].bpfloader_min_ver);
             mapFds.push_back(unique_fd());
             continue;
         }
 
-        if (BPFLOADER_VERSION >= md[i].bpfloader_max_ver) {
+        if (bpfloader_ver >= md[i].bpfloader_max_ver) {
             ALOGI("skipping map %s which requires bpfloader max ver 0x%05x", mapNames[i].c_str(),
                   md[i].bpfloader_max_ver);
             mapFds.push_back(unique_fd());
@@ -711,6 +704,16 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
         }
 
         enum bpf_map_type type = md[i].type;
+        if (type == BPF_MAP_TYPE_DEVMAP && !isAtLeastKernelVersion(4, 14, 0)) {
+            // On Linux Kernels older than 4.14 this map type doesn't exist, but it can kind
+            // of be approximated: ARRAY has the same userspace api, though it is not usable
+            // by the same ebpf programs.  However, that's okay because the bpf_redirect_map()
+            // helper doesn't exist on 4.9-T anyway (so the bpf program would fail to load,
+            // and thus needs to be tagged as 4.14+ either way), so there's nothing useful you
+            // could do with a DEVMAP anyway (that isn't already provided by an ARRAY)...
+            // Hence using an ARRAY instead of a DEVMAP simply makes life easier for userspace.
+            type = BPF_MAP_TYPE_ARRAY;
+        }
         if (type == BPF_MAP_TYPE_DEVMAP_HASH && !isAtLeastKernelVersion(5, 4, 0)) {
             // On Linux Kernels older than 5.4 this map type doesn't exist, but it can kind
             // of be approximated: HASH has the same userspace visible api.
@@ -766,7 +769,8 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
               .max_entries = max_entries,
               .map_flags = md[i].map_flags,
             };
-            strlcpy(req.map_name, mapNames[i].c_str(), sizeof(req.map_name));
+            if (isAtLeastKernelVersion(4, 14, 0))
+                strlcpy(req.map_name, mapNames[i].c_str(), sizeof(req.map_name));
             fd.reset(bpf(BPF_MAP_CREATE, req));
             saved_errno = errno;
             ALOGD("bpf_create_map name %s, ret: %d", mapNames[i].c_str(), fd.get());
@@ -910,7 +914,7 @@ static void applyMapRelo(ifstream& elfFile, vector<unique_fd> &mapFds, vector<co
 }
 
 static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const string& license,
-                            const char* prefix) {
+                            const char* prefix, const unsigned int bpfloader_ver) {
     unsigned kvers = kernelVersion();
 
     if (!kvers) {
@@ -946,8 +950,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
 
         ALOGD("cs[%d].name:%s requires bpfloader version [0x%05x,0x%05x)", i, name.c_str(),
               bpfMinVer, bpfMaxVer);
-        if (BPFLOADER_VERSION < bpfMinVer) continue;
-        if (BPFLOADER_VERSION >= bpfMaxVer) continue;
+        if (bpfloader_ver < bpfMinVer) continue;
+        if (bpfloader_ver >= bpfMaxVer) continue;
 
         if ((cs[i].prog_def->ignore_on_eng && isEng()) ||
             (cs[i].prog_def->ignore_on_user && isUser()) ||
@@ -1008,7 +1012,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
               .log_size = static_cast<__u32>(log_buf.size()),
               .expected_attach_type = cs[i].expected_attach_type,
             };
-            strlcpy(req.prog_name, cs[i].name.c_str(), sizeof(req.prog_name));
+            if (isAtLeastKernelVersion(4, 14, 0))
+                strlcpy(req.prog_name, cs[i].name.c_str(), sizeof(req.prog_name));
             fd.reset(bpf(BPF_PROG_LOAD, req));
 
             ALOGD("BPF_PROG_LOAD call for %s (%s) returned fd: %d (%s)", elfPath,
@@ -1082,7 +1087,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
     return 0;
 }
 
-int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
+int loadProg(const char* const elfPath, bool* const isCritical, const unsigned int bpfloader_ver,
+             const Location& location) {
     vector<char> license;
     vector<char> critical;
     vector<codeSection> cs;
@@ -1121,27 +1127,27 @@ int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
             readSectionUint("size_of_bpf_prog_def", elfFile, DEFAULT_SIZEOF_BPF_PROG_DEF);
 
     // inclusive lower bound check
-    if (BPFLOADER_VERSION < bpfLoaderMinVer) {
+    if (bpfloader_ver < bpfLoaderMinVer) {
         ALOGI("BpfLoader version 0x%05x ignoring ELF object %s with min ver 0x%05x",
-              BPFLOADER_VERSION, elfPath, bpfLoaderMinVer);
+              bpfloader_ver, elfPath, bpfLoaderMinVer);
         return 0;
     }
 
     // exclusive upper bound check
-    if (BPFLOADER_VERSION >= bpfLoaderMaxVer) {
+    if (bpfloader_ver >= bpfLoaderMaxVer) {
         ALOGI("BpfLoader version 0x%05x ignoring ELF object %s with max ver 0x%05x",
-              BPFLOADER_VERSION, elfPath, bpfLoaderMaxVer);
+              bpfloader_ver, elfPath, bpfLoaderMaxVer);
         return 0;
     }
 
-    if (BPFLOADER_VERSION < bpfLoaderMinRequiredVer) {
+    if (bpfloader_ver < bpfLoaderMinRequiredVer) {
         ALOGI("BpfLoader version 0x%05x failing due to ELF object %s with required min ver 0x%05x",
-              BPFLOADER_VERSION, elfPath, bpfLoaderMinRequiredVer);
+              bpfloader_ver, elfPath, bpfLoaderMinRequiredVer);
         return -1;
     }
 
     ALOGI("BpfLoader version 0x%05x processing ELF object %s with ver [0x%05x,0x%05x)",
-          BPFLOADER_VERSION, elfPath, bpfLoaderMinVer, bpfLoaderMaxVer);
+          bpfloader_ver, elfPath, bpfLoaderMinVer, bpfLoaderMaxVer);
 
     if (sizeOfBpfMapDef < DEFAULT_SIZEOF_BPF_MAP_DEF) {
         ALOGE("sizeof(bpf_map_def) of %zu is too small (< %d)", sizeOfBpfMapDef,
@@ -1164,7 +1170,7 @@ int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
     /* Just for future debugging */
     if (0) dumpAllCs(cs);
 
-    ret = createMaps(elfPath, elfFile, mapFds, location.prefix, sizeOfBpfMapDef);
+    ret = createMaps(elfPath, elfFile, mapFds, location.prefix, sizeOfBpfMapDef, bpfloader_ver);
     if (ret) {
         ALOGE("Failed to create maps: (ret=%d) in %s", ret, elfPath);
         return ret;
@@ -1175,7 +1181,7 @@ int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
 
     applyMapRelo(elfFile, mapFds, cs);
 
-    ret = loadCodeSections(elfPath, cs, string(license.data()), location.prefix);
+    ret = loadCodeSections(elfPath, cs, string(license.data()), location.prefix, bpfloader_ver);
     if (ret) ALOGE("Failed to load programs, loadCodeSections ret=%d", ret);
 
     return ret;
