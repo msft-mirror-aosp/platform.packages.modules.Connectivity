@@ -1783,6 +1783,8 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
             if (transport == TRANSPORT_WIFI) {
                 ifaceSet = mAllWifiIfacesSinceBoot;
             } else if (transport == TRANSPORT_CELLULAR) {
+                // Since satellite networks appear under type mobile, this includes both cellular
+                // and satellite active interfaces
                 ifaceSet = mAllMobileIfacesSinceBoot;
             } else {
                 throw new IllegalArgumentException("Invalid transport " + transport);
@@ -2193,7 +2195,9 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         for (NetworkStateSnapshot snapshot : snapshots) {
             final int displayTransport =
                     getDisplayTransport(snapshot.getNetworkCapabilities().getTransportTypes());
-            final boolean isMobile = (NetworkCapabilities.TRANSPORT_CELLULAR == displayTransport);
+            // Consider satellite transport to support satellite stats appear as type_mobile
+            final boolean isMobile = NetworkCapabilities.TRANSPORT_CELLULAR == displayTransport
+                    || NetworkCapabilities.TRANSPORT_SATELLITE == displayTransport;
             final boolean isWifi = (NetworkCapabilities.TRANSPORT_WIFI == displayTransport);
             final boolean isDefault = CollectionUtils.contains(
                     mDefaultNetworks, snapshot.getNetwork());
@@ -2236,7 +2240,7 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
                             .setDefaultNetwork(true)
                             .setOemManaged(ident.getOemManaged())
                             .setSubId(ident.getSubId()).build();
-                    final String ifaceVt = IFACE_VT + getSubIdForMobile(snapshot);
+                    final String ifaceVt = IFACE_VT + getSubIdForCellularOrSatellite(snapshot);
                     findOrCreateNetworkIdentitySet(mActiveIfaces, ifaceVt).add(vtIdent);
                     findOrCreateNetworkIdentitySet(mActiveUidIfaces, ifaceVt).add(vtIdent);
                 }
@@ -2305,9 +2309,15 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
         mMobileIfaces = mobileIfaces.toArray(new String[0]);
     }
 
-    private static int getSubIdForMobile(@NonNull NetworkStateSnapshot state) {
-        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
-            throw new IllegalArgumentException("Mobile state need capability TRANSPORT_CELLULAR");
+    private static int getSubIdForCellularOrSatellite(@NonNull NetworkStateSnapshot state) {
+        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                // Both cellular and satellite are 2 different network transport at Mobile using
+                // same telephony network specifier. So adding satellite transport to consider
+                // for, when satellite network is active at mobile.
+                && !state.getNetworkCapabilities().hasTransport(
+                NetworkCapabilities.TRANSPORT_SATELLITE)) {
+            throw new IllegalArgumentException(
+                    "Mobile state need capability TRANSPORT_CELLULAR or TRANSPORT_SATELLITE");
         }
 
         final NetworkSpecifier spec = state.getNetworkCapabilities().getNetworkSpecifier();
@@ -2320,12 +2330,14 @@ public class NetworkStatsService extends INetworkStatsService.Stub {
     }
 
     /**
-     * For networks with {@code TRANSPORT_CELLULAR}, get ratType that was obtained through
-     * {@link PhoneStateListener}. Otherwise, return 0 given that other networks with different
-     * transport types do not actually fill this value.
+     * For networks with {@code TRANSPORT_CELLULAR} Or {@code TRANSPORT_SATELLITE}, get ratType
+     * that was obtained through {@link PhoneStateListener}. Otherwise, return 0 given that other
+     * networks with different transport types do not actually fill this value.
      */
     private int getRatTypeForStateSnapshot(@NonNull NetworkStateSnapshot state) {
-        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+        if (!state.getNetworkCapabilities().hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                && !state.getNetworkCapabilities()
+                .hasTransport(NetworkCapabilities.TRANSPORT_SATELLITE)) {
             return 0;
         }
 
