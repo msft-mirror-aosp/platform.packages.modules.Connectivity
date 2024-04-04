@@ -26,14 +26,18 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.Manifest.permission;
 import android.annotation.RequiresPermission;
 import android.content.Context;
+import android.net.ConnectivityManager;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.MulticastLock;
 import android.text.format.DateUtils;
@@ -48,7 +52,9 @@ import org.junit.Before;
 import org.junit.Ignore;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.ArgumentMatchers;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 import org.mockito.invocation.InvocationOnMock;
@@ -56,6 +62,8 @@ import org.mockito.invocation.InvocationOnMock;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -71,6 +79,7 @@ public class MdnsSocketClientTests {
 
     @Mock private Context mContext;
     @Mock private WifiManager mockWifiManager;
+    @Mock private ConnectivityManager mockConnectivityManager;
     @Mock private MdnsSocket mockMulticastSocket;
     @Mock private MdnsSocket mockUnicastSocket;
     @Mock private MulticastLock mockMulticastLock;
@@ -83,6 +92,9 @@ public class MdnsSocketClientTests {
     @Before
     public void setup() throws RuntimeException, IOException {
         MockitoAnnotations.initMocks(this);
+
+        doReturn(mockConnectivityManager).when(mContext).getSystemService(
+                Context.CONNECTIVITY_SERVICE);
 
         when(mockWifiManager.createMulticastLock(ArgumentMatchers.anyString()))
                 .thenReturn(mockMulticastLock);
@@ -226,7 +238,7 @@ public class MdnsSocketClientTests {
 
         // Sends a packet.
         DatagramPacket packet = getTestDatagramPacket();
-        mdnsClient.sendPacketRequestingMulticastResponse(packet,
+        mdnsClient.sendPacketRequestingMulticastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
         // mockMulticastSocket.send() will be called on another thread. If we verify it immediately,
         // it may not be called yet. So timeout is added.
@@ -234,7 +246,7 @@ public class MdnsSocketClientTests {
         verify(mockUnicastSocket, timeout(TIMEOUT).times(0)).send(packet);
 
         // Verify the packet is sent by the unicast socket.
-        mdnsClient.sendPacketRequestingUnicastResponse(packet,
+        mdnsClient.sendPacketRequestingUnicastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
         verify(mockMulticastSocket, timeout(TIMEOUT).times(1)).send(packet);
         verify(mockUnicastSocket, timeout(TIMEOUT).times(1)).send(packet);
@@ -279,7 +291,7 @@ public class MdnsSocketClientTests {
 
         // Sends a packet.
         DatagramPacket packet = getTestDatagramPacket();
-        mdnsClient.sendPacketRequestingMulticastResponse(packet,
+        mdnsClient.sendPacketRequestingMulticastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
         // mockMulticastSocket.send() will be called on another thread. If we verify it immediately,
         // it may not be called yet. So timeout is added.
@@ -287,7 +299,7 @@ public class MdnsSocketClientTests {
         verify(mockUnicastSocket, timeout(TIMEOUT).times(0)).send(packet);
 
         // Verify the packet is sent by the multicast socket as well.
-        mdnsClient.sendPacketRequestingUnicastResponse(packet,
+        mdnsClient.sendPacketRequestingUnicastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
         verify(mockMulticastSocket, timeout(TIMEOUT).times(2)).send(packet);
         verify(mockUnicastSocket, timeout(TIMEOUT).times(0)).send(packet);
@@ -320,19 +332,25 @@ public class MdnsSocketClientTests {
 
     @Test
     public void testStartStop() throws IOException {
-        for (int i = 0; i < 5; i++) {
+        for (int i = 1; i <= 5; i++) {
             mdnsClient.startDiscovery();
 
             Thread multicastReceiverThread = mdnsClient.multicastReceiveThread;
             Thread socketThread = mdnsClient.sendThread;
+            final ArgumentCaptor<ConnectivityManager.NetworkCallback> cbCaptor =
+                    ArgumentCaptor.forClass(ConnectivityManager.NetworkCallback.class);
 
             assertTrue(multicastReceiverThread.isAlive());
             assertTrue(socketThread.isAlive());
+            verify(mockConnectivityManager, times(i))
+                    .registerNetworkCallback(any(), cbCaptor.capture());
 
             mdnsClient.stopDiscovery();
 
             assertFalse(multicastReceiverThread.isAlive());
             assertFalse(socketThread.isAlive());
+            verify(mockConnectivityManager, times(i))
+                    .unregisterNetworkCallback(cbCaptor.getValue());
         }
     }
 
@@ -340,7 +358,7 @@ public class MdnsSocketClientTests {
     public void testStopDiscovery_queueIsCleared() throws IOException {
         mdnsClient.startDiscovery();
         mdnsClient.stopDiscovery();
-        mdnsClient.sendPacketRequestingMulticastResponse(getTestDatagramPacket(),
+        mdnsClient.sendPacketRequestingMulticastResponse(List.of(getTestDatagramPacket()),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
 
         synchronized (mdnsClient.multicastPacketQueue) {
@@ -352,7 +370,7 @@ public class MdnsSocketClientTests {
     public void testSendPacket_afterDiscoveryStops() throws IOException {
         mdnsClient.startDiscovery();
         mdnsClient.stopDiscovery();
-        mdnsClient.sendPacketRequestingMulticastResponse(getTestDatagramPacket(),
+        mdnsClient.sendPacketRequestingMulticastResponse(List.of(getTestDatagramPacket()),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
 
         synchronized (mdnsClient.multicastPacketQueue) {
@@ -366,7 +384,7 @@ public class MdnsSocketClientTests {
         //MdnsConfigsFlagsImpl.mdnsPacketQueueMaxSize.override(2L);
         mdnsClient.startDiscovery();
         for (int i = 0; i < 100; i++) {
-            mdnsClient.sendPacketRequestingMulticastResponse(getTestDatagramPacket(),
+            mdnsClient.sendPacketRequestingMulticastResponse(List.of(getTestDatagramPacket()),
                     false /* onlyUseIpv6OnIpv6OnlyNetworks */);
         }
 
@@ -464,9 +482,9 @@ public class MdnsSocketClientTests {
 
         mdnsClient.startDiscovery();
         DatagramPacket packet = getTestDatagramPacket();
-        mdnsClient.sendPacketRequestingUnicastResponse(packet,
+        mdnsClient.sendPacketRequestingUnicastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
-        mdnsClient.sendPacketRequestingMulticastResponse(packet,
+        mdnsClient.sendPacketRequestingMulticastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
 
         // Wait for the timer to be triggered.
@@ -497,9 +515,9 @@ public class MdnsSocketClientTests {
         assertFalse(mdnsClient.receivedUnicastResponse);
         assertFalse(mdnsClient.cannotReceiveMulticastResponse.get());
 
-        mdnsClient.sendPacketRequestingUnicastResponse(packet,
+        mdnsClient.sendPacketRequestingUnicastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
-        mdnsClient.sendPacketRequestingMulticastResponse(packet,
+        mdnsClient.sendPacketRequestingMulticastResponse(List.of(packet),
                 false /* onlyUseIpv6OnIpv6OnlyNetworks */);
         Thread.sleep(MdnsConfigs.checkMulticastResponseIntervalMs() * 2);
 
@@ -554,6 +572,26 @@ public class MdnsSocketClientTests {
         verify(mockMulticastSocket, never()).getInterfaceIndex();
         verify(mockCallback, timeout(TIMEOUT).atLeast(1))
                 .onResponseReceived(any(), argThat(key -> key.getInterfaceIndex() == -1));
+    }
+
+    @Test
+    public void testSendPacketWithMultipleDatagramPacket() throws IOException {
+        mdnsClient.startDiscovery();
+        final List<DatagramPacket> packets = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            packets.add(new DatagramPacket(new byte[10 + i] /* buff */, 0 /* offset */,
+                    10 + i /* length */, MdnsConstants.IPV4_SOCKET_ADDR));
+        }
+
+        // Sends packets.
+        mdnsClient.sendPacketRequestingMulticastResponse(packets,
+                false /* onlyUseIpv6OnIpv6OnlyNetworks */);
+        InOrder inOrder = inOrder(mockMulticastSocket);
+        for (int i = 0; i < 10; i++) {
+            // mockMulticastSocket.send() will be called on another thread. If we verify it
+            // immediately, it may not be called yet. So timeout is added.
+            inOrder.verify(mockMulticastSocket, timeout(TIMEOUT)).send(packets.get(i));
+        }
     }
 
     private DatagramPacket getTestDatagramPacket() {
