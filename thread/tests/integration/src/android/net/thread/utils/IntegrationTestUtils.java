@@ -31,7 +31,6 @@ import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ThreadNetworkController;
 import android.os.Handler;
 import android.os.SystemClock;
-import android.os.SystemProperties;
 
 import androidx.annotation.NonNull;
 
@@ -76,12 +75,6 @@ public final class IntegrationTestUtils {
     public static final Duration SERVICE_DISCOVERY_TIMEOUT = Duration.ofSeconds(20);
 
     private IntegrationTestUtils() {}
-
-    /** Returns whether the device supports simulated Thread radio. */
-    public static boolean isSimulatedThreadRadioSupported() {
-        // The integration test uses SIMULATION Thread radio so that it only supports CuttleFish.
-        return SystemProperties.get("ro.product.model").startsWith("Cuttlefish");
-    }
 
     /**
      * Waits for the given {@link Supplier} to be true until given timeout.
