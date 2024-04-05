@@ -27,16 +27,21 @@ import android.provider.DeviceConfig
 import android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY
 import android.system.OsConstants
 import androidx.test.platform.app.InstrumentationRegistry
-import com.android.compatibility.common.util.PropertyUtil.isVendorApiLevelNewerThan
+import com.android.compatibility.common.util.PropertyUtil.getVsrApiLevel
+import com.android.compatibility.common.util.SystemUtil.runShellCommand
 import com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow
-import com.android.testutils.DevSdkIgnoreRule
+import com.android.internal.util.HexDump
+import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
 import com.android.testutils.DevSdkIgnoreRunner
 import com.android.testutils.NetworkStackModuleTest
 import com.android.testutils.RecorderCallback.CallbackEntry.LinkPropertiesChanged
+import com.android.testutils.SkipPresubmit
 import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.runAsShell
 import com.google.common.truth.Truth.assertThat
+import com.google.common.truth.Truth.assertWithMessage
 import com.google.common.truth.TruthJUnit.assume
+import kotlin.random.Random
 import kotlin.test.assertNotNull
 import org.junit.After
 import org.junit.Before
@@ -50,7 +55,6 @@ private const val APF_NEW_RA_FILTER_VERSION = "apf_new_ra_filter_version"
 @AppModeFull(reason = "CHANGE_NETWORK_STATE permission can't be granted to instant apps")
 @RunWith(DevSdkIgnoreRunner::class)
 @NetworkStackModuleTest
-@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.TIRAMISU)
 class ApfIntegrationTest {
     companion object {
         @BeforeClass
@@ -79,7 +83,10 @@ class ApfIntegrationTest {
     private lateinit var caps: ApfCapabilities
 
     fun getApfCapabilities(): ApfCapabilities {
-        val caps = runShellCommandOrThrow("cmd network_stack apf $ifname capabilities").trim()
+        val caps = runShellCommand("cmd network_stack apf $ifname capabilities").trim()
+        if (caps.isEmpty()) {
+            return ApfCapabilities(0, 0, 0)
+        }
         val (version, maxLen, packetFormat) = caps.split(",").map { it.toInt() }
         return ApfCapabilities(version, maxLen, packetFormat)
     }
@@ -87,7 +94,6 @@ class ApfIntegrationTest {
     @Before
     fun setUp() {
         assume().that(pm.hasSystemFeature(FEATURE_WIFI)).isTrue()
-        assume().that(isVendorApiLevelNewerThan(Build.VERSION_CODES.TIRAMISU)).isTrue()
         networkCallback = TestableNetworkCallback()
         cm.requestNetwork(
                 NetworkRequest.Builder()
@@ -100,7 +106,10 @@ class ApfIntegrationTest {
             ifname = assertNotNull(it.lp.interfaceName)
             true
         }
-        runShellCommandOrThrow("cmd network_stack apf $ifname pause")
+        // It's possible the device does not support APF, in which case this command will not be
+        // successful. Ignore the error as testApfCapabilities() already asserts APF support on the
+        // respective VSR releases and all other tests are based on the capabilities indicated.
+        runShellCommand("cmd network_stack apf $ifname pause")
         caps = getApfCapabilities()
     }
 
@@ -110,17 +119,76 @@ class ApfIntegrationTest {
             cm.unregisterNetworkCallback(networkCallback)
         }
         if (::ifname.isInitialized) {
-            runShellCommandOrThrow("cmd network_stack apf $ifname resume")
+            runShellCommand("cmd network_stack apf $ifname resume")
         }
     }
 
     @Test
-    fun testGetApfCapabilities() {
+    fun testApfCapabilities() {
+        // APF became mandatory in Android 14 VSR.
+        assume().that(getVsrApiLevel()).isAtLeast(34)
+
+        // ApfFilter does not support anything but ARPHRD_ETHER.
+        assertThat(caps.apfPacketFormat).isEqualTo(OsConstants.ARPHRD_ETHER)
+
+        // DEVICEs launching with Android 14 with CHIPSETs that set ro.board.first_api_level to 34:
+        // - [GMS-VSR-5.3.12-003] MUST return 4 or higher as the APF version number from calls to
+        //   the getApfPacketFilterCapabilities HAL method.
+        // - [GMS-VSR-5.3.12-004] MUST indicate at least 1024 bytes of usable memory from calls to
+        //   the getApfPacketFilterCapabilities HAL method.
+        // TODO: check whether above text should be changed "34 or higher"
+        // This should assert apfVersionSupported >= 4 as per the VSR requirements, but there are
+        // currently no tests for APFv6 and there cannot be a valid implementation as the
+        // interpreter has yet to be finalized.
         assertThat(caps.apfVersionSupported).isEqualTo(4)
         assertThat(caps.maximumApfProgramSize).isAtLeast(1024)
-        if (isVendorApiLevelNewerThan(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)) {
+
+        // DEVICEs launching with Android 15 (AOSP experimental) or higher with CHIPSETs that set
+        // ro.board.first_api_level or ro.board.api_level to 202404 or higher:
+        // - [GMS-VSR-5.3.12-009] MUST indicate at least 2000 bytes of usable memory from calls to
+        //   the getApfPacketFilterCapabilities HAL method.
+        if (getVsrApiLevel() >= 202404) {
             assertThat(caps.maximumApfProgramSize).isAtLeast(2000)
         }
-        assertThat(caps.apfPacketFormat).isEqualTo(OsConstants.ARPHRD_ETHER)
+    }
+
+    // APF is backwards compatible, i.e. a v6 interpreter supports both v2 and v4 functionality.
+    fun assumeApfVersionSupportAtLeast(version: Int) {
+        assume().that(caps.apfVersionSupported).isAtLeast(version)
+    }
+
+    fun installProgram(bytes: ByteArray) {
+        val prog = HexDump.toHexString(bytes, 0 /* offset */, bytes.size, false /* upperCase */)
+        val result = runShellCommandOrThrow("cmd network_stack apf $ifname install $prog").trim()
+        // runShellCommandOrThrow only throws on S+.
+        assertThat(result).isEqualTo("success")
+    }
+
+    fun readProgram(): ByteArray {
+        val progHexString = runShellCommandOrThrow("cmd network_stack apf $ifname read").trim()
+        // runShellCommandOrThrow only throws on S+.
+        assertThat(progHexString).isNotEmpty()
+        return HexDump.hexStringToByteArray(progHexString)
+    }
+
+    @SkipPresubmit(reason = "This test takes longer than 1 minute, do not run it on presubmit.")
+    // APF integration is mostly broken before V, only run the full read / write test on V+.
+    @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @Test
+    fun testReadWriteProgram() {
+        assumeApfVersionSupportAtLeast(4)
+
+        // Only test down to 2 bytes. The first byte always stays PASS.
+        val program = ByteArray(caps.maximumApfProgramSize)
+        for (i in caps.maximumApfProgramSize downTo 2) {
+            // Randomize bytes in range [1, i). And install first [0, i) bytes of program.
+            // Note that only the very first instruction (PASS) is valid APF bytecode.
+            Random.nextBytes(program, 1 /* fromIndex */, i /* toIndex */)
+            installProgram(program.sliceArray(0..<i))
+
+            // Compare entire memory region.
+            val readResult = readProgram()
+            assertWithMessage("read/write $i byte prog failed").that(readResult).isEqualTo(program)
+        }
     }
 }
