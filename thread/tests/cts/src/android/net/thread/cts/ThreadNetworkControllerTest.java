@@ -17,6 +17,12 @@
 package android.net.thread.cts;
 
 import static android.Manifest.permission.ACCESS_NETWORK_STATE;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_CHILD;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_LEADER;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_ROUTER;
@@ -805,6 +811,20 @@ public class ThreadNetworkControllerTest {
 
         assertThat(isAttached(mController)).isTrue();
         assertThat(networkFuture.get(NETWORK_CALLBACK_TIMEOUT_MILLIS, MILLISECONDS)).isNotNull();
+        NetworkCapabilities caps =
+                runAsShell(
+                        ACCESS_NETWORK_STATE, () -> cm.getNetworkCapabilities(networkFuture.get()));
+        assertThat(caps).isNotNull();
+        assertThat(caps.hasTransport(NetworkCapabilities.TRANSPORT_THREAD)).isTrue();
+        assertThat(caps.getCapabilities())
+                .asList()
+                .containsAtLeast(
+                        NET_CAPABILITY_LOCAL_NETWORK,
+                        NET_CAPABILITY_NOT_METERED,
+                        NET_CAPABILITY_NOT_RESTRICTED,
+                        NET_CAPABILITY_NOT_VCN_MANAGED,
+                        NET_CAPABILITY_NOT_VPN,
+                        NET_CAPABILITY_TRUSTED);
     }
 
     private void grantPermissions(String... permissions) {
@@ -864,11 +884,12 @@ public class ThreadNetworkControllerTest {
     @Test
     public void meshcopService_threadDisabled_notDiscovered() throws Exception {
         setUpTestNetwork();
-
         CompletableFuture<NsdServiceInfo> serviceLostFuture = new CompletableFuture<>();
         NsdManager.DiscoveryListener listener =
                 discoverForServiceLost(MESHCOP_SERVICE_TYPE, serviceLostFuture);
+
         setEnabledAndWait(mController, false);
+
         try {
             serviceLostFuture.get(SERVICE_LOST_TIMEOUT_MILLIS, MILLISECONDS);
         } catch (InterruptedException | ExecutionException | TimeoutException ignored) {
@@ -877,7 +898,6 @@ public class ThreadNetworkControllerTest {
         } finally {
             mNsdManager.stopServiceDiscovery(listener);
         }
-
         assertThrows(
                 TimeoutException.class,
                 () -> discoverService(MESHCOP_SERVICE_TYPE, SERVICE_LOST_TIMEOUT_MILLIS));
@@ -1112,7 +1132,12 @@ public class ThreadNetworkControllerTest {
                         serviceInfoFuture.complete(serviceInfo);
                     }
                 };
-        mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        mNsdManager.discoverServices(
+                serviceType,
+                NsdManager.PROTOCOL_DNS_SD,
+                mTestNetworkTracker.getNetwork(),
+                mExecutor,
+                listener);
         try {
             serviceInfoFuture.get(timeoutMilliseconds, MILLISECONDS);
         } finally {
@@ -1131,7 +1156,12 @@ public class ThreadNetworkControllerTest {
                         serviceInfoFuture.complete(serviceInfo);
                     }
                 };
-        mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        mNsdManager.discoverServices(
+                serviceType,
+                NsdManager.PROTOCOL_DNS_SD,
+                mTestNetworkTracker.getNetwork(),
+                mExecutor,
+                listener);
         return listener;
     }
 
