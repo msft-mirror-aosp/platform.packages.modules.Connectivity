@@ -16,8 +16,12 @@
 
 package com.android.cts.net.hostside;
 
+import android.net.NetworkInfo;
+
+import com.android.cts.net.hostside.NetworkCheckResult;
+
 interface INetworkStateObserver {
-    void onNetworkStateChecked(int resultCode, String resultData);
+    void onNetworkStateChecked(int resultCode, in NetworkCheckResult networkCheckResult);
 
     const int RESULT_SUCCESS_NETWORK_STATE_CHECKED = 0;
     const int RESULT_ERROR_UNEXPECTED_PROC_STATE = 1;

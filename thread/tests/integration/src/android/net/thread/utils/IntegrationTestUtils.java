@@ -31,7 +31,6 @@ import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ThreadNetworkController;
 import android.os.Handler;
 import android.os.SystemClock;
-import android.os.SystemProperties;
 
 import androidx.annotation.NonNull;
 
@@ -77,12 +76,6 @@ public final class IntegrationTestUtils {
 
     private IntegrationTestUtils() {}
 
-    /** Returns whether the device supports simulated Thread radio. */
-    public static boolean isSimulatedThreadRadioSupported() {
-        // The integration test uses SIMULATION Thread radio so that it only supports CuttleFish.
-        return SystemProperties.get("ro.product.model").startsWith("Cuttlefish");
-    }
-
     /**
      * Waits for the given {@link Supplier} to be true until given timeout.
      *
@@ -92,7 +85,7 @@ public final class IntegrationTestUtils {
      */
     public static void waitFor(Supplier<Boolean> condition, Duration timeout)
             throws TimeoutException {
-        final long intervalMills = 1000;
+        final long intervalMills = 500;
         final long timeoutMills = timeout.toMillis();
 
         for (long i = 0; i < timeoutMills; i += intervalMills) {

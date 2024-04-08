@@ -46,10 +46,13 @@ import java.io.InputStream;
  */
 public class ThreadPersistentSettings {
     private static final String TAG = "ThreadPersistentSettings";
+
     /** File name used for storing settings. */
     private static final String FILE_NAME = "ThreadPersistentSettings.xml";
+
     /** Current config store data version. This will be incremented for any additions. */
     private static final int CURRENT_SETTINGS_STORE_DATA_VERSION = 1;
+
     /**
      * Stores the version of the data. This can be used to handle migration of data if some
      * non-backward compatible change introduced.
@@ -58,7 +61,10 @@ public class ThreadPersistentSettings {
 
     /******** Thread persistent setting keys ***************/
     /** Stores the Thread feature toggle state, true for enabled and false for disabled. */
-    public static final Key<Boolean> THREAD_ENABLED = new Key<>("Thread_enabled", true);
+    public static final Key<Boolean> THREAD_ENABLED = new Key<>("thread_enabled", true);
+
+    /** Stores the Thread country code, null if no country code is stored. */
+    public static final Key<String> THREAD_COUNTRY_CODE = new Key<>("thread_country_code", null);
 
     /******** Thread persistent setting keys ***************/
 
@@ -120,7 +126,9 @@ public class ThreadPersistentSettings {
     private <T> T getObject(String key, T defaultValue) {
         Object value;
         synchronized (mLock) {
-            if (defaultValue instanceof Boolean) {
+            if (defaultValue == null) {
+                value = mSettings.getString(key, null);
+            } else if (defaultValue instanceof Boolean) {
                 value = mSettings.getBoolean(key, (Boolean) defaultValue);
             } else if (defaultValue instanceof Integer) {
                 value = mSettings.getInt(key, (Integer) defaultValue);
@@ -210,7 +218,7 @@ public class ThreadPersistentSettings {
                 mSettings.putAll(bundleRead);
             }
         } catch (FileNotFoundException e) {
-            Log.e(TAG, "No store file to read", e);
+            Log.w(TAG, "No store file to read", e);
         } catch (IOException e) {
             Log.e(TAG, "Read from store file failed", e);
         }
