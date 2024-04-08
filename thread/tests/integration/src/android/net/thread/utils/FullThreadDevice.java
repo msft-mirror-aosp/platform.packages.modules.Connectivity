@@ -20,10 +20,9 @@ import static android.net.thread.utils.IntegrationTestUtils.waitFor;
 
 import static com.google.common.io.BaseEncoding.base16;
 
-import static org.junit.Assert.fail;
-
 import android.net.InetAddresses;
 import android.net.IpPrefix;
+import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ActiveOperationalDataset;
 
 import com.google.errorprone.annotations.FormatMethod;
@@ -34,6 +33,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -52,6 +52,13 @@ import java.util.regex.Pattern;
  * available commands.
  */
 public final class FullThreadDevice {
+    private static final int HOP_LIMIT = 64;
+    private static final int PING_INTERVAL = 1;
+    private static final int PING_SIZE = 100;
+    // There may not be a response for the ping command, using a short timeout to keep the tests
+    // short.
+    private static final float PING_TIMEOUT_SECONDS = 0.1f;
+
     private final Process mProcess;
     private final BufferedReader mReader;
     private final BufferedWriter mWriter;
@@ -209,6 +216,11 @@ public final class FullThreadDevice {
         return matcher.group(4);
     }
 
+    /** Sends a UDP message to given IPv6 address and port. */
+    public void udpSend(String message, Inet6Address serverAddr, int serverPort) {
+        executeCommand("udp send %s %d %s", serverAddr.getHostAddress(), serverPort, message);
+    }
+
     /** Enables the SRP client and run in autostart mode. */
     public void autoStartSrpClient() {
         executeCommand("srp client autostart enable");
@@ -320,6 +332,55 @@ public final class FullThreadDevice {
         return false;
     }
 
+    /** Sets the DNS server address. */
+    public void setDnsServerAddress(String address) {
+        executeCommand("dns config " + address);
+    }
+
+    /** Returns the first browsed service instance of {@code serviceType}. */
+    public NsdServiceInfo browseService(String serviceType) {
+        // CLI output:
+        // DNS browse response for _testservice._tcp.default.service.arpa.
+        // test-service
+        //    Port:12345, Priority:0, Weight:0, TTL:10
+        //    Host:testhost.default.service.arpa.
+        //    HostAddress:2001:0:0:0:0:0:0:1 TTL:10
+        //    TXT:[key1=0102, key2=03] TTL:10
+
+        List<String> lines = executeCommand("dns browse " + serviceType);
+        NsdServiceInfo info = new NsdServiceInfo();
+        info.setServiceName(lines.get(1));
+        info.setServiceType(serviceType);
+        info.setPort(DnsServiceCliOutputParser.parsePort(lines.get(2)));
+        info.setHostname(DnsServiceCliOutputParser.parseHostname(lines.get(3)));
+        info.setHostAddresses(List.of(DnsServiceCliOutputParser.parseHostAddress(lines.get(4))));
+        DnsServiceCliOutputParser.parseTxtIntoServiceInfo(lines.get(5), info);
+
+        return info;
+    }
+
+    /** Returns the resolved service instance. */
+    public NsdServiceInfo resolveService(String serviceName, String serviceType) {
+        // CLI output:
+        // DNS service resolution response for test-service for service
+        // _test._tcp.default.service.arpa.
+        // Port:12345, Priority:0, Weight:0, TTL:10
+        // Host:Android.default.service.arpa.
+        // HostAddress:2001:0:0:0:0:0:0:1 TTL:10
+        // TXT:[key1=0102, key2=03] TTL:10
+
+        List<String> lines = executeCommand("dns service %s %s", serviceName, serviceType);
+        NsdServiceInfo info = new NsdServiceInfo();
+        info.setServiceName(serviceName);
+        info.setServiceType(serviceType);
+        info.setPort(DnsServiceCliOutputParser.parsePort(lines.get(1)));
+        info.setHostname(DnsServiceCliOutputParser.parseHostname(lines.get(2)));
+        info.setHostAddresses(List.of(DnsServiceCliOutputParser.parseHostAddress(lines.get(3))));
+        DnsServiceCliOutputParser.parseTxtIntoServiceInfo(lines.get(4), info);
+
+        return info;
+    }
+
     /** Runs the "factoryreset" command on the device. */
     public void factoryReset() {
         try {
@@ -339,7 +400,36 @@ public final class FullThreadDevice {
         executeCommand("ipmaddr add " + address.getHostAddress());
     }
 
-    public void ping(Inet6Address address, Inet6Address source, int size, int count) {
+    public void ping(Inet6Address address, Inet6Address source) {
+        ping(
+                address,
+                source,
+                PING_SIZE,
+                1 /* count */,
+                PING_INTERVAL,
+                HOP_LIMIT,
+                PING_TIMEOUT_SECONDS);
+    }
+
+    public void ping(Inet6Address address) {
+        ping(
+                address,
+                null,
+                PING_SIZE,
+                1 /* count */,
+                PING_INTERVAL,
+                HOP_LIMIT,
+                PING_TIMEOUT_SECONDS);
+    }
+
+    private void ping(
+            Inet6Address address,
+            Inet6Address source,
+            int size,
+            int count,
+            int interval,
+            int hopLimit,
+            float timeout) {
         String cmd =
                 "ping"
                         + ((source == null) ? "" : (" -I " + source.getHostAddress()))
@@ -348,12 +438,14 @@ public final class FullThreadDevice {
                         + " "
                         + size
                         + " "
-                        + count;
+                        + count
+                        + " "
+                        + interval
+                        + " "
+                        + hopLimit
+                        + " "
+                        + timeout;
         executeCommand(cmd);
-    }
-
-    public void ping(Inet6Address address) {
-        ping(address, null, 100 /* size */, 1 /* count */);
     }
 
     @FormatMethod
@@ -385,7 +477,7 @@ public final class FullThreadDevice {
                 break;
             }
             if (line.startsWith("Error")) {
-                fail("ot-cli-ftd reported an error: " + line);
+                throw new IOException("ot-cli-ftd reported an error: " + line);
             }
             if (!line.startsWith("> ")) {
                 result.add(line);
@@ -415,5 +507,46 @@ public final class FullThreadDevice {
 
     private static String toHexString(byte[] bytes) {
         return base16().encode(bytes);
+    }
+
+    private static final class DnsServiceCliOutputParser {
+        /** Returns the first match in the input of a given regex pattern. */
+        private static Matcher firstMatchOf(String input, String regex) {
+            Matcher matcher = Pattern.compile(regex).matcher(input);
+            matcher.find();
+            return matcher;
+        }
+
+        // Example: "Port:12345"
+        private static int parsePort(String line) {
+            return Integer.parseInt(firstMatchOf(line, "Port:(\\d+)").group(1));
+        }
+
+        // Example: "Host:Android.default.service.arpa."
+        private static String parseHostname(String line) {
+            return firstMatchOf(line, "Host:(.+)").group(1);
+        }
+
+        // Example: "HostAddress:2001:0:0:0:0:0:0:1"
+        private static InetAddress parseHostAddress(String line) {
+            return InetAddresses.parseNumericAddress(
+                    firstMatchOf(line, "HostAddress:([^ ]+)").group(1));
+        }
+
+        // Example: "TXT:[key1=0102, key2=03]"
+        private static void parseTxtIntoServiceInfo(String line, NsdServiceInfo serviceInfo) {
+            String txtString = firstMatchOf(line, "TXT:\\[([^\\]]+)\\]").group(1);
+            for (String txtEntry : txtString.split(",")) {
+                String[] nameAndValue = txtEntry.trim().split("=");
+                String name = nameAndValue[0];
+                String value = nameAndValue[1];
+                byte[] bytes = new byte[value.length() / 2];
+                for (int i = 0; i < value.length(); i += 2) {
+                    byte b = (byte) ((value.charAt(i) - '0') << 4 | (value.charAt(i + 1) - '0'));
+                    bytes[i / 2] = b;
+                }
+                serviceInfo.setAttribute(name, bytes);
+            }
+        }
     }
 }
