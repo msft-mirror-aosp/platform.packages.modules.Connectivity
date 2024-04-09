@@ -30,7 +30,9 @@ java_defaults {
         "net-tests-utils",
         "net-utils-device-common",
         "net-utils-device-common-bpf",
+        "net-utils-device-common-struct-base",
         "testables",
+        "ThreadNetworkTestUtils",
         "truth",
     ],
     libs: [
