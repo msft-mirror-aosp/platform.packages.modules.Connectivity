@@ -16,9 +16,13 @@
 
 package com.android.cts.net;
 
+import static com.android.cts.net.arguments.InstrumentationArguments.ARG_WAIVE_BIND_PRIORITY;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+
+import java.util.Map;
 
 public class HostsideNetworkPolicyManagerTests extends HostsideNetworkTestCase {
     @Before
@@ -34,41 +38,49 @@ public class HostsideNetworkPolicyManagerTests extends HostsideNetworkTestCase {
 
     @Test
     public void testIsUidNetworkingBlocked_withUidNotBlocked() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkPolicyManagerTest",
                 "testIsUidNetworkingBlocked_withUidNotBlocked");
     }
 
     @Test
     public void testIsUidNetworkingBlocked_withSystemUid() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkPolicyManagerTest", "testIsUidNetworkingBlocked_withSystemUid");
     }
 
     @Test
     public void testIsUidNetworkingBlocked_withDataSaverMode() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkPolicyManagerTest",
                 "testIsUidNetworkingBlocked_withDataSaverMode");
     }
 
     @Test
     public void testIsUidNetworkingBlocked_withRestrictedNetworkingMode() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkPolicyManagerTest",
                 "testIsUidNetworkingBlocked_withRestrictedNetworkingMode");
     }
 
     @Test
     public void testIsUidNetworkingBlocked_withPowerSaverMode() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkPolicyManagerTest",
                 "testIsUidNetworkingBlocked_withPowerSaverMode");
     }
 
     @Test
     public void testIsUidRestrictedOnMeteredNetworks() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkPolicyManagerTest", "testIsUidRestrictedOnMeteredNetworks");
+    }
+
+    // TODO(b/321848487): Annotate with @RequiresFlagsEnabled to mirror the device-side test.
+    @Test
+    public void testIsUidNetworkingBlocked_whenInBackground() throws Exception {
+        runDeviceTestsWithCustomOptions(TEST_PKG, TEST_PKG + ".NetworkPolicyManagerTest",
+                "testIsUidNetworkingBlocked_whenInBackground",
+                Map.of(ARG_WAIVE_BIND_PRIORITY, "true"));
     }
 }

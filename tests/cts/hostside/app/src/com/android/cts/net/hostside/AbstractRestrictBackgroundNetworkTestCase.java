@@ -23,6 +23,8 @@ import static android.app.job.JobScheduler.RESULT_SUCCESS;
 import static android.net.ConnectivityManager.ACTION_RESTRICT_BACKGROUND_CHANGED;
 import static android.os.BatteryManager.BATTERY_PLUGGED_ANY;
 
+import static com.android.cts.net.arguments.InstrumentationArguments.ARG_CONNECTION_CHECK_CUSTOM_URL;
+import static com.android.cts.net.arguments.InstrumentationArguments.ARG_WAIVE_BIND_PRIORITY;
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.executeShellCommand;
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.forceRunJob;
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.getConnectivityManager;
@@ -50,6 +52,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.NetworkInfo.DetailedState;
 import android.net.NetworkInfo.State;
 import android.net.NetworkRequest;
@@ -65,20 +68,22 @@ import android.util.Log;
 import android.util.Pair;
 
 import androidx.annotation.Nullable;
+import androidx.test.platform.app.InstrumentationRegistry;
 
 import com.android.compatibility.common.util.AmUtils;
 import com.android.compatibility.common.util.BatteryUtils;
 import com.android.compatibility.common.util.DeviceConfigStateHelper;
 import com.android.compatibility.common.util.ThrowingRunnable;
+import com.android.modules.utils.build.SdkLevel;
 
 import org.junit.Rule;
 import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
 
-import java.util.ArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 /**
@@ -90,6 +95,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     protected static final String TEST_PKG = "com.android.cts.net.hostside";
     protected static final String TEST_APP2_PKG = "com.android.cts.net.hostside.app2";
+    // TODO(b/321797685): Configure it via device-config once it is available.
+    protected static final long PROCESS_STATE_TRANSITION_DELAY_MS = TimeUnit.SECONDS.toMillis(5);
 
     private static final String TEST_APP2_ACTIVITY_CLASS = TEST_APP2_PKG + ".MyActivity";
     private static final String TEST_APP2_SERVICE_CLASS = TEST_APP2_PKG + ".MyForegroundService";
@@ -97,7 +104,6 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     private static final ComponentName TEST_JOB_COMPONENT = new ComponentName(
             TEST_APP2_PKG, TEST_APP2_JOB_SERVICE_CLASS);
-
     private static final int TEST_JOB_ID = 7357437;
 
     private static final int SLEEP_TIME_SEC = 1;
@@ -132,6 +138,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
 
     private static final String KEY_NETWORK_STATE_OBSERVER = TEST_PKG + ".observer";
     private static final String KEY_SKIP_VALIDATION_CHECKS = TEST_PKG + ".skip_validation_checks";
+    private static final String KEY_CUSTOM_URL = TEST_PKG + ".custom_url";
 
     private static final String EMPTY_STRING = "";
 
@@ -152,8 +159,6 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     private static final IntentFilter BATTERY_CHANGED_FILTER =
             new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
 
-    private static final String APP_NOT_FOREGROUND_ERROR = "app_not_fg";
-
     protected static final long TEMP_POWERSAVE_WHITELIST_DURATION_MS = 20_000; // 20 sec
 
     private static final long BROADCAST_TIMEOUT_MS = 5_000;
@@ -163,6 +168,7 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     protected ConnectivityManager mCm;
     protected int mUid;
     private int mMyUid;
+    private @Nullable String mCustomUrl;
     private MyServiceClient mServiceClient;
     private DeviceConfigStateHelper mDeviceIdleDeviceConfigStateHelper;
     private PowerManager mPowerManager;
@@ -181,7 +187,21 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         mUid = getUid(TEST_APP2_PKG);
         mMyUid = getUid(mContext.getPackageName());
         mServiceClient = new MyServiceClient(mContext);
-        mServiceClient.bind();
+
+        final Bundle args = InstrumentationRegistry.getArguments();
+        mCustomUrl = args.getString(ARG_CONNECTION_CHECK_CUSTOM_URL);
+        if (mCustomUrl != null) {
+            Log.d(TAG, "Using custom URL " + mCustomUrl + " for network checks");
+        }
+
+        final int bindPriorityFlags;
+        if (Boolean.valueOf(args.getString(ARG_WAIVE_BIND_PRIORITY, "false"))) {
+            bindPriorityFlags = Context.BIND_WAIVE_PRIORITY;
+        } else {
+            bindPriorityFlags = Context.BIND_NOT_FOREGROUND;
+        }
+        mServiceClient.bind(bindPriorityFlags);
+
         mPowerManager = mContext.getSystemService(PowerManager.class);
         executeShellCommand("cmd netpolicy start-watching " + mUid);
         // Some of the test cases assume that Data saver mode is initially disabled, which might not
@@ -203,6 +223,22 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         mServiceClient.unbind();
         final PowerManager.WakeLock lock = mLock;
         if (null != lock && lock.isHeld()) lock.release();
+    }
+
+    /**
+     * Check if the feature blocking network for top_sleeping and lower priority proc-states is
+     * enabled. This is a manual check because the feature flag infrastructure may not be available
+     * in all the branches that will get this code.
+     * TODO: b/322115994 - Use @RequiresFlagsEnabled with
+     * Flags.FLAG_NETWORK_BLOCKED_FOR_TOP_SLEEPING_AND_ABOVE once the tests are moved to cts.
+     */
+    protected boolean isNetworkBlockedForTopSleepingAndAbove() {
+        if (!SdkLevel.isAtLeastV()) {
+            return false;
+        }
+        final String output = executeShellCommand("device_config get backstage_power"
+                + " com.android.server.net.network_blocked_for_top_sleeping_and_above");
+        return Boolean.parseBoolean(output);
     }
 
     protected int getUid(String packageName) throws Exception {
@@ -475,25 +511,23 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
      */
     private String checkNetworkAccess(boolean expectAvailable,
             @Nullable final String expectedUnavailableError) throws Exception {
-        final String resultData = mServiceClient.checkNetworkStatus();
-        return checkForAvailabilityInResultData(resultData, expectAvailable,
+        final NetworkCheckResult checkResult = mServiceClient.checkNetworkStatus(mCustomUrl);
+        return checkForAvailabilityInNetworkCheckResult(checkResult, expectAvailable,
                 expectedUnavailableError);
     }
 
-    private String checkForAvailabilityInResultData(String resultData, boolean expectAvailable,
-            @Nullable final String expectedUnavailableError) {
-        if (resultData == null) {
-            assertNotNull("Network status from app2 is null", resultData);
-        }
-        // Network status format is described on MyBroadcastReceiver.checkNetworkStatus()
-        final String[] parts = resultData.split(NETWORK_STATUS_SEPARATOR);
-        assertEquals("Wrong network status: " + resultData, 5, parts.length);
-        final State state = parts[0].equals("null") ? null : State.valueOf(parts[0]);
-        final DetailedState detailedState = parts[1].equals("null")
-                ? null : DetailedState.valueOf(parts[1]);
-        final boolean connected = Boolean.valueOf(parts[2]);
-        final String connectionCheckDetails = parts[3];
-        final String networkInfo = parts[4];
+    private String checkForAvailabilityInNetworkCheckResult(NetworkCheckResult networkCheckResult,
+            boolean expectAvailable, @Nullable final String expectedUnavailableError) {
+        assertNotNull("NetworkCheckResult from app2 is null", networkCheckResult);
+
+        final NetworkInfo networkInfo = networkCheckResult.networkInfo;
+        assertNotNull("NetworkInfo from app2 is null", networkInfo);
+
+        final State state = networkInfo.getState();
+        final DetailedState detailedState = networkInfo.getDetailedState();
+
+        final boolean connected = networkCheckResult.connected;
+        final String connectionCheckDetails = networkCheckResult.details;
 
         final StringBuilder errors = new StringBuilder();
         final State expectedState;
@@ -899,33 +933,36 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
         if (type == TYPE_COMPONENT_FOREGROUND_SERVICE) {
             startForegroundService();
             assertForegroundServiceNetworkAccess();
-            return;
         } else if (type == TYPE_COMPONENT_ACTIVTIY) {
             turnScreenOn();
             final CountDownLatch latch = new CountDownLatch(1);
             final Intent launchIntent = getIntentForComponent(type);
             final Bundle extras = new Bundle();
-            final ArrayList<Pair<Integer, String>> result = new ArrayList<>(1);
+            final AtomicReference<Pair<Integer, NetworkCheckResult>> result =
+                    new AtomicReference<>();
             extras.putBinder(KEY_NETWORK_STATE_OBSERVER, getNewNetworkStateObserver(latch, result));
             extras.putBoolean(KEY_SKIP_VALIDATION_CHECKS, !expectAvailable);
+            extras.putString(KEY_CUSTOM_URL, mCustomUrl);
             launchIntent.putExtras(extras);
             mContext.startActivity(launchIntent);
             if (latch.await(ACTIVITY_NETWORK_STATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                final int resultCode = result.get(0).first;
-                final String resultData = result.get(0).second;
+                final int resultCode = result.get().first;
+                final NetworkCheckResult networkCheckResult = result.get().second;
                 if (resultCode == INetworkStateObserver.RESULT_SUCCESS_NETWORK_STATE_CHECKED) {
-                    final String error = checkForAvailabilityInResultData(
-                            resultData, expectAvailable, null /* expectedUnavailableError */);
+                    final String error = checkForAvailabilityInNetworkCheckResult(
+                            networkCheckResult, expectAvailable,
+                            null /* expectedUnavailableError */);
                     if (error != null) {
                         fail("Network is not available for activity in app2 (" + mUid + "): "
                                 + error);
                     }
                 } else if (resultCode == INetworkStateObserver.RESULT_ERROR_UNEXPECTED_PROC_STATE) {
-                    Log.d(TAG, resultData);
+                    Log.d(TAG, networkCheckResult.details);
                     // App didn't come to foreground when the activity is started, so try again.
                     assertTopNetworkAccess(true);
                 } else {
-                    fail("Unexpected resultCode=" + resultCode + "; received=[" + resultData + "]");
+                    fail("Unexpected resultCode=" + resultCode
+                            + "; networkCheckResult=[" + networkCheckResult + "]");
                 }
             } else {
                 fail("Timed out waiting for network availability status from app2's activity ("
@@ -933,10 +970,12 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
             }
         } else if (type == TYPE_EXPEDITED_JOB) {
             final Bundle extras = new Bundle();
-            final ArrayList<Pair<Integer, String>> result = new ArrayList<>(1);
+            final AtomicReference<Pair<Integer, NetworkCheckResult>> result =
+                    new AtomicReference<>();
             final CountDownLatch latch = new CountDownLatch(1);
             extras.putBinder(KEY_NETWORK_STATE_OBSERVER, getNewNetworkStateObserver(latch, result));
             extras.putBoolean(KEY_SKIP_VALIDATION_CHECKS, !expectAvailable);
+            extras.putString(KEY_CUSTOM_URL, mCustomUrl);
             final JobInfo jobInfo = new JobInfo.Builder(TEST_JOB_ID, TEST_JOB_COMPONENT)
                     .setExpedited(true)
                     .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
@@ -946,11 +985,12 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                     RESULT_SUCCESS, mServiceClient.scheduleJob(jobInfo));
             forceRunJob(TEST_APP2_PKG, TEST_JOB_ID);
             if (latch.await(JOB_NETWORK_STATE_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                final int resultCode = result.get(0).first;
-                final String resultData = result.get(0).second;
+                final int resultCode = result.get().first;
+                final NetworkCheckResult networkCheckResult = result.get().second;
                 if (resultCode == INetworkStateObserver.RESULT_SUCCESS_NETWORK_STATE_CHECKED) {
-                    final String error = checkForAvailabilityInResultData(
-                            resultData, expectAvailable, null /* expectedUnavailableError */);
+                    final String error = checkForAvailabilityInNetworkCheckResult(
+                            networkCheckResult, expectAvailable,
+                            null /* expectedUnavailableError */);
                     if (error != null) {
                         Log.d(TAG, "Network state is unexpected, checking again. " + error);
                         // Right now we could end up in an unexpected state if expedited job
@@ -958,7 +998,8 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
                         assertNetworkAccess(expectAvailable, false /* needScreenOn */);
                     }
                 } else {
-                    fail("Unexpected resultCode=" + resultCode + "; received=[" + resultData + "]");
+                    fail("Unexpected resultCode=" + resultCode
+                            + "; networkCheckResult=[" + networkCheckResult + "]");
                 }
             } else {
                 fail("Timed out waiting for network availability status from app2's expedited job ("
@@ -1001,11 +1042,12 @@ public abstract class AbstractRestrictBackgroundNetworkTestCase {
     }
 
     private Binder getNewNetworkStateObserver(final CountDownLatch latch,
-            final ArrayList<Pair<Integer, String>> result) {
+            final AtomicReference<Pair<Integer, NetworkCheckResult>> result) {
         return new INetworkStateObserver.Stub() {
             @Override
-            public void onNetworkStateChecked(int resultCode, String resultData) {
-                result.add(Pair.create(resultCode, resultData));
+            public void onNetworkStateChecked(int resultCode,
+                    NetworkCheckResult networkCheckResult) {
+                result.set(Pair.create(resultCode, networkCheckResult));
                 latch.countDown();
             }
         };

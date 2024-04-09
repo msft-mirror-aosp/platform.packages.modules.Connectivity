@@ -241,13 +241,10 @@ public class MdnsAdvertiser {
         }
 
         @Override
-        public void onDestroyed(@NonNull MdnsInterfaceSocket socket) {
-            for (int i = mAdvertiserRequests.size() - 1; i >= 0; i--) {
-                if (mAdvertiserRequests.valueAt(i).onAdvertiserDestroyed(socket)) {
-                    mAdvertiserRequests.removeAt(i);
-                }
-            }
-            mAllAdvertisers.remove(socket);
+        public void onAllServicesRemoved(@NonNull MdnsInterfaceSocket socket) {
+            if (DBG) { mSharedLog.i("onAllServicesRemoved: " + socket); }
+            // Try destroying the advertiser if all services has been removed
+            destroyAdvertiser(socket, false /* interfaceDestroyed */);
         }
     };
 
@@ -318,6 +315,30 @@ public class MdnsAdvertiser {
     }
 
     /**
+     * Destroys the advertiser for the interface indicated by {@code socket}.
+     *
+     * {@code interfaceDestroyed} should be set to {@code true} if this method is called because
+     * the associated interface has been destroyed.
+     */
+    private void destroyAdvertiser(MdnsInterfaceSocket socket, boolean interfaceDestroyed) {
+        InterfaceAdvertiserRequest advertiserRequest;
+
+        MdnsInterfaceAdvertiser advertiser = mAllAdvertisers.remove(socket);
+        if (advertiser != null) {
+            advertiser.destroyNow();
+            if (DBG) { mSharedLog.i("MdnsInterfaceAdvertiser is destroyed: " + advertiser); }
+        }
+
+        for (int i = mAdvertiserRequests.size() - 1; i >= 0; i--) {
+            advertiserRequest = mAdvertiserRequests.valueAt(i);
+            if (advertiserRequest.onAdvertiserDestroyed(socket, interfaceDestroyed)) {
+                if (DBG) { mSharedLog.i("AdvertiserRequest is removed: " + advertiserRequest); }
+                mAdvertiserRequests.removeAt(i);
+            }
+        }
+    }
+
+    /**
      * A request for a {@link MdnsInterfaceAdvertiser}.
      *
      * This class tracks services to be advertised on all sockets provided via a registered
@@ -336,13 +357,22 @@ public class MdnsAdvertiser {
         }
 
         /**
-         * Called when an advertiser was destroyed, after all services were unregistered and it sent
-         * exit announcements, or the interface is gone.
+         * Called when the interface advertiser associated with {@code socket} has been destroyed.
          *
-         * @return true if this {@link InterfaceAdvertiserRequest} should now be deleted.
+         * {@code interfaceDestroyed} should be set to {@code true} if this method is called because
+         * the associated interface has been destroyed.
+         *
+         * @return true if the {@link InterfaceAdvertiserRequest} should now be deleted
          */
-        boolean onAdvertiserDestroyed(@NonNull MdnsInterfaceSocket socket) {
+        boolean onAdvertiserDestroyed(
+                @NonNull MdnsInterfaceSocket socket, boolean interfaceDestroyed) {
             final MdnsInterfaceAdvertiser removedAdvertiser = mAdvertisers.remove(socket);
+            if (removedAdvertiser != null
+                    && !interfaceDestroyed && mPendingRegistrations.size() > 0) {
+                mSharedLog.wtf(
+                        "unexpected onAdvertiserDestroyed() when there are pending registrations");
+            }
+
             if (mMdnsFeatureFlags.mIsMdnsOffloadFeatureEnabled && removedAdvertiser != null) {
                 final String interfaceName = removedAdvertiser.getSocketInterfaceName();
                 // If the interface is destroyed, stop all hardware offloading on that
@@ -449,7 +479,8 @@ public class MdnsAdvertiser {
             mPendingRegistrations.put(id, registration);
             for (int i = 0; i < mAdvertisers.size(); i++) {
                 try {
-                    mAdvertisers.valueAt(i).addService(id, registration.getServiceInfo());
+                    mAdvertisers.valueAt(i).addService(id, registration.getServiceInfo(),
+                            registration.getAdvertisingOptions());
                 } catch (NameConflictException e) {
                     mSharedLog.wtf("Name conflict adding services that should have unique names",
                             e);
@@ -515,7 +546,7 @@ public class MdnsAdvertiser {
                 final Registration registration = mPendingRegistrations.valueAt(i);
                 try {
                     advertiser.addService(mPendingRegistrations.keyAt(i),
-                            registration.getServiceInfo());
+                            registration.getServiceInfo(), registration.getAdvertisingOptions());
                 } catch (NameConflictException e) {
                     mSharedLog.wtf("Name conflict adding services that should have unique names",
                             e);
@@ -527,7 +558,7 @@ public class MdnsAdvertiser {
         public void onInterfaceDestroyed(@NonNull SocketKey socketKey,
                 @NonNull MdnsInterfaceSocket socket) {
             final MdnsInterfaceAdvertiser advertiser = mAdvertisers.get(socket);
-            if (advertiser != null) advertiser.destroyNow();
+            if (advertiser != null) destroyAdvertiser(socket, true /* interfaceDestroyed */);
         }
 
         @Override
@@ -587,15 +618,17 @@ public class MdnsAdvertiser {
         @NonNull
         private NsdServiceInfo mServiceInfo;
         final int mClientUid;
+        private final MdnsAdvertisingOptions mAdvertisingOptions;
         int mConflictDuringProbingCount;
         int mConflictAfterProbingCount;
 
-
-        private Registration(@NonNull NsdServiceInfo serviceInfo, int clientUid) {
+        private Registration(@NonNull NsdServiceInfo serviceInfo, int clientUid,
+                @NonNull MdnsAdvertisingOptions advertisingOptions) {
             this.mOriginalServiceName = serviceInfo.getServiceName();
             this.mOriginalHostname = serviceInfo.getHostname();
             this.mServiceInfo = serviceInfo;
             this.mClientUid = clientUid;
+            this.mAdvertisingOptions = advertisingOptions;
         }
 
         /** Check if the new {@link NsdServiceInfo} doesn't update any data other than subtypes. */
@@ -696,6 +729,11 @@ public class MdnsAdvertiser {
         @NonNull
         public NsdServiceInfo getServiceInfo() {
             return mServiceInfo;
+        }
+
+        @NonNull
+        public MdnsAdvertisingOptions getAdvertisingOptions() {
+            return mAdvertisingOptions;
         }
     }
 
@@ -855,7 +893,7 @@ public class MdnsAdvertiser {
             }
             mSharedLog.i("Adding service " + service + " with ID " + id + " and subtypes "
                     + subtypes + " advertisingOptions " + advertisingOptions);
-            registration = new Registration(service, clientUid);
+            registration = new Registration(service, clientUid, advertisingOptions);
             final BiPredicate<Network, InterfaceAdvertiserRequest> checkConflictFilter;
             if (network == null) {
                 // If registering on all networks, no advertiser must have conflicts

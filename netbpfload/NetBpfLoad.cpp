@@ -97,7 +97,7 @@ const android::bpf::Location locations[] = {
         },
 };
 
-int loadAllElfObjects(const android::bpf::Location& location) {
+int loadAllElfObjects(const unsigned int bpfloader_ver, const android::bpf::Location& location) {
     int retVal = 0;
     DIR* dir;
     struct dirent* ent;
@@ -111,7 +111,7 @@ int loadAllElfObjects(const android::bpf::Location& location) {
             progPath += s;
 
             bool critical;
-            int ret = android::bpf::loadProg(progPath.c_str(), &critical, location);
+            int ret = android::bpf::loadProg(progPath.c_str(), &critical, bpfloader_ver, location);
             if (ret) {
                 if (critical) retVal = ret;
                 ALOGE("Failed to load object: %s, ret: %s", progPath.c_str(), std::strerror(-ret));
@@ -169,29 +169,96 @@ int writeProcSysFile(const char *filename, const char *value) {
     return 0;
 }
 
+#define APEX_MOUNT_POINT "/apex/com.android.tethering"
+const char * const platformBpfLoader = "/system/bin/bpfloader";
+
+int logTetheringApexVersion(void) {
+    char * found_blockdev = NULL;
+    FILE * f = NULL;
+    char buf[4096];
+
+    f = fopen("/proc/mounts", "re");
+    if (!f) return 1;
+
+    // /proc/mounts format: block_device [space] mount_point [space] other stuff... newline
+    while (fgets(buf, sizeof(buf), f)) {
+        char * blockdev = buf;
+        char * space = strchr(blockdev, ' ');
+        if (!space) continue;
+        *space = '\0';
+        char * mntpath = space + 1;
+        space = strchr(mntpath, ' ');
+        if (!space) continue;
+        *space = '\0';
+        if (strcmp(mntpath, APEX_MOUNT_POINT)) continue;
+        found_blockdev = strdup(blockdev);
+        break;
+    }
+    fclose(f);
+    f = NULL;
+
+    if (!found_blockdev) return 2;
+    ALOGD("Found Tethering Apex mounted from blockdev %s", found_blockdev);
+
+    f = fopen("/proc/mounts", "re");
+    if (!f) { free(found_blockdev); return 3; }
+
+    while (fgets(buf, sizeof(buf), f)) {
+        char * blockdev = buf;
+        char * space = strchr(blockdev, ' ');
+        if (!space) continue;
+        *space = '\0';
+        char * mntpath = space + 1;
+        space = strchr(mntpath, ' ');
+        if (!space) continue;
+        *space = '\0';
+        if (strcmp(blockdev, found_blockdev)) continue;
+        if (strncmp(mntpath, APEX_MOUNT_POINT "@", strlen(APEX_MOUNT_POINT "@"))) continue;
+        char * at = strchr(mntpath, '@');
+        if (!at) continue;
+        char * ver = at + 1;
+        ALOGI("Tethering APEX version %s", ver);
+    }
+    fclose(f);
+    free(found_blockdev);
+    return 0;
+}
+
 int main(int argc, char** argv, char * const envp[]) {
     (void)argc;
     android::base::InitLogging(argv, &android::base::KernelLogger);
 
     ALOGI("NetBpfLoad '%s' starting...", argv[0]);
 
-    // true iff we are running from the module
-    const bool is_mainline = !strcmp(argv[0], "/apex/com.android.tethering/bin/netbpfload");
-
-    // true iff we are running from the platform
-    const bool is_platform = !strcmp(argv[0], "/system/bin/netbpfload");
-
     const int device_api_level = android_get_device_api_level();
     const bool isAtLeastT = (device_api_level >= __ANDROID_API_T__);
     const bool isAtLeastU = (device_api_level >= __ANDROID_API_U__);
     const bool isAtLeastV = (device_api_level >= __ANDROID_API_V__);
 
-    ALOGI("NetBpfLoad api:%d/%d kver:%07x platform:%d mainline:%d",
-          android_get_application_target_sdk_version(), device_api_level,
-          android::bpf::kernelVersion(), is_platform, is_mainline);
+    // last in U QPR2 beta1
+    const bool has_platform_bpfloader_rc = exists("/system/etc/init/bpfloader.rc");
+    // first in U QPR2 beta~2
+    const bool has_platform_netbpfload_rc = exists("/system/etc/init/netbpfload.rc");
 
-    if (!is_platform && !is_mainline) {
-        ALOGE("Unable to determine if we're platform or mainline netbpfload.");
+    ALOGI("NetBpfLoad api:%d/%d kver:%07x rc:%d%d",
+          android_get_application_target_sdk_version(), device_api_level,
+          android::bpf::kernelVersion(),
+          has_platform_bpfloader_rc, has_platform_netbpfload_rc);
+
+    if (!has_platform_bpfloader_rc && !has_platform_netbpfload_rc) {
+        ALOGE("Unable to find platform's bpfloader & netbpfload init scripts.");
+        return 1;
+    }
+
+    if (has_platform_bpfloader_rc && has_platform_netbpfload_rc) {
+        ALOGE("Platform has *both* bpfloader & netbpfload init scripts.");
+        return 1;
+    }
+
+    logTetheringApexVersion();
+
+    if (!isAtLeastT) {
+        ALOGE("Impossible - not reachable on Android <T.");
         return 1;
     }
 
@@ -207,6 +274,11 @@ int main(int argc, char** argv, char * const envp[]) {
 
     if (isAtLeastV && !android::bpf::isAtLeastKernelVersion(4, 19, 0)) {
         ALOGE("Android V requires kernel 4.19.");
+        return 1;
+    }
+
+    if (isAtLeastV && android::bpf::isX86() && !android::bpf::isKernel64Bit()) {
+        ALOGE("Android V requires X86 kernel to be 64-bit.");
         return 1;
     }
 
@@ -241,14 +313,16 @@ int main(int argc, char** argv, char * const envp[]) {
         return 1;
     }
 
-    if (isAtLeastU) {
+    if (false && isAtLeastV) {
         // Linux 5.16-rc1 changed the default to 2 (disabled but changeable),
         // but we need 0 (enabled)
         // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on
         // pre-5.13, on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
         if (writeProcSysFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
             android::bpf::isAtLeastKernelVersion(5, 13, 0)) return 1;
+    }
 
+    if (isAtLeastU) {
         // Enable the eBPF JIT -- but do note that on 64-bit kernels it is likely
         // already force enabled by the kernel config option BPF_JIT_ALWAYS_ON.
         // (Note: this (open) will fail with ENOENT 'No such file or directory' if
@@ -271,9 +345,22 @@ int main(int argc, char** argv, char * const envp[]) {
         if (createSysFsBpfSubDir(location.prefix)) return 1;
     }
 
+    // Note: there's no actual src dir for fs_bpf_loader .o's,
+    // so it is not listed in 'locations[].prefix'.
+    // This is because this is primarily meant for triggering genfscon rules,
+    // and as such this will likely always be the case.
+    // Thus we need to manually create the /sys/fs/bpf/loader subdirectory.
+    if (createSysFsBpfSubDir("loader")) return 1;
+
+    // Version of Network BpfLoader depends on the Android OS version
+    unsigned int bpfloader_ver = 42u;  // [42] BPFLOADER_MAINLINE_VERSION
+    if (isAtLeastT) ++bpfloader_ver;   // [43] BPFLOADER_MAINLINE_T_VERSION
+    if (isAtLeastU) ++bpfloader_ver;   // [44] BPFLOADER_MAINLINE_U_VERSION
+    if (isAtLeastV) ++bpfloader_ver;   // [45] BPFLOADER_MAINLINE_V_VERSION
+
     // Load all ELF objects, create programs and maps, and pin them
     for (const auto& location : locations) {
-        if (loadAllElfObjects(location) != 0) {
+        if (loadAllElfObjects(bpfloader_ver, location) != 0) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
@@ -293,12 +380,15 @@ int main(int argc, char** argv, char * const envp[]) {
         return 1;
     }
 
-    ALOGI("done, transferring control to platform bpfloader.");
+    if (false && isAtLeastV) {
+        ALOGI("done, transferring control to platform bpfloader.");
 
-    const char * args[] = { "/system/bin/bpfloader", NULL, };
-    if (execve(args[0], (char**)args, envp)) {
-        ALOGE("FATAL: execve('/system/bin/bpfloader'): %d[%s]", errno, strerror(errno));
+        const char * args[] = { platformBpfLoader, NULL, };
+        execve(args[0], (char**)args, envp);
+        ALOGE("FATAL: execve('%s'): %d[%s]", platformBpfLoader, errno, strerror(errno));
+        return 1;
     }
 
-    return 1;
+    ALOGI("mainline done!");
+    return 0;
 }

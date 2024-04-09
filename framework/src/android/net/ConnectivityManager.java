@@ -74,6 +74,7 @@ import android.util.Range;
 import android.util.SparseIntArray;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.modules.utils.build.SdkLevel;
 
 import libcore.net.event.NetworkEventDispatcher;
 
@@ -6278,16 +6279,21 @@ public class ConnectivityManager {
     // Only the system server process and the network stack have access.
     @FlaggedApi(Flags.SUPPORT_IS_UID_NETWORKING_BLOCKED)
     @SystemApi(client = MODULE_LIBRARIES)
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)  // BPF maps were only mainlined in T
+    // Note b/326143935 kernel bug can trigger crash on some T device.
+    @RequiresApi(VERSION_CODES.UPSIDE_DOWN_CAKE)
     @RequiresPermission(NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
     public boolean isUidNetworkingBlocked(int uid, boolean isNetworkMetered) {
-        final BpfNetMapsReader reader = BpfNetMapsReader.getInstance();
+        if (!SdkLevel.isAtLeastU()) {
+            throw new IllegalStateException(
+                    "isUidNetworkingBlocked is not supported on pre-U devices");
+        }
+        final NetworkStackBpfNetMaps reader = NetworkStackBpfNetMaps.getInstance();
         // Note that before V, the data saver status in bpf is written by ConnectivityService
         // when receiving {@link #ACTION_RESTRICT_BACKGROUND_CHANGED}. Thus,
         // the status is not synchronized.
         // On V+, the data saver status is set by platform code when enabling/disabling
         // data saver, which is synchronized.
-        return reader.isUidNetworkingBlocked(uid, isNetworkMetered, reader.getDataSaverEnabled());
+        return reader.isUidNetworkingBlocked(uid, isNetworkMetered);
     }
 
     /** @hide */

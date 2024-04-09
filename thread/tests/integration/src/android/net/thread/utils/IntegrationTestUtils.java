@@ -17,16 +17,22 @@ package android.net.thread.utils;
 
 import static android.system.OsConstants.IPPROTO_ICMPV6;
 
+import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ND_OPTION_PIO;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ROUTER_ADVERTISEMENT;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+
 import android.net.TestNetworkInterface;
+import android.net.nsd.NsdManager;
+import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ThreadNetworkController;
 import android.os.Handler;
 import android.os.SystemClock;
-import android.os.SystemProperties;
+
+import androidx.annotation.NonNull;
 
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.Icmpv6Header;
@@ -39,10 +45,18 @@ import com.android.testutils.TapPacketReader;
 import com.google.common.util.concurrent.SettableFuture;
 
 import java.io.FileDescriptor;
+import java.io.IOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -58,14 +72,9 @@ public final class IntegrationTestUtils {
     public static final Duration JOIN_TIMEOUT = Duration.ofSeconds(30);
     public static final Duration LEAVE_TIMEOUT = Duration.ofSeconds(2);
     public static final Duration CALLBACK_TIMEOUT = Duration.ofSeconds(1);
+    public static final Duration SERVICE_DISCOVERY_TIMEOUT = Duration.ofSeconds(20);
 
     private IntegrationTestUtils() {}
-
-    /** Returns whether the device supports simulated Thread radio. */
-    public static boolean isSimulatedThreadRadioSupported() {
-        // The integration test uses SIMULATION Thread radio so that it only supports CuttleFish.
-        return SystemProperties.get("ro.product.model").startsWith("Cuttlefish");
-    }
 
     /**
      * Waits for the given {@link Supplier} to be true until given timeout.
@@ -76,7 +85,7 @@ public final class IntegrationTestUtils {
      */
     public static void waitFor(Supplier<Boolean> condition, Duration timeout)
             throws TimeoutException {
-        final long intervalMills = 1000;
+        final long intervalMills = 500;
         final long timeoutMills = timeout.toMillis();
 
         for (long i = 0; i < timeoutMills; i += intervalMills) {
@@ -143,17 +152,17 @@ public final class IntegrationTestUtils {
     }
 
     /**
-     * Reads a packet from a given {@link TapPacketReader} that satisfies the {@code filter}.
+     * Polls for a packet from a given {@link TapPacketReader} that satisfies the {@code filter}.
      *
      * @param packetReader a TUN packet reader
      * @param filter the filter to be applied on the packet
      * @return the first IPv6 packet that satisfies the {@code filter}. If it has waited for more
      *     than 3000ms to read the next packet, the method will return null
      */
-    public static byte[] readPacketFrom(TapPacketReader packetReader, Predicate<byte[]> filter) {
+    public static byte[] pollForPacket(TapPacketReader packetReader, Predicate<byte[]> filter) {
         byte[] packet;
-        while ((packet = packetReader.poll(3000 /* timeoutMs */)) != null) {
-            if (filter.test(packet)) return packet;
+        while ((packet = packetReader.poll(3000 /* timeoutMs */, filter)) != null) {
+            return packet;
         }
         return null;
     }
@@ -169,6 +178,34 @@ public final class IntegrationTestUtils {
                 return false;
             }
             return Struct.parse(Icmpv6Header.class, buf).type == (short) type;
+        } catch (IllegalArgumentException ignored) {
+            // It's fine that the passed in packet is malformed because it's could be sent
+            // by anybody.
+        }
+        return false;
+    }
+
+    public static boolean isFromIpv6Source(byte[] packet, Inet6Address src) {
+        if (packet == null) {
+            return false;
+        }
+        ByteBuffer buf = ByteBuffer.wrap(packet);
+        try {
+            return Struct.parse(Ipv6Header.class, buf).srcIp.equals(src);
+        } catch (IllegalArgumentException ignored) {
+            // It's fine that the passed in packet is malformed because it's could be sent
+            // by anybody.
+        }
+        return false;
+    }
+
+    public static boolean isToIpv6Destination(byte[] packet, Inet6Address dest) {
+        if (packet == null) {
+            return false;
+        }
+        ByteBuffer buf = ByteBuffer.wrap(packet);
+        try {
+            return Struct.parse(Ipv6Header.class, buf).dstIp.equals(dest);
         } catch (IllegalArgumentException ignored) {
             // It's fine that the passed in packet is malformed because it's could be sent
             // by anybody.
@@ -218,5 +255,141 @@ public final class IntegrationTestUtils {
             }
         }
         return pioList;
+    }
+
+    /**
+     * Sends a UDP message to a destination.
+     *
+     * @param dstAddress the IP address of the destination
+     * @param dstPort the port of the destination
+     * @param message the message in UDP payload
+     * @throws IOException if failed to send the message
+     */
+    public static void sendUdpMessage(InetAddress dstAddress, int dstPort, String message)
+            throws IOException {
+        SocketAddress dstSockAddr = new InetSocketAddress(dstAddress, dstPort);
+
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.connect(dstSockAddr);
+
+            byte[] msgBytes = message.getBytes();
+            DatagramPacket packet = new DatagramPacket(msgBytes, msgBytes.length);
+
+            socket.send(packet);
+        }
+    }
+
+    public static boolean isInMulticastGroup(String interfaceName, Inet6Address address) {
+        final String cmd = "ip -6 maddr show dev " + interfaceName;
+        final String output = runShellCommandOrThrow(cmd);
+        final String addressStr = address.getHostAddress();
+        for (final String line : output.split("\\n")) {
+            if (line.contains(addressStr)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Return the first discovered service of {@code serviceType}. */
+    public static NsdServiceInfo discoverService(NsdManager nsdManager, String serviceType)
+            throws Exception {
+        CompletableFuture<NsdServiceInfo> serviceInfoFuture = new CompletableFuture<>();
+        NsdManager.DiscoveryListener listener =
+                new DefaultDiscoveryListener() {
+                    @Override
+                    public void onServiceFound(NsdServiceInfo serviceInfo) {
+                        serviceInfoFuture.complete(serviceInfo);
+                    }
+                };
+        nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        try {
+            serviceInfoFuture.get(SERVICE_DISCOVERY_TIMEOUT.toMillis(), MILLISECONDS);
+        } finally {
+            nsdManager.stopServiceDiscovery(listener);
+        }
+
+        return serviceInfoFuture.get();
+    }
+
+    /**
+     * Returns the {@link NsdServiceInfo} when a service instance of {@code serviceType} gets lost.
+     */
+    public static NsdManager.DiscoveryListener discoverForServiceLost(
+            NsdManager nsdManager,
+            String serviceType,
+            CompletableFuture<NsdServiceInfo> serviceInfoFuture) {
+        NsdManager.DiscoveryListener listener =
+                new DefaultDiscoveryListener() {
+                    @Override
+                    public void onServiceLost(NsdServiceInfo serviceInfo) {
+                        serviceInfoFuture.complete(serviceInfo);
+                    }
+                };
+        nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        return listener;
+    }
+
+    /** Resolves the service. */
+    public static NsdServiceInfo resolveService(NsdManager nsdManager, NsdServiceInfo serviceInfo)
+            throws Exception {
+        return resolveServiceUntil(nsdManager, serviceInfo, s -> true);
+    }
+
+    /** Returns the first resolved service that satisfies the {@code predicate}. */
+    public static NsdServiceInfo resolveServiceUntil(
+            NsdManager nsdManager, NsdServiceInfo serviceInfo, Predicate<NsdServiceInfo> predicate)
+            throws Exception {
+        CompletableFuture<NsdServiceInfo> resolvedServiceInfoFuture = new CompletableFuture<>();
+        NsdManager.ServiceInfoCallback callback =
+                new DefaultServiceInfoCallback() {
+                    @Override
+                    public void onServiceUpdated(@NonNull NsdServiceInfo serviceInfo) {
+                        if (predicate.test(serviceInfo)) {
+                            resolvedServiceInfoFuture.complete(serviceInfo);
+                        }
+                    }
+                };
+        nsdManager.registerServiceInfoCallback(serviceInfo, directExecutor(), callback);
+        try {
+            return resolvedServiceInfoFuture.get(
+                    SERVICE_DISCOVERY_TIMEOUT.toMillis(), MILLISECONDS);
+        } finally {
+            nsdManager.unregisterServiceInfoCallback(callback);
+        }
+    }
+
+    private static class DefaultDiscoveryListener implements NsdManager.DiscoveryListener {
+        @Override
+        public void onStartDiscoveryFailed(String serviceType, int errorCode) {}
+
+        @Override
+        public void onStopDiscoveryFailed(String serviceType, int errorCode) {}
+
+        @Override
+        public void onDiscoveryStarted(String serviceType) {}
+
+        @Override
+        public void onDiscoveryStopped(String serviceType) {}
+
+        @Override
+        public void onServiceFound(NsdServiceInfo serviceInfo) {}
+
+        @Override
+        public void onServiceLost(NsdServiceInfo serviceInfo) {}
+    }
+
+    private static class DefaultServiceInfoCallback implements NsdManager.ServiceInfoCallback {
+        @Override
+        public void onServiceInfoCallbackRegistrationFailed(int errorCode) {}
+
+        @Override
+        public void onServiceUpdated(@NonNull NsdServiceInfo serviceInfo) {}
+
+        @Override
+        public void onServiceLost() {}
+
+        @Override
+        public void onServiceInfoCallbackUnregistered() {}
     }
 }

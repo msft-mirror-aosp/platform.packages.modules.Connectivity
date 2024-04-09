@@ -45,6 +45,7 @@ import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -75,9 +76,9 @@ public class MdnsRecordRepository {
     // TTL for records with a host name as the resource record's name (e.g., A, AAAA, HINFO) or a
     // host name contained within the resource record's rdata (e.g., SRV, reverse mapping PTR
     // record)
-    private static final long NAME_RECORDS_TTL_MILLIS = TimeUnit.SECONDS.toMillis(120);
+    private static final long DEFAULT_NAME_RECORDS_TTL_MILLIS = TimeUnit.SECONDS.toMillis(120);
     // TTL for other records
-    private static final long NON_NAME_RECORDS_TTL_MILLIS = TimeUnit.MINUTES.toMillis(75);
+    private static final long DEFAULT_NON_NAME_RECORDS_TTL_MILLIS = TimeUnit.MINUTES.toMillis(75);
 
     // Top-level domain for link-local queries, as per RFC6762 3.
     private static final String LOCAL_TLD = "local";
@@ -193,6 +194,9 @@ public class MdnsRecordRepository {
          */
         private boolean isProbing;
 
+        @Nullable
+        private Duration ttl;
+
         /**
          * Create a ServiceRegistration with only update the subType.
          */
@@ -200,15 +204,31 @@ public class MdnsRecordRepository {
             NsdServiceInfo newServiceInfo = new NsdServiceInfo(serviceInfo);
             newServiceInfo.setSubtypes(newSubtypes);
             return new ServiceRegistration(srvRecord.record.getServiceHost(), newServiceInfo,
-                    repliedServiceCount, sentPacketCount, exiting, isProbing);
+                    repliedServiceCount, sentPacketCount, exiting, isProbing, ttl);
         }
 
         /**
          * Create a ServiceRegistration for dns-sd service registration (RFC6763).
          */
         ServiceRegistration(@NonNull String[] deviceHostname, @NonNull NsdServiceInfo serviceInfo,
-                int repliedServiceCount, int sentPacketCount, boolean exiting, boolean isProbing) {
+                int repliedServiceCount, int sentPacketCount, boolean exiting, boolean isProbing,
+                @Nullable Duration ttl) {
             this.serviceInfo = serviceInfo;
+
+            final long nonNameRecordsTtlMillis;
+            final long nameRecordsTtlMillis;
+
+            // When custom TTL is specified, all records of the service will use the custom TTL.
+            // This is typically useful for SRP (Service Registration Protocol:
+            // https://datatracker.ietf.org/doc/html/draft-ietf-dnssd-srp-24) Advertising Proxy
+            // where all records in a single SRP are required the same TTL.
+            if (ttl != null) {
+                nonNameRecordsTtlMillis = ttl.toMillis();
+                nameRecordsTtlMillis = ttl.toMillis();
+            } else {
+                nonNameRecordsTtlMillis = DEFAULT_NON_NAME_RECORDS_TTL_MILLIS;
+                nameRecordsTtlMillis = DEFAULT_NAME_RECORDS_TTL_MILLIS;
+            }
 
             final boolean hasService = !TextUtils.isEmpty(serviceInfo.getServiceType());
             final boolean hasCustomHost = !TextUtils.isEmpty(serviceInfo.getHostname());
@@ -229,7 +249,7 @@ public class MdnsRecordRepository {
                                 serviceType,
                                 0L /* receiptTimeMillis */,
                                 false /* cacheFlush */,
-                                NON_NAME_RECORDS_TTL_MILLIS,
+                                nonNameRecordsTtlMillis,
                                 serviceName),
                         true /* sharedName */));
                 for (String subtype : serviceInfo.getSubtypes()) {
@@ -239,7 +259,7 @@ public class MdnsRecordRepository {
                                     MdnsUtils.constructFullSubtype(serviceType, subtype),
                                     0L /* receiptTimeMillis */,
                                     false /* cacheFlush */,
-                                    NON_NAME_RECORDS_TTL_MILLIS,
+                                    nonNameRecordsTtlMillis,
                                     serviceName),
                             true /* sharedName */));
                 }
@@ -249,7 +269,7 @@ public class MdnsRecordRepository {
                         new MdnsServiceRecord(serviceName,
                                 0L /* receiptTimeMillis */,
                                 true /* cacheFlush */,
-                                NAME_RECORDS_TTL_MILLIS,
+                                nameRecordsTtlMillis,
                                 0 /* servicePriority */, 0 /* serviceWeight */,
                                 serviceInfo.getPort(),
                                 hostname),
@@ -261,7 +281,7 @@ public class MdnsRecordRepository {
                                 0L /* receiptTimeMillis */,
                                 // Service name is verified unique after probing
                                 true /* cacheFlush */,
-                                NON_NAME_RECORDS_TTL_MILLIS,
+                                nonNameRecordsTtlMillis,
                                 attrsToTextEntries(serviceInfo.getAttributes())),
                         false /* sharedName */);
 
@@ -275,7 +295,7 @@ public class MdnsRecordRepository {
                                 DNS_SD_SERVICE_TYPE,
                                 0L /* receiptTimeMillis */,
                                 false /* cacheFlush */,
-                                NON_NAME_RECORDS_TTL_MILLIS,
+                                nonNameRecordsTtlMillis,
                                 serviceType),
                         true /* sharedName */));
             } else {
@@ -292,7 +312,7 @@ public class MdnsRecordRepository {
                                     new MdnsInetAddressRecord(hostname,
                                             0L /* receiptTimeMillis */,
                                             true /* cacheFlush */,
-                                            NAME_RECORDS_TTL_MILLIS,
+                                            nameRecordsTtlMillis,
                                             address),
                                     false /* sharedName */));
                 }
@@ -315,9 +335,9 @@ public class MdnsRecordRepository {
          * @param serviceInfo Service to advertise
          */
         ServiceRegistration(@NonNull String[] deviceHostname, @NonNull NsdServiceInfo serviceInfo,
-                int repliedServiceCount, int sentPacketCount) {
+                int repliedServiceCount, int sentPacketCount, @Nullable Duration ttl) {
             this(deviceHostname, serviceInfo,repliedServiceCount, sentPacketCount,
-                    false /* exiting */, true /* isProbing */);
+                    false /* exiting */, true /* isProbing */, ttl);
         }
 
         void setProbing(boolean probing) {
@@ -339,7 +359,7 @@ public class MdnsRecordRepository {
                             revDnsAddr,
                             0L /* receiptTimeMillis */,
                             true /* cacheFlush */,
-                            NAME_RECORDS_TTL_MILLIS,
+                            DEFAULT_NAME_RECORDS_TTL_MILLIS,
                             mDeviceHostname),
                     false /* sharedName */));
 
@@ -349,7 +369,7 @@ public class MdnsRecordRepository {
                             mDeviceHostname,
                             0L /* receiptTimeMillis */,
                             true /* cacheFlush */,
-                            NAME_RECORDS_TTL_MILLIS,
+                            DEFAULT_NAME_RECORDS_TTL_MILLIS,
                             addr.getAddress()),
                     false /* sharedName */));
         }
@@ -378,17 +398,20 @@ public class MdnsRecordRepository {
      * This may remove/replace any existing service that used the name added but is exiting.
      * @param serviceId A unique service ID.
      * @param serviceInfo Service info to add.
+     * @param ttl the TTL duration for all records of {@code serviceInfo} or {@code null}
      * @return If the added service replaced another with a matching name (which was exiting), the
      *         ID of the replaced service.
      * @throws NameConflictException There is already a (non-exiting) service using the name.
      */
-    public int addService(int serviceId, NsdServiceInfo serviceInfo) throws NameConflictException {
+    public int addService(int serviceId, NsdServiceInfo serviceInfo, @Nullable Duration ttl)
+            throws NameConflictException {
         if (mServices.contains(serviceId)) {
             throw new IllegalArgumentException(
                     "Service ID must not be reused across registrations: " + serviceId);
         }
 
-        final int existing = getServiceByName(serviceInfo.getServiceName());
+        final int existing =
+                getServiceByNameAndType(serviceInfo.getServiceName(), serviceInfo.getServiceType());
         // It's OK to re-add a service that is exiting
         if (existing >= 0 && !mServices.get(existing).exiting) {
             throw new NameConflictException(existing);
@@ -396,7 +419,7 @@ public class MdnsRecordRepository {
 
         final ServiceRegistration registration = new ServiceRegistration(
                 mDeviceHostname, serviceInfo, NO_PACKET /* repliedServiceCount */,
-                NO_PACKET /* sentPacketCount */);
+                NO_PACKET /* sentPacketCount */, ttl);
         mServices.put(serviceId, registration);
 
         // Remove existing exiting service
@@ -405,16 +428,17 @@ public class MdnsRecordRepository {
     }
 
     /**
-     * @return The ID of the service identified by its name, or -1 if none.
+     * @return The ID of the service identified by its name and type, or -1 if none.
      */
-    private int getServiceByName(@Nullable String serviceName) {
-        if (TextUtils.isEmpty(serviceName)) {
+    private int getServiceByNameAndType(
+            @Nullable String serviceName, @Nullable String serviceType) {
+        if (TextUtils.isEmpty(serviceName) || TextUtils.isEmpty(serviceType)) {
             return -1;
         }
         for (int i = 0; i < mServices.size(); i++) {
-            final ServiceRegistration registration = mServices.valueAt(i);
-            if (MdnsUtils.equalsIgnoreDnsCase(
-                    serviceName, registration.serviceInfo.getServiceName())) {
+            final NsdServiceInfo info = mServices.valueAt(i).serviceInfo;
+            if (MdnsUtils.equalsIgnoreDnsCase(serviceName, info.getServiceName())
+                    && MdnsUtils.equalsIgnoreDnsCase(serviceType, info.getServiceType())) {
                 return mServices.keyAt(i);
             }
         }
@@ -536,7 +560,7 @@ public class MdnsRecordRepository {
     }
 
     private boolean isTruncatedKnownAnswerPacket(MdnsPacket packet) {
-        if (!mMdnsFeatureFlags.mIsKnownAnswerSuppressionEnabled
+        if (!mMdnsFeatureFlags.isKnownAnswerSuppressionEnabled()
                 // Should ignore the response packet.
                 || (packet.flags & MdnsConstants.FLAGS_RESPONSE) != 0) {
             return false;
@@ -743,7 +767,7 @@ public class MdnsRecordRepository {
             // RR TTL as known by the Multicast DNS responder, the responder MUST
             // send an answer so as to update the querier's cache before the record
             // becomes in danger of expiration.
-            if (mMdnsFeatureFlags.mIsKnownAnswerSuppressionEnabled
+            if (mMdnsFeatureFlags.isKnownAnswerSuppressionEnabled()
                     && isKnownAnswer(info.record, knownAnswerRecords)) {
                 continue;
             }
@@ -774,7 +798,7 @@ public class MdnsRecordRepository {
                     true /* cacheFlush */,
                     // TODO: RFC6762 6.1: "In general, the TTL given for an NSEC record SHOULD
                     // be the same as the TTL that the record would have had, had it existed."
-                    NAME_RECORDS_TTL_MILLIS,
+                    DEFAULT_NAME_RECORDS_TTL_MILLIS,
                     question.getName(),
                     new int[] { question.getType() });
             additionalAnswerInfo.add(
@@ -901,22 +925,79 @@ public class MdnsRecordRepository {
         }
     }
 
+    @Nullable
+    public String getHostnameForServiceId(int id) {
+        ServiceRegistration registration = mServices.get(id);
+        if (registration == null) {
+            return null;
+        }
+        return registration.serviceInfo.getHostname();
+    }
+
+    /**
+     * Restart probing the services which are being probed and using the given custom hostname.
+     *
+     * @return The list of {@link MdnsProber.ProbingInfo} to be used by advertiser.
+     */
+    public List<MdnsProber.ProbingInfo> restartProbingForHostname(@NonNull String hostname) {
+        final ArrayList<MdnsProber.ProbingInfo> probingInfos = new ArrayList<>();
+        forEachActiveServiceRegistrationWithHostname(
+                hostname,
+                (id, registration) -> {
+                    if (!registration.isProbing) {
+                        return;
+                    }
+                    probingInfos.add(makeProbingInfo(id, registration));
+                });
+        return probingInfos;
+    }
+
+    /**
+     * Restart announcing the services which are using the given custom hostname.
+     *
+     * @return The list of {@link MdnsAnnouncer.AnnouncementInfo} to be used by advertiser.
+     */
+    public List<MdnsAnnouncer.AnnouncementInfo> restartAnnouncingForHostname(
+            @NonNull String hostname) {
+        final ArrayList<MdnsAnnouncer.AnnouncementInfo> announcementInfos = new ArrayList<>();
+        forEachActiveServiceRegistrationWithHostname(
+                hostname,
+                (id, registration) -> {
+                    if (registration.isProbing) {
+                        return;
+                    }
+                    announcementInfos.add(makeAnnouncementInfo(id, registration));
+                });
+        return announcementInfos;
+    }
+
     /**
      * Called to indicate that probing succeeded for a service.
+     *
      * @param probeSuccessInfo The successful probing info.
      * @return The {@link MdnsAnnouncer.AnnouncementInfo} to send, now that probing has succeeded.
      */
     public MdnsAnnouncer.AnnouncementInfo onProbingSucceeded(
-            MdnsProber.ProbingInfo probeSuccessInfo)
-            throws IOException {
-
-        int serviceId = probeSuccessInfo.getServiceId();
+            MdnsProber.ProbingInfo probeSuccessInfo) throws IOException {
+        final int serviceId = probeSuccessInfo.getServiceId();
         final ServiceRegistration registration = mServices.get(serviceId);
         if (registration == null) {
             throw new IOException("Service is not registered: " + serviceId);
         }
         registration.setProbing(false);
 
+        return makeAnnouncementInfo(serviceId, registration);
+    }
+
+    /**
+     * Make the announcement info of the given service ID.
+     *
+     * @param serviceId The service ID.
+     * @param registration The service registration.
+     * @return The {@link MdnsAnnouncer.AnnouncementInfo} of the given service ID.
+     */
+    private MdnsAnnouncer.AnnouncementInfo makeAnnouncementInfo(
+            int serviceId, ServiceRegistration registration) {
         final Set<MdnsRecord> answersSet = new LinkedHashSet<>();
         final ArrayList<MdnsRecord> additionalAnswers = new ArrayList<>();
 
@@ -948,8 +1029,8 @@ public class MdnsRecordRepository {
         addNsecRecordsForUniqueNames(additionalAnswers,
                 mGeneralRecords.iterator(), registration.allRecords.iterator());
 
-        return new MdnsAnnouncer.AnnouncementInfo(
-                probeSuccessInfo.getServiceId(), new ArrayList<>(answersSet), additionalAnswers);
+        return new MdnsAnnouncer.AnnouncementInfo(serviceId,
+                new ArrayList<>(answersSet), additionalAnswers);
     }
 
     /**
@@ -1209,7 +1290,7 @@ public class MdnsRecordRepository {
         if (existing == null) return null;
 
         final ServiceRegistration newService = new ServiceRegistration(mDeviceHostname, newInfo,
-                existing.repliedServiceCount, existing.sentPacketCount);
+                existing.repliedServiceCount, existing.sentPacketCount, existing.ttl);
         mServices.put(serviceId, newService);
         return makeProbingInfo(serviceId, newService);
     }

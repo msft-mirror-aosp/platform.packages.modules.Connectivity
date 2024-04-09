@@ -40,12 +40,13 @@ import android.os.Process;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import android.util.SparseIntArray;
+import android.util.SparseArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.HandlerExecutor;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.DeviceConfigUtils;
 import com.android.networkstack.apishim.TelephonyManagerShimImpl;
 import com.android.networkstack.apishim.common.TelephonyManagerShim;
@@ -55,6 +56,7 @@ import com.android.networkstack.apishim.common.UnsupportedApiLevelException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executor;
+import java.util.function.BiConsumer;
 
 /**
  * Tracks the uid of the carrier privileged app that provides the carrier config.
@@ -71,7 +73,8 @@ public class CarrierPrivilegeAuthenticator {
     private final TelephonyManagerShim mTelephonyManagerShim;
     private final TelephonyManager mTelephonyManager;
     @GuardedBy("mLock")
-    private final SparseIntArray mCarrierServiceUid = new SparseIntArray(2 /* initialCapacity */);
+    private final SparseArray<CarrierServiceUidWithSubId> mCarrierServiceUidWithSubId =
+            new SparseArray<>(2 /* initialCapacity */);
     @GuardedBy("mLock")
     private int mModemCount = 0;
     private final Object mLock = new Object();
@@ -81,49 +84,69 @@ public class CarrierPrivilegeAuthenticator {
     private final boolean mUseCallbacksForServiceChanged;
     private final boolean mRequestRestrictedWifiEnabled;
     @NonNull
-    private final CarrierPrivilegesLostListener mListener;
+    private final BiConsumer<Integer, Integer> mListener;
 
     public CarrierPrivilegeAuthenticator(@NonNull final Context c,
             @NonNull final Dependencies deps,
             @NonNull final TelephonyManager t,
             @NonNull final TelephonyManagerShim telephonyManagerShim,
             final boolean requestRestrictedWifiEnabled,
-            @NonNull CarrierPrivilegesLostListener listener) {
+            @NonNull BiConsumer<Integer, Integer> listener,
+            @NonNull final Handler connectivityServiceHandler) {
         mContext = c;
         mTelephonyManager = t;
         mTelephonyManagerShim = telephonyManagerShim;
-        final HandlerThread thread = deps.makeHandlerThread();
-        thread.start();
-        mHandler = new Handler(thread.getLooper());
         mUseCallbacksForServiceChanged = deps.isFeatureEnabled(
                 c, CARRIER_SERVICE_CHANGED_USE_CALLBACK);
         mRequestRestrictedWifiEnabled = requestRestrictedWifiEnabled;
         mListener = listener;
+        if (mRequestRestrictedWifiEnabled) {
+            mHandler = connectivityServiceHandler;
+        } else {
+            final HandlerThread thread = deps.makeHandlerThread();
+            thread.start();
+            mHandler = new Handler(thread.getLooper());
+            synchronized (mLock) {
+                registerSimConfigChangedReceiver();
+                simConfigChanged();
+            }
+        }
+    }
+
+    private void registerSimConfigChangedReceiver() {
         final IntentFilter filter = new IntentFilter();
         filter.addAction(TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED);
-        synchronized (mLock) {
-            // Never unregistered because the system server never stops
-            c.registerReceiver(new BroadcastReceiver() {
-                @Override
-                public void onReceive(final Context context, final Intent intent) {
-                    switch (intent.getAction()) {
-                        case TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED:
-                            simConfigChanged();
-                            break;
-                        default:
-                            Log.d(TAG, "Unknown intent received, action: " + intent.getAction());
-                    }
+        // Never unregistered because the system server never stops
+        mContext.registerReceiver(new BroadcastReceiver() {
+            @Override
+            public void onReceive(final Context context, final Intent intent) {
+                switch (intent.getAction()) {
+                    case TelephonyManager.ACTION_MULTI_SIM_CONFIG_CHANGED:
+                        simConfigChanged();
+                        break;
+                    default:
+                        Log.d(TAG, "Unknown intent received, action: " + intent.getAction());
                 }
-            }, filter, null, mHandler);
-            simConfigChanged();
+            }
+        }, filter, null, mHandler);
+    }
+
+    /**
+     * Start CarrierPrivilegeAuthenticator
+     */
+    public void start() {
+        if (mRequestRestrictedWifiEnabled) {
+            registerSimConfigChangedReceiver();
+            mHandler.post(this::simConfigChanged);
         }
     }
 
     public CarrierPrivilegeAuthenticator(@NonNull final Context c,
             @NonNull final TelephonyManager t, final boolean requestRestrictedWifiEnabled,
-            @NonNull CarrierPrivilegesLostListener listener) {
+            @NonNull BiConsumer<Integer, Integer> listener,
+            @NonNull final Handler connectivityServiceHandler) {
         this(c, new Dependencies(), t, TelephonyManagerShimImpl.newInstance(t),
-                requestRestrictedWifiEnabled, listener);
+                requestRestrictedWifiEnabled, listener, connectivityServiceHandler);
     }
 
     public static class Dependencies {
@@ -142,19 +165,11 @@ public class CarrierPrivilegeAuthenticator {
         }
     }
 
-    /**
-     * Listener interface to get a notification when the carrier App lost its privileges.
-     */
-    public interface CarrierPrivilegesLostListener {
-        /**
-         * Called when the carrier App lost its privileges.
-         *
-         * @param uid  The uid of the carrier app which has lost its privileges.
-         */
-        void onCarrierPrivilegesLost(int uid);
-    }
-
     private void simConfigChanged() {
+        //  If mRequestRestrictedWifiEnabled is false, constructor calls simConfigChanged
+        if (mRequestRestrictedWifiEnabled) {
+            ensureRunningOnHandlerThread();
+        }
         synchronized (mLock) {
             unregisterCarrierPrivilegesListeners();
             mModemCount = mTelephonyManager.getActiveModemCount();
@@ -163,6 +178,29 @@ public class CarrierPrivilegeAuthenticator {
         }
     }
 
+    private static class CarrierServiceUidWithSubId {
+        final int mUid;
+        final int mSubId;
+
+        CarrierServiceUidWithSubId(int uid, int subId) {
+            mUid = uid;
+            mSubId = subId;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (!(obj instanceof CarrierServiceUidWithSubId)) {
+                return false;
+            }
+            CarrierServiceUidWithSubId compare = (CarrierServiceUidWithSubId) obj;
+            return (mUid == compare.mUid && mSubId == compare.mSubId);
+        }
+
+        @Override
+        public int hashCode() {
+            return mUid * 31 + mSubId;
+        }
+    }
     private class PrivilegeListener implements CarrierPrivilegesListenerShim {
         public final int mLogicalSlot;
 
@@ -174,6 +212,7 @@ public class CarrierPrivilegeAuthenticator {
         public void onCarrierPrivilegesChanged(
                 @NonNull List<String> privilegedPackageNames,
                 @NonNull int[] privilegedUids) {
+            ensureRunningOnHandlerThread();
             if (mUseCallbacksForServiceChanged) return;
             // Re-trigger the synchronous check (which is also very cheap due
             // to caching in CarrierPrivilegesTracker). This allows consistency
@@ -184,6 +223,7 @@ public class CarrierPrivilegeAuthenticator {
         @Override
         public void onCarrierServiceChanged(@Nullable final String carrierServicePackageName,
                 final int carrierServiceUid) {
+            ensureRunningOnHandlerThread();
             if (!mUseCallbacksForServiceChanged) {
                 // Re-trigger the synchronous check (which is also very cheap due
                 // to caching in CarrierPrivilegesTracker). This allows consistency
@@ -192,10 +232,17 @@ public class CarrierPrivilegeAuthenticator {
                 return;
             }
             synchronized (mLock) {
-                int oldUid = mCarrierServiceUid.get(mLogicalSlot);
-                mCarrierServiceUid.put(mLogicalSlot, carrierServiceUid);
-                if (oldUid != 0 && oldUid != carrierServiceUid) {
-                    mListener.onCarrierPrivilegesLost(oldUid);
+                CarrierServiceUidWithSubId oldPair =
+                        mCarrierServiceUidWithSubId.get(mLogicalSlot);
+                int subId = getSubId(mLogicalSlot);
+                mCarrierServiceUidWithSubId.put(
+                        mLogicalSlot,
+                        new CarrierServiceUidWithSubId(carrierServiceUid, subId));
+                if (oldPair != null
+                        && oldPair.mUid != Process.INVALID_UID
+                        && oldPair.mSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID
+                        && !oldPair.equals(mCarrierServiceUidWithSubId.get(mLogicalSlot))) {
+                    mListener.accept(oldPair.mUid, oldPair.mSubId);
                 }
             }
         }
@@ -218,10 +265,13 @@ public class CarrierPrivilegeAuthenticator {
     private void unregisterCarrierPrivilegesListeners() {
         for (PrivilegeListener carrierPrivilegesListener : mCarrierPrivilegesChangedListeners) {
             removeCarrierPrivilegesListener(carrierPrivilegesListener);
-            int oldUid = mCarrierServiceUid.get(carrierPrivilegesListener.mLogicalSlot);
-            mCarrierServiceUid.delete(carrierPrivilegesListener.mLogicalSlot);
-            if (oldUid != 0) {
-                mListener.onCarrierPrivilegesLost(oldUid);
+            CarrierServiceUidWithSubId oldPair =
+                    mCarrierServiceUidWithSubId.get(carrierPrivilegesListener.mLogicalSlot);
+            mCarrierServiceUidWithSubId.remove(carrierPrivilegesListener.mLogicalSlot);
+            if (oldPair != null
+                    && oldPair.mUid != Process.INVALID_UID
+                    && oldPair.mSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                mListener.accept(oldPair.mUid, oldPair.mSubId);
             }
         }
         mCarrierPrivilegesChangedListeners.clear();
@@ -259,7 +309,23 @@ public class CarrierPrivilegeAuthenticator {
      */
     public boolean isCarrierServiceUidForNetworkCapabilities(int callingUid,
             @NonNull NetworkCapabilities networkCapabilities) {
-        if (callingUid == Process.INVALID_UID) return false;
+        if (callingUid == Process.INVALID_UID) {
+            return false;
+        }
+        int subId = getSubIdFromNetworkCapabilities(networkCapabilities);
+        if (SubscriptionManager.INVALID_SUBSCRIPTION_ID == subId) {
+            return false;
+        }
+        return callingUid == getCarrierServiceUidForSubId(subId);
+    }
+
+    /**
+     * Extract the SubscriptionId from the NetworkCapabilities.
+     *
+     * @param networkCapabilities the network capabilities which may contains the SubscriptionId.
+     * @return the SubscriptionId.
+     */
+    public int getSubIdFromNetworkCapabilities(@NonNull NetworkCapabilities networkCapabilities) {
         int subId;
         if (networkCapabilities.hasSingleTransportBesidesTest(TRANSPORT_CELLULAR)) {
             subId = getSubIdFromTelephonySpecifier(networkCapabilities.getNetworkSpecifier());
@@ -285,21 +351,42 @@ public class CarrierPrivilegeAuthenticator {
             Log.wtf(TAG, "NetworkCapabilities subIds are inconsistent between "
                     + "specifier/transportInfo and mSubIds : " + networkCapabilities);
         }
-        if (SubscriptionManager.INVALID_SUBSCRIPTION_ID == subId) return false;
-        return callingUid == getCarrierServiceUidForSubId(subId);
+        return subId;
+    }
+
+    @VisibleForTesting
+    protected int getSubId(int slotIndex) {
+        if (SdkLevel.isAtLeastU()) {
+            return SubscriptionManager.getSubscriptionId(slotIndex);
+        } else {
+            SubscriptionManager sm = mContext.getSystemService(SubscriptionManager.class);
+            int[] subIds = sm.getSubscriptionIds(slotIndex);
+            if (subIds != null && subIds.length > 0) {
+                return subIds[0];
+            }
+            return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
+        }
     }
 
     @VisibleForTesting
     void updateCarrierServiceUid() {
         synchronized (mLock) {
-            SparseIntArray oldCarrierServiceUid = mCarrierServiceUid.clone();
-            mCarrierServiceUid.clear();
+            SparseArray<CarrierServiceUidWithSubId> copy = mCarrierServiceUidWithSubId.clone();
+            mCarrierServiceUidWithSubId.clear();
             for (int i = 0; i < mModemCount; i++) {
-                mCarrierServiceUid.put(i, getCarrierServicePackageUidForSlot(i));
+                int subId = getSubId(i);
+                mCarrierServiceUidWithSubId.put(
+                        i,
+                        new CarrierServiceUidWithSubId(
+                                getCarrierServicePackageUidForSlot(i), subId));
             }
-            for (int i = 0; i < oldCarrierServiceUid.size(); i++) {
-                if (mCarrierServiceUid.indexOfValue(oldCarrierServiceUid.valueAt(i)) < 0) {
-                    mListener.onCarrierPrivilegesLost(oldCarrierServiceUid.valueAt(i));
+            for (int i = 0; i < copy.size(); ++i) {
+                CarrierServiceUidWithSubId oldPair = copy.valueAt(i);
+                CarrierServiceUidWithSubId newPair = mCarrierServiceUidWithSubId.get(copy.keyAt(i));
+                if (oldPair.mUid != Process.INVALID_UID
+                        && oldPair.mSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID
+                        && !oldPair.equals(newPair)) {
+                    mListener.accept(oldPair.mUid, oldPair.mSubId);
                 }
             }
         }
@@ -307,15 +394,14 @@ public class CarrierPrivilegeAuthenticator {
 
     @VisibleForTesting
     int getCarrierServiceUidForSubId(int subId) {
-        final int slotId = getSlotIndex(subId);
         synchronized (mLock) {
-            return mCarrierServiceUid.get(slotId, Process.INVALID_UID);
+            for (int i = 0; i < mCarrierServiceUidWithSubId.size(); ++i) {
+                if (mCarrierServiceUidWithSubId.valueAt(i).mSubId == subId) {
+                    return mCarrierServiceUidWithSubId.valueAt(i).mUid;
+                }
+            }
+            return Process.INVALID_UID;
         }
-    }
-
-    @VisibleForTesting
-    protected int getSlotIndex(int subId) {
-        return SubscriptionManager.getSlotIndex(subId);
     }
 
     @VisibleForTesting
@@ -379,15 +465,23 @@ public class CarrierPrivilegeAuthenticator {
         }
     }
 
+    private void ensureRunningOnHandlerThread() {
+        if (mHandler.getLooper().getThread() != Thread.currentThread()) {
+            throw new IllegalStateException(
+                    "Not running on handler thread: " + Thread.currentThread().getName());
+        }
+    }
+
     public void dump(IndentingPrintWriter pw) {
         pw.println("CarrierPrivilegeAuthenticator:");
         pw.println("mRequestRestrictedWifiEnabled = " + mRequestRestrictedWifiEnabled);
         synchronized (mLock) {
-            final int size = mCarrierServiceUid.size();
-            for (int i = 0; i < size; ++i) {
-                final int logicalSlot = mCarrierServiceUid.keyAt(i);
-                final int serviceUid = mCarrierServiceUid.valueAt(i);
-                pw.println("Logical slot = " + logicalSlot + " : uid = " + serviceUid);
+            for (int i = 0; i < mCarrierServiceUidWithSubId.size(); ++i) {
+                final int logicalSlot = mCarrierServiceUidWithSubId.keyAt(i);
+                final int serviceUid = mCarrierServiceUidWithSubId.valueAt(i).mUid;
+                final int subId = mCarrierServiceUidWithSubId.valueAt(i).mSubId;
+                pw.println("Logical slot = " + logicalSlot + " : uid = " + serviceUid
+                        + " : subId = " + subId);
             }
         }
     }

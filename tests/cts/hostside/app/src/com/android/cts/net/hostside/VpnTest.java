@@ -23,6 +23,7 @@ import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
 import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
 import static android.content.pm.PackageManager.FEATURE_WIFI;
 import static android.net.ConnectivityManager.TYPE_VPN;
+import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.os.Process.INVALID_UID;
 import static android.system.OsConstants.AF_INET;
@@ -72,6 +73,7 @@ import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.ConnectivityManager;
 import android.net.ConnectivityManager.NetworkCallback;
+import android.net.InetAddresses;
 import android.net.IpSecManager;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
@@ -91,6 +93,7 @@ import android.net.VpnTransportInfo;
 import android.net.cts.util.CtsNetUtils;
 import android.net.util.KeepaliveUtils;
 import android.net.wifi.WifiManager;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
@@ -120,6 +123,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.PacketBuilder;
+import com.android.testutils.AutoReleaseNetworkCallbackRule;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.RecorderCallback;
@@ -230,8 +234,12 @@ public class VpnTest {
     // The registered callbacks.
     private List<NetworkCallback> mRegisteredCallbacks = new ArrayList<>();
 
-    @Rule
+    @Rule(order = 1)
     public final DevSdkIgnoreRule mDevSdkIgnoreRule = new DevSdkIgnoreRule();
+
+    @Rule(order = 2)
+    public final AutoReleaseNetworkCallbackRule
+            mNetworkCallbackRule = new AutoReleaseNetworkCallbackRule();
 
     private boolean supportedHardware() {
         final PackageManager pm = getInstrumentation().getContext().getPackageManager();
@@ -249,6 +257,7 @@ public class VpnTest {
 
     @Before
     public void setUp() throws Exception {
+        assumeTrue(supportedHardware());
         mNetwork = null;
         mTestContext = getInstrumentation().getContext();
         mTargetContext = getInstrumentation().getTargetContext();
@@ -269,7 +278,6 @@ public class VpnTest {
     public void tearDown() throws Exception {
         restorePrivateDnsSetting();
         mRemoteSocketFactoryClient.unbind();
-        mCtsNetUtils.tearDown();
         Log.i(TAG, "Stopping VPN");
         stopVpn();
         unregisterRegisteredCallbacks();
@@ -879,7 +887,6 @@ public class VpnTest {
 
     @Test @IgnoreUpTo(SC_V2) // TODO: Use to Build.VERSION_CODES.SC_V2 when available
     public void testChangeUnderlyingNetworks() throws Exception {
-        assumeTrue(supportedHardware());
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_TELEPHONY));
         final TestableNetworkCallback callback = new TestableNetworkCallback();
@@ -887,9 +894,7 @@ public class VpnTest {
         testAndCleanup(() -> {
             // Ensure both of wifi and mobile data are connected.
             final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
-            assertTrue("Wifi is not connected", (wifiNetwork != null));
-            final Network cellNetwork = mCtsNetUtils.connectToCell();
-            assertTrue("Mobile data is not connected", (cellNetwork != null));
+            final Network cellNetwork = mNetworkCallbackRule.requestCell();
             // Store current default network.
             final Network defaultNetwork = mCM.getActiveNetwork();
             // Start VPN and set empty array as its underlying networks.
@@ -938,7 +943,6 @@ public class VpnTest {
 
     @Test
     public void testDefault() throws Exception {
-        assumeTrue(supportedHardware());
         if (!SdkLevel.isAtLeastS() && (
                 SystemProperties.getInt("persist.adb.tcp.port", -1) > -1
                         || SystemProperties.getInt("service.adb.tcp.port", -1) > -1)) {
@@ -1017,8 +1021,8 @@ public class VpnTest {
             // This needs to be done before testing  private DNS because checkStrictModePrivateDns
             // will set the private DNS server to a nonexistent name, which will cause validation to
             // fail and could cause the default network to switch (e.g., from wifi to cellular).
-            systemDefaultCallback.assertNoCallback();
-            otherUidCallback.assertNoCallback();
+            assertNoCallbackExceptCapOrLpChange(systemDefaultCallback);
+            assertNoCallbackExceptCapOrLpChange(otherUidCallback);
         }
 
         checkStrictModePrivateDns();
@@ -1026,10 +1030,13 @@ public class VpnTest {
         receiver.unregisterQuietly();
     }
 
+    private void assertNoCallbackExceptCapOrLpChange(TestableNetworkCallback callback) {
+        callback.assertNoCallback(c -> !(c instanceof CallbackEntry.CapabilitiesChanged
+                || c instanceof CallbackEntry.LinkPropertiesChanged));
+    }
+
     @Test
     public void testAppAllowed() throws Exception {
-        assumeTrue(supportedHardware());
-
         FileDescriptor fd = openSocketFdInOtherApp(TEST_HOST, 80, TIMEOUT_MS);
 
         // Shell app must not be put in here or it would kill the ADB-over-network use case
@@ -1137,8 +1144,6 @@ public class VpnTest {
     }
 
     private void doTestAutomaticOnOffKeepaliveMode(final boolean closeSocket) throws Exception {
-        assumeTrue(supportedHardware());
-
         // Get default network first before starting VPN
         final Network defaultNetwork = mCM.getActiveNetwork();
         final TestableNetworkCallback cb = new TestableNetworkCallback();
@@ -1226,8 +1231,6 @@ public class VpnTest {
 
     @Test
     public void testAppDisallowed() throws Exception {
-        assumeTrue(supportedHardware());
-
         FileDescriptor localFd = openSocketFd(TEST_HOST, 80, TIMEOUT_MS);
         FileDescriptor remoteFd = openSocketFdInOtherApp(TEST_HOST, 80, TIMEOUT_MS);
 
@@ -1260,8 +1263,6 @@ public class VpnTest {
 
     @Test
     public void testSocketClosed() throws Exception {
-        assumeTrue(supportedHardware());
-
         final FileDescriptor localFd = openSocketFd(TEST_HOST, 80, TIMEOUT_MS);
         final List<FileDescriptor> remoteFds = new ArrayList<>();
 
@@ -1285,7 +1286,6 @@ public class VpnTest {
 
     @Test
     public void testExcludedRoutes() throws Exception {
-        assumeTrue(supportedHardware());
         assumeTrue(SdkLevel.isAtLeastT());
 
         // Shell app must not be put in here or it would kill the ADB-over-network use case
@@ -1306,8 +1306,6 @@ public class VpnTest {
 
     @Test
     public void testIncludedRoutes() throws Exception {
-        assumeTrue(supportedHardware());
-
         // Shell app must not be put in here or it would kill the ADB-over-network use case
         String allowedApps = mRemoteSocketFactoryClient.getPackageName() + "," + mPackageName;
         startVpn(new String[]{"192.0.2.2/32", "2001:db8:1:2::ffe/128"} /* addresses */,
@@ -1325,7 +1323,6 @@ public class VpnTest {
 
     @Test
     public void testInterleavedRoutes() throws Exception {
-        assumeTrue(supportedHardware());
         assumeTrue(SdkLevel.isAtLeastT());
 
         // Shell app must not be put in here or it would kill the ADB-over-network use case
@@ -1353,8 +1350,6 @@ public class VpnTest {
 
     @Test
     public void testGetConnectionOwnerUidSecurity() throws Exception {
-        assumeTrue(supportedHardware());
-
         DatagramSocket s;
         InetAddress address = InetAddress.getByName("localhost");
         s = new DatagramSocket();
@@ -1375,7 +1370,6 @@ public class VpnTest {
 
     @Test
     public void testSetProxy() throws  Exception {
-        assumeTrue(supportedHardware());
         ProxyInfo initialProxy = mCM.getDefaultProxy();
         // Receiver for the proxy change broadcast.
         BlockingBroadcastReceiver proxyBroadcastReceiver = new ProxyChangeBroadcastReceiver();
@@ -1415,7 +1409,6 @@ public class VpnTest {
 
     @Test
     public void testSetProxyDisallowedApps() throws Exception {
-        assumeTrue(supportedHardware());
         ProxyInfo initialProxy = mCM.getDefaultProxy();
 
         String disallowedApps = mPackageName;
@@ -1441,7 +1434,6 @@ public class VpnTest {
 
     @Test
     public void testNoProxy() throws Exception {
-        assumeTrue(supportedHardware());
         ProxyInfo initialProxy = mCM.getDefaultProxy();
         BlockingBroadcastReceiver proxyBroadcastReceiver = new ProxyChangeBroadcastReceiver();
         proxyBroadcastReceiver.register();
@@ -1476,7 +1468,6 @@ public class VpnTest {
 
     @Test
     public void testBindToNetworkWithProxy() throws Exception {
-        assumeTrue(supportedHardware());
         String allowedApps = mPackageName;
         Network initialNetwork = mCM.getActiveNetwork();
         ProxyInfo initialProxy = mCM.getDefaultProxy();
@@ -1501,9 +1492,6 @@ public class VpnTest {
 
     @Test
     public void testVpnMeterednessWithNoUnderlyingNetwork() throws Exception {
-        if (!supportedHardware()) {
-            return;
-        }
         // VPN is not routing any traffic i.e. its underlying networks is an empty array.
         ArrayList<Network> underlyingNetworks = new ArrayList<>();
         String allowedApps = mPackageName;
@@ -1533,9 +1521,6 @@ public class VpnTest {
 
     @Test
     public void testVpnMeterednessWithNullUnderlyingNetwork() throws Exception {
-        if (!supportedHardware()) {
-            return;
-        }
         Network underlyingNetwork = mCM.getActiveNetwork();
         if (underlyingNetwork == null) {
             Log.i(TAG, "testVpnMeterednessWithNullUnderlyingNetwork cannot execute"
@@ -1562,9 +1547,6 @@ public class VpnTest {
 
     @Test
     public void testVpnMeterednessWithNonNullUnderlyingNetwork() throws Exception {
-        if (!supportedHardware()) {
-            return;
-        }
         Network underlyingNetwork = mCM.getActiveNetwork();
         if (underlyingNetwork == null) {
             Log.i(TAG, "testVpnMeterednessWithNonNullUnderlyingNetwork cannot execute"
@@ -1604,9 +1586,6 @@ public class VpnTest {
 
     @Test
     public void testAlwaysMeteredVpnWithNullUnderlyingNetwork() throws Exception {
-        if (!supportedHardware()) {
-            return;
-        }
         Network underlyingNetwork = mCM.getActiveNetwork();
         if (underlyingNetwork == null) {
             Log.i(TAG, "testAlwaysMeteredVpnWithNullUnderlyingNetwork cannot execute"
@@ -1631,9 +1610,6 @@ public class VpnTest {
 
     @Test
     public void testAlwaysMeteredVpnWithNonNullUnderlyingNetwork() throws Exception {
-        if (!supportedHardware()) {
-            return;
-        }
         Network underlyingNetwork = mCM.getActiveNetwork();
         if (underlyingNetwork == null) {
             Log.i(TAG, "testAlwaysMeteredVpnWithNonNullUnderlyingNetwork cannot execute"
@@ -1671,9 +1647,6 @@ public class VpnTest {
 
     @Test
     public void testB141603906() throws Exception {
-        if (!supportedHardware()) {
-            return;
-        }
         final InetSocketAddress src = new InetSocketAddress(0);
         final InetSocketAddress dst = new InetSocketAddress(0);
         final int NUM_THREADS = 8;
@@ -1781,8 +1754,6 @@ public class VpnTest {
      */
     @Test
     public void testDownloadWithDownloadManagerDisallowed() throws Exception {
-        assumeTrue(supportedHardware());
-
         // Start a VPN with DownloadManager package in disallowed list.
         startVpn(new String[] {"192.0.2.2/32", "2001:db8:1:2::ffe/128"},
                 new String[] {"192.0.2.0/24", "2001:db8::/32"},
@@ -1838,7 +1809,6 @@ public class VpnTest {
 
     @Test @IgnoreUpTo(Build.VERSION_CODES.R)
     public void testBlockIncomingPackets() throws Exception {
-        assumeTrue(supportedHardware());
         final Network network = mCM.getActiveNetwork();
         assertNotNull("Requires a working Internet connection", network);
 
@@ -1907,7 +1877,6 @@ public class VpnTest {
 
     @Test
     public void testSetVpnDefaultForUids() throws Exception {
-        assumeTrue(supportedHardware());
         assumeTrue(SdkLevel.isAtLeastU());
 
         final Network defaultNetwork = mCM.getActiveNetwork();
@@ -1953,6 +1922,81 @@ public class VpnTest {
             });
     }
 
+    /**
+     * Check if packets to a VPN interface's IP arriving on a non-VPN interface are dropped or not.
+     * If the test interface has a different address from the VPN interface, packets must be dropped
+     * If the test interface has the same address as the VPN interface, packets must not be
+     * dropped
+     *
+     * @param duplicatedAddress true to bring up the test interface with the same address as the VPN
+     *                          interface
+     */
+    private void doTestDropPacketToVpnAddress(final boolean duplicatedAddress)
+            throws Exception {
+        final NetworkRequest request = new NetworkRequest.Builder()
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
+                .addTransportType(TRANSPORT_TEST)
+                .build();
+        final CtsNetUtils.TestNetworkCallback callback = new CtsNetUtils.TestNetworkCallback();
+        mCM.requestNetwork(request, callback);
+        final FileDescriptor srcTunFd = runWithShellPermissionIdentity(() -> {
+            final TestNetworkManager tnm = mTestContext.getSystemService(TestNetworkManager.class);
+            List<LinkAddress> linkAddresses = duplicatedAddress
+                    ? List.of(new LinkAddress("192.0.2.2/24"),
+                            new LinkAddress("2001:db8:1:2::ffe/64")) :
+                    List.of(new LinkAddress("198.51.100.2/24"),
+                            new LinkAddress("2001:db8:3:4::ffe/64"));
+            final TestNetworkInterface iface = tnm.createTunInterface(linkAddresses);
+            tnm.setupTestNetwork(iface.getInterfaceName(), new Binder());
+            return iface.getFileDescriptor().getFileDescriptor();
+        }, MANAGE_TEST_NETWORKS);
+        final Network testNetwork = callback.waitForAvailable();
+        assertNotNull(testNetwork);
+        final DatagramSocket dstSock = new DatagramSocket();
+
+        testAndCleanup(() -> {
+            startVpn(new String[] {"192.0.2.2/32", "2001:db8:1:2::ffe/128"} /* addresses */,
+                    new String[]{"0.0.0.0/0", "::/0"} /* routes */,
+                    "" /* allowedApplications */, "" /* disallowedApplications */,
+                    null /* proxyInfo */, null /* underlyingNetworks */,
+                    false /* isAlwaysMetered */);
+
+            final FileDescriptor dstUdpFd = dstSock.getFileDescriptor$();
+            checkBlockUdp(srcTunFd, dstUdpFd,
+                    InetAddresses.parseNumericAddress("192.0.2.2") /* dstAddress */,
+                    InetAddresses.parseNumericAddress("192.0.2.1") /* srcAddress */,
+                    duplicatedAddress ? EXPECT_PASS : EXPECT_BLOCK);
+            checkBlockUdp(srcTunFd, dstUdpFd,
+                    InetAddresses.parseNumericAddress("2001:db8:1:2::ffe") /* dstAddress */,
+                    InetAddresses.parseNumericAddress("2001:db8:1:2::ffa") /* srcAddress */,
+                    duplicatedAddress ? EXPECT_PASS : EXPECT_BLOCK);
+
+            // Traffic on VPN should not be affected
+            checkTrafficOnVpn();
+        }, /* cleanup */ () -> {
+                Os.close(srcTunFd);
+                dstSock.close();
+            }, /* cleanup */ () -> {
+                runWithShellPermissionIdentity(() -> {
+                    mTestContext.getSystemService(TestNetworkManager.class)
+                            .teardownTestNetwork(testNetwork);
+                }, MANAGE_TEST_NETWORKS);
+            }, /* cleanup */ () -> {
+                mCM.unregisterNetworkCallback(callback);
+            });
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDropPacketToVpnAddress_WithoutDuplicatedAddress() throws Exception {
+        doTestDropPacketToVpnAddress(false /* duplicatedAddress */);
+    }
+
+    @Test @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testDropPacketToVpnAddress_WithDuplicatedAddress() throws Exception {
+        doTestDropPacketToVpnAddress(true /* duplicatedAddress */);
+    }
+
     private ByteBuffer buildIpv4UdpPacket(final Inet4Address dstAddr, final Inet4Address srcAddr,
             final short dstPort, final short srcPort, final byte[] payload) throws IOException {
 
@@ -1996,7 +2040,8 @@ public class VpnTest {
     private void checkBlockUdp(
             final FileDescriptor srcTunFd,
             final FileDescriptor dstUdpFd,
-            final boolean ipv6,
+            final InetAddress dstAddress,
+            final InetAddress srcAddress,
             final boolean expectBlock) throws Exception {
         final Random random = new Random();
         final byte[] sendData = new byte[100];
@@ -2004,15 +2049,15 @@ public class VpnTest {
         final short dstPort = (short) ((InetSocketAddress) Os.getsockname(dstUdpFd)).getPort();
 
         ByteBuffer buf;
-        if (ipv6) {
+        if (dstAddress instanceof Inet6Address) {
             buf = buildIpv6UdpPacket(
-                    (Inet6Address) TEST_IP6_DST_ADDR.getAddress(),
-                    (Inet6Address) TEST_IP6_SRC_ADDR.getAddress(),
+                    (Inet6Address) dstAddress,
+                    (Inet6Address) srcAddress,
                     dstPort, TEST_SRC_PORT, sendData);
         } else {
             buf = buildIpv4UdpPacket(
-                    (Inet4Address) TEST_IP4_DST_ADDR.getAddress(),
-                    (Inet4Address) TEST_IP4_SRC_ADDR.getAddress(),
+                    (Inet4Address) dstAddress,
+                    (Inet4Address) srcAddress,
                     dstPort, TEST_SRC_PORT, sendData);
         }
 
@@ -2038,8 +2083,10 @@ public class VpnTest {
             final FileDescriptor srcTunFd,
             final FileDescriptor dstUdpFd,
             final boolean expectBlock) throws Exception {
-        checkBlockUdp(srcTunFd, dstUdpFd, false /* ipv6 */, expectBlock);
-        checkBlockUdp(srcTunFd, dstUdpFd, true /* ipv6 */, expectBlock);
+        checkBlockUdp(srcTunFd, dstUdpFd, TEST_IP4_DST_ADDR.getAddress(),
+                TEST_IP4_SRC_ADDR.getAddress(), expectBlock);
+        checkBlockUdp(srcTunFd, dstUdpFd, TEST_IP6_DST_ADDR.getAddress(),
+                TEST_IP6_SRC_ADDR.getAddress(), expectBlock);
     }
 
     private class DetailedBlockedStatusCallback extends TestableNetworkCallback {
