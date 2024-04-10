@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
@@ -74,6 +75,7 @@ java_library {
         "com.android.tethering",
     ],
     visibility: [
+        "//frameworks/base/services/tests/VpnTests",
         "//frameworks/base/tests/vcn",
         "//packages/modules/Connectivity/service",
         "//packages/modules/Connectivity/tests:__subpackages__",
@@ -98,7 +100,7 @@ java_library {
     min_sdk_version: "21",
     lint: {
         error_checks: ["NewApi"],
-        baseline_filename: "lint-baseline.xml",
+
     },
     srcs: [
         "src/com/android/server/connectivity/mdns/**/*.java",

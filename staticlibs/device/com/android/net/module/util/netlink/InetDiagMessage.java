@@ -24,15 +24,14 @@ import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 import static android.system.OsConstants.NETLINK_INET_DIAG;
 
-import static com.android.net.module.util.netlink.NetlinkConstants.NLMSG_DONE;
 import static com.android.net.module.util.netlink.NetlinkConstants.SOCK_DESTROY;
 import static com.android.net.module.util.netlink.NetlinkConstants.SOCK_DIAG_BY_FAMILY;
 import static com.android.net.module.util.netlink.NetlinkConstants.SOCKDIAG_MSG_HEADER_SIZE;
-import static com.android.net.module.util.netlink.NetlinkConstants.hexify;
 import static com.android.net.module.util.netlink.NetlinkConstants.stringForAddressFamily;
 import static com.android.net.module.util.netlink.NetlinkConstants.stringForProtocol;
 import static com.android.net.module.util.netlink.NetlinkUtils.DEFAULT_RECV_BUFSIZE;
 import static com.android.net.module.util.netlink.NetlinkUtils.IO_TIMEOUT_MS;
+import static com.android.net.module.util.netlink.NetlinkUtils.SOCKET_RECV_BUFSIZE;
 import static com.android.net.module.util.netlink.NetlinkUtils.TCP_ALIVE_STATE_FILTER;
 import static com.android.net.module.util.netlink.NetlinkUtils.connectToKernel;
 import static com.android.net.module.util.netlink.StructNlMsgHdr.NLM_F_DUMP;
@@ -182,7 +181,10 @@ public class InetDiagMessage extends NetlinkMessage {
         while (payload.position() < payloadLength) {
             final StructNlAttr attr = StructNlAttr.parse(payload);
             // Stop parsing for truncated or malformed attribute
-            if (attr == null)  return null;
+            if (attr == null)  {
+                Log.wtf(TAG, "Got truncated or malformed attribute");
+                return null;
+            }
 
             msg.nlAttrs.add(attr);
         }
@@ -280,7 +282,7 @@ public class InetDiagMessage extends NetlinkMessage {
         int uid = INVALID_UID;
         FileDescriptor fd = null;
         try {
-            fd = NetlinkUtils.netlinkSocketForProto(NETLINK_INET_DIAG);
+            fd = NetlinkUtils.netlinkSocketForProto(NETLINK_INET_DIAG, SOCKET_RECV_BUFSIZE);
             connectToKernel(fd);
             uid = lookupUid(protocol, local, remote, fd);
         } catch (ErrnoException | SocketException | IllegalArgumentException

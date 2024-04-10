@@ -29,6 +29,7 @@ import android.net.NetworkSpecifier;
 import android.net.TelephonyNetworkSpecifier;
 import android.net.TransportInfo;
 import android.net.wifi.WifiInfo;
+import android.os.Build;
 import android.os.Handler;
 import android.os.SystemClock;
 import android.telephony.SubscriptionInfo;
@@ -38,6 +39,8 @@ import android.util.IndentingPrintWriter;
 import android.util.Log;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
+
+import androidx.annotation.RequiresApi;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.metrics.DailykeepaliveInfoReported;
@@ -74,9 +77,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class KeepaliveStatsTracker {
     private static final String TAG = KeepaliveStatsTracker.class.getSimpleName();
     private static final int INVALID_KEEPALIVE_ID = -1;
-    // 1 hour acceptable deviation in metrics collection duration time.
+    // 2 hour acceptable deviation in metrics collection duration time to account for the 1 hour
+    // window of AlarmManager.
     private static final long MAX_EXPECTED_DURATION_MS =
-            AutomaticOnOffKeepaliveTracker.METRICS_COLLECTION_DURATION_MS + 1 * 60 * 60 * 1_000L;
+            AutomaticOnOffKeepaliveTracker.METRICS_COLLECTION_DURATION_MS + 2 * 60 * 60 * 1_000L;
 
     @NonNull private final Handler mConnectivityServiceHandler;
     @NonNull private final Dependencies mDependencies;
@@ -278,6 +282,7 @@ public class KeepaliveStatsTracker {
          *
          * @param dailyKeepaliveInfoReported the proto to write to statsD.
          */
+        @RequiresApi(Build.VERSION_CODES.TIRAMISU)
         public void writeStats(DailykeepaliveInfoReported dailyKeepaliveInfoReported) {
             ConnectivityStatsLog.write(
                     ConnectivityStatsLog.DAILY_KEEPALIVE_INFO_REPORTED,

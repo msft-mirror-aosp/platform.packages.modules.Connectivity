@@ -256,7 +256,7 @@ public class ClatCoordinator {
         public IBpfMap<ClatIngress6Key, ClatIngress6Value> getBpfIngress6Map() {
             try {
                 return new BpfMap<>(CLAT_INGRESS6_MAP_PATH,
-                    BpfMap.BPF_F_RDWR, ClatIngress6Key.class, ClatIngress6Value.class);
+                       ClatIngress6Key.class, ClatIngress6Value.class);
             } catch (ErrnoException e) {
                 Log.e(TAG, "Cannot create ingress6 map: " + e);
                 return null;
@@ -268,7 +268,7 @@ public class ClatCoordinator {
         public IBpfMap<ClatEgress4Key, ClatEgress4Value> getBpfEgress4Map() {
             try {
                 return new BpfMap<>(CLAT_EGRESS4_MAP_PATH,
-                    BpfMap.BPF_F_RDWR, ClatEgress4Key.class, ClatEgress4Value.class);
+                       ClatEgress4Key.class, ClatEgress4Value.class);
             } catch (ErrnoException e) {
                 Log.e(TAG, "Cannot create egress4 map: " + e);
                 return null;
@@ -280,7 +280,7 @@ public class ClatCoordinator {
         public IBpfMap<CookieTagMapKey, CookieTagMapValue> getBpfCookieTagMap() {
             try {
                 return new BpfMap<>(COOKIE_TAG_MAP_PATH,
-                        BpfMap.BPF_F_RDWR, CookieTagMapKey.class, CookieTagMapValue.class);
+                       CookieTagMapKey.class, CookieTagMapValue.class);
             } catch (ErrnoException e) {
                 Log.wtf(TAG, "Cannot open cookie tag map: " + e);
                 return null;
@@ -847,12 +847,12 @@ public class ClatCoordinator {
             if (mIngressMap.isEmpty()) {
                 pw.println("<empty>");
             }
-            pw.println("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif");
+            pw.println("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif (packets bytes)");
             pw.increaseIndent();
             mIngressMap.forEach((k, v) -> {
                 // TODO: print interface name
-                pw.println(String.format("%d %s/96 %s -> %s %d", k.iif, k.pfx96, k.local6,
-                        v.local4, v.oif));
+                pw.println(String.format("%d %s/96 %s -> %s %d (%d %d)", k.iif, k.pfx96, k.local6,
+                        v.local4, v.oif, v.packets, v.bytes));
             });
             pw.decreaseIndent();
         } catch (ErrnoException e) {
@@ -870,12 +870,13 @@ public class ClatCoordinator {
             if (mEgressMap.isEmpty()) {
                 pw.println("<empty>");
             }
-            pw.println("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif");
+            pw.println("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif (packets bytes)");
             pw.increaseIndent();
             mEgressMap.forEach((k, v) -> {
                 // TODO: print interface name
-                pw.println(String.format("%d %s -> %s %s/96 %d %s", k.iif, k.local4, v.local6,
-                        v.pfx96, v.oif, v.oifIsEthernet != 0 ? "ether" : "rawip"));
+                pw.println(String.format("%d %s -> %s %s/96 %d %s (%d %d)", k.iif, k.local4,
+                        v.local6, v.pfx96, v.oif, v.oifIsEthernet != 0 ? "ether" : "rawip",
+                        v.packets, v.bytes));
             });
             pw.decreaseIndent();
         } catch (ErrnoException e) {

@@ -16,15 +16,23 @@
 
 package com.android.server.thread;
 
+import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
+
 import android.annotation.Nullable;
+import android.content.ApexEnvironment;
+import android.content.Context;
 import android.os.PersistableBundle;
 import android.util.AtomicFile;
 import android.util.Log;
 
+import com.android.connectivity.resources.R;
 import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
@@ -38,10 +46,13 @@ import java.io.InputStream;
  */
 public class ThreadPersistentSettings {
     private static final String TAG = "ThreadPersistentSettings";
+
     /** File name used for storing settings. */
-    public static final String FILE_NAME = "ThreadPersistentSettings.xml";
+    private static final String FILE_NAME = "ThreadPersistentSettings.xml";
+
     /** Current config store data version. This will be incremented for any additions. */
     private static final int CURRENT_SETTINGS_STORE_DATA_VERSION = 1;
+
     /**
      * Stores the version of the data. This can be used to handle migration of data if some
      * non-backward compatible change introduced.
@@ -50,7 +61,10 @@ public class ThreadPersistentSettings {
 
     /******** Thread persistent setting keys ***************/
     /** Stores the Thread feature toggle state, true for enabled and false for disabled. */
-    public static final Key<Boolean> THREAD_ENABLED = new Key<>("Thread_enabled", true);
+    public static final Key<Boolean> THREAD_ENABLED = new Key<>("thread_enabled", true);
+
+    /** Stores the Thread country code, null if no country code is stored. */
+    public static final Key<String> THREAD_COUNTRY_CODE = new Key<>("thread_country_code", null);
 
     /******** Thread persistent setting keys ***************/
 
@@ -62,16 +76,29 @@ public class ThreadPersistentSettings {
     @GuardedBy("mLock")
     private final PersistableBundle mSettings = new PersistableBundle();
 
-    public ThreadPersistentSettings(AtomicFile atomicFile) {
+    private final ConnectivityResources mResources;
+
+    public static ThreadPersistentSettings newInstance(Context context) {
+        return new ThreadPersistentSettings(
+                new AtomicFile(new File(getOrCreateThreadNetworkDir(), FILE_NAME)),
+                new ConnectivityResources(context));
+    }
+
+    @VisibleForTesting
+    ThreadPersistentSettings(AtomicFile atomicFile, ConnectivityResources resources) {
         mAtomicFile = atomicFile;
+        mResources = resources;
     }
 
     /** Initialize the settings by reading from the settings file. */
     public void initialize() {
         readFromStoreFile();
         synchronized (mLock) {
-            if (mSettings.isEmpty()) {
-                put(THREAD_ENABLED.key, THREAD_ENABLED.defaultValue);
+            if (!mSettings.containsKey(THREAD_ENABLED.key)) {
+                Log.i(TAG, "\"thread_enabled\" is missing in settings file, using default value");
+                put(
+                        THREAD_ENABLED.key,
+                        mResources.get().getBoolean(R.bool.config_thread_default_enabled));
             }
         }
     }
@@ -99,7 +126,9 @@ public class ThreadPersistentSettings {
     private <T> T getObject(String key, T defaultValue) {
         Object value;
         synchronized (mLock) {
-            if (defaultValue instanceof Boolean) {
+            if (defaultValue == null) {
+                value = mSettings.getString(key, null);
+            } else if (defaultValue instanceof Boolean) {
                 value = mSettings.getBoolean(key, (Boolean) defaultValue);
             } else if (defaultValue instanceof Integer) {
                 value = mSettings.getInt(key, (Integer) defaultValue);
@@ -189,7 +218,7 @@ public class ThreadPersistentSettings {
                 mSettings.putAll(bundleRead);
             }
         } catch (FileNotFoundException e) {
-            Log.e(TAG, "No store file to read", e);
+            Log.w(TAG, "No store file to read", e);
         } catch (IOException e) {
             Log.e(TAG, "Read from store file failed", e);
         }
@@ -239,5 +268,20 @@ public class ThreadPersistentSettings {
             }
             throw e;
         }
+    }
+
+    /** Get device protected storage dir for the tethering apex. */
+    private static File getOrCreateThreadNetworkDir() {
+        final File threadnetworkDir;
+        final File apexDataDir =
+                ApexEnvironment.getApexEnvironment(TETHERING_MODULE_NAME)
+                        .getDeviceProtectedDataDir();
+        threadnetworkDir = new File(apexDataDir, "thread");
+
+        if (threadnetworkDir.exists() || threadnetworkDir.mkdirs()) {
+            return threadnetworkDir;
+        }
+        throw new IllegalStateException(
+                "Cannot write into thread network data directory: " + threadnetworkDir);
     }
 }

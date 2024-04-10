@@ -64,6 +64,7 @@ import static android.text.format.DateUtils.HOUR_IN_MILLIS;
 import static android.text.format.DateUtils.MINUTE_IN_MILLIS;
 import static android.text.format.DateUtils.WEEK_IN_MILLIS;
 
+import static com.android.dx.mockito.inline.extended.ExtendedMockito.doThrow;
 import static com.android.server.net.NetworkStatsEventLogger.POLL_REASON_RAT_CHANGED;
 import static com.android.server.net.NetworkStatsEventLogger.PollEvent.pollReasonNameOf;
 import static com.android.server.net.NetworkStatsService.ACTION_NETWORK_STATS_POLL;
@@ -85,6 +86,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Matchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -97,6 +99,7 @@ import android.annotation.NonNull;
 import android.app.AlarmManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.database.ContentObserver;
 import android.net.DataUsageRequest;
@@ -124,12 +127,15 @@ import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.Process;
 import android.os.SimpleClock;
+import android.os.UserHandle;
 import android.provider.Settings;
 import android.system.ErrnoException;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.ArrayMap;
+import android.util.IndentingPrintWriter;
 import android.util.Pair;
 
 import androidx.annotation.Nullable;
@@ -243,6 +249,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private static @Mock WifiInfo sWifiInfo;
     private @Mock INetd mNetd;
     private @Mock TetheringManager mTetheringManager;
+    private @Mock PackageManager mPm;
     private @Mock NetworkStatsFactory mStatsFactory;
     @NonNull
     private final TestNetworkStatsSettings mSettings =
@@ -252,7 +259,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     private @Mock AlarmManager mAlarmManager;
     @Mock
     private NetworkStatsSubscriptionsMonitor mNetworkStatsSubscriptionsMonitor;
-    private @Mock BpfInterfaceMapUpdater mBpfInterfaceMapUpdater;
+    private @Mock BpfInterfaceMapHelper mBpfInterfaceMapHelper;
     private HandlerThread mHandlerThread;
     @Mock
     private LocationPermissionChecker mLocationPermissionChecker;
@@ -300,6 +307,16 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         MockContext(Context base) {
             super(base);
             mBaseContext = base;
+        }
+
+        @Override
+        public PackageManager getPackageManager() {
+            return mPm;
+        }
+
+        @Override
+        public Context createContextAsUser(UserHandle user, int flags) {
+            return this;
         }
 
         @Override
@@ -425,6 +442,9 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 any(), tetheringEventCbCaptor.capture());
         mTetheringEventCallback = tetheringEventCbCaptor.getValue();
 
+        doReturn(Process.myUid()).when(mPm)
+                .getPackageUid(eq(mServiceContext.getPackageName()), anyInt());
+
         mUsageCallback = new TestableUsageCallback(mUsageCallbackBinder);
     }
 
@@ -517,9 +537,8 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         }
 
         @Override
-        public BpfInterfaceMapUpdater makeBpfInterfaceMapUpdater(
-                @NonNull Context ctx, @NonNull Handler handler) {
-            return mBpfInterfaceMapUpdater;
+        public BpfInterfaceMapHelper makeBpfInterfaceMapHelper() {
+            return mBpfInterfaceMapHelper;
         }
 
         @Override
@@ -928,7 +947,16 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     }
 
     @Test
-    public void testMobileStatsByRatType() throws Exception {
+    public void testMobileStatsByRatTypeForSatellite() throws Exception {
+        doTestMobileStatsByRatType(new NetworkStateSnapshot[]{buildSatelliteMobileState(IMSI_1)});
+    }
+
+    @Test
+    public void testMobileStatsByRatTypeForCellular() throws Exception {
+        doTestMobileStatsByRatType(new NetworkStateSnapshot[]{buildMobileState(IMSI_1)});
+    }
+
+    private void doTestMobileStatsByRatType(NetworkStateSnapshot[] states) throws Exception {
         final NetworkTemplate template3g = new NetworkTemplate.Builder(MATCH_MOBILE)
                 .setRatType(TelephonyManager.NETWORK_TYPE_UMTS)
                 .setMeteredness(METERED_YES).build();
@@ -938,8 +966,6 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         final NetworkTemplate template5g = new NetworkTemplate.Builder(MATCH_MOBILE)
                 .setRatType(TelephonyManager.NETWORK_TYPE_NR)
                 .setMeteredness(METERED_YES).build();
-        final NetworkStateSnapshot[] states =
-                new NetworkStateSnapshot[]{buildMobileState(IMSI_1)};
 
         // 3G network comes online.
         mockNetworkStatsSummary(buildEmptyStats());
@@ -953,7 +979,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         incrementCurrentTime(MINUTE_IN_MILLIS);
         mockNetworkStatsUidDetail(new NetworkStats(getElapsedRealtime(), 1)
                 .addEntry(new NetworkStats.Entry(TEST_IFACE, UID_RED, SET_DEFAULT, TAG_NONE,
-                        METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO, 12L, 18L, 14L, 1L, 0L)));
+                         METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO, 12L, 18L, 14L, 1L, 0L)));
         forcePollAndWaitForIdle();
 
         // Verify 3g templates gets stats.
@@ -968,7 +994,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         mockNetworkStatsUidDetail(new NetworkStats(getElapsedRealtime(), 1)
                 // Append more traffic on existing 3g stats entry.
                 .addEntry(new NetworkStats.Entry(TEST_IFACE, UID_RED, SET_DEFAULT, TAG_NONE,
-                         METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO, 16L, 22L, 17L, 2L, 0L))
+                        METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO, 16L, 22L, 17L, 2L, 0L))
                 // Add entry that is new on 4g.
                 .addEntry(new NetworkStats.Entry(TEST_IFACE, UID_RED, SET_FOREGROUND, TAG_NONE,
                         METERED_NO, ROAMING_NO, DEFAULT_NETWORK_NO, 33L, 27L, 8L, 10L, 1L)));
@@ -1370,6 +1396,57 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
     }
 
     @Test
+    public void testGetUidStatsForTransportWithCellularAndSatellite() throws Exception {
+        // Setup satellite mobile network and Cellular mobile network
+        mockDefaultSettings();
+        mockNetworkStatsUidDetail(buildEmptyStats());
+
+        final NetworkStateSnapshot mobileState = buildStateOfTransport(
+                NetworkCapabilities.TRANSPORT_CELLULAR, TYPE_MOBILE,
+                TEST_IFACE2, IMSI_1, null /* wifiNetworkKey */,
+                false /* isTemporarilyNotMetered */, false /* isRoaming */);
+
+        final NetworkStateSnapshot[] states = new NetworkStateSnapshot[]{mobileState,
+                buildSatelliteMobileState(IMSI_1)};
+        mService.notifyNetworkStatus(NETWORKS_MOBILE, states, getActiveIface(states),
+                new UnderlyingNetworkInfo[0]);
+        setMobileRatTypeAndWaitForIdle(TelephonyManager.NETWORK_TYPE_LTE);
+
+        // mock traffic on satellite network
+        final NetworkStats.Entry entrySatellite = new NetworkStats.Entry(
+                TEST_IFACE, UID_RED, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                DEFAULT_NETWORK_NO, 80L, 5L, 70L, 15L, 1L);
+
+        // mock traffic on cellular network
+        final NetworkStats.Entry entryCellular = new NetworkStats.Entry(
+                TEST_IFACE2, UID_RED, SET_DEFAULT, TAG_NONE, METERED_NO, ROAMING_NO,
+                DEFAULT_NETWORK_NO, 100L, 15L, 150L, 15L, 1L);
+
+        final TetherStatsParcel[] emptyTetherStats = {};
+        // The interfaces that expect to be used to query the stats.
+        final String[] mobileIfaces = {TEST_IFACE, TEST_IFACE2};
+        incrementCurrentTime(HOUR_IN_MILLIS);
+        mockDefaultSettings();
+        mockNetworkStatsUidDetail(new NetworkStats(getElapsedRealtime(), 2)
+                .insertEntry(entrySatellite).insertEntry(entryCellular), emptyTetherStats,
+                mobileIfaces);
+        // with getUidStatsForTransport(TRANSPORT_CELLULAR) return stats of both cellular
+        // and satellite
+        final NetworkStats mobileStats = mService.getUidStatsForTransport(
+                NetworkCapabilities.TRANSPORT_CELLULAR);
+
+        // The iface field of the returned stats should be null because getUidStatsForTransport
+        // clears the interface field before it returns the result.
+        assertValues(mobileStats, null /* iface */, UID_RED, SET_DEFAULT, TAG_NONE,
+                METERED_NO, ROAMING_NO, METERED_NO, 180L, 20L, 220L, 30L, 2L);
+
+        // getUidStatsForTransport(TRANSPORT_SATELLITE) is not supported
+        assertThrows(IllegalArgumentException.class,
+                () -> mService.getUidStatsForTransport(NetworkCapabilities.TRANSPORT_SATELLITE));
+
+    }
+
+    @Test
     public void testForegroundBackground() throws Exception {
         // pretend that network comes online
         mockDefaultSettings();
@@ -1591,7 +1668,7 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
         // Register and verify request and that binder was called
         DataUsageRequest request = mService.registerUsageCallback(
-                mServiceContext.getOpPackageName(), inputRequest, mUsageCallback);
+                mServiceContext.getPackageName(), inputRequest, mUsageCallback);
         assertTrue(request.requestId > 0);
         assertTrue(Objects.equals(sTemplateWifi, request.template));
         long minThresholdInBytes = 2 * 1024 * 1024; // 2 MB
@@ -2527,6 +2604,12 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
                 false /* isTemporarilyNotMetered */, false /* isRoaming */);
     }
 
+    private static NetworkStateSnapshot buildSatelliteMobileState(String subscriberId) {
+        return buildStateOfTransport(NetworkCapabilities.TRANSPORT_SATELLITE, TYPE_MOBILE,
+                TEST_IFACE, subscriberId, null /* wifiNetworkKey */,
+                false /* isTemporarilyNotMetered */, false /* isRoaming */);
+    }
+
     private static NetworkStateSnapshot buildTestState(@NonNull String iface,
             @Nullable String wifiNetworkKey) {
         return buildStateOfTransport(NetworkCapabilities.TRANSPORT_TEST, TYPE_TEST,
@@ -2762,13 +2845,13 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     @Test
     public void testDumpStatsMap() throws ErrnoException {
-        doReturn("wlan0").when(mBpfInterfaceMapUpdater).getIfNameByIndex(10 /* index */);
+        doReturn("wlan0").when(mBpfInterfaceMapHelper).getIfNameByIndex(10 /* index */);
         doTestDumpStatsMap("wlan0");
     }
 
     @Test
     public void testDumpStatsMapUnknownInterface() throws ErrnoException {
-        doReturn(null).when(mBpfInterfaceMapUpdater).getIfNameByIndex(10 /* index */);
+        doReturn(null).when(mBpfInterfaceMapHelper).getIfNameByIndex(10 /* index */);
         doTestDumpStatsMap("unknown");
     }
 
@@ -2783,13 +2866,13 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
 
     @Test
     public void testDumpIfaceStatsMap() throws Exception {
-        doReturn("wlan0").when(mBpfInterfaceMapUpdater).getIfNameByIndex(10 /* index */);
+        doReturn("wlan0").when(mBpfInterfaceMapHelper).getIfNameByIndex(10 /* index */);
         doTestDumpIfaceStatsMap("wlan0");
     }
 
     @Test
     public void testDumpIfaceStatsMapUnknownInterface() throws Exception {
-        doReturn(null).when(mBpfInterfaceMapUpdater).getIfNameByIndex(10 /* index */);
+        doReturn(null).when(mBpfInterfaceMapHelper).getIfNameByIndex(10 /* index */);
         doTestDumpIfaceStatsMap("unknown");
     }
 
@@ -2801,5 +2884,49 @@ public class NetworkStatsServiceTest extends NetworkStatsBaseTest {
         setMobileRatTypeAndWaitForIdle(TelephonyManager.NETWORK_TYPE_UMTS);
         final String dump = getDump();
         assertDumpContains(dump, pollReasonNameOf(POLL_REASON_RAT_CHANGED));
+    }
+
+    @Test
+    public void testEnforcePackageNameMatchesUid() throws Exception {
+        final String testMyPackageName = "test.package.myname";
+        final String testRedPackageName = "test.package.red";
+        final String testInvalidPackageName = "test.package.notfound";
+
+        doReturn(UID_RED).when(mPm).getPackageUid(eq(testRedPackageName), anyInt());
+        doReturn(Process.myUid()).when(mPm).getPackageUid(eq(testMyPackageName), anyInt());
+        doThrow(new PackageManager.NameNotFoundException()).when(mPm)
+                .getPackageUid(eq(testInvalidPackageName), anyInt());
+
+        assertThrows(SecurityException.class, () ->
+                mService.openSessionForUsageStats(0 /* flags */, testRedPackageName));
+        assertThrows(SecurityException.class, () ->
+                mService.openSessionForUsageStats(0 /* flags */, testInvalidPackageName));
+        assertThrows(NullPointerException.class, () ->
+                mService.openSessionForUsageStats(0 /* flags */, null));
+        // Verify package name belongs to ourselves does not throw.
+        mService.openSessionForUsageStats(0 /* flags */, testMyPackageName);
+
+        long thresholdInBytes = 10 * 1024 * 1024;  // 10 MB
+        DataUsageRequest request = new DataUsageRequest(
+                2 /* requestId */, sTemplateImsi1, thresholdInBytes);
+        assertThrows(SecurityException.class, () ->
+                mService.registerUsageCallback(testRedPackageName, request, mUsageCallback));
+        assertThrows(SecurityException.class, () ->
+                mService.registerUsageCallback(testInvalidPackageName, request, mUsageCallback));
+        assertThrows(NullPointerException.class, () ->
+                mService.registerUsageCallback(null, request, mUsageCallback));
+        mService.registerUsageCallback(testMyPackageName, request, mUsageCallback);
+    }
+
+    @Test
+    public void testDumpSkDestroyListenerLogs() throws ErrnoException {
+        doAnswer((invocation) -> {
+            final IndentingPrintWriter ipw = (IndentingPrintWriter) invocation.getArgument(0);
+            ipw.println("Log for testing");
+            return null;
+        }).when(mSkDestroyListener).dump(any());
+
+        final String dump = getDump();
+        assertDumpContains(dump, "Log for testing");
     }
 }

@@ -39,6 +39,15 @@ import java.util.Set;
  * @hide
  */
 public class MdnsSearchOptions implements Parcelable {
+    // Passive query mode scans less frequently in order to conserve battery and produce less
+    // network traffic.
+    public static final int PASSIVE_QUERY_MODE = 0;
+    // Active query mode scans frequently.
+    public static final int ACTIVE_QUERY_MODE = 1;
+    // Aggressive query mode scans more frequently than the active mode at first, and sends both
+    // unicast and multicast queries simultaneously, but in long sessions it eventually sends as
+    // many queries as the PASSIVE mode.
+    public static final int AGGRESSIVE_QUERY_MODE = 2;
 
     /** @hide */
     public static final Parcelable.Creator<MdnsSearchOptions> CREATOR =
@@ -47,9 +56,10 @@ public class MdnsSearchOptions implements Parcelable {
                 public MdnsSearchOptions createFromParcel(Parcel source) {
                     return new MdnsSearchOptions(
                             source.createStringArrayList(),
-                            source.readInt() == 1,
+                            source.readInt(),
                             source.readInt() == 1,
                             source.readParcelable(null),
+                            source.readInt(),
                             source.readString(),
                             source.readInt() == 1,
                             source.readInt());
@@ -64,19 +74,22 @@ public class MdnsSearchOptions implements Parcelable {
     private final List<String> subtypes;
     @Nullable
     private final String resolveInstanceName;
-    private final boolean isPassiveMode;
+    private final int queryMode;
     private final boolean onlyUseIpv6OnIpv6OnlyNetworks;
     private final int numOfQueriesBeforeBackoff;
     private final boolean removeExpiredService;
     // The target network for searching. Null network means search on all possible interfaces.
     @Nullable private final Network mNetwork;
+    // If the target interface does not have a Network, set to the interface index, otherwise unset.
+    private final int mInterfaceIndex;
 
     /** Parcelable constructs for a {@link MdnsSearchOptions}. */
     MdnsSearchOptions(
             List<String> subtypes,
-            boolean isPassiveMode,
+            int queryMode,
             boolean removeExpiredService,
             @Nullable Network network,
+            int interfaceIndex,
             @Nullable String resolveInstanceName,
             boolean onlyUseIpv6OnIpv6OnlyNetworks,
             int numOfQueriesBeforeBackoff) {
@@ -84,11 +97,12 @@ public class MdnsSearchOptions implements Parcelable {
         if (subtypes != null) {
             this.subtypes.addAll(subtypes);
         }
-        this.isPassiveMode = isPassiveMode;
+        this.queryMode = queryMode;
         this.onlyUseIpv6OnIpv6OnlyNetworks = onlyUseIpv6OnIpv6OnlyNetworks;
         this.numOfQueriesBeforeBackoff = numOfQueriesBeforeBackoff;
         this.removeExpiredService = removeExpiredService;
         mNetwork = network;
+        mInterfaceIndex = interfaceIndex;
         this.resolveInstanceName = resolveInstanceName;
     }
 
@@ -111,11 +125,10 @@ public class MdnsSearchOptions implements Parcelable {
     }
 
     /**
-     * @return {@code true} if the passive mode is used. The passive mode scans less frequently in
-     * order to conserve battery and produce less network traffic.
+     * @return the current query mode.
      */
-    public boolean isPassiveMode() {
-        return isPassiveMode;
+    public int getQueryMode() {
+        return queryMode;
     }
 
     /**
@@ -140,13 +153,25 @@ public class MdnsSearchOptions implements Parcelable {
     }
 
     /**
-     * Returns the network which the mdns query should target on.
+     * Returns the network which the mdns query should target.
      *
-     * @return the target network or null if search on all possible interfaces.
+     * @return the target network or null to search on all possible interfaces.
      */
     @Nullable
     public Network getNetwork() {
         return mNetwork;
+    }
+
+
+    /**
+     * Returns the interface index which the mdns query should target.
+     *
+     * This is only set when the service is to be searched on an interface that does not have a
+     * Network, in which case {@link #getNetwork()} returns null.
+     * The interface index as per {@link java.net.NetworkInterface#getIndex}, or 0 if unset.
+     */
+    public int getInterfaceIndex() {
+        return mInterfaceIndex;
     }
 
     /**
@@ -166,9 +191,10 @@ public class MdnsSearchOptions implements Parcelable {
     @Override
     public void writeToParcel(Parcel out, int flags) {
         out.writeStringList(subtypes);
-        out.writeInt(isPassiveMode ? 1 : 0);
+        out.writeInt(queryMode);
         out.writeInt(removeExpiredService ? 1 : 0);
         out.writeParcelable(mNetwork, 0);
+        out.writeInt(mInterfaceIndex);
         out.writeString(resolveInstanceName);
         out.writeInt(onlyUseIpv6OnIpv6OnlyNetworks ? 1 : 0);
         out.writeInt(numOfQueriesBeforeBackoff);
@@ -177,11 +203,12 @@ public class MdnsSearchOptions implements Parcelable {
     /** A builder to create {@link MdnsSearchOptions}. */
     public static final class Builder {
         private final Set<String> subtypes;
-        private boolean isPassiveMode = true;
+        private int queryMode = PASSIVE_QUERY_MODE;
         private boolean onlyUseIpv6OnIpv6OnlyNetworks = false;
         private int numOfQueriesBeforeBackoff = 3;
         private boolean removeExpiredService;
         private Network mNetwork;
+        private int mInterfaceIndex;
         private String resolveInstanceName;
 
         private Builder() {
@@ -212,14 +239,12 @@ public class MdnsSearchOptions implements Parcelable {
         }
 
         /**
-         * Sets if the passive mode scan should be used. The passive mode scans less frequently in
-         * order to conserve battery and produce less network traffic.
+         * Sets which query mode should be used.
          *
-         * @param isPassiveMode If set to {@code true}, passive mode will be used. If set to {@code
-         *                      false}, active mode will be used.
+         * @param queryMode the query mode should be used.
          */
-        public Builder setIsPassiveMode(boolean isPassiveMode) {
-            this.isPassiveMode = isPassiveMode;
+        public Builder setQueryMode(int queryMode) {
+            this.queryMode = queryMode;
             return this;
         }
 
@@ -272,13 +297,24 @@ public class MdnsSearchOptions implements Parcelable {
             return this;
         }
 
+        /**
+         * Set the interface index to use for the query, if not querying on a {@link Network}.
+         *
+         * @see MdnsSearchOptions#getInterfaceIndex()
+         */
+        public Builder setInterfaceIndex(int index) {
+            mInterfaceIndex = index;
+            return this;
+        }
+
         /** Builds a {@link MdnsSearchOptions} with the arguments supplied to this builder. */
         public MdnsSearchOptions build() {
             return new MdnsSearchOptions(
                     new ArrayList<>(subtypes),
-                    isPassiveMode,
+                    queryMode,
                     removeExpiredService,
                     mNetwork,
+                    mInterfaceIndex,
                     resolveInstanceName,
                     onlyUseIpv6OnIpv6OnlyNetworks,
                     numOfQueriesBeforeBackoff);

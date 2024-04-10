@@ -38,6 +38,7 @@ import static android.net.ConnectivityManager.BLOCKED_REASON_LOCKDOWN_VPN;
 import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.CALLBACK_IP_CHANGED;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DEFAULT;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
@@ -65,6 +66,7 @@ import static android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_PRIVDNS;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_PARTIAL;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_SKIPPED;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_VALID;
+import static android.net.MulticastRoutingConfig.FORWARD_NONE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_FOREGROUND;
@@ -95,6 +97,8 @@ import static android.net.NetworkRequest.Type.LISTEN_FOR_BEST;
 import static android.net.NetworkScore.POLICY_TRANSPORT_PRIMARY;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
+import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_MATCH_LOCAL_NETWORK;
+import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_SELF_CERTIFIED_CAPABILITIES_DECLARATION;
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
 import static android.system.OsConstants.ETH_P_ALL;
@@ -107,15 +111,18 @@ import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_EGRESS;
 import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_INGRESS;
 import static com.android.net.module.util.BpfUtils.BPF_CGROUP_INET_SOCK_CREATE;
 import static com.android.net.module.util.NetworkMonitorUtils.isPrivateDnsValidationRequired;
-import static com.android.net.module.util.PermissionUtils.checkAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceAnyPermissionOf;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermission;
 import static com.android.net.module.util.PermissionUtils.enforceNetworkStackPermissionOr;
+import static com.android.net.module.util.PermissionUtils.hasAnyPermissionOf;
 import static com.android.server.ConnectivityStatsLog.CONNECTIVITY_STATE_SAMPLE;
+import static com.android.server.connectivity.ConnectivityFlags.REQUEST_RESTRICTED_WIFI;
+import static com.android.server.connectivity.ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING;
 
 import static java.util.Map.Entry;
 
 import android.Manifest;
+import android.annotation.CheckResult;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.SuppressLint;
@@ -171,6 +178,7 @@ import android.net.LinkProperties;
 import android.net.LocalNetworkConfig;
 import android.net.LocalNetworkInfo;
 import android.net.MatchAllNetworkSpecifier;
+import android.net.MulticastRoutingConfig;
 import android.net.NativeNetworkConfig;
 import android.net.NativeNetworkType;
 import android.net.NattSocketKeepalive;
@@ -211,7 +219,6 @@ import android.net.UnderlyingNetworkInfo;
 import android.net.Uri;
 import android.net.VpnManager;
 import android.net.VpnTransportInfo;
-import android.net.connectivity.ConnectivityCompatChanges;
 import android.net.metrics.IpConnectivityLog;
 import android.net.metrics.NetworkEvent;
 import android.net.netd.aidl.NativeUidRangeConfig;
@@ -253,6 +260,7 @@ import android.stats.connectivity.RequestType;
 import android.stats.connectivity.ValidatedState;
 import android.sysprop.NetworkProperties;
 import android.system.ErrnoException;
+import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -281,7 +289,6 @@ import com.android.metrics.NetworkCountPerTransports;
 import com.android.metrics.NetworkDescription;
 import com.android.metrics.NetworkList;
 import com.android.metrics.NetworkRequestCount;
-import com.android.metrics.NetworkRequestStateStatsMetrics;
 import com.android.metrics.RequestCountForType;
 import com.android.modules.utils.BasicShellCommandHandler;
 import com.android.modules.utils.build.SdkLevel;
@@ -291,6 +298,7 @@ import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.BpfUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.LinkPropertiesUtils.CompareOrUpdateResult;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
@@ -315,12 +323,12 @@ import com.android.server.connectivity.DnsManager;
 import com.android.server.connectivity.DnsManager.PrivateDnsValidationUpdate;
 import com.android.server.connectivity.DscpPolicyTracker;
 import com.android.server.connectivity.FullScore;
-import com.android.server.connectivity.HandlerUtils;
 import com.android.server.connectivity.InvalidTagException;
 import com.android.server.connectivity.KeepaliveResourceUtil;
 import com.android.server.connectivity.KeepaliveTracker;
 import com.android.server.connectivity.LingerMonitor;
 import com.android.server.connectivity.MockableSystemProperties;
+import com.android.server.connectivity.MulticastRoutingCoordinatorService;
 import com.android.server.connectivity.MultinetworkPolicyTracker;
 import com.android.server.connectivity.NetworkAgentInfo;
 import com.android.server.connectivity.NetworkDiagnostics;
@@ -329,11 +337,13 @@ import com.android.server.connectivity.NetworkNotificationManager.NotificationTy
 import com.android.server.connectivity.NetworkOffer;
 import com.android.server.connectivity.NetworkPreferenceList;
 import com.android.server.connectivity.NetworkRanker;
+import com.android.server.connectivity.NetworkRequestStateStatsMetrics;
 import com.android.server.connectivity.PermissionMonitor;
 import com.android.server.connectivity.ProfileNetworkPreferenceInfo;
 import com.android.server.connectivity.ProxyTracker;
 import com.android.server.connectivity.QosCallbackTracker;
 import com.android.server.connectivity.RoutingCoordinatorService;
+import com.android.server.connectivity.SatelliteAccessController;
 import com.android.server.connectivity.UidRangeUtils;
 import com.android.server.connectivity.VpnNetworkPreferenceInfo;
 import com.android.server.connectivity.wear.CompanionDeviceManagerProxyService;
@@ -362,6 +372,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.NoSuchElementException;
 import java.util.Objects;
 import java.util.Set;
@@ -370,6 +381,8 @@ import java.util.StringJoiner;
 import java.util.TreeSet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 /**
  * @hide
@@ -464,6 +477,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private volatile boolean mLockdownEnabled;
 
+    private final boolean mRequestRestrictedWifiEnabled;
+    private final boolean mBackgroundFirewallChainEnabled;
+
     /**
      * Stale copy of uid blocked reasons provided by NPMS. As long as they are accessed only in
      * internal handler thread, they don't need a lock.
@@ -497,6 +513,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @GuardedBy("mTNSLock")
     private TestNetworkService mTNS;
     private final CompanionDeviceManagerProxyService mCdmps;
+    private final MulticastRoutingCoordinatorService mMulticastRoutingCoordinatorService;
     private final RoutingCoordinatorService mRoutingCoordinatorService;
 
     private final Object mTNSLock = new Object();
@@ -558,6 +575,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
     // See {@link ConnectivitySettingsManager#setMobileDataPreferredUids}
     @VisibleForTesting
     static final int PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED = 30;
+    // Order of setting satellite network preference fallback when default message application
+    // with role_sms role and android.permission.SATELLITE_COMMUNICATION permission detected
+    @VisibleForTesting
+    static final int PREFERENCE_ORDER_SATELLITE_FALLBACK = 40;
     // Preference order that signifies the network shouldn't be set as a default network for
     // the UIDs, only give them access to it. TODO : replace this with a boolean
     // in NativeUidRangeConfig
@@ -916,6 +937,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private final QosCallbackTracker mQosCallbackTracker;
     private final NetworkNotificationManager mNotifier;
     private final LingerMonitor mLingerMonitor;
+    private final SatelliteAccessController mSatelliteAccessController;
 
     // sequence number of NetworkRequests
     private int mNextNetworkRequestId = NetworkRequest.FIRST_REQUEST_ID;
@@ -942,7 +964,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private final IpConnectivityLog mMetricsLog;
 
-    private final NetworkRequestStateStatsMetrics mNetworkRequestStateStatsMetrics;
+    @Nullable private final NetworkRequestStateStatsMetrics mNetworkRequestStateStatsMetrics;
 
     @GuardedBy("mBandwidthRequests")
     private final SparseArray<Integer> mBandwidthRequests = new SparseArray<>(10);
@@ -978,6 +1000,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     // Uids that ConnectivityService is pending to close sockets of.
     private final Set<Integer> mPendingFrozenUids = new ArraySet<>();
+
+    // Flag to drop packets to VPN addresses ingressing via non-VPN interfaces.
+    private final boolean mIngressToVpnAddressFiltering;
 
     /**
      * Implements support for the legacy "one network per network type" model.
@@ -1280,7 +1305,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         LocalPriorityDump() {}
 
         private void dumpHigh(FileDescriptor fd, PrintWriter pw) {
-            if (!HandlerUtils.runWithScissors(mHandler, () -> {
+            if (!HandlerUtils.runWithScissorsForDump(mHandler, () -> {
                 doDump(fd, pw, new String[]{DIAG_ARG});
                 doDump(fd, pw, new String[]{SHORT_ARG});
             }, DUMPSYS_DEFAULT_TIMEOUT_MS)) {
@@ -1289,7 +1314,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         private void dumpNormal(FileDescriptor fd, PrintWriter pw, String[] args) {
-            if (!HandlerUtils.runWithScissors(mHandler, () -> doDump(fd, pw, args),
+            if (!HandlerUtils.runWithScissorsForDump(mHandler, () -> doDump(fd, pw, args),
                     DUMPSYS_DEFAULT_TIMEOUT_MS)) {
                 pw.println("dumpNormal timeout");
             }
@@ -1424,6 +1449,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return new AutomaticOnOffKeepaliveTracker(c, h);
         }
 
+        public MulticastRoutingCoordinatorService makeMulticastRoutingCoordinatorService(
+                    @NonNull Handler h) {
+            try {
+                return new MulticastRoutingCoordinatorService(h);
+            } catch (UnsupportedOperationException e) {
+                // Multicast routing is not supported by the kernel
+                Log.i(TAG, "Skipping unsupported MulticastRoutingCoordinatorService");
+                return null;
+            }
+        }
+
         /**
          * @see NetworkRequestStateStatsMetrics
          */
@@ -1431,7 +1467,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 Context context) {
             // We currently have network requests metric for Watch devices only
             if (context.getPackageManager().hasSystemFeature(FEATURE_WATCH)) {
-                return  new NetworkRequestStateStatsMetrics();
+                return new NetworkRequestStateStatsMetrics();
             } else {
                 return null;
             }
@@ -1473,12 +1509,29 @@ public class ConnectivityService extends IConnectivityManager.Stub
          */
         @Nullable
         public CarrierPrivilegeAuthenticator makeCarrierPrivilegeAuthenticator(
-                @NonNull final Context context, @NonNull final TelephonyManager tm) {
+                @NonNull final Context context,
+                @NonNull final TelephonyManager tm,
+                boolean requestRestrictedWifiEnabled,
+                @NonNull BiConsumer<Integer, Integer> listener,
+                @NonNull final Handler connectivityServiceHandler) {
             if (isAtLeastT()) {
-                return new CarrierPrivilegeAuthenticator(context, tm);
+                return new CarrierPrivilegeAuthenticator(context, tm, requestRestrictedWifiEnabled,
+                        listener, connectivityServiceHandler);
             } else {
                 return null;
             }
+        }
+
+        /**
+         * @see SatelliteAccessController
+         */
+        @Nullable
+        public SatelliteAccessController makeSatelliteAccessController(
+                @NonNull final Context context,
+                Consumer<Set<Integer>> updateSatelliteNetworkFallbackUidCallback,
+                @NonNull final Handler connectivityServiceInternalHandler) {
+            return new SatelliteAccessController(context, updateSatelliteNetworkFallbackUidCallback,
+                    connectivityServiceInternalHandler);
         }
 
         /**
@@ -1744,8 +1797,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mTelephonyManager = (TelephonyManager) mContext.getSystemService(Context.TELEPHONY_SERVICE);
         mAppOpsManager = (AppOpsManager) mContext.getSystemService(Context.APP_OPS_SERVICE);
         mLocationPermissionChecker = mDeps.makeLocationPermissionChecker(mContext);
-        mCarrierPrivilegeAuthenticator =
-                mDeps.makeCarrierPrivilegeAuthenticator(mContext, mTelephonyManager);
+        mRequestRestrictedWifiEnabled = mDeps.isAtLeastU()
+                && mDeps.isFeatureEnabled(context, REQUEST_RESTRICTED_WIFI);
+        mBackgroundFirewallChainEnabled = mDeps.isAtLeastV() && mDeps.isFeatureNotChickenedOut(
+                context, ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN);
+        mCarrierPrivilegeAuthenticator = mDeps.makeCarrierPrivilegeAuthenticator(
+                mContext, mTelephonyManager, mRequestRestrictedWifiEnabled,
+                this::handleUidCarrierPrivilegesLost, mHandler);
+
+        if (mDeps.isAtLeastU()
+                && mDeps
+                .isFeatureNotChickenedOut(mContext, ALLOW_SATALLITE_NETWORK_FALLBACK)) {
+            mSatelliteAccessController = mDeps.makeSatelliteAccessController(
+                    mContext, this::updateSatelliteNetworkPreferenceUids, mHandler);
+        } else {
+            mSatelliteAccessController = null;
+        }
 
         // To ensure uid state is synchronized with Network Policy, register for
         // NetworkPolicyManagerService events must happen prior to NetworkPolicyManagerService
@@ -1876,9 +1943,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         mRoutingCoordinatorService = new RoutingCoordinatorService(netd);
+        mMulticastRoutingCoordinatorService =
+                mDeps.makeMulticastRoutingCoordinatorService(mHandler);
 
-        mDestroyFrozenSockets = mDeps.isAtLeastU()
-                && mDeps.isFeatureEnabled(context, KEY_DESTROY_FROZEN_SOCKETS_VERSION);
+        mDestroyFrozenSockets = mDeps.isAtLeastV() || (mDeps.isAtLeastU()
+                && mDeps.isFeatureEnabled(context, KEY_DESTROY_FROZEN_SOCKETS_VERSION));
         mDelayDestroyFrozenSockets = mDeps.isAtLeastU()
                 && mDeps.isFeatureEnabled(context, DELAY_DESTROY_FROZEN_SOCKETS_VERSION);
         mAllowSysUiConnectivityReports = mDeps.isFeatureNotChickenedOut(
@@ -1907,10 +1976,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             activityManager.registerUidFrozenStateChangedCallback(
                     (Runnable r) -> r.run(), frozenStateChangedCallback);
         }
-
-        if (mDeps.isFeatureNotChickenedOut(mContext, LOG_BPF_RC)) {
-            mHandler.post(BpfLoaderRcUtils::checkBpfLoaderRc);
-        }
+        mIngressToVpnAddressFiltering = mDeps.isAtLeastT()
+                && mDeps.isFeatureNotChickenedOut(mContext, INGRESS_TO_VPN_ADDRESS_FILTERING);
     }
 
     /**
@@ -2011,6 +2078,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
             @NonNull final ProxyInfo proxyInfo) {
         Message.obtain(mHandler, EVENT_PAC_PROXY_HAS_CHANGED,
                 new Pair<>(network, proxyInfo)).sendToTarget();
+    }
+
+    /**
+     * Called when satellite network fallback uids at {@link SatelliteAccessController}
+     * cache was updated based on {@link
+     * android.app.role.OnRoleHoldersChangedListener#onRoleHoldersChanged(String, UserHandle)},
+     * to create multilayer request with preference order
+     * {@link #PREFERENCE_ORDER_SATELLITE_FALLBACK} there on.
+     *
+     */
+    private void updateSatelliteNetworkPreferenceUids(Set<Integer> satelliteNetworkFallbackUids) {
+        handleSetSatelliteNetworkPreference(satelliteNetworkFallbackUids);
     }
 
     private void handleAlwaysOnNetworkRequest(
@@ -2159,7 +2238,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final long ident = Binder.clearCallingIdentity();
         try {
             final boolean metered = nc == null ? true : nc.isMetered();
-            return mPolicyManager.isUidNetworkingBlocked(uid, metered);
+            if (mDeps.isAtLeastV()) {
+                return mBpfNetMaps.isUidNetworkingBlocked(uid, metered);
+            } else {
+                return mPolicyManager.isUidNetworkingBlocked(uid, metered);
+            }
         } finally {
             Binder.restoreCallingIdentity(ident);
         }
@@ -2528,7 +2611,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 // Not the system, so it's an app requesting on its own behalf.
                 type = RequestType.RT_APP.getNumber();
             }
-            countPerType.put(type, countPerType.get(type, 0));
+            countPerType.put(type, countPerType.get(type, 0) + 1);
         }
         for (int i = countPerType.size() - 1; i >= 0; --i) {
             final RequestCountForType.Builder r = RequestCountForType.newBuilder();
@@ -2632,7 +2715,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         Objects.requireNonNull(packageName);
         Objects.requireNonNull(lp);
         enforceNetworkStackOrSettingsPermission();
-        if (!checkAccessPermission(-1 /* pid */, uid)) {
+        if (!hasAccessPermission(-1 /* pid */, uid)) {
             return null;
         }
         return linkPropertiesRestrictedForCallerPermissions(lp, -1 /* callerPid */, uid);
@@ -2668,7 +2751,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         Objects.requireNonNull(nc);
         Objects.requireNonNull(packageName);
         enforceNetworkStackOrSettingsPermission();
-        if (!checkAccessPermission(-1 /* pid */, uid)) {
+        if (!hasAccessPermission(-1 /* pid */, uid)) {
             return null;
         }
         return createWithLocationInfoSanitizedIfNecessaryWhenParceled(
@@ -2679,14 +2762,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void redactUnderlyingNetworksForCapabilities(NetworkCapabilities nc, int pid, int uid) {
         if (nc.getUnderlyingNetworks() != null
-                && !checkNetworkFactoryOrSettingsPermission(pid, uid)) {
+                && !hasNetworkFactoryOrSettingsPermission(pid, uid)) {
             nc.setUnderlyingNetworks(null);
         }
     }
 
     private boolean canSeeAllowedUids(final int pid, final int uid, final int netOwnerUid) {
         return Process.SYSTEM_UID == uid
-                || checkAnyPermissionOf(mContext, pid, uid,
+                || netOwnerUid == uid
+                || hasAnyPermissionOf(mContext, pid, uid,
                         android.Manifest.permission.NETWORK_FACTORY);
     }
 
@@ -2699,21 +2783,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // it happens for some reason (e.g. the package is uninstalled while CS is trying to
         // send the callback) it would crash the system server with NPE.
         final NetworkCapabilities newNc = new NetworkCapabilities(nc);
-        if (!checkSettingsPermission(callerPid, callerUid)) {
+        if (!hasSettingsPermission(callerPid, callerUid)) {
             newNc.setUids(null);
             newNc.setSSID(null);
         }
         if (newNc.getNetworkSpecifier() != null) {
             newNc.setNetworkSpecifier(newNc.getNetworkSpecifier().redact());
         }
-        if (!checkAnyPermissionOf(mContext, callerPid, callerUid,
+        if (!hasAnyPermissionOf(mContext, callerPid, callerUid,
                 android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)) {
             newNc.setAdministratorUids(new int[0]);
         }
         if (!canSeeAllowedUids(callerPid, callerUid, newNc.getOwnerUid())) {
             newNc.setAllowedUids(new ArraySet<>());
-            newNc.setSubscriptionIds(Collections.emptySet());
         }
         redactUnderlyingNetworksForCapabilities(newNc, callerPid, callerUid);
 
@@ -2774,11 +2857,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
          * Returns whether the app holds local mac address permission or not (might return cached
          * result if the permission was already checked before).
          */
+        @CheckResult
         public boolean hasLocalMacAddressPermission() {
             if (mHasLocalMacAddressPermission == null) {
                 // If there is no cached result, perform the check now.
-                mHasLocalMacAddressPermission =
-                        checkLocalMacAddressPermission(mCallingPid, mCallingUid);
+                mHasLocalMacAddressPermission = ConnectivityService.this
+                        .hasLocalMacAddressPermission(mCallingPid, mCallingUid);
             }
             return mHasLocalMacAddressPermission;
         }
@@ -2787,10 +2871,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
          * Returns whether the app holds settings permission or not (might return cached
          * result if the permission was already checked before).
          */
+        @CheckResult
         public boolean hasSettingsPermission() {
             if (mHasSettingsPermission == null) {
                 // If there is no cached result, perform the check now.
-                mHasSettingsPermission = checkSettingsPermission(mCallingPid, mCallingUid);
+                mHasSettingsPermission =
+                        ConnectivityService.this.hasSettingsPermission(mCallingPid, mCallingUid);
             }
             return mHasSettingsPermission;
         }
@@ -2894,7 +2980,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return new LinkProperties(lp);
         }
 
-        if (checkSettingsPermission(callerPid, callerUid)) {
+        if (hasSettingsPermission(callerPid, callerUid)) {
             return new LinkProperties(lp, true /* parcelSensitiveFields */);
         }
 
@@ -2910,7 +2996,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             int callerUid, String callerPackageName) {
         // There is no need to track the effective UID of the request here. If the caller
         // lacks the settings permission, the effective UID is the same as the calling ID.
-        if (!checkSettingsPermission()) {
+        if (!hasSettingsPermission()) {
             // Unprivileged apps can only pass in null or their own UID.
             if (nc.getUids() == null) {
                 // If the caller passes in null, the callback will also match networks that do not
@@ -2936,6 +3022,23 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (!mPermissionMonitor.hasUseBackgroundNetworksPermission(mDeps.getCallingUid())) {
             nc.addCapability(NET_CAPABILITY_FOREGROUND);
         }
+    }
+
+    private void maybeDisableLocalNetworkMatching(NetworkCapabilities nc, int callingUid) {
+        if (mDeps.isChangeEnabled(ENABLE_MATCH_LOCAL_NETWORK, callingUid)) {
+            return;
+        }
+        // If NET_CAPABILITY_LOCAL_NETWORK is not added to capability, request should not be
+        // satisfied by local networks.
+        if (!nc.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)) {
+            nc.addForbiddenCapability(NET_CAPABILITY_LOCAL_NETWORK);
+        }
+    }
+
+    private void restrictRequestNetworkCapabilitiesForCaller(NetworkCapabilities nc,
+            int callingUid, String callerPackageName) {
+        restrictRequestUidsForCallerAndSetRequestorInfo(nc, callingUid, callerPackageName);
+        maybeDisableLocalNetworkMatching(nc, callingUid);
     }
 
     @Override
@@ -3021,26 +3124,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return false;
     }
 
-    private int getAppUid(final String app, final UserHandle user) {
-        final PackageManager pm =
-                mContext.createContextAsUser(user, 0 /* flags */).getPackageManager();
-        final long token = Binder.clearCallingIdentity();
-        try {
-            return pm.getPackageUid(app, 0 /* flags */);
-        } catch (PackageManager.NameNotFoundException e) {
-            return -1;
-        } finally {
-            Binder.restoreCallingIdentity(token);
-        }
-    }
-
-    private void verifyCallingUidAndPackage(String packageName, int callingUid) {
-        final UserHandle user = UserHandle.getUserHandleForUid(callingUid);
-        if (getAppUid(packageName, user) != callingUid) {
-            throw new SecurityException(packageName + " does not belong to uid " + callingUid);
-        }
-    }
-
     /**
      * Ensure that a network route exists to deliver traffic to the specified
      * host via the specified network interface.
@@ -3056,7 +3139,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         if (disallowedBecauseSystemCaller()) {
             return false;
         }
-        verifyCallingUidAndPackage(callingPackageName, mDeps.getCallingUid());
+        PermissionUtils.enforcePackageNameMatchesUid(
+                mContext, mDeps.getCallingUid(), callingPackageName);
         enforceChangePermission(callingPackageName, callingAttributionTag);
         if (mProtectedNetworks.contains(networkType)) {
             enforceConnectivityRestrictedNetworksPermission(true /* checkUidsAllowedList */);
@@ -3369,7 +3453,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public static final String ALLOW_SYSUI_CONNECTIVITY_REPORTS =
             "allow_sysui_connectivity_reports";
 
-    public static final String LOG_BPF_RC = "log_bpf_rc_force_disable";
+    public static final String ALLOW_SATALLITE_NETWORK_FALLBACK =
+            "allow_satallite_network_fallback";
 
     private void enforceInternetPermission() {
         mContext.enforceCallingOrSelfPermission(
@@ -3383,7 +3468,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 "ConnectivityService");
     }
 
-    private boolean checkAccessPermission(int pid, int uid) {
+    @CheckResult
+    private boolean hasAccessPermission(int pid, int uid) {
         return mContext.checkPermission(android.Manifest.permission.ACCESS_NETWORK_STATE, pid, uid)
                 == PERMISSION_GRANTED;
     }
@@ -3469,7 +3555,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
-    private boolean checkNetworkFactoryOrSettingsPermission(int pid, int uid) {
+    @CheckResult
+    private boolean hasNetworkFactoryOrSettingsPermission(int pid, int uid) {
         return PERMISSION_GRANTED == mContext.checkPermission(
                 android.Manifest.permission.NETWORK_FACTORY, pid, uid)
                 || PERMISSION_GRANTED == mContext.checkPermission(
@@ -3479,13 +3566,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 || UserHandle.getAppId(uid) == Process.BLUETOOTH_UID;
     }
 
-    private boolean checkSettingsPermission() {
-        return PermissionUtils.checkAnyPermissionOf(mContext,
-                android.Manifest.permission.NETWORK_SETTINGS,
+    @CheckResult
+    private boolean hasSettingsPermission() {
+        return hasAnyPermissionOf(mContext, android.Manifest.permission.NETWORK_SETTINGS,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
-    private boolean checkSettingsPermission(int pid, int uid) {
+    @CheckResult
+    private boolean hasSettingsPermission(int pid, int uid) {
         return PERMISSION_GRANTED == mContext.checkPermission(
                 android.Manifest.permission.NETWORK_SETTINGS, pid, uid)
                 || PERMISSION_GRANTED == mContext.checkPermission(
@@ -3522,33 +3610,36 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 "ConnectivityService");
     }
 
-    private boolean checkNetworkStackPermission() {
-        return PermissionUtils.checkAnyPermissionOf(mContext,
-                android.Manifest.permission.NETWORK_STACK,
+    @CheckResult
+    private boolean hasNetworkStackPermission() {
+        return hasAnyPermissionOf(mContext, android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
-    private boolean checkNetworkStackPermission(int pid, int uid) {
-        return checkAnyPermissionOf(mContext, pid, uid,
-                android.Manifest.permission.NETWORK_STACK,
+    @CheckResult
+    private boolean hasNetworkStackPermission(int pid, int uid) {
+        return hasAnyPermissionOf(mContext, pid, uid, android.Manifest.permission.NETWORK_STACK,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
     }
 
-    private boolean checkSystemBarServicePermission(int pid, int uid) {
-        return checkAnyPermissionOf(mContext, pid, uid,
+    @CheckResult
+    private boolean hasSystemBarServicePermission(int pid, int uid) {
+        return hasAnyPermissionOf(mContext, pid, uid,
                 android.Manifest.permission.STATUS_BAR_SERVICE);
     }
 
-    private boolean checkNetworkSignalStrengthWakeupPermission(int pid, int uid) {
-        return checkAnyPermissionOf(mContext, pid, uid,
+    @CheckResult
+    private boolean hasNetworkSignalStrengthWakeupPermission(int pid, int uid) {
+        return hasAnyPermissionOf(mContext, pid, uid,
                 android.Manifest.permission.NETWORK_SIGNAL_STRENGTH_WAKEUP,
                 NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK,
                 android.Manifest.permission.NETWORK_SETTINGS);
     }
 
-    private boolean checkConnectivityRestrictedNetworksPermission(int callingUid,
+    @CheckResult
+    private boolean hasConnectivityRestrictedNetworksPermission(int callingUid,
             boolean checkUidsAllowedList) {
-        if (PermissionUtils.checkAnyPermissionOf(mContext,
+        if (hasAnyPermissionOf(mContext,
                 android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS)) {
             return true;
         }
@@ -3556,8 +3647,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // fallback to ConnectivityInternalPermission
         // TODO: Remove this fallback check after all apps have declared
         //  CONNECTIVITY_USE_RESTRICTED_NETWORKS.
-        if (PermissionUtils.checkAnyPermissionOf(mContext,
-                android.Manifest.permission.CONNECTIVITY_INTERNAL)) {
+        if (hasAnyPermissionOf(mContext, android.Manifest.permission.CONNECTIVITY_INTERNAL)) {
             return true;
         }
 
@@ -3571,7 +3661,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private void enforceConnectivityRestrictedNetworksPermission(boolean checkUidsAllowedList) {
         final int callingUid = mDeps.getCallingUid();
-        if (!checkConnectivityRestrictedNetworksPermission(callingUid, checkUidsAllowedList)) {
+        if (!hasConnectivityRestrictedNetworksPermission(callingUid, checkUidsAllowedList)) {
             throw new SecurityException("ConnectivityService: user " + callingUid
                     + " has no permission to access restricted network.");
         }
@@ -3581,7 +3671,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mContext.enforceCallingOrSelfPermission(KeepaliveTracker.PERMISSION, "ConnectivityService");
     }
 
-    private boolean checkLocalMacAddressPermission(int pid, int uid) {
+    @CheckResult
+    private boolean hasLocalMacAddressPermission(int pid, int uid) {
         return PERMISSION_GRANTED == mContext.checkPermission(
                 Manifest.permission.LOCAL_MAC_ADDRESS, pid, uid);
     }
@@ -3731,6 +3822,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
             updateMobileDataPreferredUids();
         }
 
+        if (mSatelliteAccessController != null) {
+            mSatelliteAccessController.start();
+        }
+
+        if (mCarrierPrivilegeAuthenticator != null) {
+            mCarrierPrivilegeAuthenticator.start();
+        }
+
         // On T+ devices, register callback for statsd to pull NETWORK_BPF_MAP_INFO atom
         if (mDeps.isAtLeastT()) {
             mBpfNetMaps.setPullAtomCallback(mContext);
@@ -3875,12 +3974,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     protected void dump(@NonNull FileDescriptor fd, @NonNull PrintWriter writer,
             @Nullable String[] args) {
-        if (!checkDumpPermission(mContext, TAG, writer)) return;
+        if (!hasDumpPermission(mContext, TAG, writer)) return;
 
         mPriorityDumper.dump(fd, writer, args);
     }
 
-    private boolean checkDumpPermission(Context context, String tag, PrintWriter pw) {
+    @CheckResult
+    private boolean hasDumpPermission(Context context, String tag, PrintWriter pw) {
         if (context.checkCallingOrSelfPermission(android.Manifest.permission.DUMP)
                 != PackageManager.PERMISSION_GRANTED) {
             pw.println("Permission Denial: can't dump " + tag + " from from pid="
@@ -4051,6 +4151,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.increaseIndent();
         mNetworkActivityTracker.dump(pw);
         pw.decreaseIndent();
+
+        pw.println();
+        pw.println("Multicast routing supported: " +
+                (mMulticastRoutingCoordinatorService != null));
+
+        pw.println();
+        pw.println("Background firewall chain enabled: " + mBackgroundFirewallChainEnabled);
     }
 
     private void dumpNetworks(IndentingPrintWriter pw) {
@@ -5192,9 +5299,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private void removeLocalNetworkUpstream(@NonNull final NetworkAgentInfo localAgent,
             @NonNull final NetworkAgentInfo upstream) {
         try {
+            final String localNetworkInterfaceName = localAgent.linkProperties.getInterfaceName();
+            final String upstreamNetworkInterfaceName = upstream.linkProperties.getInterfaceName();
             mRoutingCoordinatorService.removeInterfaceForward(
-                    localAgent.linkProperties.getInterfaceName(),
-                    upstream.linkProperties.getInterfaceName());
+                    localNetworkInterfaceName,
+                    upstreamNetworkInterfaceName);
+            disableMulticastRouting(localNetworkInterfaceName, upstreamNetworkInterfaceName);
         } catch (RemoteException e) {
             loge("Couldn't remove interface forward for "
                     + localAgent.linkProperties.getInterfaceName() + " to "
@@ -5244,6 +5354,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // was is being disconnected the callbacks have already been sent, and if it is being
         // destroyed pending replacement they will be sent when it is disconnected.
         maybeDisableForwardRulesForDisconnectingNai(nai, false /* sendCallbacks */);
+        updateIngressToVpnAddressFiltering(null, nai.linkProperties, nai);
         try {
             mNetd.networkDestroy(nai.network.getNetId());
         } catch (RemoteException | ServiceSpecificException e) {
@@ -5303,6 +5414,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     callingUid, caps);
         }
         return false;
+    }
+
+    private int getSubscriptionIdFromNetworkCaps(@NonNull final NetworkCapabilities caps) {
+        if (mCarrierPrivilegeAuthenticator != null) {
+            return mCarrierPrivilegeAuthenticator.getSubIdFromNetworkCapabilities(caps);
+        }
+        return SubscriptionManager.INVALID_SUBSCRIPTION_ID;
     }
 
     private void handleRegisterNetworkRequestWithIntent(@NonNull final Message msg) {
@@ -5690,7 +5808,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     }
 
     private RequestInfoPerUidCounter getRequestCounter(NetworkRequestInfo nri) {
-        return checkAnyPermissionOf(mContext,
+        return hasAnyPermissionOf(mContext,
                 nri.mPid, nri.mUid, NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK)
                 ? mSystemNetworkRequestCounter : mNetworkRequestCounter;
     }
@@ -5914,7 +6032,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (nm == null) return;
 
             if (request == CaptivePortal.APP_REQUEST_REEVALUATION_REQUIRED) {
-                checkNetworkStackPermission();
+                // This enforceNetworkStackPermission() should be adopted to check
+                // the required permission but this may be break OEM captive portal
+                // apps. Simply ignore the request if the caller does not have
+                // permission.
+                if (!hasNetworkStackPermission()) {
+                    Log.e(TAG, "Calling appRequest() without proper permission. Skip");
+                    return;
+                }
+
                 nm.forceReevaluation(mDeps.getCallingUid());
             }
         }
@@ -5944,7 +6070,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * @see MultinetworkPolicyTracker#getAvoidBadWifi()
      */
     public boolean shouldAvoidBadWifi() {
-        if (!checkNetworkStackPermission()) {
+        if (!hasNetworkStackPermission()) {
             throw new SecurityException("avoidBadWifi requires NETWORK_STACK permission");
         }
         return avoidBadWifi();
@@ -6313,10 +6439,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     if (!networkFound) return;
 
                     if (underpinnedNetworkFound) {
-                        final NetworkCapabilities underpinnedNc =
-                                getNetworkCapabilitiesInternal(underpinnedNetwork);
                         mKeepaliveTracker.handleMonitorAutomaticKeepalive(ki,
-                                underpinnedNetwork.netId, underpinnedNc.getUids());
+                                underpinnedNetwork.netId);
                     } else {
                         // If no underpinned network, then make sure the keepalive is running.
                         mKeepaliveTracker.handleMaybeResumeKeepalive(ki);
@@ -7466,20 +7590,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
     // specific SSID/SignalStrength, or the calling app has permission to do so.
     private void ensureSufficientPermissionsForRequest(NetworkCapabilities nc,
             int callerPid, int callerUid, String callerPackageName) {
-        if (null != nc.getSsid() && !checkSettingsPermission(callerPid, callerUid)) {
+        if (null != nc.getSsid() && !hasSettingsPermission(callerPid, callerUid)) {
             throw new SecurityException("Insufficient permissions to request a specific SSID");
         }
 
         if (nc.hasSignalStrength()
-                && !checkNetworkSignalStrengthWakeupPermission(callerPid, callerUid)) {
+                && !hasNetworkSignalStrengthWakeupPermission(callerPid, callerUid)) {
             throw new SecurityException(
                     "Insufficient permissions to request a specific signal strength");
         }
         mAppOpsManager.checkPackage(callerUid, callerPackageName);
-
-        if (!nc.getSubscriptionIds().isEmpty()) {
-            enforceNetworkFactoryPermission();
-        }
     }
 
     private int[] getSignalStrengthThresholds(@NonNull final NetworkAgentInfo nai) {
@@ -7569,7 +7689,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             int reqTypeInt, Messenger messenger, int timeoutMs, final IBinder binder,
             int legacyType, int callbackFlags, @NonNull String callingPackageName,
             @Nullable String callingAttributionTag) {
-        if (legacyType != TYPE_NONE && !checkNetworkStackPermission()) {
+        if (legacyType != TYPE_NONE && !hasNetworkStackPermission()) {
             if (isTargetSdkAtleast(Build.VERSION_CODES.M, mDeps.getCallingUid(),
                     callingPackageName)) {
                 throw new SecurityException("Insufficient permissions to specify legacy type");
@@ -7613,10 +7733,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 //  the state of the app when the request is filed, but we never change the
                 //  request if the app changes network state. http://b/29964605
                 enforceMeteredApnPolicy(networkCapabilities);
+                maybeDisableLocalNetworkMatching(networkCapabilities, callingUid);
                 break;
             case LISTEN_FOR_BEST:
                 enforceAccessPermission();
                 networkCapabilities = new NetworkCapabilities(networkCapabilities);
+                maybeDisableLocalNetworkMatching(networkCapabilities, callingUid);
                 break;
             default:
                 throw new IllegalArgumentException("Unsupported request type " + reqType);
@@ -7703,7 +7825,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final UserHandle user = UserHandle.getUserHandleForUid(callingUid);
         // Only run the check if the change is enabled.
         if (!mDeps.isChangeEnabled(
-                ConnectivityCompatChanges.ENABLE_SELF_CERTIFIED_CAPABILITIES_DECLARATION,
+                ENABLE_SELF_CERTIFIED_CAPABILITIES_DECLARATION,
                 callingPackageName, user)) {
             return false;
         }
@@ -7759,6 +7881,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
         applicationNetworkCapabilities.enforceSelfCertifiedNetworkCapabilitiesDeclared(
                 networkCapabilities);
     }
+
+    private boolean canRequestRestrictedNetworkDueToCarrierPrivileges(
+            NetworkCapabilities networkCapabilities, int callingUid) {
+        if (mRequestRestrictedWifiEnabled) {
+            // For U+ devices, callers with carrier privilege could request restricted networks
+            // with CBS capabilities, or any restricted WiFi networks.
+            return ((networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CBS)
+                || networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
+                && hasCarrierPrivilegeForNetworkCaps(callingUid, networkCapabilities));
+        } else {
+            // For T+ devices, callers with carrier privilege could request with CBS
+            // capabilities.
+            return (networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CBS)
+                && hasCarrierPrivilegeForNetworkCaps(callingUid, networkCapabilities));
+        }
+    }
     private void enforceNetworkRequestPermissions(NetworkCapabilities networkCapabilities,
             String callingPackageName, String callingAttributionTag, final int callingUid) {
         if (shouldCheckCapabilitiesDeclaration(networkCapabilities, callingUid,
@@ -7766,13 +7904,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
             enforceRequestCapabilitiesDeclaration(callingPackageName, networkCapabilities,
                     callingUid);
         }
-        if (networkCapabilities.hasCapability(NET_CAPABILITY_NOT_RESTRICTED) == false) {
-            // For T+ devices, callers with carrier privilege could request with CBS capabilities.
-            if (networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_CBS)
-                    && hasCarrierPrivilegeForNetworkCaps(callingUid, networkCapabilities)) {
-                return;
+        if (!networkCapabilities.hasCapability(NET_CAPABILITY_NOT_RESTRICTED)) {
+            if (!canRequestRestrictedNetworkDueToCarrierPrivileges(
+                    networkCapabilities, callingUid)) {
+                enforceConnectivityRestrictedNetworksPermission(true /* checkUidsAllowedList */);
             }
-            enforceConnectivityRestrictedNetworksPermission(true /* checkUidsAllowedList */);
         } else {
             enforceChangePermission(callingPackageName, callingAttributionTag);
         }
@@ -7841,8 +7977,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         ensureRequestableCapabilities(networkCapabilities);
         ensureSufficientPermissionsForRequest(networkCapabilities,
                 Binder.getCallingPid(), callingUid, callingPackageName);
-        restrictRequestUidsForCallerAndSetRequestorInfo(networkCapabilities,
-                callingUid, callingPackageName);
+        restrictRequestNetworkCapabilitiesForCaller(
+                networkCapabilities, callingUid, callingPackageName);
 
         NetworkRequest networkRequest = new NetworkRequest(networkCapabilities, TYPE_NONE,
                 nextNetworkRequestId(), NetworkRequest.Type.REQUEST);
@@ -7902,7 +8038,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         NetworkCapabilities nc = new NetworkCapabilities(networkCapabilities);
         ensureSufficientPermissionsForRequest(networkCapabilities,
                 Binder.getCallingPid(), callingUid, callingPackageName);
-        restrictRequestUidsForCallerAndSetRequestorInfo(nc, callingUid, callingPackageName);
+        restrictRequestNetworkCapabilitiesForCaller(nc, callingUid, callingPackageName);
         // Apps without the CHANGE_NETWORK_STATE permission can't use background networks, so
         // make all their listens include NET_CAPABILITY_FOREGROUND. That way, they will get
         // onLost and onAvailable callbacks when networks move in and out of the background.
@@ -7935,7 +8071,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         ensureSufficientPermissionsForRequest(networkCapabilities,
                 Binder.getCallingPid(), callingUid, callingPackageName);
         final NetworkCapabilities nc = new NetworkCapabilities(networkCapabilities);
-        restrictRequestUidsForCallerAndSetRequestorInfo(nc, callingUid, callingPackageName);
+        restrictRequestNetworkCapabilitiesForCaller(nc, callingUid, callingPackageName);
 
         NetworkRequest networkRequest = new NetworkRequest(nc, TYPE_NONE, nextNetworkRequestId(),
                 NetworkRequest.Type.LISTEN);
@@ -8566,6 +8702,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // new interface (the interface name -> index map becomes initialized)
         updateVpnFiltering(newLp, oldLp, networkAgent);
 
+        updateIngressToVpnAddressFiltering(newLp, oldLp, networkAgent);
+
         updateMtu(newLp, oldLp);
         // TODO - figure out what to do for clat
 //        for (LinkProperties lp : newLp.getStackedLinks()) {
@@ -8857,6 +8995,87 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    /**
+     * Returns ingress discard rules to drop packets to VPN addresses ingressing via non-VPN
+     * interfaces.
+     * Ingress discard rule is added to the address iff
+     *   1. The address is not a link local address
+     *   2. The address is used by a single VPN interface and not used by any other
+     *      interfaces even non-VPN ones
+     * This method can be called during network disconnects, when nai has already been removed from
+     * mNetworkAgentInfos.
+     *
+     * @param nai This method generates rules assuming lp of this nai is the lp at the second
+     *            argument.
+     * @param lp  This method generates rules assuming lp of nai at the first argument is this lp.
+     *            Caller passes old lp to generate old rules and new lp to generate new rules.
+     * @return    ingress discard rules. Set of pairs of addresses and interface names
+     */
+    private Set<Pair<InetAddress, String>> generateIngressDiscardRules(
+            @NonNull final NetworkAgentInfo nai, @Nullable final LinkProperties lp) {
+        Set<NetworkAgentInfo> nais = new ArraySet<>(mNetworkAgentInfos);
+        nais.add(nai);
+        // Determine how many networks each IP address is currently configured on.
+        // Ingress rules are added only for IP addresses that are configured on single interface.
+        final Map<InetAddress, Integer> addressOwnerCounts = new ArrayMap<>();
+        for (final NetworkAgentInfo agent : nais) {
+            if (agent.isDestroyed()) {
+                continue;
+            }
+            final LinkProperties agentLp = (nai == agent) ? lp : agent.linkProperties;
+            if (agentLp == null) {
+                continue;
+            }
+            for (final InetAddress addr: agentLp.getAllAddresses()) {
+                addressOwnerCounts.put(addr, addressOwnerCounts.getOrDefault(addr, 0) + 1);
+            }
+        }
+
+        // Iterates all networks instead of only generating rule for nai that was passed in since
+        // lp of the nai change could cause/resolve address collision and result in affecting rule
+        // for different network.
+        final Set<Pair<InetAddress, String>> ingressDiscardRules = new ArraySet<>();
+        for (final NetworkAgentInfo agent : nais) {
+            if (!agent.isVPN() || agent.isDestroyed()) {
+                continue;
+            }
+            final LinkProperties agentLp = (nai == agent) ? lp : agent.linkProperties;
+            if (agentLp == null || agentLp.getInterfaceName() == null) {
+                continue;
+            }
+
+            for (final InetAddress addr: agentLp.getAllAddresses()) {
+                if (addressOwnerCounts.get(addr) == 1 && !addr.isLinkLocalAddress()) {
+                    ingressDiscardRules.add(new Pair<>(addr, agentLp.getInterfaceName()));
+                }
+            }
+        }
+        return ingressDiscardRules;
+    }
+
+    private void updateIngressToVpnAddressFiltering(@Nullable LinkProperties newLp,
+            @Nullable LinkProperties oldLp, @NonNull NetworkAgentInfo nai) {
+        // Having isAtleastT to avoid NewApi linter error (b/303382209)
+        if (!mIngressToVpnAddressFiltering || !mDeps.isAtLeastT()) {
+            return;
+        }
+        final CompareOrUpdateResult<InetAddress, Pair<InetAddress, String>> ruleDiff =
+                new CompareOrUpdateResult<>(
+                        generateIngressDiscardRules(nai, oldLp),
+                        generateIngressDiscardRules(nai, newLp),
+                        (rule) -> rule.first);
+        for (Pair<InetAddress, String> rule: ruleDiff.removed) {
+            mBpfNetMaps.removeIngressDiscardRule(rule.first);
+        }
+        for (Pair<InetAddress, String> rule: ruleDiff.added) {
+            mBpfNetMaps.setIngressDiscardRule(rule.first, rule.second);
+        }
+        // setIngressDiscardRule overrides the existing rule
+        for (Pair<InetAddress, String> rule: ruleDiff.updated) {
+            mBpfNetMaps.setIngressDiscardRule(rule.first, rule.second);
+        }
+    }
+
     private void updateWakeOnLan(@NonNull LinkProperties lp) {
         if (mWolSupportedInterfaces == null) {
             mWolSupportedInterfaces = new ArraySet<>(mResources.get().getStringArray(
@@ -9039,6 +9258,43 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    private void handleUidCarrierPrivilegesLost(int uid, int subId) {
+        if (!mRequestRestrictedWifiEnabled) {
+            return;
+        }
+        ensureRunningOnConnectivityServiceThread();
+        // A NetworkRequest needs to be revoked when all the conditions are met
+        //   1. It requests restricted network
+        //   2. The requestor uid matches the uid with the callback
+        //   3. The app doesn't have Carrier Privileges
+        //   4. The app doesn't have permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS
+        for (final NetworkRequest nr : mNetworkRequests.keySet()) {
+            if (nr.isRequest()
+                    && !nr.hasCapability(NET_CAPABILITY_NOT_RESTRICTED)
+                    && nr.getRequestorUid() == uid
+                    && getSubscriptionIdFromNetworkCaps(nr.networkCapabilities) == subId
+                    && !hasConnectivityRestrictedNetworksPermission(uid, true)) {
+                declareNetworkRequestUnfulfillable(nr);
+            }
+        }
+
+        // A NetworkAgent's allowedUids may need to be updated if the app has lost
+        // carrier config
+        for (final NetworkAgentInfo nai : mNetworkAgentInfos) {
+            if (nai.networkCapabilities.getAllowedUidsNoCopy().contains(uid)
+                    && getSubscriptionIdFromNetworkCaps(nai.networkCapabilities) == subId) {
+                final NetworkCapabilities nc = new NetworkCapabilities(nai.networkCapabilities);
+                NetworkAgentInfo.restrictCapabilitiesFromNetworkAgent(
+                        nc,
+                        uid,
+                        false /* hasAutomotiveFeature (irrelevant) */,
+                        mDeps,
+                        mCarrierPrivilegeAuthenticator);
+                updateCapabilities(nai.getScore(), nai, nc);
+            }
+        }
+    }
+
     /**
      * Update the NetworkCapabilities for {@code nai} to {@code nc}. Specifically:
      *
@@ -9116,6 +9372,71 @@ public class ConnectivityService extends IConnectivityManager.Stub
         updateCapabilities(nai.getScore(), nai, nai.networkCapabilities);
     }
 
+    private void maybeApplyMulticastRoutingConfig(@NonNull final NetworkAgentInfo nai,
+            final LocalNetworkConfig oldConfig,
+            final LocalNetworkConfig newConfig) {
+        final MulticastRoutingConfig oldUpstreamConfig =
+                oldConfig == null ? MulticastRoutingConfig.CONFIG_FORWARD_NONE :
+                        oldConfig.getUpstreamMulticastRoutingConfig();
+        final MulticastRoutingConfig oldDownstreamConfig =
+                oldConfig == null ? MulticastRoutingConfig.CONFIG_FORWARD_NONE :
+                        oldConfig.getDownstreamMulticastRoutingConfig();
+        final MulticastRoutingConfig newUpstreamConfig =
+                newConfig == null ? MulticastRoutingConfig.CONFIG_FORWARD_NONE :
+                        newConfig.getUpstreamMulticastRoutingConfig();
+        final MulticastRoutingConfig newDownstreamConfig =
+                newConfig == null ? MulticastRoutingConfig.CONFIG_FORWARD_NONE :
+                        newConfig.getDownstreamMulticastRoutingConfig();
+
+        if (oldUpstreamConfig.equals(newUpstreamConfig) &&
+            oldDownstreamConfig.equals(newDownstreamConfig)) {
+            return;
+        }
+
+        final String downstreamNetworkName = nai.linkProperties.getInterfaceName();
+        final LocalNetworkInfo lni = localNetworkInfoForNai(nai);
+        final Network upstreamNetwork = lni.getUpstreamNetwork();
+
+        if (upstreamNetwork != null) {
+            final String upstreamNetworkName =
+                    getLinkProperties(upstreamNetwork).getInterfaceName();
+            applyMulticastRoutingConfig(downstreamNetworkName, upstreamNetworkName, newConfig);
+        }
+    }
+
+    private void applyMulticastRoutingConfig(@NonNull String localNetworkInterfaceName,
+            @NonNull String upstreamNetworkInterfaceName,
+            @NonNull final LocalNetworkConfig config) {
+        if (mMulticastRoutingCoordinatorService == null) {
+            if (config.getDownstreamMulticastRoutingConfig().getForwardingMode() != FORWARD_NONE ||
+                config.getUpstreamMulticastRoutingConfig().getForwardingMode() != FORWARD_NONE) {
+                loge("Multicast routing is not supported, failed to configure " + config
+                        + " for " + localNetworkInterfaceName + " to "
+                        +  upstreamNetworkInterfaceName);
+            }
+            return;
+        }
+
+        mMulticastRoutingCoordinatorService.applyMulticastRoutingConfig(localNetworkInterfaceName,
+                upstreamNetworkInterfaceName, config.getUpstreamMulticastRoutingConfig());
+        mMulticastRoutingCoordinatorService.applyMulticastRoutingConfig
+                (upstreamNetworkInterfaceName, localNetworkInterfaceName,
+                        config.getDownstreamMulticastRoutingConfig());
+    }
+
+    private void disableMulticastRouting(@NonNull String localNetworkInterfaceName,
+            @NonNull String upstreamNetworkInterfaceName) {
+        if (mMulticastRoutingCoordinatorService == null) {
+            return;
+        }
+
+        mMulticastRoutingCoordinatorService.applyMulticastRoutingConfig(localNetworkInterfaceName,
+                upstreamNetworkInterfaceName, MulticastRoutingConfig.CONFIG_FORWARD_NONE);
+        mMulticastRoutingCoordinatorService.applyMulticastRoutingConfig
+                (upstreamNetworkInterfaceName, localNetworkInterfaceName,
+                        MulticastRoutingConfig.CONFIG_FORWARD_NONE);
+    }
+
     // oldConfig is null iff this is the original registration of the local network config
     private void handleUpdateLocalNetworkConfig(@NonNull final NetworkAgentInfo nai,
             @Nullable final LocalNetworkConfig oldConfig,
@@ -9129,7 +9450,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
             Log.v(TAG, "Update local network config " + nai.network.netId + " : " + newConfig);
         }
         final LocalNetworkConfig.Builder configBuilder = new LocalNetworkConfig.Builder();
-        // TODO : apply the diff for multicast routing.
         configBuilder.setUpstreamMulticastRoutingConfig(
                 newConfig.getUpstreamMulticastRoutingConfig());
         configBuilder.setDownstreamMulticastRoutingConfig(
@@ -9188,6 +9508,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             configBuilder.setUpstreamSelector(oldRequest);
             nai.localNetworkConfig = configBuilder.build();
         }
+        maybeApplyMulticastRoutingConfig(nai, oldConfig, newConfig);
     }
 
     /**
@@ -9421,7 +9742,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final ArraySet<Integer> toAdd = new ArraySet<>(newUids);
         toRemove.removeAll(newUids);
         toAdd.removeAll(prevUids);
-
         try {
             if (!toAdd.isEmpty()) {
                 mNetd.networkAddUidRangesParcel(new NativeUidRangeConfig(
@@ -10187,6 +10507,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     if (null != change.mOldNetwork) {
                         mRoutingCoordinatorService.removeInterfaceForward(fromIface,
                                 change.mOldNetwork.linkProperties.getInterfaceName());
+                        disableMulticastRouting(fromIface,
+                                change.mOldNetwork.linkProperties.getInterfaceName());
                     }
                     // If the new upstream is already destroyed, there is no point in setting up
                     // a forward (in fact, it might forward to the interface for some new network !)
@@ -10195,6 +10517,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     if (null != change.mNewNetwork && !change.mNewNetwork.isDestroyed()) {
                         mRoutingCoordinatorService.addInterfaceForward(fromIface,
                                 change.mNewNetwork.linkProperties.getInterfaceName());
+                        applyMulticastRoutingConfig(fromIface,
+                                change.mNewNetwork.linkProperties.getInterfaceName(),
+                                nai.localNetworkConfig);
                     }
                 } catch (final RemoteException e) {
                     loge("Can't update forwarding rules", e);
@@ -11062,17 +11387,28 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 err.getFileDescriptor(), args);
     }
 
-    private Boolean parseBooleanArgument(final String arg) {
-        if ("true".equals(arg)) {
-            return true;
-        } else if ("false".equals(arg)) {
-            return false;
-        } else {
-            return null;
-        }
-    }
-
     private class ShellCmd extends BasicShellCommandHandler {
+
+        private Boolean parseBooleanArgument(final String arg) {
+            if ("true".equals(arg)) {
+                return true;
+            } else if ("false".equals(arg)) {
+                return false;
+            } else {
+                getOutPrintWriter().println("Invalid boolean argument: " + arg);
+                return null;
+            }
+        }
+
+        private Integer parseIntegerArgument(final String arg) {
+            try {
+                return Integer.valueOf(arg);
+            } catch (NumberFormatException ne) {
+                getOutPrintWriter().println("Invalid integer argument: " + arg);
+                return null;
+            }
+        }
+
         @Override
         public int onCommand(String cmd) {
             if (cmd == null) {
@@ -11149,6 +11485,38 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         }
                         return 0;
                     }
+                    case "set-background-networking-enabled-for-uid": {
+                        final Integer uid = parseIntegerArgument(getNextArg());
+                        final Boolean enabled = parseBooleanArgument(getNextArg());
+                        if (null == enabled || null == uid) {
+                            onHelp();
+                            return -1;
+                        }
+                        final int rule = enabled ? FIREWALL_RULE_ALLOW : FIREWALL_RULE_DEFAULT;
+                        setUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, uid, rule);
+                        final String msg = (enabled ? "Enabled" : "Disabled")
+                                + " background networking for  uid " + uid;
+                        Log.i(TAG, msg);
+                        pw.println(msg);
+                        return 0;
+                    }
+                    case "get-background-networking-enabled-for-uid": {
+                        final Integer uid = parseIntegerArgument(getNextArg());
+                        if (null == uid) {
+                            onHelp();
+                            return -1;
+                        }
+                        final int rule = getUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, uid);
+                        if (FIREWALL_RULE_ALLOW == rule) {
+                            pw.println(uid + ": allow");
+                        } else if (FIREWALL_RULE_DENY == rule  || FIREWALL_RULE_DEFAULT == rule) {
+                            pw.println(uid + ": deny");
+                        } else {
+                            throw new IllegalStateException(
+                                    "Unknown rule " + rule + " for uid " + uid);
+                        }
+                        return 0;
+                    }
                     case "reevaluate":
                         // Usage : adb shell cmd connectivity reevaluate <netId>
                         // If netId is omitted, then reevaluate the default network
@@ -11209,6 +11577,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     + "    no effect if the chain is disabled.");
             pw.println("  get-package-networking-enabled [package name]");
             pw.println("    Get the deny bit in FIREWALL_CHAIN_OEM_DENY_3 for package.");
+            pw.println("  set-background-networking-enabled-for-uid [uid] [true|false]");
+            pw.println("    Set the allow bit in FIREWALL_CHAIN_BACKGROUND for the given uid.");
+            pw.println("  get-background-networking-enabled-for-uid [uid]");
+            pw.println("    Get the allow bit in FIREWALL_CHAIN_BACKGROUND for the given uid.");
         }
     }
 
@@ -11249,7 +11621,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         // Connection owner UIDs are visible only to the network stack and to the VpnService-based
         // VPN, if any, that applies to the UID that owns the connection.
-        if (checkNetworkStackPermission()) return uid;
+        if (hasNetworkStackPermission()) return uid;
 
         final NetworkAgentInfo vpn = getVpnForUid(uid);
         if (vpn == null || getVpnType(vpn) != VpnManager.TYPE_VPN_SERVICE
@@ -11509,7 +11881,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (report == null) {
                 continue;
             }
-            if (!checkConnectivityDiagnosticsPermissions(
+            if (!hasConnectivityDiagnosticsPermissions(
                     nri.mPid, nri.mUid, nai, cbInfo.mCallingPackageName)) {
                 continue;
             }
@@ -11672,7 +12044,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 continue;
             }
 
-            if (!checkConnectivityDiagnosticsPermissions(
+            if (!hasConnectivityDiagnosticsPermissions(
                     nri.mPid, nri.mUid, nai, cbInfo.mCallingPackageName)) {
                 continue;
             }
@@ -11716,14 +12088,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return false;
     }
 
+    @CheckResult
     @VisibleForTesting
-    boolean checkConnectivityDiagnosticsPermissions(
+    boolean hasConnectivityDiagnosticsPermissions(
             int callbackPid, int callbackUid, NetworkAgentInfo nai, String callbackPackageName) {
-        if (checkNetworkStackPermission(callbackPid, callbackUid)) {
+        if (hasNetworkStackPermission(callbackPid, callbackUid)) {
             return true;
         }
         if (mAllowSysUiConnectivityReports
-                && checkSystemBarServicePermission(callbackPid, callbackUid)) {
+                && hasSystemBarServicePermission(callbackPid, callbackUid)) {
             return true;
         }
 
@@ -11757,7 +12130,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // This NetworkCapabilities is only used for matching to Networks. Clear out its owner uid
         // and administrator uids to be safe.
         final NetworkCapabilities nc = new NetworkCapabilities(request.networkCapabilities);
-        restrictRequestUidsForCallerAndSetRequestorInfo(nc, callingUid, callingPackageName);
+        restrictRequestNetworkCapabilitiesForCaller(nc, callingUid, callingPackageName);
 
         final NetworkRequest requestWithId =
                 new NetworkRequest(
@@ -12589,16 +12962,27 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     @VisibleForTesting
     @NonNull
-    ArraySet<NetworkRequestInfo> createNrisFromMobileDataPreferredUids(
-            @NonNull final Set<Integer> uids) {
+    ArraySet<NetworkRequestInfo> createNrisForPreferenceOrder(@NonNull final Set<Integer> uids,
+            @NonNull final List<NetworkRequest> requests,
+            final int preferenceOrder) {
         final ArraySet<NetworkRequestInfo> nris = new ArraySet<>();
         if (uids.size() == 0) {
             // Should not create NetworkRequestInfo if no preferences. Without uid range in
             // NetworkRequestInfo, makeDefaultForApps() would treat it as a illegal NRI.
-            if (DBG) log("Don't create NetworkRequestInfo because no preferences");
             return nris;
         }
 
+        final Set<UidRange> ranges = new ArraySet<>();
+        for (final int uid : uids) {
+            ranges.add(new UidRange(uid, uid));
+        }
+        setNetworkRequestUids(requests, ranges);
+        nris.add(new NetworkRequestInfo(Process.myUid(), requests, preferenceOrder));
+        return nris;
+    }
+
+    ArraySet<NetworkRequestInfo> createNrisFromMobileDataPreferredUids(
+            @NonNull final Set<Integer> uids) {
         final List<NetworkRequest> requests = new ArrayList<>();
         // The NRI should be comprised of two layers:
         // - The request for the mobile network preferred.
@@ -12607,14 +12991,28 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 TRANSPORT_CELLULAR, NetworkRequest.Type.REQUEST));
         requests.add(createDefaultInternetRequestForTransport(
                 TYPE_NONE, NetworkRequest.Type.TRACK_DEFAULT));
-        final Set<UidRange> ranges = new ArraySet<>();
-        for (final int uid : uids) {
-            ranges.add(new UidRange(uid, uid));
-        }
-        setNetworkRequestUids(requests, ranges);
-        nris.add(new NetworkRequestInfo(Process.myUid(), requests,
-                PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED));
-        return nris;
+        return createNrisForPreferenceOrder(uids, requests, PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED
+        );
+    }
+
+    ArraySet<NetworkRequestInfo> createMultiLayerNrisFromSatelliteNetworkFallbackUids(
+            @NonNull final Set<Integer> uids) {
+        final List<NetworkRequest> requests = new ArrayList<>();
+
+        // request: track default(unrestricted internet network)
+        requests.add(createDefaultInternetRequestForTransport(
+                TYPE_NONE, NetworkRequest.Type.TRACK_DEFAULT));
+
+        // request: restricted Satellite internet
+        final NetworkCapabilities cap = new NetworkCapabilities.Builder()
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+                .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
+                .addTransportType(NetworkCapabilities.TRANSPORT_SATELLITE)
+                .build();
+        requests.add(createNetworkRequest(NetworkRequest.Type.REQUEST, cap));
+
+        return createNrisForPreferenceOrder(uids, requests, PREFERENCE_ORDER_SATELLITE_FALLBACK);
     }
 
     private void handleMobileDataPreferredUidsChanged() {
@@ -12622,6 +13020,16 @@ public class ConnectivityService extends IConnectivityManager.Stub
         removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED);
         addPerAppDefaultNetworkRequests(
                 createNrisFromMobileDataPreferredUids(mMobileDataPreferredUids));
+        // Finally, rematch.
+        rematchAllNetworksAndRequests();
+    }
+
+    private void handleSetSatelliteNetworkPreference(
+            @NonNull final Set<Integer> satelliteNetworkPreferredUids) {
+        removeDefaultNetworkRequestsForPreference(PREFERENCE_ORDER_SATELLITE_FALLBACK);
+        addPerAppDefaultNetworkRequests(
+                createMultiLayerNrisFromSatelliteNetworkFallbackUids(satelliteNetworkPreferredUids)
+        );
         // Finally, rematch.
         rematchAllNetworksAndRequests();
     }
@@ -13119,6 +13527,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public void setUidFirewallRule(final int chain, final int uid, final int rule) {
         enforceNetworkStackOrSettingsPermission();
 
+        if (chain == FIREWALL_CHAIN_BACKGROUND && !mBackgroundFirewallChainEnabled) {
+            Log.i(TAG, "Ignoring operation setUidFirewallRule on the background chain because the"
+                    + " feature is disabled.");
+            return;
+        }
+
         // There are only two type of firewall rule: FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
         int firewallRule = getFirewallRuleType(chain, rule);
 
@@ -13191,6 +13605,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public void setFirewallChainEnabled(final int chain, final boolean enable) {
         enforceNetworkStackOrSettingsPermission();
 
+        if (chain == FIREWALL_CHAIN_BACKGROUND && !mBackgroundFirewallChainEnabled) {
+            Log.i(TAG, "Ignoring operation setFirewallChainEnabled on the background chain because"
+                    + " the feature is disabled.");
+            return;
+        }
+
         try {
             mBpfNetMaps.setChildChain(chain, enable);
         } catch (ServiceSpecificException e) {
@@ -13216,6 +13636,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     public void replaceFirewallChain(final int chain, final int[] uids) {
         enforceNetworkStackOrSettingsPermission();
+
+        if (chain == FIREWALL_CHAIN_BACKGROUND && !mBackgroundFirewallChainEnabled) {
+            Log.i(TAG, "Ignoring operation replaceFirewallChain on the background chain because"
+                    + " the feature is disabled.");
+            return;
+        }
 
         mBpfNetMaps.replaceUidChain(chain, uids);
     }

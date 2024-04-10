@@ -136,6 +136,7 @@ import com.android.internal.util.StateMachine;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.SdkUtil.LateSdk;
 import com.android.net.module.util.SharedLog;
@@ -161,11 +162,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  *
@@ -175,8 +173,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public class Tethering {
 
     private static final String TAG = Tethering.class.getSimpleName();
-    private static final boolean DBG = false;
-    private static final boolean VDBG = false;
+    private static final boolean DBG = Log.isLoggable(TAG, Log.DEBUG);
+    private static final boolean VDBG = Log.isLoggable(TAG, Log.VERBOSE);
 
     private static final Class[] sMessageClasses = {
             Tethering.class, TetherMainSM.class, IpServer.class
@@ -243,9 +241,6 @@ public class Tethering {
     private final TetherMainSM mTetherMainSM;
     private final OffloadController mOffloadController;
     private final UpstreamNetworkMonitor mUpstreamNetworkMonitor;
-    // TODO: Figure out how to merge this and other downstream-tracking objects
-    // into a single coherent structure.
-    private final HashSet<IpServer> mForwardedDownstreams;
     private final VersionedBroadcastListener mCarrierConfigChange;
     private final TetheringDependencies mDeps;
     private final EntitlementManager mEntitlementMgr;
@@ -273,8 +268,6 @@ public class Tethering {
 
     private boolean mRndisEnabled;       // track the RNDIS function enabled state
     private boolean mNcmEnabled;         // track the NCM function enabled state
-    // True iff. WiFi tethering should be started when soft AP is ready.
-    private boolean mWifiTetherRequested;
     private Network mTetherUpstream;
     private TetherStatesParcel mTetherStatesParcel;
     private boolean mDataSaverEnabled = false;
@@ -331,7 +324,6 @@ public class Tethering {
                 (what, obj) -> {
                     mTetherMainSM.sendMessage(TetherMainSM.EVENT_UPSTREAM_CALLBACK, what, 0, obj);
                 });
-        mForwardedDownstreams = new HashSet<>();
 
         IntentFilter filter = new IntentFilter();
         filter.addAction(ACTION_CARRIER_CONFIG_CHANGED);
@@ -370,6 +362,7 @@ public class Tethering {
 
         // Load tethering configuration.
         updateConfiguration();
+        mConfig.readEnableSyncSM(mContext);
         // It is OK for the configuration to be passed to the PrivateAddressCoordinator at
         // construction time because the only part of the configuration it uses is
         // shouldEnableWifiP2pDedicatedIp(), and currently do not support changing that.
@@ -764,7 +757,6 @@ public class Tethering {
             }
             if ((enable && mgr.startTetheredHotspot(null /* use existing softap config */))
                     || (!enable && mgr.stopSoftAp())) {
-                mWifiTetherRequested = enable;
                 return TETHER_ERROR_NO_ERROR;
             }
         } finally {
@@ -1471,10 +1463,6 @@ public class Tethering {
     }
 
     private void disableWifiIpServing(String ifname, int apState) {
-        // Regardless of whether we requested this transition, the AP has gone
-        // down.  Don't try to tether again unless we're requested to do so.
-        mWifiTetherRequested = false;
-
         mLog.log("Canceling WiFi tethering request - interface=" + ifname + " state=" + apState);
 
         disableWifiIpServingCommon(TETHERING_WIFI, ifname);
@@ -1506,8 +1494,7 @@ public class Tethering {
     private void enableWifiIpServing(String ifname, int wifiIpMode) {
         mLog.log("request WiFi tethering - interface=" + ifname + " state=" + wifiIpMode);
 
-        // Map wifiIpMode values to IpServer.Callback serving states, inferring
-        // from mWifiTetherRequested as a final "best guess".
+        // Map wifiIpMode values to IpServer.Callback serving states.
         final int ipServingMode;
         switch (wifiIpMode) {
             case IFACE_IP_MODE_TETHERED:
@@ -1654,11 +1641,6 @@ public class Tethering {
         mLog.log(state.getName() + " got " + sMagicDecoderRing.get(what, Integer.toString(what)));
     }
 
-    private boolean upstreamWanted() {
-        if (!mForwardedDownstreams.isEmpty()) return true;
-        return mWifiTetherRequested;
-    }
-
     // Needed because the canonical source of upstream truth is just the
     // upstream interface set, |mCurrentUpstreamIfaceSet|.
     private boolean pertainsToCurrentUpstream(UpstreamNetworkState ns) {
@@ -1716,12 +1698,16 @@ public class Tethering {
         private final ArrayList<IpServer> mNotifyList;
         private final IPv6TetheringCoordinator mIPv6TetheringCoordinator;
         private final OffloadWrapper mOffload;
+        // TODO: Figure out how to merge this and other downstream-tracking objects
+        // into a single coherent structure.
+        private final HashSet<IpServer> mForwardedDownstreams;
 
         private static final int UPSTREAM_SETTLE_TIME_MS     = 10000;
 
         TetherMainSM(String name, Looper looper, TetheringDependencies deps) {
             super(name, looper);
 
+            mForwardedDownstreams = new HashSet<>();
             mInitialState = new InitialState();
             mTetherModeAliveState = new TetherModeAliveState();
             mSetIpForwardingEnabledErrorState = new SetIpForwardingEnabledErrorState();
@@ -2055,6 +2041,10 @@ public class Tethering {
                     mLog.e("Unknown arg1 value: " + arg1);
                     break;
             }
+        }
+
+        private boolean upstreamWanted() {
+            return !mForwardedDownstreams.isEmpty();
         }
 
         class TetherModeAliveState extends State {
@@ -2394,6 +2384,9 @@ public class Tethering {
                 hasCallingPermission(NETWORK_SETTINGS)
                         || hasCallingPermission(PERMISSION_MAINLINE_NETWORK_STACK)
                         || hasCallingPermission(NETWORK_STACK);
+        if (callback == null) {
+            throw new NullPointerException();
+        }
         mHandler.post(() -> {
             mTetheringEventCallbacks.register(callback, new CallbackCookie(hasListPermission));
             final TetheringCallbackStartedParcel parcel = new TetheringCallbackStartedParcel();
@@ -2652,7 +2645,7 @@ public class Tethering {
             }
             pw.println(" - lastError = " + tetherState.lastError);
         }
-        pw.println("Upstream wanted: " + upstreamWanted());
+        pw.println("Upstream wanted: " + mTetherMainSM.upstreamWanted());
         pw.println("Current upstream interface(s): " + mCurrentUpstreamIfaceSet);
         pw.decreaseIndent();
 
@@ -2694,31 +2687,10 @@ public class Tethering {
             return;
         }
 
-        final CountDownLatch latch = new CountDownLatch(1);
-
-        // Don't crash the system if something in doDump throws an exception, but try to propagate
-        // the exception to the caller.
-        AtomicReference<RuntimeException> exceptionRef = new AtomicReference<>();
-        mHandler.post(() -> {
-            try {
-                doDump(fd, writer, args);
-            } catch (RuntimeException e) {
-                exceptionRef.set(e);
-            }
-            latch.countDown();
-        });
-
-        try {
-            if (!latch.await(DUMP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
-                writer.println("Dump timeout after " + DUMP_TIMEOUT_MS + "ms");
-                return;
-            }
-        } catch (InterruptedException e) {
-            exceptionRef.compareAndSet(null, new IllegalStateException("Dump interrupted", e));
+        if (!HandlerUtils.runWithScissorsForDump(mHandler, () -> doDump(fd, writer, args),
+                DUMP_TIMEOUT_MS)) {
+            writer.println("Dump timeout after " + DUMP_TIMEOUT_MS + "ms");
         }
-
-        final RuntimeException e = exceptionRef.get();
-        if (e != null) throw e;
     }
 
     private void maybeDhcpLeasesChanged() {

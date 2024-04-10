@@ -74,7 +74,6 @@ import com.android.testutils.TestNetworkTracker;
 
 import org.junit.After;
 import org.junit.Before;
-import org.junit.BeforeClass;
 
 import java.io.FileDescriptor;
 import java.net.Inet4Address;
@@ -83,8 +82,10 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -142,10 +143,12 @@ public abstract class EthernetTetheringTestBase {
 
     private static final Context sContext =
             InstrumentationRegistry.getInstrumentation().getContext();
-    private static final EthernetManager sEm = sContext.getSystemService(EthernetManager.class);
+    protected static final EthernetManager sEm = sContext.getSystemService(EthernetManager.class);
     private static final TetheringManager sTm = sContext.getSystemService(TetheringManager.class);
     private static final PackageManager sPackageManager = sContext.getPackageManager();
     private static final CtsNetUtils sCtsNetUtils = new CtsNetUtils(sContext);
+    private static final List<String> sCallbackErrors =
+            Collections.synchronizedList(new ArrayList<>());
 
     // Late initialization in setUp()
     private boolean mRunTests;
@@ -164,33 +167,6 @@ public abstract class EthernetTetheringTestBase {
         return sContext;
     }
 
-    @BeforeClass
-    public static void setUpOnce() throws Exception {
-        // The first test case may experience tethering restart with IP conflict handling.
-        // Tethering would cache the last upstreams so that the next enabled tethering avoids
-        // picking up the address that is in conflict with the upstreams. To protect subsequent
-        // tests, turn tethering on and off before running them.
-        MyTetheringEventCallback callback = null;
-        TestNetworkInterface testIface = null;
-        try {
-            // If the physical ethernet interface is available, do nothing.
-            if (isInterfaceForTetheringAvailable()) return;
-
-            testIface = createTestInterface();
-            setIncludeTestInterfaces(true);
-
-            callback = enableEthernetTethering(testIface.getInterfaceName(), null);
-            callback.awaitUpstreamChanged(true /* throwTimeoutException */);
-        } catch (TimeoutException e) {
-            Log.d(TAG, "WARNNING " + e);
-        } finally {
-            maybeCloseTestInterface(testIface);
-            maybeUnregisterTetheringEventCallback(callback);
-
-            setIncludeTestInterfaces(false);
-        }
-    }
-
     @Before
     public void setUp() throws Exception {
         mHandlerThread = new HandlerThread(getClass().getSimpleName());
@@ -201,6 +177,7 @@ public abstract class EthernetTetheringTestBase {
         assumeTrue(mRunTests);
 
         mTetheredInterfaceRequester = new TetheredInterfaceRequester();
+        sCallbackErrors.clear();
     }
 
     private boolean isEthernetTetheringSupported() throws Exception {
@@ -279,6 +256,10 @@ public abstract class EthernetTetheringTestBase {
         } finally {
             mHandlerThread.quitSafely();
             mHandlerThread.join();
+        }
+
+        if (sCallbackErrors.size() > 0) {
+            fail("Some callbacks had errors: " + sCallbackErrors);
         }
     }
 
@@ -391,7 +372,7 @@ public abstract class EthernetTetheringTestBase {
         }
         @Override
         public void onTetheredInterfacesChanged(List<String> interfaces) {
-            fail("Should only call callback that takes a Set<TetheringInterface>");
+            addCallbackError("Should only call callback that takes a Set<TetheringInterface>");
         }
 
         @Override
@@ -412,7 +393,7 @@ public abstract class EthernetTetheringTestBase {
 
         @Override
         public void onLocalOnlyInterfacesChanged(List<String> interfaces) {
-            fail("Should only call callback that takes a Set<TetheringInterface>");
+            addCallbackError("Should only call callback that takes a Set<TetheringInterface>");
         }
 
         @Override
@@ -481,7 +462,7 @@ public abstract class EthernetTetheringTestBase {
             // Ignore stale callbacks registered by previous test cases.
             if (mUnregistered) return;
 
-            fail("TetheringEventCallback got error:" + error + " on iface " + ifName);
+            addCallbackError("TetheringEventCallback got error:" + error + " on iface " + ifName);
         }
 
         @Override
@@ -536,6 +517,11 @@ public abstract class EthernetTetheringTestBase {
         }
     }
 
+    private static void addCallbackError(String error) {
+        Log.e(TAG, error);
+        sCallbackErrors.add(error);
+    }
+
     protected static MyTetheringEventCallback enableEthernetTethering(String iface,
             TetheringRequest request, Network expectedUpstream) throws Exception {
         // Enable ethernet tethering with null expectedUpstream means the test accept any upstream
@@ -562,7 +548,7 @@ public abstract class EthernetTetheringTestBase {
 
             @Override
             public void onTetheringFailed(int resultCode) {
-                fail("Unexpectedly got onTetheringFailed");
+                addCallbackError("Unexpectedly got onTetheringFailed");
             }
         };
         Log.d(TAG, "Starting Ethernet tethering");
@@ -865,12 +851,12 @@ public abstract class EthernetTetheringTestBase {
         // trigger the reselection, the total test time may over test suite 1 minmute timeout.
         // Probably need to disable/restore all internet networks in a common place of test
         // process. Currently, EthernetTetheringTest is part of CTS test which needs wifi network
-        // connection if device has wifi feature. CtsNetUtils#toggleWifi() checks wifi connection
-        // during the toggling process.
-        // See Tethering#chooseUpstreamType, CtsNetUtils#toggleWifi.
+        // connection if device has wifi feature.
+        // See Tethering#chooseUpstreamType
         // TODO: toggle cellular network if the device has no WIFI feature.
         Log.d(TAG, "Toggle WIFI to retry upstream selection");
-        sCtsNetUtils.toggleWifi();
+        sCtsNetUtils.disableWifi();
+        sCtsNetUtils.ensureWifiConnected();
 
         // Wait for expected upstream.
         final CompletableFuture<Network> future = new CompletableFuture<>();

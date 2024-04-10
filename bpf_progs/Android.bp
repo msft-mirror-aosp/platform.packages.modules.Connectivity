@@ -18,6 +18,7 @@
 // struct definitions shared with JNI
 //
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -93,13 +94,13 @@ bpf {
 }
 
 bpf {
-    name: "offload@btf.o",
-    srcs: ["offload@btf.c"],
+    name: "offload@mainline.o",
+    srcs: ["offload@mainline.c"],
     btf: true,
     cflags: [
         "-Wall",
         "-Werror",
-        "-DBTF",
+        "-DMAINLINE",
     ],
 }
 
@@ -113,13 +114,13 @@ bpf {
 }
 
 bpf {
-    name: "test@btf.o",
-    srcs: ["test@btf.c"],
+    name: "test@mainline.o",
+    srcs: ["test@mainline.c"],
     btf: true,
     cflags: [
         "-Wall",
         "-Werror",
-        "-DBTF",
+        "-DMAINLINE",
     ],
 }
 

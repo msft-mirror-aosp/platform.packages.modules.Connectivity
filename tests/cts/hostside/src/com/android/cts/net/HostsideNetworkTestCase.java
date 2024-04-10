@@ -16,12 +16,15 @@
 
 package com.android.cts.net;
 
+import static com.android.cts.net.arguments.InstrumentationArguments.ARG_CONNECTION_CHECK_CUSTOM_URL;
+
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.fail;
 
 import com.android.ddmlib.Log;
 import com.android.modules.utils.build.testing.DeviceSdkLevel;
+import com.android.tradefed.config.Option;
 import com.android.tradefed.device.DeviceNotAvailableException;
 import com.android.tradefed.invoker.TestInformation;
 import com.android.tradefed.targetprep.BuildError;
@@ -31,9 +34,12 @@ import com.android.tradefed.testtype.DeviceJUnit4ClassRunner;
 import com.android.tradefed.testtype.junit4.AfterClassWithInfo;
 import com.android.tradefed.testtype.junit4.BaseHostJUnit4Test;
 import com.android.tradefed.testtype.junit4.BeforeClassWithInfo;
+import com.android.tradefed.testtype.junit4.DeviceTestRunOptions;
 import com.android.tradefed.util.RunUtil;
 
 import org.junit.runner.RunWith;
+
+import java.util.Map;
 
 @RunWith(DeviceJUnit4ClassRunner.class)
 abstract class HostsideNetworkTestCase extends BaseHostJUnit4Test {
@@ -44,6 +50,10 @@ abstract class HostsideNetworkTestCase extends BaseHostJUnit4Test {
     protected static final String TEST_APK_NEXT = "CtsHostsideNetworkTestsAppNext.apk";
     protected static final String TEST_APP2_PKG = "com.android.cts.net.hostside.app2";
     protected static final String TEST_APP2_APK = "CtsHostsideNetworkTestsApp2.apk";
+
+    @Option(name = "custom-url", importance = Option.Importance.IF_UNSET,
+            description = "A custom url to use for testing network connections")
+    protected String mCustomUrl;
 
     @BeforeClassWithInfo
     public static void setUpOnceBase(TestInformation testInfo) throws Exception {
@@ -144,6 +154,35 @@ abstract class HostsideNetworkTestCase extends BaseHostJUnit4Test {
         }
         throw new IllegalStateException("Failed to find the test app on the device; pkg="
                 + packageName + ", u=" + currentUser);
+    }
+
+    protected boolean runDeviceTestsWithCustomOptions(String packageName, String className)
+            throws DeviceNotAvailableException {
+        return runDeviceTestsWithCustomOptions(packageName, className, null);
+    }
+
+    protected boolean runDeviceTestsWithCustomOptions(String packageName, String className,
+            String methodName) throws DeviceNotAvailableException {
+        return runDeviceTestsWithCustomOptions(packageName, className, methodName, null);
+    }
+
+    protected boolean runDeviceTestsWithCustomOptions(String packageName, String className,
+            String methodName, Map<String, String> testArgs) throws DeviceNotAvailableException {
+        final DeviceTestRunOptions deviceTestRunOptions = new DeviceTestRunOptions(packageName)
+                .setTestClassName(className)
+                .setTestMethodName(methodName);
+
+        // Currently there is only one custom option that the test exposes.
+        if (mCustomUrl != null) {
+            deviceTestRunOptions.addInstrumentationArg(ARG_CONNECTION_CHECK_CUSTOM_URL, mCustomUrl);
+        }
+        // Pass over any test specific arguments.
+        if (testArgs != null) {
+            for (Map.Entry<String, String> arg : testArgs.entrySet()) {
+                deviceTestRunOptions.addInstrumentationArg(arg.getKey(), arg.getValue());
+            }
+        }
+        return runDeviceTests(deviceTestRunOptions);
     }
 
     protected String runCommand(String command) throws DeviceNotAvailableException {

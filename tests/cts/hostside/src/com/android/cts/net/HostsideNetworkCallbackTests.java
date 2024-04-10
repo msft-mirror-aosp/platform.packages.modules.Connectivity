@@ -15,11 +15,15 @@
  */
 package com.android.cts.net;
 
+import static com.android.cts.net.arguments.InstrumentationArguments.ARG_WAIVE_BIND_PRIORITY;
+
 import com.android.testutils.SkipPresubmit;
 
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+
+import java.util.Map;
 
 @SkipPresubmit(reason = "Out of SLO flakiness")
 public class HostsideNetworkCallbackTests extends HostsideNetworkTestCase {
@@ -37,14 +41,21 @@ public class HostsideNetworkCallbackTests extends HostsideNetworkTestCase {
 
     @Test
     public void testOnBlockedStatusChanged_dataSaver() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkCallbackTest", "testOnBlockedStatusChanged_dataSaver");
     }
 
     @Test
     public void testOnBlockedStatusChanged_powerSaver() throws Exception {
-        runDeviceTests(TEST_PKG,
+        runDeviceTestsWithCustomOptions(TEST_PKG,
                 TEST_PKG + ".NetworkCallbackTest", "testOnBlockedStatusChanged_powerSaver");
+    }
+
+    // TODO(b/321848487): Annotate with @RequiresFlagsEnabled to mirror the device-side test.
+    @Test
+    public void testOnBlockedStatusChanged_default() throws Exception {
+        runDeviceTestsWithCustomOptions(TEST_PKG, TEST_PKG + ".NetworkCallbackTest",
+                "testOnBlockedStatusChanged_default", Map.of(ARG_WAIVE_BIND_PRIORITY, "true"));
     }
 }
 
