@@ -114,7 +114,7 @@ static void verifyClatPerms() {
 
     V("/sys/fs/bpf", S_IFDIR|S_ISVTX|0777, ROOT, ROOT, "fs_bpf", DIR);
 
-    if (false && modules::sdklevel::IsAtLeastV()) {
+    if (true) {
         V("/sys/fs/bpf/net_shared", S_IFDIR|01777, ROOT, ROOT, "fs_bpf_net_shared", DIR);
     } else {
         V("/sys/fs/bpf/net_shared", S_IFDIR|01777, SYSTEM, SYSTEM, "fs_bpf_net_shared", DIR);
