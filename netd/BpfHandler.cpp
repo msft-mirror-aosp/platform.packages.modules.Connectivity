@@ -183,7 +183,7 @@ Status BpfHandler::init(const char* cg2_path) {
         // Make sure BPF programs are loaded before doing anything
         ALOGI("Waiting for BPF programs");
 
-        if (true || !modules::sdklevel::IsAtLeastV()) {
+        if (false) {
             waitForNetProgsLoaded();
             ALOGI("Networking BPF programs are loaded");
 
