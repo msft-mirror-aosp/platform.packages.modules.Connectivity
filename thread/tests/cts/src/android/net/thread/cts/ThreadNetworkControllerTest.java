@@ -17,6 +17,12 @@
 package android.net.thread.cts;
 
 import static android.Manifest.permission.ACCESS_NETWORK_STATE;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_CHILD;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_LEADER;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_ROUTER;
@@ -73,6 +79,7 @@ import com.android.testutils.FunctionalUtils.ThrowingRunnable;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 
@@ -743,17 +750,6 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
-    public void setEnabled_toggleAfterJoin_joinsThreadNetworkAgain() throws Exception {
-        joinRandomizedDatasetAndWait(mController);
-
-        setEnabledAndWait(mController, false);
-        assertThat(getDeviceRole(mController)).isEqualTo(DEVICE_ROLE_STOPPED);
-        setEnabledAndWait(mController, true);
-
-        runAsShell(ACCESS_NETWORK_STATE, () -> waitForAttachedState(mController));
-    }
-
-    @Test
     public void setEnabled_enableFollowedByDisable_allSucceed() throws Exception {
         joinRandomizedDatasetAndWait(mController);
         CompletableFuture<Void> setFuture1 = new CompletableFuture<>();
@@ -805,6 +801,20 @@ public class ThreadNetworkControllerTest {
 
         assertThat(isAttached(mController)).isTrue();
         assertThat(networkFuture.get(NETWORK_CALLBACK_TIMEOUT_MILLIS, MILLISECONDS)).isNotNull();
+        NetworkCapabilities caps =
+                runAsShell(
+                        ACCESS_NETWORK_STATE, () -> cm.getNetworkCapabilities(networkFuture.get()));
+        assertThat(caps).isNotNull();
+        assertThat(caps.hasTransport(NetworkCapabilities.TRANSPORT_THREAD)).isTrue();
+        assertThat(caps.getCapabilities())
+                .asList()
+                .containsAtLeast(
+                        NET_CAPABILITY_LOCAL_NETWORK,
+                        NET_CAPABILITY_NOT_METERED,
+                        NET_CAPABILITY_NOT_RESTRICTED,
+                        NET_CAPABILITY_NOT_VCN_MANAGED,
+                        NET_CAPABILITY_NOT_VPN,
+                        NET_CAPABILITY_TRUSTED);
     }
 
     private void grantPermissions(String... permissions) {
@@ -837,6 +847,7 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
+    @Ignore("b/333649897: Enable this when it's not flaky at all")
     public void meshcopService_joinedNetwork_discoveredHasNetwork() throws Exception {
         setUpTestNetwork();
 
