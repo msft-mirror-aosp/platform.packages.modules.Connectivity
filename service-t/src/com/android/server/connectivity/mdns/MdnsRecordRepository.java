@@ -97,6 +97,8 @@ public class MdnsRecordRepository {
     @NonNull
     private final Looper mLooper;
     @NonNull
+    private final Dependencies mDeps;
+    @NonNull
     private final String[] mDeviceHostname;
     @NonNull
     private final MdnsFeatureFlags mMdnsFeatureFlags;
@@ -111,6 +113,7 @@ public class MdnsRecordRepository {
             @NonNull String[] deviceHostname, @NonNull MdnsFeatureFlags mdnsFeatureFlags) {
         mDeviceHostname = deviceHostname;
         mLooper = looper;
+        mDeps = deps;
         mMdnsFeatureFlags = mdnsFeatureFlags;
     }
 
@@ -127,6 +130,10 @@ public class MdnsRecordRepository {
         public Enumeration<InetAddress> getInterfaceInetAddresses(@NonNull NetworkInterface iface) {
             return iface.getInetAddresses();
         }
+
+        public long elapsedRealTime() {
+            return SystemClock.elapsedRealtime();
+        }
     }
 
     private static class RecordInfo<T extends MdnsRecord> {
@@ -140,17 +147,25 @@ public class MdnsRecordRepository {
         public final boolean isSharedName;
 
         /**
-         * Last time (as per SystemClock.elapsedRealtime) when advertised via multicast, 0 if never
+         * Last time (as per SystemClock.elapsedRealtime) when advertised via multicast on IPv4, 0
+         * if never
          */
-        public long lastAdvertisedTimeMs;
+        public long lastAdvertisedOnIpv4TimeMs;
 
         /**
-         * Last time (as per SystemClock.elapsedRealtime) when sent via unicast or multicast,
-         * 0 if never
+         * Last time (as per SystemClock.elapsedRealtime) when advertised via multicast on IPv6, 0
+         * if never
          */
-        // FIXME: the `lastSentTimeMs` and `lastAdvertisedTimeMs` should be maintained separately
-        // for IPv4 and IPv6, because neither IPv4 nor and IPv6 clients can receive replies in
-        // different address space.
+        public long lastAdvertisedOnIpv6TimeMs;
+
+        /**
+         * Last time (as per SystemClock.elapsedRealtime) when sent via unicast or multicast, 0 if
+         * never.
+         *
+         * <p>Different from lastAdvertisedOnIpv(4|6)TimeMs, lastSentTimeMs is mainly used for
+         * tracking is a record is ever sent out, no matter unicast/multicast or IPv4/IPv6. It's
+         * unnecessary to maintain two versions (IPv4/IPv6) for it.
+         */
         public long lastSentTimeMs;
 
         RecordInfo(NsdServiceInfo serviceInfo, T record, boolean sharedName) {
@@ -577,7 +592,8 @@ public class MdnsRecordRepository {
      */
     @Nullable
     public MdnsReplyInfo getReply(MdnsPacket packet, InetSocketAddress src) {
-        final long now = SystemClock.elapsedRealtime();
+        final long now = mDeps.elapsedRealTime();
+        final boolean isQuestionOnIpv4 = src.getAddress() instanceof Inet4Address;
 
         // TODO: b/322142420 - Set<RecordInfo<?>> may contain duplicate records wrapped in different
         // RecordInfo<?>s when custom host is enabled.
@@ -595,7 +611,7 @@ public class MdnsRecordRepository {
                     null /* serviceSrvRecord */, null /* serviceTxtRecord */,
                     null /* hostname */,
                     replyUnicastEnabled, now, answerInfo, additionalAnswerInfo,
-                    Collections.emptyList())) {
+                    Collections.emptyList(), isQuestionOnIpv4)) {
                 replyUnicast &= question.isUnicastReplyRequested();
             }
 
@@ -607,7 +623,7 @@ public class MdnsRecordRepository {
                         registration.srvRecord, registration.txtRecord,
                         registration.serviceInfo.getHostname(),
                         replyUnicastEnabled, now,
-                        answerInfo, additionalAnswerInfo, packet.answers)) {
+                        answerInfo, additionalAnswerInfo, packet.answers, isQuestionOnIpv4)) {
                     replyUnicast &= question.isUnicastReplyRequested();
                     registration.repliedServiceCount++;
                     registration.sentPacketCount++;
@@ -685,7 +701,7 @@ public class MdnsRecordRepository {
             // multicast responses. Unicast replies are faster as they do not need to wait for the
             // beacon interval on Wi-Fi.
             dest = src;
-        } else if (src.getAddress() instanceof Inet4Address) {
+        } else if (isQuestionOnIpv4) {
             dest = IPV4_SOCKET_ADDR;
         } else {
             dest = IPV6_SOCKET_ADDR;
@@ -697,7 +713,11 @@ public class MdnsRecordRepository {
             // TODO: consider actual packet send delay after response aggregation
             info.lastSentTimeMs = now + delayMs;
             if (!replyUnicast) {
-                info.lastAdvertisedTimeMs = info.lastSentTimeMs;
+                if (isQuestionOnIpv4) {
+                    info.lastAdvertisedOnIpv4TimeMs = info.lastSentTimeMs;
+                } else {
+                    info.lastAdvertisedOnIpv6TimeMs = info.lastSentTimeMs;
+                }
             }
             // Different RecordInfos may the contain the same record
             if (!answerRecords.contains(info.record)) {
@@ -729,7 +749,8 @@ public class MdnsRecordRepository {
             @Nullable String hostname,
             boolean replyUnicastEnabled, long now, @NonNull Set<RecordInfo<?>> answerInfo,
             @NonNull Set<RecordInfo<?>> additionalAnswerInfo,
-            @NonNull List<MdnsRecord> knownAnswerRecords) {
+            @NonNull List<MdnsRecord> knownAnswerRecords,
+            boolean isQuestionOnIpv4) {
         boolean hasDnsSdPtrRecordAnswer = false;
         boolean hasDnsSdSrvRecordAnswer = false;
         boolean hasFullyOwnedNameMatch = false;
@@ -778,10 +799,20 @@ public class MdnsRecordRepository {
 
             // TODO: responses to probe queries should bypass this check and only ensure the
             // reply is sent 250ms after the last sent time (RFC 6762 p.15)
-            if (!(replyUnicastEnabled && question.isUnicastReplyRequested())
-                    && info.lastAdvertisedTimeMs > 0L
-                    && now - info.lastAdvertisedTimeMs < MIN_MULTICAST_REPLY_INTERVAL_MS) {
-                continue;
+            if (!(replyUnicastEnabled && question.isUnicastReplyRequested())) {
+                if (isQuestionOnIpv4) { // IPv4
+                    if (info.lastAdvertisedOnIpv4TimeMs > 0L
+                            && now - info.lastAdvertisedOnIpv4TimeMs
+                                    < MIN_MULTICAST_REPLY_INTERVAL_MS) {
+                        continue;
+                    }
+                } else { // IPv6
+                    if (info.lastAdvertisedOnIpv6TimeMs > 0L
+                            && now - info.lastAdvertisedOnIpv6TimeMs
+                                    < MIN_MULTICAST_REPLY_INTERVAL_MS) {
+                        continue;
+                    }
+                }
             }
 
             answerInfo.add(info);
@@ -1302,10 +1333,11 @@ public class MdnsRecordRepository {
         final ServiceRegistration registration = mServices.get(serviceId);
         if (registration == null) return;
 
-        final long now = SystemClock.elapsedRealtime();
+        final long now = mDeps.elapsedRealTime();
         for (RecordInfo<?> record : registration.allRecords) {
             record.lastSentTimeMs = now;
-            record.lastAdvertisedTimeMs = now;
+            record.lastAdvertisedOnIpv4TimeMs = now;
+            record.lastAdvertisedOnIpv6TimeMs = now;
         }
         registration.sentPacketCount += sentPacketCount;
     }
