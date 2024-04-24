@@ -26,6 +26,12 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.apf.ApfCapabilities
+import android.net.apf.ApfConstant.ETH_ETHERTYPE_OFFSET
+import android.net.apf.ApfConstant.ICMP6_TYPE_OFFSET
+import android.net.apf.ApfConstant.IPV6_NEXT_HEADER_OFFSET
+import android.net.apf.ApfV4Generator
+import android.net.apf.BaseApfGenerator
+import android.net.apf.BaseApfGenerator.Register.R0
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -35,11 +41,13 @@ import android.provider.DeviceConfig
 import android.provider.DeviceConfig.NAMESPACE_CONNECTIVITY
 import android.system.Os
 import android.system.OsConstants
-import android.system.OsConstants.AF_INET
-import android.system.OsConstants.IPPROTO_ICMP
+import android.system.OsConstants.AF_INET6
+import android.system.OsConstants.ETH_P_IPV6
+import android.system.OsConstants.IPPROTO_ICMPV6
 import android.system.OsConstants.SOCK_DGRAM
 import android.system.OsConstants.SOCK_NONBLOCK
 import android.util.Log
+import androidx.test.filters.RequiresDevice
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.compatibility.common.util.PropertyUtil.getVsrApiLevel
 import com.android.compatibility.common.util.SystemUtil.runShellCommand
@@ -69,6 +77,7 @@ import kotlin.random.Random
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import org.junit.After
+import org.junit.AfterClass
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Rule
@@ -80,20 +89,56 @@ private const val TIMEOUT_MS = 2000L
 private const val APF_NEW_RA_FILTER_VERSION = "apf_new_ra_filter_version"
 private const val POLLING_INTERVAL_MS: Int = 100
 private const val RCV_BUFFER_SIZE = 1480
+private const val PING_HEADER_LENGTH = 8
 
 @AppModeFull(reason = "CHANGE_NETWORK_STATE permission can't be granted to instant apps")
 @RunWith(DevSdkIgnoreRunner::class)
+@RequiresDevice
 @NetworkStackModuleTest
 // ByteArray.toHexString is experimental API
 @kotlin.ExperimentalStdlibApi
 class ApfIntegrationTest {
     companion object {
-        private val PING_DESTINATION = InetSocketAddress("8.8.8.8", 0)
+        private val PING_DESTINATION = InetSocketAddress("2001:4860:4860::8888", 0)
+
+        private val context = InstrumentationRegistry.getInstrumentation().context
+        private val powerManager = context.getSystemService(PowerManager::class.java)!!
+        private val wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG)
+
+        fun pollingCheck(condition: () -> Boolean, timeout_ms: Int): Boolean {
+            var polling_time = 0
+            do {
+                Thread.sleep(POLLING_INTERVAL_MS.toLong())
+                polling_time += POLLING_INTERVAL_MS
+                if (condition()) return true
+            } while (polling_time < timeout_ms)
+            return false
+        }
+
+        fun turnScreenOff() {
+            if (!wakeLock.isHeld()) wakeLock.acquire()
+            runShellCommandOrThrow("input keyevent KEYCODE_SLEEP")
+            val result = pollingCheck({ !powerManager.isInteractive() }, timeout_ms = 2000)
+            assertThat(result).isTrue()
+        }
+
+        fun turnScreenOn() {
+            if (wakeLock.isHeld()) wakeLock.release()
+            runShellCommandOrThrow("input keyevent KEYCODE_WAKEUP")
+            val result = pollingCheck({ powerManager.isInteractive() }, timeout_ms = 2000)
+            assertThat(result).isTrue()
+        }
 
         @BeforeClass
         @JvmStatic
         @Suppress("ktlint:standard:no-multi-spaces")
         fun setupOnce() {
+            // TODO: assertions thrown in @BeforeClass / @AfterClass are not well supported in the
+            // test infrastructure. Consider saving excepion and throwing it in setUp().
+            // APF must run when the screen is off and the device is not interactive.
+            turnScreenOff()
+            // Wait for APF to become active.
+            Thread.sleep(1000)
             // TODO: check that there is no active wifi network. Otherwise, ApfFilter has already been
             // created.
             // APF adb cmds are only implemented in ApfFilter.java. Enable experiment to prevent
@@ -107,9 +152,15 @@ class ApfIntegrationTest {
                 )
             }
         }
+
+        @AfterClass
+        @JvmStatic
+        fun tearDownOnce() {
+            turnScreenOn()
+        }
     }
 
-    class IcmpPacketReader(
+    class Icmp6PacketReader(
             handler: Handler,
             private val network: Network
     ) : PacketReader(handler, RCV_BUFFER_SIZE) {
@@ -118,7 +169,7 @@ class ApfIntegrationTest {
 
         override fun createFd(): FileDescriptor {
             // sockFd is closed by calling super.stop()
-            val sock = Os.socket(AF_INET, SOCK_DGRAM or SOCK_NONBLOCK, IPPROTO_ICMP)
+            val sock = Os.socket(AF_INET6, SOCK_DGRAM or SOCK_NONBLOCK, IPPROTO_ICMPV6)
             // APF runs only on WiFi, so make sure the socket is bound to the right network.
             network.bindSocket(sock)
             sockFd = sock
@@ -126,6 +177,10 @@ class ApfIntegrationTest {
         }
 
         override fun handlePacket(recvbuf: ByteArray, length: Int) {
+            // If zero-length or Type is not echo reply: ignore.
+            if (length == 0 || recvbuf[0] != 0x81.toByte()) {
+                return
+            }
             // Only copy the ping data and complete the future.
             val result = recvbuf.sliceArray(8..<length)
             Log.i(TAG, "Received ping reply: ${result.toHexString()}")
@@ -135,18 +190,18 @@ class ApfIntegrationTest {
         fun sendPing(data: ByteArray) {
             require(data.size == 56)
 
-            // rfc792: Echo (type 0x08) or Echo Reply (type 0x00) Message:
-            //  0                   1                   2                   3
-            //  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-            // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            // |     Type      |     Code      |          Checksum             |
-            // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            // |           Identifier          |        Sequence Number        |
-            // +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-            // |     Data ...
-            // +-+-+-+-+-
-            val icmpHeader = byteArrayOf(0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
-            val packet = icmpHeader + data
+            // rfc4443#section-4.1: Echo Request Message
+            //   0                   1                   2                   3
+            //   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+            //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+            //  |     Type      |     Code      |          Checksum             |
+            //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+            //  |           Identifier          |        Sequence Number        |
+            //  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+            //  |     Data ...
+            //  +-+-+-+-+-
+            val icmp6Header = byteArrayOf(0x80.toByte(), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00)
+            val packet = icmp6Header + data
             Log.i(TAG, "Sent ping: ${packet.toHexString()}")
             futureReply = CompletableFuture<ByteArray>()
             Os.sendto(sockFd!!, packet, 0, packet.size, 0, PING_DESTINATION)
@@ -178,18 +233,15 @@ class ApfIntegrationTest {
     @get:Rule
     val ignoreRule = DevSdkIgnoreRule()
 
-    private val context by lazy { InstrumentationRegistry.getInstrumentation().context }
     private val cm by lazy { context.getSystemService(ConnectivityManager::class.java)!! }
     private val pm by lazy { context.packageManager }
-    private val powerManager by lazy { context.getSystemService(PowerManager::class.java)!! }
-    private val wakeLock by lazy { powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, TAG) }
     private lateinit var network: Network
     private lateinit var ifname: String
     private lateinit var networkCallback: TestableNetworkCallback
     private lateinit var caps: ApfCapabilities
     private val handlerThread = HandlerThread("$TAG handler thread").apply { start() }
     private val handler = Handler(handlerThread.looper)
-    private lateinit var packetReader: IcmpPacketReader
+    private lateinit var packetReader: Icmp6PacketReader
 
     fun getApfCapabilities(): ApfCapabilities {
         val caps = runShellCommand("cmd network_stack apf $ifname capabilities").trim()
@@ -200,36 +252,9 @@ class ApfIntegrationTest {
         return ApfCapabilities(version, maxLen, packetFormat)
     }
 
-    fun pollingCheck(condition: () -> Boolean, timeout_ms: Int): Boolean {
-        var polling_time = 0
-        do {
-            Thread.sleep(POLLING_INTERVAL_MS.toLong())
-            polling_time += POLLING_INTERVAL_MS
-            if (condition()) return true
-        } while (polling_time < timeout_ms)
-        return false
-    }
-
-    fun turnScreenOff() {
-        if (!wakeLock.isHeld()) wakeLock.acquire()
-        runShellCommandOrThrow("input keyevent KEYCODE_SLEEP")
-        val result = pollingCheck({ !powerManager.isInteractive() }, timeout_ms = 2000)
-        assertThat(result).isTrue()
-    }
-
-    fun turnScreenOn() {
-        if (wakeLock.isHeld()) wakeLock.release()
-        runShellCommandOrThrow("input keyevent KEYCODE_WAKEUP")
-        val result = pollingCheck({ powerManager.isInteractive() }, timeout_ms = 2000)
-        assertThat(result).isTrue()
-    }
-
     @Before
     fun setUp() {
         assume().that(pm.hasSystemFeature(FEATURE_WIFI)).isTrue()
-        // APF must run when the screen is off and the device is not interactive.
-        // TODO: consider running some of the tests with screen on (capabilities, read / write).
-        turnScreenOff()
 
         networkCallback = TestableNetworkCallback()
         cm.requestNetwork(
@@ -250,7 +275,7 @@ class ApfIntegrationTest {
         runShellCommand("cmd network_stack apf $ifname pause")
         caps = getApfCapabilities()
 
-        packetReader = IcmpPacketReader(handler, network)
+        packetReader = Icmp6PacketReader(handler, network)
         packetReader.start()
     }
 
@@ -268,7 +293,6 @@ class ApfIntegrationTest {
         if (::networkCallback.isInitialized) {
             cm.unregisterNetworkCallback(networkCallback)
         }
-        turnScreenOn()
     }
 
     @Test
@@ -340,13 +364,47 @@ class ApfIntegrationTest {
         }
     }
 
-    // TODO: this is a placeholder test to test the IcmpPacketReader functionality and will soon be
-    // replaced by a real test.
     @Test
-    fun testPing() {
-        val data = ByteArray(56)
-        Random.nextBytes(data)
+    fun testDropPingReply() {
+        assumeApfVersionSupportAtLeast(4)
+
+        // clear any active APF filter
+        var gen = ApfV4Generator(caps.apfVersionSupported).addPass()
+        installProgram(gen.generate())
+        readProgram() // wait for install completion
+
+        // Assert that initial ping does not get filtered.
+        val data = ByteArray(56).also { Random.nextBytes(it) }
         packetReader.sendPing(data)
         assertThat(packetReader.expectPingReply()).isEqualTo(data)
+
+        // Generate an APF program that drops the next ping
+        gen = ApfV4Generator(caps.apfVersionSupported)
+
+        // If not IPv6 -> PASS
+        gen.addLoad16(R0, ETH_ETHERTYPE_OFFSET)
+        gen.addJumpIfR0NotEquals(ETH_P_IPV6.toLong(), BaseApfGenerator.PASS_LABEL)
+
+        // If not ICMPv6 -> PASS
+        gen.addLoad8(R0, IPV6_NEXT_HEADER_OFFSET)
+        gen.addJumpIfR0NotEquals(IPPROTO_ICMPV6.toLong(), BaseApfGenerator.PASS_LABEL)
+
+        // If not echo reply -> PASS
+        gen.addLoad8(R0, ICMP6_TYPE_OFFSET)
+        gen.addJumpIfR0NotEquals(0x81, BaseApfGenerator.PASS_LABEL)
+
+        // if not data matches -> PASS
+        gen.addLoadImmediate(R0, ICMP6_TYPE_OFFSET + PING_HEADER_LENGTH)
+        gen.addJumpIfBytesAtR0NotEqual(data, BaseApfGenerator.PASS_LABEL)
+
+        // else DROP
+        gen.addJump(BaseApfGenerator.DROP_LABEL)
+
+        val program = gen.generate()
+        installProgram(program)
+        readProgram() // wait for install completion
+
+        packetReader.sendPing(data)
+        packetReader.expectPingDropped()
     }
 }
