@@ -41,6 +41,7 @@ import static com.android.networkstack.apishim.api33.ConstantsShim.REGISTER_NSD_
 import static com.android.server.NsdService.DEFAULT_RUNNING_APP_ACTIVE_IMPORTANCE_CUTOFF;
 import static com.android.server.NsdService.MdnsListener;
 import static com.android.server.NsdService.NO_TRANSACTION;
+import static com.android.server.NsdService.checkHostname;
 import static com.android.server.NsdService.parseTypeAndSubtype;
 import static com.android.testutils.ContextUtils.mockService;
 
@@ -53,6 +54,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertFalse;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -521,6 +523,56 @@ public class NsdServiceTest {
     }
 
     @Test
+    @EnableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
+    public void testDiscoverOnTetheringDownstream_DiscoveryManager() throws Exception {
+        final NsdManager client = connectClient(mService);
+        final DiscoveryListener discListener = mock(DiscoveryListener.class);
+        client.discoverServices(SERVICE_TYPE, PROTOCOL, discListener);
+        waitForIdle();
+
+        final ArgumentCaptor<MdnsServiceBrowserListener> discoverListenerCaptor =
+                ArgumentCaptor.forClass(MdnsServiceBrowserListener.class);
+        final InOrder discManagerOrder = inOrder(mDiscoveryManager);
+        final String serviceTypeWithLocalDomain = SERVICE_TYPE + ".local";
+        discManagerOrder.verify(mDiscoveryManager).registerListener(eq(serviceTypeWithLocalDomain),
+                discoverListenerCaptor.capture(), any());
+
+        final int interfaceIdx = 123;
+        final MdnsServiceInfo mockServiceInfo = new MdnsServiceInfo(
+                SERVICE_NAME, /* serviceInstanceName */
+                serviceTypeWithLocalDomain.split("\\."), /* serviceType */
+                List.of(), /* subtypes */
+                new String[] {"android", "local"}, /* hostName */
+                12345, /* port */
+                List.of(IPV4_ADDRESS),
+                List.of(IPV6_ADDRESS),
+                List.of(), /* textStrings */
+                List.of(), /* textEntries */
+                interfaceIdx, /* interfaceIndex */
+                null /* network */,
+                Instant.MAX /* expirationTime */);
+
+        // Verify service is found with the interface index
+        discoverListenerCaptor.getValue().onServiceNameDiscovered(
+                mockServiceInfo, false /* isServiceFromCache */);
+        final ArgumentCaptor<NsdServiceInfo> foundInfoCaptor =
+                ArgumentCaptor.forClass(NsdServiceInfo.class);
+        verify(discListener, timeout(TIMEOUT_MS)).onServiceFound(foundInfoCaptor.capture());
+        final NsdServiceInfo foundInfo = foundInfoCaptor.getValue();
+        assertNull(foundInfo.getNetwork());
+        assertEquals(interfaceIdx, foundInfo.getInterfaceIndex());
+
+        // Using the returned service info to resolve or register callback uses the interface index
+        client.resolveService(foundInfo, mock(ResolveListener.class));
+        client.registerServiceInfoCallback(foundInfo, Runnable::run,
+                mock(ServiceInfoCallback.class));
+        waitForIdle();
+
+        discManagerOrder.verify(mDiscoveryManager, times(2)).registerListener(any(), any(), argThat(
+                o -> o.getNetwork() == null && o.getInterfaceIndex() == interfaceIdx));
+    }
+
+    @Test
     @DisableCompatChanges(ENABLE_PLATFORM_MDNS_BACKEND)
     @DevSdkIgnoreRule.IgnoreAfter(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     public void testDiscoverOnBlackholeNetwork() throws Exception {
@@ -854,7 +906,7 @@ public class NsdServiceTest {
                 request.getServiceName().equals(ns.getServiceName())
                         && request.getServiceType().equals(ns.getServiceType())));
         verify(mMetrics).reportServiceResolutionStop(
-                true /* isLegacy */, resolveId, 10L /* durationMs */);
+                true /* isLegacy */, resolveId, 10L /* durationMs */, 0 /* sentQueryCount */);
     }
 
     @Test
@@ -928,7 +980,7 @@ public class NsdServiceTest {
                 request.getServiceName().equals(ns.getServiceName())
                         && request.getServiceType().equals(ns.getServiceType())));
         verify(mMetrics).reportServiceResolutionStop(
-                true /* isLegacy */, getAddrId, 10L /* durationMs */);
+                true /* isLegacy */, getAddrId, 10L /* durationMs */,  0 /* sentQueryCount */);
     }
 
     private void verifyUpdatedServiceInfo(NsdServiceInfo info, String serviceName,
@@ -1629,20 +1681,23 @@ public class NsdServiceTest {
         // Subtypes are not used for resolution, only for discovery
         assertEquals(Collections.emptyList(), optionsCaptor.getValue().getSubtypes());
 
+        final MdnsListener listener = listenerCaptor.getValue();
+        // Callbacks for query sent.
+        listener.onDiscoveryQuerySent(Collections.emptyList(), 1 /* transactionId */);
+
         doReturn(TEST_TIME_MS + 10L).when(mClock).elapsedRealtime();
         client.stopServiceResolution(resolveListener);
         waitForIdle();
 
         // Verify the listener has been unregistered.
-        final MdnsListener listener = listenerCaptor.getValue();
         verify(mDiscoveryManager, timeout(TIMEOUT_MS))
                 .unregisterListener(eq(constructedServiceType), eq(listener));
         verify(resolveListener, timeout(TIMEOUT_MS)).onResolutionStopped(argThat(ns ->
                 request.getServiceName().equals(ns.getServiceName())
                         && request.getServiceType().equals(ns.getServiceType())));
         verify(mSocketProvider, timeout(CLEANUP_DELAY_MS + TIMEOUT_MS)).requestStopWhenInactive();
-        verify(mMetrics).reportServiceResolutionStop(
-                false /* isLegacy */, listener.mTransactionId, 10L /* durationMs */);
+        verify(mMetrics).reportServiceResolutionStop(false /* isLegacy */, listener.mTransactionId,
+                10L /* durationMs */, 1 /* sentQueryCount */);
     }
 
     @Test
@@ -1670,6 +1725,36 @@ public class NsdServiceTest {
                 parseTypeAndSubtype(serviceType8));
         assertEquals(new Pair<>("_997._tcp", List.of("_test4")),
                 parseTypeAndSubtype(serviceType9));
+    }
+
+    @Test
+    public void TestCheckHostname() {
+        // Valid cases
+        assertTrue(checkHostname(null));
+        assertTrue(checkHostname("a"));
+        assertTrue(checkHostname("1"));
+        assertTrue(checkHostname("a-1234-bbbb-cccc000"));
+        assertTrue(checkHostname("A-1234-BBbb-CCCC000"));
+        assertTrue(checkHostname("1234-bbbb-cccc000"));
+        assertTrue(checkHostname("0123456789abcdef"
+                                + "0123456789abcdef"
+                                + "0123456789abcdef"
+                                + "0123456789abcde" // 63 characters
+                        ));
+
+        // Invalid cases
+        assertFalse(checkHostname("?"));
+        assertFalse(checkHostname("/"));
+        assertFalse(checkHostname("a-"));
+        assertFalse(checkHostname("B-"));
+        assertFalse(checkHostname("-A"));
+        assertFalse(checkHostname("-b"));
+        assertFalse(checkHostname("-1-"));
+        assertFalse(checkHostname("0123456789abcdef"
+                                + "0123456789abcdef"
+                                + "0123456789abcdef"
+                                + "0123456789abcdef" // 64 characters
+                        ));
     }
 
     @Test

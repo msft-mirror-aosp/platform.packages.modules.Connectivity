@@ -63,6 +63,9 @@ import static android.net.ConnectivityManager.EXTRA_REALTIME_NS;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_ADMIN;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_USER;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3;
@@ -172,6 +175,7 @@ import static com.android.server.ConnectivityService.makeNflogPrefix;
 import static com.android.server.ConnectivityServiceTestUtils.transportToLegacyType;
 import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackRegister;
 import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister;
+import static com.android.server.connectivity.ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN;
 import static com.android.server.connectivity.ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.ConcurrentUtils.await;
@@ -391,6 +395,7 @@ import com.android.internal.net.VpnConfig;
 import com.android.internal.util.WakeupMessage;
 import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.internal.util.test.FakeSettingsProvider;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
@@ -455,6 +460,7 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Method;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -1719,8 +1725,6 @@ public class ConnectivityServiceTest {
     private void mockUidNetworkingBlocked() {
         doAnswer(i -> isUidBlocked(mBlockedReasons, i.getArgument(1))
         ).when(mNetworkPolicyManager).isUidNetworkingBlocked(anyInt(), anyBoolean());
-        doAnswer(i -> isUidBlocked(mBlockedReasons, i.getArgument(1))
-        ).when(mBpfNetMaps).isUidNetworkingBlocked(anyInt(), anyBoolean());
     }
 
     private boolean isUidBlocked(int blockedReasons, boolean meteredNetwork) {
@@ -2170,6 +2174,8 @@ public class ConnectivityServiceTest {
                 case ALLOW_SATALLITE_NETWORK_FALLBACK:
                     return true;
                 case INGRESS_TO_VPN_ADDRESS_FILTERING:
+                    return true;
+                case BACKGROUND_FIREWALL_CHAIN:
                     return true;
                 default:
                     return super.isFeatureNotChickenedOut(context, name);
@@ -10488,24 +10494,33 @@ public class ConnectivityServiceTest {
         doTestSetUidFirewallRule(FIREWALL_CHAIN_POWERSAVE, FIREWALL_RULE_DENY);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_RESTRICTED, FIREWALL_RULE_DENY);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_LOW_POWER_STANDBY, FIREWALL_RULE_DENY);
-        doTestSetUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, FIREWALL_RULE_DENY);
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            doTestSetUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, FIREWALL_RULE_DENY);
+        }
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_1, FIREWALL_RULE_ALLOW);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_2, FIREWALL_RULE_ALLOW);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_3, FIREWALL_RULE_ALLOW);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_ALLOW, FIREWALL_RULE_DENY);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_USER, FIREWALL_RULE_ALLOW);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_ADMIN, FIREWALL_RULE_ALLOW);
     }
 
     @Test @IgnoreUpTo(SC_V2)
     public void testSetFirewallChainEnabled() throws Exception {
-        final List<Integer> firewallChains = Arrays.asList(
+        final List<Integer> firewallChains = new ArrayList<>(Arrays.asList(
                 FIREWALL_CHAIN_DOZABLE,
                 FIREWALL_CHAIN_STANDBY,
                 FIREWALL_CHAIN_POWERSAVE,
                 FIREWALL_CHAIN_RESTRICTED,
                 FIREWALL_CHAIN_LOW_POWER_STANDBY,
-                FIREWALL_CHAIN_BACKGROUND,
                 FIREWALL_CHAIN_OEM_DENY_1,
                 FIREWALL_CHAIN_OEM_DENY_2,
-                FIREWALL_CHAIN_OEM_DENY_3);
+                FIREWALL_CHAIN_OEM_DENY_3));
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            firewallChains.add(FIREWALL_CHAIN_BACKGROUND);
+        }
         for (final int chain: firewallChains) {
             mCm.setFirewallChainEnabled(chain, true /* enabled */);
             verify(mBpfNetMaps).setChildChain(chain, true /* enable */);
@@ -10552,7 +10567,10 @@ public class ConnectivityServiceTest {
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_POWERSAVE, allowlist);
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_RESTRICTED, allowlist);
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_LOW_POWER_STANDBY, allowlist);
-        doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_BACKGROUND, allowlist);
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_BACKGROUND, allowlist);
+        }
 
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_STANDBY, denylist);
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_OEM_DENY_1, denylist);
@@ -10574,7 +10592,10 @@ public class ConnectivityServiceTest {
         doTestReplaceFirewallChain(FIREWALL_CHAIN_POWERSAVE);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_RESTRICTED);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_LOW_POWER_STANDBY);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_BACKGROUND);
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            doTestReplaceFirewallChain(FIREWALL_CHAIN_BACKGROUND);
+        }
         doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_1);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_2);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_3);
@@ -19174,6 +19195,25 @@ public class ConnectivityServiceTest {
         verifyClatdStop(null /* inOrder */, MOBILE_IFNAME);
     }
 
-    // Note : adding tests is ConnectivityServiceTest is deprecated, as it is too big for
+    private static final int EXPECTED_TEST_METHOD_COUNT = 332;
+
+    @Test
+    public void testTestMethodCount() {
+        final Class<?> testClass = this.getClass();
+
+        int actualTestMethodCount = 0;
+        for (final Method method : testClass.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(Test.class)) {
+                actualTestMethodCount++;
+            }
+        }
+
+        assertEquals("Adding tests in ConnectivityServiceTest is deprecated, "
+                + "as it is too big for maintenance. Please consider adding new tests "
+                + "in subclasses of CSTest instead.",
+                EXPECTED_TEST_METHOD_COUNT, actualTestMethodCount);
+    }
+
+    // Note : adding tests in ConnectivityServiceTest is deprecated, as it is too big for
     // maintenance. Please consider adding new tests in subclasses of CSTest instead.
 }

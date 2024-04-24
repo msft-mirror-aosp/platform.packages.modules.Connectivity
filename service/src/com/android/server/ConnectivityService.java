@@ -24,6 +24,8 @@ import static android.content.pm.PackageManager.FEATURE_WATCH;
 import static android.content.pm.PackageManager.FEATURE_WIFI;
 import static android.content.pm.PackageManager.FEATURE_WIFI_DIRECT;
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
+import static android.net.BpfNetMapsConstants.METERED_ALLOW_CHAINS;
+import static android.net.BpfNetMapsConstants.METERED_DENY_CHAINS;
 import static android.net.ConnectivityDiagnosticsManager.ConnectivityReport.KEY_NETWORK_PROBES_ATTEMPTED_BITMASK;
 import static android.net.ConnectivityDiagnosticsManager.ConnectivityReport.KEY_NETWORK_PROBES_SUCCEEDED_BITMASK;
 import static android.net.ConnectivityDiagnosticsManager.ConnectivityReport.KEY_NETWORK_VALIDATION_RESULT;
@@ -478,6 +480,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private volatile boolean mLockdownEnabled;
 
     private final boolean mRequestRestrictedWifiEnabled;
+    private final boolean mBackgroundFirewallChainEnabled;
 
     /**
      * Stale copy of uid blocked reasons provided by NPMS. As long as they are accessed only in
@@ -1798,6 +1801,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mLocationPermissionChecker = mDeps.makeLocationPermissionChecker(mContext);
         mRequestRestrictedWifiEnabled = mDeps.isAtLeastU()
                 && mDeps.isFeatureEnabled(context, REQUEST_RESTRICTED_WIFI);
+        mBackgroundFirewallChainEnabled = mDeps.isAtLeastV() && mDeps.isFeatureNotChickenedOut(
+                context, ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN);
         mCarrierPrivilegeAuthenticator = mDeps.makeCarrierPrivilegeAuthenticator(
                 mContext, mTelephonyManager, mRequestRestrictedWifiEnabled,
                 this::handleUidCarrierPrivilegesLost, mHandler);
@@ -2235,11 +2240,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final long ident = Binder.clearCallingIdentity();
         try {
             final boolean metered = nc == null ? true : nc.isMetered();
-            if (mDeps.isAtLeastV()) {
-                return mBpfNetMaps.isUidNetworkingBlocked(uid, metered);
-            } else {
-                return mPolicyManager.isUidNetworkingBlocked(uid, metered);
-            }
+            return mPolicyManager.isUidNetworkingBlocked(uid, metered);
         } finally {
             Binder.restoreCallingIdentity(ident);
         }
@@ -4152,6 +4153,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.println();
         pw.println("Multicast routing supported: " +
                 (mMulticastRoutingCoordinatorService != null));
+
+        pw.println();
+        pw.println("Background firewall chain enabled: " + mBackgroundFirewallChainEnabled);
     }
 
     private void dumpNetworks(IndentingPrintWriter pw) {
@@ -13472,36 +13476,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    @Override
-    public void updateMeteredNetworkAllowList(final int uid, final boolean add) {
-        enforceNetworkStackOrSettingsPermission();
-
-        try {
-            if (add) {
-                mBpfNetMaps.addNiceApp(uid);
-            } else {
-                mBpfNetMaps.removeNiceApp(uid);
-            }
-        } catch (ServiceSpecificException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
-    @Override
-    public void updateMeteredNetworkDenyList(final int uid, final boolean add) {
-        enforceNetworkStackOrSettingsPermission();
-
-        try {
-            if (add) {
-                mBpfNetMaps.addNaughtyApp(uid);
-            } else {
-                mBpfNetMaps.removeNaughtyApp(uid);
-            }
-        } catch (ServiceSpecificException e) {
-            throw new IllegalStateException(e);
-        }
-    }
-
     private int setPackageFirewallRule(final int chain, final String packageName, final int rule)
             throws PackageManager.NameNotFoundException {
         final PackageManager pm = mContext.getPackageManager();
@@ -13520,6 +13494,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @Override
     public void setUidFirewallRule(final int chain, final int uid, final int rule) {
         enforceNetworkStackOrSettingsPermission();
+
+        if (chain == FIREWALL_CHAIN_BACKGROUND && !mBackgroundFirewallChainEnabled) {
+            Log.i(TAG, "Ignoring operation setUidFirewallRule on the background chain because the"
+                    + " feature is disabled.");
+            return;
+        }
 
         // There are only two type of firewall rule: FIREWALL_RULE_ALLOW or FIREWALL_RULE_DENY
         int firewallRule = getFirewallRuleType(chain, rule);
@@ -13555,6 +13535,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1:
             case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2:
             case ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3:
+            case ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_USER:
+            case ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_ADMIN:
                 defaultRule = FIREWALL_RULE_ALLOW;
                 break;
             case ConnectivityManager.FIREWALL_CHAIN_DOZABLE:
@@ -13562,6 +13544,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             case ConnectivityManager.FIREWALL_CHAIN_RESTRICTED:
             case ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY:
             case ConnectivityManager.FIREWALL_CHAIN_BACKGROUND:
+            case ConnectivityManager.FIREWALL_CHAIN_METERED_ALLOW:
                 defaultRule = FIREWALL_RULE_DENY;
                 break;
             default:
@@ -13572,6 +13555,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return rule;
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private void closeSocketsForFirewallChainLocked(final int chain)
             throws ErrnoException, SocketException, InterruptedIOException {
         if (BpfNetMapsUtils.isFirewallAllowList(chain)) {
@@ -13593,6 +13577,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public void setFirewallChainEnabled(final int chain, final boolean enable) {
         enforceNetworkStackOrSettingsPermission();
 
+        if (chain == FIREWALL_CHAIN_BACKGROUND && !mBackgroundFirewallChainEnabled) {
+            Log.i(TAG, "Ignoring operation setFirewallChainEnabled on the background chain because"
+                    + " the feature is disabled.");
+            return;
+        }
+        if (METERED_ALLOW_CHAINS.contains(chain) || METERED_DENY_CHAINS.contains(chain)) {
+            // Metered chains are used from a separate bpf program that is triggered by iptables
+            // and can not be controlled by setFirewallChainEnabled.
+            throw new UnsupportedOperationException(
+                    "Chain (" + chain + ") can not be controlled by setFirewallChainEnabled");
+        }
+
         try {
             mBpfNetMaps.setChildChain(chain, enable);
         } catch (ServiceSpecificException e) {
@@ -13612,12 +13608,25 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public boolean getFirewallChainEnabled(final int chain) {
         enforceNetworkStackOrSettingsPermission();
 
+        if (METERED_ALLOW_CHAINS.contains(chain) || METERED_DENY_CHAINS.contains(chain)) {
+            // Metered chains are used from a separate bpf program that is triggered by iptables
+            // and can not be controlled by setFirewallChainEnabled.
+            throw new UnsupportedOperationException(
+                    "getFirewallChainEnabled can not return status of chain (" + chain + ")");
+        }
+
         return mBpfNetMaps.isChainEnabled(chain);
     }
 
     @Override
     public void replaceFirewallChain(final int chain, final int[] uids) {
         enforceNetworkStackOrSettingsPermission();
+
+        if (chain == FIREWALL_CHAIN_BACKGROUND && !mBackgroundFirewallChainEnabled) {
+            Log.i(TAG, "Ignoring operation replaceFirewallChain on the background chain because"
+                    + " the feature is disabled.");
+            return;
+        }
 
         mBpfNetMaps.replaceUidChain(chain, uids);
     }
