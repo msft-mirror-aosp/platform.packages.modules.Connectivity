@@ -63,6 +63,9 @@ import static android.net.ConnectivityManager.EXTRA_REALTIME_NS;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_ADMIN;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_USER;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3;
@@ -457,6 +460,7 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Method;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -799,8 +803,10 @@ public class ConnectivityServiceTest {
             // This relies on all contexts for a given user returning the same UM mock
             final DevicePolicyManager dpmMock = createContextAsUser(userHandle, 0 /* flags */)
                     .getSystemService(DevicePolicyManager.class);
-            doReturn(value).when(dpmMock).getDeviceOwner();
-            doReturn(value).when(mDevicePolicyManager).getDeviceOwner();
+            ComponentName componentName = value == null
+                    ? null : new ComponentName(value, "deviceOwnerClass");
+            doReturn(componentName).when(dpmMock).getDeviceOwnerComponentOnAnyUser();
+            doReturn(componentName).when(mDevicePolicyManager).getDeviceOwnerComponentOnAnyUser();
         }
 
         @Override
@@ -10497,6 +10503,9 @@ public class ConnectivityServiceTest {
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_1, FIREWALL_RULE_ALLOW);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_2, FIREWALL_RULE_ALLOW);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_3, FIREWALL_RULE_ALLOW);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_ALLOW, FIREWALL_RULE_DENY);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_USER, FIREWALL_RULE_ALLOW);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_ADMIN, FIREWALL_RULE_ALLOW);
     }
 
     @Test @IgnoreUpTo(SC_V2)
@@ -19188,6 +19197,25 @@ public class ConnectivityServiceTest {
         verifyClatdStop(null /* inOrder */, MOBILE_IFNAME);
     }
 
-    // Note : adding tests is ConnectivityServiceTest is deprecated, as it is too big for
+    private static final int EXPECTED_TEST_METHOD_COUNT = 332;
+
+    @Test
+    public void testTestMethodCount() {
+        final Class<?> testClass = this.getClass();
+
+        int actualTestMethodCount = 0;
+        for (final Method method : testClass.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(Test.class)) {
+                actualTestMethodCount++;
+            }
+        }
+
+        assertEquals("Adding tests in ConnectivityServiceTest is deprecated, "
+                + "as it is too big for maintenance. Please consider adding new tests "
+                + "in subclasses of CSTest instead.",
+                EXPECTED_TEST_METHOD_COUNT, actualTestMethodCount);
+    }
+
+    // Note : adding tests in ConnectivityServiceTest is deprecated, as it is too big for
     // maintenance. Please consider adding new tests in subclasses of CSTest instead.
 }
