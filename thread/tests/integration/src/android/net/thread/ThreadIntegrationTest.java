@@ -21,15 +21,21 @@ import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_LEADER;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_STOPPED;
 import static android.net.thread.utils.IntegrationTestUtils.CALLBACK_TIMEOUT;
 import static android.net.thread.utils.IntegrationTestUtils.RESTART_JOIN_TIMEOUT;
+import static android.net.thread.utils.IntegrationTestUtils.getIpv6LinkAddresses;
+import static android.net.thread.utils.IntegrationTestUtils.isInMulticastGroup;
 import static android.net.thread.utils.IntegrationTestUtils.waitFor;
 
 import static com.android.compatibility.common.util.SystemUtil.runShellCommand;
 import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
+import static com.android.server.thread.openthread.IOtDaemon.TUN_IF_NAME;
 
 import static com.google.common.io.BaseEncoding.base16;
 import static com.google.common.truth.Truth.assertThat;
 
 import android.content.Context;
+import android.net.InetAddresses;
+import android.net.IpPrefix;
+import android.net.LinkAddress;
 import android.net.thread.utils.FullThreadDevice;
 import android.net.thread.utils.OtDaemonController;
 import android.net.thread.utils.ThreadFeatureCheckerRule;
@@ -79,6 +85,9 @@ public class ThreadIntegrationTest {
                                     + "B9D351B40C0402A0FFF8");
     private static final ActiveOperationalDataset DEFAULT_DATASET =
             ActiveOperationalDataset.fromThreadTlvs(DEFAULT_DATASET_TLVS);
+
+    private static final Inet6Address GROUP_ADDR_ALL_ROUTERS =
+            (Inet6Address) InetAddresses.parseNumericAddress("ff02::2");
 
     @Rule public final ThreadFeatureCheckerRule mThreadRule = new ThreadFeatureCheckerRule();
 
@@ -201,6 +210,33 @@ public class ThreadIntegrationTest {
         assertThat(udpReply).isEqualTo("Hello,Thread");
     }
 
+    @Test
+    public void joinNetworkWithBrDisabled_meshLocalAddressesArePreferred() throws Exception {
+        // When BR feature is disabled, there is no OMR address, so the mesh-local addresses are
+        // expected to be preferred.
+        mOtCtl.executeCommand("br disable");
+        mController.joinAndWait(DEFAULT_DATASET);
+
+        IpPrefix meshLocalPrefix = DEFAULT_DATASET.getMeshLocalPrefix();
+        List<LinkAddress> linkAddresses = getIpv6LinkAddresses("thread-wpan");
+        for (LinkAddress address : linkAddresses) {
+            if (meshLocalPrefix.contains(address.getAddress())) {
+                assertThat(address.getDeprecationTime())
+                        .isGreaterThan(SystemClock.elapsedRealtime());
+                assertThat(address.isPreferred()).isTrue();
+            }
+        }
+
+        mOtCtl.executeCommand("br enable");
+    }
+
+    @Test
+    public void joinNetwork_tunInterfaceJoinsAllRouterMulticastGroup() throws Exception {
+        mController.joinAndWait(DEFAULT_DATASET);
+
+        assertTunInterfaceMemberOfGroup(GROUP_ADDR_ALL_ROUTERS);
+    }
+
     // TODO (b/323300829): add more tests for integration with linux platform and
     // ConnectivityService
 
@@ -235,5 +271,9 @@ public class ThreadIntegrationTest {
         } catch (IOException e) {
             throw new IllegalStateException(e);
         }
+    }
+
+    private void assertTunInterfaceMemberOfGroup(Inet6Address address) throws Exception {
+        waitFor(() -> isInMulticastGroup(TUN_IF_NAME, address), TUN_ADDR_UPDATE_TIMEOUT);
     }
 }
