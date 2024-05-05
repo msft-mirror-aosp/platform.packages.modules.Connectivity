@@ -26,9 +26,9 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.apf.ApfCapabilities
-import android.net.apf.ApfConstant.ETH_ETHERTYPE_OFFSET
-import android.net.apf.ApfConstant.ICMP6_TYPE_OFFSET
-import android.net.apf.ApfConstant.IPV6_NEXT_HEADER_OFFSET
+import android.net.apf.ApfConstants.ETH_ETHERTYPE_OFFSET
+import android.net.apf.ApfConstants.ICMP6_TYPE_OFFSET
+import android.net.apf.ApfConstants.IPV6_NEXT_HEADER_OFFSET
 import android.net.apf.ApfV4Generator
 import android.net.apf.BaseApfGenerator
 import android.net.apf.BaseApfGenerator.MemorySlot
@@ -321,10 +321,10 @@ class ApfIntegrationTest {
 
         // DEVICEs launching with Android 15 (AOSP experimental) or higher with CHIPSETs that set
         // ro.board.first_api_level or ro.board.api_level to 202404 or higher:
-        // - [GMS-VSR-5.3.12-009] MUST indicate at least 2000 bytes of usable memory from calls to
+        // - [GMS-VSR-5.3.12-009] MUST indicate at least 2048 bytes of usable memory from calls to
         //   the getApfPacketFilterCapabilities HAL method.
         if (getVsrApiLevel() >= 202404) {
-            assertThat(caps.maximumApfProgramSize).isAtLeast(2000)
+            assertThat(caps.maximumApfProgramSize).isAtLeast(2048)
         }
     }
 
