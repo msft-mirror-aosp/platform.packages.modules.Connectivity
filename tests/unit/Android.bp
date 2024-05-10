@@ -2,6 +2,7 @@
 // Build FrameworksNetTests package
 //########################################################################
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     // A large-scale-change added 'default_applicable_licenses' to import
     // all of the 'license_kinds' from "Android-Apache-2.0"
@@ -26,7 +27,6 @@ java_defaults {
         "libandroid_net_frameworktests_util_jni",
         "libbase",
         "libbinder",
-        "libbpf_bcc",
         "libc++",
         "libcrypto",
         "libcutils",
@@ -58,34 +58,18 @@ java_defaults {
 filegroup {
     name: "non-connectivity-module-test",
     srcs: [
-        "java/android/net/Ikev2VpnProfileTest.java",
         "java/android/net/IpMemoryStoreTest.java",
         "java/android/net/TelephonyNetworkSpecifierTest.java",
-        "java/android/net/VpnManagerTest.java",
         "java/android/net/ipmemorystore/*.java",
         "java/android/net/netstats/NetworkStatsDataMigrationUtilsTest.kt",
         "java/com/android/internal/net/NetworkUtilsInternalTest.java",
-        "java/com/android/internal/net/VpnProfileTest.java",
-        "java/com/android/server/VpnManagerServiceTest.java",
         "java/com/android/server/connectivity/IpConnectivityEventBuilderTest.java",
         "java/com/android/server/connectivity/IpConnectivityMetricsTest.java",
         "java/com/android/server/connectivity/MetricsTestUtil.java",
         "java/com/android/server/connectivity/MultipathPolicyTrackerTest.java",
         "java/com/android/server/connectivity/NetdEventListenerServiceTest.java",
-        "java/com/android/server/connectivity/VpnTest.java",
         "java/com/android/server/net/ipmemorystore/*.java",
-    ]
-}
-
-// Subset of services-core used to by ConnectivityService tests to test VPN realistically.
-// This is stripped by jarjar (see rules below) from other unrelated classes, so tests do not
-// include most classes from services-core, which are unrelated and cause wrong code coverage
-// calculations.
-java_library {
-    name: "services.core-vpn",
-    static_libs: ["services.core"],
-    jarjar_rules: "vpn-jarjar-rules.txt",
-    visibility: ["//visibility:private"],
+    ],
 }
 
 java_defaults {
@@ -114,9 +98,8 @@ java_defaults {
         "platform-test-annotations",
         "service-connectivity-pre-jarjar",
         "service-connectivity-tiramisu-pre-jarjar",
-        "services.core-vpn",
         "testables",
-        "cts-net-utils"
+        "cts-net-utils",
     ],
     libs: [
         "android.net.ipsec.ike.stubs.module_lib",

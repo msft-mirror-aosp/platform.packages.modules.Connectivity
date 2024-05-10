@@ -35,6 +35,7 @@ import com.android.testutils.DevSdkIgnoreRunner;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
@@ -53,7 +54,8 @@ public class MdnsServiceInfoTest {
                         "192.168.1.1",
                         "2001::1",
                         List.of("vn=Google Inc.", "mn=Google Nest Hub Max"),
-                        /* textEntries= */ null);
+                        /* textEntries= */ null,
+                        INTERFACE_INDEX_UNSPECIFIED);
 
         assertTrue(info.getAttributeByKey("vn").equals("Google Inc."));
         assertTrue(info.getAttributeByKey("mn").equals("Google Nest Hub Max"));
@@ -72,7 +74,8 @@ public class MdnsServiceInfoTest {
                         "2001::1",
                         /* textStrings= */ null,
                         List.of(MdnsServiceInfo.TextEntry.fromString("vn=Google Inc."),
-                                MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max")));
+                                MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max")),
+                        INTERFACE_INDEX_UNSPECIFIED);
 
         assertTrue(info.getAttributeByKey("vn").equals("Google Inc."));
         assertTrue(info.getAttributeByKey("mn").equals("Google Nest Hub Max"));
@@ -92,7 +95,8 @@ public class MdnsServiceInfoTest {
                         List.of("vn=Alphabet Inc.", "mn=Google Nest Hub Max", "id=12345"),
                         List.of(
                                 MdnsServiceInfo.TextEntry.fromString("vn=Google Inc."),
-                                MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max")));
+                                MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max")),
+                        INTERFACE_INDEX_UNSPECIFIED);
 
         assertEquals(Map.of("vn", "Google Inc.", "mn", "Google Nest Hub Max"),
                 info.getAttributes());
@@ -112,10 +116,32 @@ public class MdnsServiceInfoTest {
                         List.of("vn=Alphabet Inc.", "mn=Google Nest Hub Max", "id=12345"),
                         List.of(MdnsServiceInfo.TextEntry.fromString("vn=Google Inc."),
                                 MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max"),
-                                MdnsServiceInfo.TextEntry.fromString("mn=Google WiFi Router")));
+                                MdnsServiceInfo.TextEntry.fromString("mn=Google WiFi Router")),
+                        INTERFACE_INDEX_UNSPECIFIED);
 
         assertEquals(Map.of("vn", "Google Inc.", "mn", "Google Nest Hub Max"),
                 info.getAttributes());
+    }
+
+    @Test
+    public void constructor_createWithUppercaseKeys_correctAttributes() {
+        MdnsServiceInfo info =
+                new MdnsServiceInfo(
+                        "my-mdns-service",
+                        new String[] {"_testtype", "_tcp"},
+                        List.of(),
+                        new String[] {"my-host", "local"},
+                        12345,
+                        "192.168.1.1",
+                        "2001::1",
+                        List.of("KEY=Value"),
+                        /* textEntries= */ null,
+                        INTERFACE_INDEX_UNSPECIFIED);
+
+        assertEquals("Value", info.getAttributeByKey("key"));
+        assertEquals("Value", info.getAttributeByKey("KEY"));
+        assertEquals(1, info.getAttributes().size());
+        assertEquals("KEY", info.getAttributes().keySet().iterator().next());
     }
 
     @Test
@@ -129,7 +155,9 @@ public class MdnsServiceInfoTest {
                         12345,
                         "192.168.1.1",
                         "2001::1",
-                        List.of());
+                        List.of(),
+                        /* textEntries= */ null,
+                        INTERFACE_INDEX_UNSPECIFIED);
 
         assertEquals(info.getInterfaceIndex(), INTERFACE_INDEX_UNSPECIFIED);
     }
@@ -177,12 +205,13 @@ public class MdnsServiceInfoTest {
                         List.of(),
                         new String[] {"my-host", "local"},
                         12345,
-                        "192.168.1.1",
-                        "2001::1",
+                        List.of("192.168.1.1"),
+                        List.of("2001::1"),
                         List.of(),
                         /* textEntries= */ null,
                         /* interfaceIndex= */ 20,
-                        network);
+                        network,
+                        Instant.MAX /* expirationTime */);
 
         assertEquals(network, info2.getNetwork());
     }
@@ -197,15 +226,16 @@ public class MdnsServiceInfoTest {
                         List.of(),
                         new String[] {"my-host", "local"},
                         12345,
-                        "192.168.1.1",
-                        "2001::1",
+                        List.of("192.168.1.1", "192.168.1.2"),
+                        List.of("2001::1", "2001::2"),
                         List.of("vn=Alphabet Inc.", "mn=Google Nest Hub Max", "id=12345"),
                         List.of(
                                 MdnsServiceInfo.TextEntry.fromString("vn=Google Inc."),
                                 MdnsServiceInfo.TextEntry.fromString("mn=Google Nest Hub Max"),
                                 MdnsServiceInfo.TextEntry.fromString("test=")),
                         20 /* interfaceIndex */,
-                        new Network(123));
+                        new Network(123),
+                        Instant.MAX /* expirationTime */);
 
         beforeParcel.writeToParcel(parcel, 0);
         parcel.setDataPosition(0);
@@ -217,7 +247,9 @@ public class MdnsServiceInfoTest {
         assertArrayEquals(beforeParcel.getHostName(), afterParcel.getHostName());
         assertEquals(beforeParcel.getPort(), afterParcel.getPort());
         assertEquals(beforeParcel.getIpv4Address(), afterParcel.getIpv4Address());
+        assertEquals(beforeParcel.getIpv4Addresses(), afterParcel.getIpv4Addresses());
         assertEquals(beforeParcel.getIpv6Address(), afterParcel.getIpv6Address());
+        assertEquals(beforeParcel.getIpv6Addresses(), afterParcel.getIpv6Addresses());
         assertEquals(beforeParcel.getAttributes(), afterParcel.getAttributes());
         assertEquals(beforeParcel.getInterfaceIndex(), afterParcel.getInterfaceIndex());
         assertEquals(beforeParcel.getNetwork(), afterParcel.getNetwork());

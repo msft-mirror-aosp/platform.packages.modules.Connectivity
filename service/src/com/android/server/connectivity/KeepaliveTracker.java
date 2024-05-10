@@ -34,10 +34,11 @@ import static android.net.SocketKeepalive.NO_KEEPALIVE;
 import static android.net.SocketKeepalive.SUCCESS;
 import static android.net.SocketKeepalive.SUCCESS_PAUSED;
 
+import static com.android.net.module.util.FeatureVersions.FEATURE_CLAT_ADDRESS_TRANSLATE;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
-import android.net.ConnectivityResources;
 import android.net.ISocketKeepaliveCallback;
 import android.net.InetAddresses;
 import android.net.InvalidPacketException;
@@ -60,10 +61,13 @@ import android.util.Pair;
 import com.android.connectivity.resources.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.HexDump;
 import com.android.net.module.util.IpUtils;
 
 import java.io.FileDescriptor;
+import java.net.Inet4Address;
+import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketAddress;
@@ -84,6 +88,9 @@ public class KeepaliveTracker {
     private static final boolean DBG = false;
 
     public static final String PERMISSION = android.Manifest.permission.PACKET_KEEPALIVE_OFFLOAD;
+
+    private static final String CONFIG_DISABLE_CLAT_ADDRESS_TRANSLATE =
+            "disable_clat_address_translate";
 
     /** Keeps track of keepalive requests. */
     private final HashMap <NetworkAgentInfo, HashMap<Integer, KeepaliveInfo>> mKeepalives =
@@ -106,14 +113,21 @@ public class KeepaliveTracker {
     // Allowed unprivileged keepalive slots per uid. Caller's permission will be enforced if
     // the number of remaining keepalive slots is less than or equal to the threshold.
     private final int mAllowedUnprivilegedSlotsForUid;
-
+    private final Dependencies mDependencies;
     public KeepaliveTracker(Context context, Handler handler) {
-        mTcpController = new TcpKeepaliveController(handler);
+        this(context, handler, new TcpKeepaliveController(handler), new Dependencies());
+    }
+
+    @VisibleForTesting
+    public KeepaliveTracker(Context context, Handler handler, TcpKeepaliveController tcpController,
+            Dependencies deps) {
+        mTcpController = tcpController;
         mContext = context;
+        mDependencies = deps;
 
-        mSupportedKeepalives = KeepaliveUtils.getSupportedKeepalives(mContext);
+        mSupportedKeepalives = mDependencies.getSupportedKeepalives(mContext);
 
-        final ConnectivityResources res = new ConnectivityResources(mContext);
+        final ConnectivityResources res = mDependencies.createConnectivityResources(mContext);
         mReservedPrivilegedSlots = res.get().getInteger(
                 R.integer.config_reservedPrivilegedKeepaliveSlots);
         mAllowedUnprivilegedSlotsForUid = res.get().getInteger(
@@ -145,8 +159,9 @@ public class KeepaliveTracker {
         public static final int TYPE_TCP = 2;
 
         // Keepalive slot. A small integer that identifies this keepalive among the ones handled
-        // by this network.
-        private int mSlot = NO_KEEPALIVE;
+        // by this network. This is initialized to NO_KEEPALIVE for new keepalives, but to the
+        // old slot for resumed keepalives.
+        private int mSlot;
 
         // Packet data.
         private final KeepalivePacketData mPacket;
@@ -166,25 +181,30 @@ public class KeepaliveTracker {
                 int interval,
                 int type,
                 @Nullable FileDescriptor fd) throws InvalidSocketException {
-            this(callback, nai, packet, interval, type, fd, false /* resumed */);
+            this(callback, nai, packet, Binder.getCallingPid(), Binder.getCallingUid(), interval,
+                    type, fd, NO_KEEPALIVE /* slot */, false /* resumed */);
         }
 
         KeepaliveInfo(@NonNull ISocketKeepaliveCallback callback,
                 @NonNull NetworkAgentInfo nai,
                 @NonNull KeepalivePacketData packet,
+                int pid,
+                int uid,
                 int interval,
                 int type,
                 @Nullable FileDescriptor fd,
+                int slot,
                 boolean resumed) throws InvalidSocketException {
             mCallback = callback;
-            mPid = Binder.getCallingPid();
-            mUid = Binder.getCallingUid();
+            mPid = pid;
+            mUid = uid;
             mPrivileged = (PERMISSION_GRANTED == mContext.checkPermission(PERMISSION, mPid, mUid));
 
             mNai = nai;
             mPacket = packet;
             mInterval = interval;
             mType = type;
+            mSlot = slot;
             mResumed = resumed;
 
             // For SocketKeepalive, a dup of fd is kept in mFd so the source port from which the
@@ -264,6 +284,14 @@ public class KeepaliveTracker {
             return mSlot;
         }
 
+        int getKeepaliveIntervalSec() {
+            return mInterval;
+        }
+
+        public int getUid() {
+            return mUid;
+        }
+
         private int checkNetworkConnected() {
             if (!mNai.networkInfo.isConnectedOrConnecting()) {
                 return ERROR_INVALID_NETWORK;
@@ -273,10 +301,14 @@ public class KeepaliveTracker {
 
         private int checkSourceAddress() {
             // Check that we have the source address.
-            for (InetAddress address : mNai.linkProperties.getAddresses()) {
+            for (InetAddress address : mNai.linkProperties.getAllAddresses()) {
                 if (address.equals(mPacket.getSrcAddress())) {
                     return SUCCESS;
                 }
+            }
+            // Or the address is the clat source address.
+            if (mPacket.getSrcAddress().equals(mNai.getClatv6SrcAddress())) {
+                return SUCCESS;
             }
             return ERROR_INVALID_IP_ADDRESS;
         }
@@ -334,7 +366,12 @@ public class KeepaliveTracker {
             return SUCCESS;
         }
 
-        private int isValid() {
+        /**
+         * Checks if the keepalive info is valid to start.
+         *
+         * @return SUCCESS if the keepalive is valid and the error reason otherwise.
+         */
+        public int isValid() {
             synchronized (mNai) {
                 int error = checkInterval();
                 if (error == SUCCESS) error = checkLimit();
@@ -345,11 +382,17 @@ public class KeepaliveTracker {
             }
         }
 
-        void start(int slot) {
+        /**
+         * Attempt to start the keepalive on the given slot.
+         *
+         * @param slot the slot to start the keepalive on.
+         * @return SUCCESS if the keepalive is successfully starting and the error reason otherwise.
+         */
+        int start(int slot) {
             // BINDER_DIED can happen if the binder died before the KeepaliveInfo was created and
             // the constructor set the state to BINDER_DIED. If that's the case, the KI is already
             // cleaned up.
-            if (BINDER_DIED == mStartedState) return;
+            if (BINDER_DIED == mStartedState) return BINDER_DIED;
             mSlot = slot;
             int error = isValid();
             if (error == SUCCESS) {
@@ -362,10 +405,10 @@ public class KeepaliveTracker {
                         break;
                     case TYPE_TCP:
                         try {
-                            mTcpController.startSocketMonitor(mFd, this, mSlot);
+                            mTcpController.startSocketMonitor(mFd, mCallback, mSlot);
                         } catch (InvalidSocketException e) {
                             handleStopKeepalive(mNai, mSlot, ERROR_INVALID_SOCKET);
-                            return;
+                            return ERROR_INVALID_SOCKET;
                         }
                         final TcpKeepalivePacketData tcpData = (TcpKeepalivePacketData) mPacket;
                         mNai.onAddTcpKeepalivePacketFilter(slot, tcpData);
@@ -374,13 +417,14 @@ public class KeepaliveTracker {
                         break;
                     default:
                         Log.wtf(TAG, "Starting keepalive with unknown type: " + mType);
-                        handleStopKeepalive(mNai, mSlot, error);
-                        return;
+                        handleStopKeepalive(mNai, mSlot, ERROR_UNSUPPORTED);
+                        return ERROR_UNSUPPORTED;
                 }
                 mStartedState = STARTING;
+                return SUCCESS;
             } else {
                 handleStopKeepalive(mNai, mSlot, error);
-                return;
+                return error;
             }
         }
 
@@ -441,16 +485,21 @@ public class KeepaliveTracker {
             }
         }
 
-        void onFileDescriptorInitiatedStop(final int socketKeepaliveReason) {
-            handleStopKeepalive(mNai, mSlot, socketKeepaliveReason);
-        }
-
         /**
          * Construct a new KeepaliveInfo from existing KeepaliveInfo with a new fd.
          */
         public KeepaliveInfo withFd(@NonNull FileDescriptor fd) throws InvalidSocketException {
-            return new KeepaliveInfo(mCallback, mNai, mPacket, mInterval, mType, fd,
-                    true /* resumed */);
+            return new KeepaliveInfo(mCallback, mNai, mPacket, mPid, mUid, mInterval, mType,
+                    fd, mSlot, true /* resumed */);
+        }
+
+        /**
+         * Construct a new KeepaliveInfo from existing KeepaliveInfo with a new KeepalivePacketData.
+         */
+        public KeepaliveInfo withPacketData(@NonNull KeepalivePacketData packet)
+                throws InvalidSocketException {
+            return new KeepaliveInfo(mCallback, mNai, packet, mPid, mUid, mInterval, mType,
+                    mFd, mSlot, mResumed);
         }
     }
 
@@ -483,12 +532,53 @@ public class KeepaliveTracker {
 
     /**
      * Handle start keepalives with the message.
+     *
+     * @param ki the keepalive to start.
+     * @return Pair of (SUCCESS if the keepalive is successfully starting and the error reason
+     *         otherwise, the started KeepaliveInfo object)
      */
-    public void handleStartKeepalive(KeepaliveInfo ki) {
-        NetworkAgentInfo nai = ki.getNai();
-        int slot = findFirstFreeSlot(nai);
-        mKeepalives.get(nai).put(slot, ki);
-        ki.start(slot);
+    public Pair<Integer, KeepaliveInfo> handleStartKeepalive(KeepaliveInfo ki) {
+        final KeepaliveInfo newKi;
+        try {
+            newKi = handleUpdateKeepaliveForClat(ki);
+        } catch (InvalidSocketException | InvalidPacketException e) {
+            Log.e(TAG, "Fail to construct keepalive packet");
+            notifyErrorCallback(ki.mCallback, ERROR_INVALID_IP_ADDRESS);
+            // Fail to create new keepalive packet for clat. Return the original keepalive info.
+            return new Pair<>(ERROR_INVALID_IP_ADDRESS, ki);
+        }
+
+        final NetworkAgentInfo nai = newKi.getNai();
+        // If this was a paused keepalive, then reuse the same slot that was kept for it. Otherwise,
+        // use the first free slot for this network agent.
+        final int slot = NO_KEEPALIVE != newKi.mSlot ? newKi.mSlot : findFirstFreeSlot(nai);
+        mKeepalives.get(nai).put(slot, newKi);
+
+        return new Pair<>(newKi.start(slot), newKi);
+    }
+
+    private KeepaliveInfo handleUpdateKeepaliveForClat(KeepaliveInfo ki)
+            throws InvalidSocketException, InvalidPacketException {
+        if (!mDependencies.isAddressTranslationEnabled(mContext)) return ki;
+
+        // Translation applies to only NAT-T keepalive
+        if (ki.mType != KeepaliveInfo.TYPE_NATT) return ki;
+        // Only try to translate address if the packet source address is the clat's source address.
+        if (!ki.mPacket.getSrcAddress().equals(ki.getNai().getClatv4SrcAddress())) return ki;
+
+        final InetAddress dstAddr = ki.mPacket.getDstAddress();
+        // Do not perform translation for a v6 dst address.
+        if (!(dstAddr instanceof Inet4Address)) return ki;
+
+        final Inet6Address address = ki.getNai().translateV4toClatV6((Inet4Address) dstAddr);
+
+        if (address == null) return ki;
+
+        final int srcPort = ki.mPacket.getSrcPort();
+        final KeepaliveInfo newInfo = ki.withPacketData(NattKeepalivePacketData.nattKeepalivePacket(
+                ki.getNai().getClatv6SrcAddress(), srcPort, address, NATT_PORT));
+        Log.d(TAG, "Src is clat v4 address. Convert from " + ki + " to " + newInfo);
+        return newInfo;
     }
 
     public void handleStopAllKeepalives(NetworkAgentInfo nai, int reason) {
@@ -496,6 +586,12 @@ public class KeepaliveTracker {
         if (networkKeepalives != null) {
             final ArrayList<KeepaliveInfo> kalist = new ArrayList(networkKeepalives.values());
             for (KeepaliveInfo ki : kalist) {
+                // If the keepalive is paused, then it is already stopped with the hardware and so
+                // continue. Note that to send the appropriate stop reason callback,
+                // AutomaticOnOffKeepaliveTracker will call finalizePausedKeepalive which will also
+                // finally remove this keepalive slot from the array.
+                if (ki.mStopReason == SUCCESS_PAUSED) continue;
+
                 ki.stop(reason);
                 // Clean up keepalives since the network agent is disconnected and unable to pass
                 // back asynchronous result of stop().
@@ -534,17 +630,22 @@ public class KeepaliveTracker {
             return;
         }
 
-        // Remove the keepalive from hash table so the slot can be considered available when reusing
-        // it.
-        networkKeepalives.remove(slot);
-        Log.d(TAG, "Remove keepalive " + slot + " on " + networkName + ", "
-                + networkKeepalives.size() + " remains.");
+        // If the keepalive was stopped for good, remove it from the hash table so the slot can
+        // be considered available when reusing it. If it was only a pause, let it sit in the map
+        // so it sits on the slot.
+        final int reason = ki.mStopReason;
+        if (reason != SUCCESS_PAUSED) {
+            networkKeepalives.remove(slot);
+            Log.d(TAG, "Remove keepalive " + slot + " on " + networkName + ", "
+                    + networkKeepalives.size() + " remains.");
+        } else {
+            Log.d(TAG, "Pause keepalive " + slot + " on " + networkName + ", keep slot reserved");
+        }
         if (networkKeepalives.isEmpty()) {
             mKeepalives.remove(nai);
         }
 
         // Notify app that the keepalive is stopped.
-        final int reason = ki.mStopReason;
         if (reason == SUCCESS) {
             try {
                 ki.mCallback.onStopped();
@@ -566,7 +667,20 @@ public class KeepaliveTracker {
         } else if (reason == ERROR_STOP_REASON_UNINITIALIZED) {
             throw new IllegalStateException("Unexpected stop reason: " + reason);
         } else if (reason == ERROR_NO_SUCH_SLOT) {
-            throw new IllegalStateException("No such slot: " + reason);
+            // There are multiple independent reasons a keepalive can stop. Some
+            // are software (e.g. the app stops the keepalive) and some are hardware
+            // (e.g. the SIM card gets removed). Therefore, there is a very low
+            // probability that both of these happen at the same time, which would
+            // result in the first stop attempt returning SUCCESS and the second
+            // stop attempt returning NO_SUCH_SLOT. Such a race condition can be
+            // ignored with a log.
+            // This should still be reported because if it happens with any frequency
+            // it probably means there is a bug where the system server is trying
+            // to use a non-existing hardware slot.
+            // TODO : separate the non-existing hardware slot from the case where
+            // there is no keepalive running on this slot.
+            Log.wtf(TAG, "Keepalive on slot " + slot + " can't be stopped : " + reason);
+            notifyErrorCallback(ki.mCallback, reason);
         } else {
             notifyErrorCallback(ki.mCallback, reason);
         }
@@ -577,40 +691,41 @@ public class KeepaliveTracker {
     /**
      * Finalize a paused keepalive.
      *
-     * This will simply send the onStopped() callback after checking that this keepalive is
-     * indeed paused.
+     * This will send the appropriate callback after checking that this keepalive is indeed paused,
+     * and free the slot.
      *
      * @param ki the keepalive to finalize
+     * @param reason the reason the keepalive is stopped
      */
-    public void finalizePausedKeepalive(@NonNull final KeepaliveInfo ki) {
+    public void finalizePausedKeepalive(@NonNull final KeepaliveInfo ki, int reason) {
         if (SUCCESS_PAUSED != ki.mStopReason) {
             throw new IllegalStateException("Keepalive is not paused");
         }
-        try {
-            ki.mCallback.onStopped();
-        } catch (RemoteException e) {
-            Log.w(TAG, "Discarded onStopped callback while finalizing paused keepalive");
+        if (reason == SUCCESS) {
+            try {
+                ki.mCallback.onStopped();
+            } catch (RemoteException e) {
+                Log.w(TAG, "Discarded onStopped callback while finalizing paused keepalive");
+            }
+        } else {
+            notifyErrorCallback(ki.mCallback, reason);
         }
+
+        final HashMap<Integer, KeepaliveInfo> networkKeepalives = mKeepalives.get(ki.mNai);
+        if (networkKeepalives == null) {
+            Log.e(TAG, "Attempt to finalize keepalive on nonexistent network " + ki.mNai);
+            return;
+        }
+        networkKeepalives.remove(ki.mSlot);
     }
 
-    public void handleCheckKeepalivesStillValid(NetworkAgentInfo nai) {
-        HashMap <Integer, KeepaliveInfo> networkKeepalives = mKeepalives.get(nai);
-        if (networkKeepalives != null) {
-            ArrayList<Pair<Integer, Integer>> invalidKeepalives = new ArrayList<>();
-            for (int slot : networkKeepalives.keySet()) {
-                int error = networkKeepalives.get(slot).isValid();
-                if (error != SUCCESS) {
-                    invalidKeepalives.add(Pair.create(slot, error));
-                }
-            }
-            for (Pair<Integer, Integer> slotAndError: invalidKeepalives) {
-                handleStopKeepalive(nai, slotAndError.first, slotAndError.second);
-            }
-        }
-    }
-
-    /** Handle keepalive events from lower layer. */
-    public void handleEventSocketKeepalive(@NonNull NetworkAgentInfo nai, int slot, int reason) {
+    /**
+     * Handle keepalive events from lower layer.
+     *
+     * @return false if the event caused handleStopKeepalive to be called, i.e. the keepalive is
+     *     forced to stop. Otherwise, return true.
+     */
+    public boolean handleEventSocketKeepalive(@NonNull NetworkAgentInfo nai, int slot, int reason) {
         KeepaliveInfo ki = null;
         try {
             ki = mKeepalives.get(nai).get(slot);
@@ -618,7 +733,7 @@ public class KeepaliveTracker {
         if (ki == null) {
             Log.e(TAG, "Event " + NetworkAgent.EVENT_SOCKET_KEEPALIVE + "," + slot + "," + reason
                     + " for unknown keepalive " + slot + " on " + nai.toShortString());
-            return;
+            return true;
         }
 
         // This can be called in a number of situations :
@@ -651,11 +766,13 @@ public class KeepaliveTracker {
                     Log.w(TAG, "Discarded " + (ki.mResumed ? "onResumed" : "onStarted")
                             + " callback for slot " + slot);
                 }
+                return true;
             } else {
                 Log.d(TAG, "Failed to start keepalive " + slot + " on " + nai.toShortString()
                         + ": " + reason);
                 // The message indicated some error trying to start: do call handleStopKeepalive.
                 handleStopKeepalive(nai, slot, reason);
+                return false;
             }
         } else if (KeepaliveInfo.STOPPING == ki.mStartedState) {
             // The message indicated result of stopping : clean up keepalive slots.
@@ -663,9 +780,12 @@ public class KeepaliveTracker {
                     + " stopped: " + reason);
             ki.mStartedState = KeepaliveInfo.NOT_STARTED;
             cleanupStoppedKeepalive(nai, slot);
+            return true;
         } else {
             Log.wtf(TAG, "Event " + NetworkAgent.EVENT_SOCKET_KEEPALIVE + "," + slot + "," + reason
                     + " for keepalive in wrong state: " + ki.toString());
+            // Although this is an unexpected event, the keepalive is not stopped here.
+            return true;
         }
     }
 
@@ -692,6 +812,7 @@ public class KeepaliveTracker {
             srcAddress = InetAddresses.parseNumericAddress(srcAddrString);
             dstAddress = InetAddresses.parseNumericAddress(dstAddrString);
         } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Fail to construct address", e);
             notifyErrorCallback(cb, ERROR_INVALID_IP_ADDRESS);
             return null;
         }
@@ -701,6 +822,7 @@ public class KeepaliveTracker {
             packet = NattKeepalivePacketData.nattKeepalivePacket(
                     srcAddress, srcPort, dstAddress, NATT_PORT);
         } catch (InvalidPacketException e) {
+            Log.e(TAG, "Fail to construct keepalive packet", e);
             notifyErrorCallback(cb, e.getError());
             return null;
         }
@@ -832,5 +954,47 @@ public class KeepaliveTracker {
             pw.decreaseIndent();
         }
         pw.decreaseIndent();
+    }
+
+    /**
+     * Dependencies class for testing.
+     */
+    @VisibleForTesting
+    public static class Dependencies {
+        /**
+         * Read supported keepalive count for each transport type from overlay resource. This should
+         * be used to create a local variable store of resource customization, and set as the
+         * input for {@link getSupportedKeepalivesForNetworkCapabilities}.
+         *
+         * @param context The context to read resource from.
+         * @return An array of supported keepalive count for each transport type.
+         */
+        @NonNull
+        public int[] getSupportedKeepalives(@NonNull Context context) {
+            return KeepaliveResourceUtil.getSupportedKeepalives(context);
+        }
+
+        /**
+         * Create a new {@link ConnectivityResources}.
+         */
+        @NonNull
+        public ConnectivityResources createConnectivityResources(@NonNull Context context) {
+            return new ConnectivityResources(context);
+        }
+
+        /**
+         * Return if keepalive address translation with clat feature is supported or not.
+         *
+         * This is controlled by both isFeatureSupported() and isFeatureEnabled(). The
+         * isFeatureSupported() checks whether device contains the minimal required module
+         * version for FEATURE_CLAT_ADDRESS_TRANSLATE. The isTetheringFeatureForceDisabled()
+         * checks the DeviceConfig flag that can be updated via DeviceConfig push to control
+         * the overall feature.
+         */
+        public boolean isAddressTranslationEnabled(@NonNull Context context) {
+            return DeviceConfigUtils.isFeatureSupported(context, FEATURE_CLAT_ADDRESS_TRANSLATE)
+                    && DeviceConfigUtils.isTetheringFeatureNotChickenedOut(context,
+                            CONFIG_DISABLE_CLAT_ADDRESS_TRANSLATE);
+        }
     }
 }

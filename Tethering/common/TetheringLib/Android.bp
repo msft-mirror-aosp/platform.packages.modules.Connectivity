@@ -14,23 +14,13 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
-
-// Both cronet_java_defaults and cronet_java_prejarjar_defaults can be used to
-// specify a java_defaults target that either enables or disables Cronet. This
-// is used to disable Cronet on tm-mainline-prod.
-// Note: they must either both be enabled or disabled.
-cronet_java_defaults = "CronetJavaDefaultsEnabled"
-cronet_java_prejarjar_defaults = "CronetJavaPrejarjarDefaultsEnabled"
-// This is a placeholder comment to avoid merge conflicts
-// as cronet_defaults may have different values
-// depending on the branch
 
 java_sdk_library {
     name: "framework-tethering",
     defaults: [
-        "CronetJavaDefaults",
         "framework-tethering-defaults",
     ],
     impl_library_visibility: [
@@ -46,14 +36,15 @@ java_sdk_library {
         "//frameworks/base/core/tests/bandwidthtests",
         "//frameworks/base/core/tests/benchmarks",
         "//frameworks/base/core/tests/utillib",
-        "//frameworks/base/packages/Connectivity/tests:__subpackages__",
+        "//frameworks/base/services/tests/VpnTests",
         "//frameworks/base/tests/vcn",
-        "//frameworks/libs/net/common/testutils",
-        "//frameworks/libs/net/common/tests:__subpackages__",
         "//frameworks/opt/telephony/tests/telephonytests",
         "//packages/modules/CaptivePortalLogin/tests",
+        "//packages/modules/Connectivity/staticlibs/testutils",
+        "//packages/modules/Connectivity/staticlibs/tests:__subpackages__",
         "//packages/modules/Connectivity/Tethering/tests:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/thread/tests:__subpackages__",
         "//packages/modules/IPsec/tests/iketests",
         "//packages/modules/NetworkStack/tests:__subpackages__",
         "//packages/modules/Wifi/service/tests/wifitests",
@@ -65,61 +56,19 @@ java_sdk_library {
 
     hostdex: true, // for hiddenapi check
     permitted_packages: ["android.net"],
-}
-
-java_defaults {
-    name: "CronetJavaDefaults",
-    defaults: [cronet_java_defaults],
-}
-
-java_defaults {
-    name: "CronetJavaDefaultsEnabled",
-    srcs: [":cronet_aml_api_sources"],
-    libs: [
-        "androidx.annotation_annotation",
-    ],
-    impl_only_static_libs: [
-        "cronet_aml_java",
-    ],
-    // STOPSHIP(b/265674359): fix all Cronet lint warnings and re-enable lint
-    // directly in framework-tethering
     lint: {
-         enabled: false,
+        strict_updatability_linting: true,
     },
-    api_lint: {
-        enabled: false,
-    },
-    api_dir: "cronet_enabled/api",
-}
-
-java_defaults {
-  name: "CronetJavaDefaultsDisabled",
-  lint: { strict_updatability_linting: true },
-}
-
-java_defaults {
-  name: "CronetJavaPrejarjarDefaults",
-  defaults: [cronet_java_prejarjar_defaults],
-}
-
-java_defaults {
-  name: "CronetJavaPrejarjarDefaultsDisabled",
-}
-
-java_defaults {
-  name: "CronetJavaPrejarjarDefaultsEnabled",
-  static_libs: [
-    "cronet_aml_api_java",
-    "cronet_aml_java"
-  ],
+    aconfig_declarations: [
+        "com.android.net.flags-aconfig",
+    ],
 }
 
 java_library {
-  name: "framework-tethering-pre-jarjar",
-  defaults: [
-    "framework-tethering-defaults",
-    "CronetJavaPrejarjarDefaults",
-  ],
+    name: "framework-tethering-pre-jarjar",
+    defaults: [
+        "framework-tethering-defaults",
+    ],
 }
 
 java_genrule {
@@ -135,7 +84,7 @@ java_genrule {
     out: ["framework_tethering_jarjar_rules.txt"],
     cmd: "$(location jarjar-rules-generator) " +
         "$(location :framework-tethering-pre-jarjar{.jar}) " +
-        "--apistubs $(location :framework-tethering.stubs.module_lib{.jar}) " + 
+        "--apistubs $(location :framework-tethering.stubs.module_lib{.jar}) " +
         "--prefix android.net.http.internal " +
         "--excludes $(location jarjar-excludes.txt) " +
         "--output $(out)",
@@ -145,7 +94,7 @@ java_defaults {
     name: "framework-tethering-defaults",
     defaults: ["framework-module-defaults"],
     srcs: [
-      ":framework-tethering-srcs"
+        ":framework-tethering-srcs",
     ],
     libs: ["framework-connectivity.stubs.module_lib"],
     aidl: {
@@ -159,9 +108,10 @@ java_defaults {
 
 filegroup {
     name: "framework-tethering-srcs",
+    defaults: ["framework-sources-module-defaults"],
     srcs: [
         "src/**/*.aidl",
         "src/**/*.java",
     ],
-    path: "src"
+    path: "src",
 }

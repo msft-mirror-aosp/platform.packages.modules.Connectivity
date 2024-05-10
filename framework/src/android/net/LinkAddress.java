@@ -37,6 +37,8 @@ import android.os.Parcelable;
 import android.os.SystemClock;
 import android.util.Pair;
 
+import com.android.net.module.util.ConnectivityUtils;
+
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
@@ -146,11 +148,7 @@ public class LinkAddress implements Parcelable {
      * Per RFC 4193 section 8, fc00::/7 identifies these addresses.
      */
     private boolean isIpv6ULA() {
-        if (isIpv6()) {
-            byte[] bytes = address.getAddress();
-            return ((bytes[0] & (byte)0xfe) == (byte)0xfc);
-        }
-        return false;
+        return ConnectivityUtils.isIPv6ULA(address);
     }
 
     /**
@@ -487,17 +485,23 @@ public class LinkAddress implements Parcelable {
      */
     @SystemApi
     public boolean isGlobalPreferred() {
-        /**
-         * Note that addresses flagged as IFA_F_OPTIMISTIC are
-         * simultaneously flagged as IFA_F_TENTATIVE (when the tentative
-         * state has cleared either DAD has succeeded or failed, and both
-         * flags are cleared regardless).
-         */
-        int flags = getFlags();
         return (scope == RT_SCOPE_UNIVERSE
                 && !isIpv6ULA()
-                && (flags & (IFA_F_DADFAILED | IFA_F_DEPRECATED)) == 0L
-                && ((flags & IFA_F_TENTATIVE) == 0L || (flags & IFA_F_OPTIMISTIC) != 0L));
+                && isPreferred());
+    }
+
+    /**
+     * Checks if the address is a preferred address.
+     *
+     * @hide
+     */
+    public boolean isPreferred() {
+        //  Note that addresses flagged as IFA_F_OPTIMISTIC are simultaneously flagged as
+        //  IFA_F_TENTATIVE (when the tentative state has cleared either DAD has succeeded or
+        //  failed, and both flags are cleared regardless).
+        int flags = getFlags();
+        return (flags & (IFA_F_DADFAILED | IFA_F_DEPRECATED)) == 0L
+                && ((flags & IFA_F_TENTATIVE) == 0L || (flags & IFA_F_OPTIMISTIC) != 0L);
     }
 
     /**

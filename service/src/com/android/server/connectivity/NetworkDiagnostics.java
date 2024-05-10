@@ -18,8 +18,18 @@ package com.android.server.connectivity;
 
 import static android.system.OsConstants.*;
 
+import static com.android.net.module.util.NetworkStackConstants.DNS_OVER_TLS_PORT;
+import static com.android.net.module.util.NetworkStackConstants.ETHER_MTU;
+import static com.android.net.module.util.NetworkStackConstants.ICMP_HEADER_LEN;
+import static com.android.net.module.util.NetworkStackConstants.IPV4_HEADER_MIN_LEN;
+import static com.android.net.module.util.NetworkStackConstants.IPV6_HEADER_LEN;
+import static com.android.net.module.util.NetworkStackConstants.IPV6_MIN_MTU;
+import static com.android.net.module.util.NetworkStackConstants.IPV6_MTU;
+import static com.android.net.module.util.NetworkStackConstants.IP_MTU;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
+import android.annotation.TargetApi;
 import android.net.InetAddresses;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
@@ -28,11 +38,13 @@ import android.net.RouteInfo;
 import android.net.TrafficStats;
 import android.net.shared.PrivateDnsConfig;
 import android.net.util.NetworkConstants;
+import android.os.Build;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.system.StructTimeval;
 import android.text.TextUtils;
+import android.util.Log;
 import android.util.Pair;
 
 import com.android.internal.util.IndentingPrintWriter;
@@ -172,7 +184,7 @@ public class NetworkDiagnostics {
         }
     }
 
-    private final Map<InetAddress, Measurement> mIcmpChecks = new HashMap<>();
+    private final Map<Pair<InetAddress, Integer>, Measurement> mIcmpChecks = new HashMap<>();
     private final Map<Pair<InetAddress, InetAddress>, Measurement> mExplicitSourceIcmpChecks =
             new HashMap<>();
     private final Map<InetAddress, Measurement> mDnsUdpChecks = new HashMap<>();
@@ -207,15 +219,16 @@ public class NetworkDiagnostics {
 
         for (RouteInfo route : mLinkProperties.getRoutes()) {
             if (route.getType() == RouteInfo.RTN_UNICAST && route.hasGateway()) {
-                InetAddress gateway = route.getGateway();
-                prepareIcmpMeasurement(gateway);
+                final InetAddress gateway = route.getGateway();
+                prepareIcmpMeasurements(gateway);
                 if (route.isIPv6Default()) {
                     prepareExplicitSourceIcmpMeasurements(gateway);
                 }
             }
         }
+
         for (InetAddress nameserver : mLinkProperties.getDnsServers()) {
-            prepareIcmpMeasurement(nameserver);
+            prepareIcmpMeasurements(nameserver);
             prepareDnsMeasurement(nameserver);
 
             // Unlike the DnsResolver which doesn't do certificate validation in opportunistic mode,
@@ -261,11 +274,87 @@ public class NetworkDiagnostics {
                 localAddr.getHostAddress(), inetSockAddr.getPort());
     }
 
-    private void prepareIcmpMeasurement(InetAddress target) {
-        if (!mIcmpChecks.containsKey(target)) {
-            Measurement measurement = new Measurement();
-            measurement.thread = new Thread(new IcmpCheck(target, measurement));
-            mIcmpChecks.put(target, measurement);
+    private static int getHeaderLen(@NonNull InetAddress target) {
+        // Convert IPv4 mapped v6 address to v4 if any.
+        try {
+            final InetAddress addr = InetAddress.getByAddress(target.getAddress());
+            // An ICMPv6 header is technically 4 bytes, but the implementation in IcmpCheck#run()
+            // will always fill in another 4 bytes padding in the v6 diagnostic packets, so the size
+            // before icmp data is always 8 bytes in the implementation of ICMP diagnostics for both
+            // v4 and v6 packets. Thus, it's fine to use the v4 header size in the length
+            // calculation.
+            if (addr instanceof Inet6Address) {
+                return IPV6_HEADER_LEN + ICMP_HEADER_LEN;
+            } else {
+                return IPV4_HEADER_MIN_LEN + ICMP_HEADER_LEN;
+            }
+        } catch (UnknownHostException e) {
+            throw new AssertionError("Create InetAddress fail(" + target + ")", e);
+        }
+    }
+
+    private void prepareIcmpMeasurements(@NonNull InetAddress target) {
+        int mtu = getMtuForTarget(target);
+        // If getMtuForTarget fails, it doesn't matter what mtu is used because connect can't
+        // succeed anyway
+        if (mtu <= 0) mtu = mLinkProperties.getMtu();
+        if (mtu <= 0) mtu = ETHER_MTU;
+        // Test with different size payload ICMP.
+        // 1. Test with 0 payload.
+        addPayloadIcmpMeasurement(target, 0);
+        final int header = getHeaderLen(target);
+        // 2. Test with full size MTU.
+        addPayloadIcmpMeasurement(target, mtu - header);
+        // 3. If v6, make another measurement with the full v6 min MTU, unless that's what
+        //    was done above.
+        if ((target instanceof Inet6Address) && (mtu != IPV6_MIN_MTU)) {
+            addPayloadIcmpMeasurement(target, IPV6_MIN_MTU - header);
+        }
+    }
+
+    private void addPayloadIcmpMeasurement(@NonNull InetAddress target, int payloadLen) {
+        // This can happen if the there is no mtu filled(which is 0) in the link property.
+        // The value becomes negative after minus header length.
+        if (payloadLen < 0) return;
+
+        final Pair<InetAddress, Integer> lenTarget =
+                new Pair<>(target, Integer.valueOf(payloadLen));
+        if (!mIcmpChecks.containsKey(lenTarget)) {
+            final Measurement measurement = new Measurement();
+            measurement.thread = new Thread(new IcmpCheck(target, payloadLen, measurement));
+            mIcmpChecks.put(lenTarget, measurement);
+        }
+    }
+
+    /**
+     * Open a socket to the target address and return the mtu from that socket
+     *
+     * If the MTU can't be obtained for some reason (e.g. the target is unreachable) this will
+     * return -1.
+     *
+     * @param target the destination address
+     * @return the mtu to that destination, or -1
+     */
+    // getsockoptInt is S+, but this service code and only installs on S, so it's safe to ignore
+    // the lint warnings by using @TargetApi.
+    @TargetApi(Build.VERSION_CODES.S)
+    private int getMtuForTarget(InetAddress target) {
+        final int family = target instanceof Inet4Address ? AF_INET : AF_INET6;
+        FileDescriptor socket = null;
+        try {
+            socket = Os.socket(family, SOCK_DGRAM, 0);
+            mNetwork.bindSocket(socket);
+            Os.connect(socket, target, 0);
+            if (family == AF_INET) {
+                return Os.getsockoptInt(socket, IPPROTO_IP, IP_MTU);
+            } else {
+                return Os.getsockoptInt(socket, IPPROTO_IPV6, IPV6_MTU);
+            }
+        } catch (ErrnoException | IOException e) {
+            Log.e(TAG, "Can't get MTU for destination " + target, e);
+            return -1;
+        } finally {
+            IoUtils.closeQuietly(socket);
         }
     }
 
@@ -276,7 +365,7 @@ public class NetworkDiagnostics {
                 Pair<InetAddress, InetAddress> srcTarget = new Pair<>(source, target);
                 if (!mExplicitSourceIcmpChecks.containsKey(srcTarget)) {
                     Measurement measurement = new Measurement();
-                    measurement.thread = new Thread(new IcmpCheck(source, target, measurement));
+                    measurement.thread = new Thread(new IcmpCheck(source, target, 0, measurement));
                     mExplicitSourceIcmpChecks.put(srcTarget, measurement);
                 }
             }
@@ -334,8 +423,8 @@ public class NetworkDiagnostics {
         ArrayList<Measurement> measurements = new ArrayList(totalMeasurementCount());
 
         // Sort measurements IPv4 first.
-        for (Map.Entry<InetAddress, Measurement> entry : mIcmpChecks.entrySet()) {
-            if (entry.getKey() instanceof Inet4Address) {
+        for (Map.Entry<Pair<InetAddress, Integer>, Measurement> entry : mIcmpChecks.entrySet()) {
+            if (entry.getKey().first instanceof Inet4Address) {
                 measurements.add(entry.getValue());
             }
         }
@@ -357,8 +446,8 @@ public class NetworkDiagnostics {
         }
 
         // IPv6 measurements second.
-        for (Map.Entry<InetAddress, Measurement> entry : mIcmpChecks.entrySet()) {
-            if (entry.getKey() instanceof Inet6Address) {
+        for (Map.Entry<Pair<InetAddress, Integer>, Measurement> entry : mIcmpChecks.entrySet()) {
+            if (entry.getKey().first instanceof Inet6Address) {
                 measurements.add(entry.getValue());
             }
         }
@@ -489,8 +578,11 @@ public class NetworkDiagnostics {
         private static final int PACKET_BUFSIZE = 512;
         private final int mProtocol;
         private final int mIcmpType;
+        private final int mPayloadSize;
+        // The length parameter is effectively the -s flag to ping/ping6 to specify the number of
+        // data bytes to be sent.
+        IcmpCheck(InetAddress source, InetAddress target, int length, Measurement measurement) {
 
-        public IcmpCheck(InetAddress source, InetAddress target, Measurement measurement) {
             super(source, target, measurement);
 
             if (mAddressFamily == AF_INET6) {
@@ -502,12 +594,13 @@ public class NetworkDiagnostics {
                 mIcmpType = NetworkConstants.ICMPV4_ECHO_REQUEST_TYPE;
                 mMeasurement.description = "ICMPv4";
             }
-
-            mMeasurement.description += " dst{" + mTarget.getHostAddress() + "}";
+            mPayloadSize = length;
+            mMeasurement.description += " payloadLength{" + mPayloadSize  + "}"
+                    + " dst{" + mTarget.getHostAddress() + "}";
         }
 
-        public IcmpCheck(InetAddress target, Measurement measurement) {
-            this(null, target, measurement);
+        IcmpCheck(InetAddress target, int length, Measurement measurement) {
+            this(null, target, length, measurement);
         }
 
         @Override
@@ -523,9 +616,11 @@ public class NetworkDiagnostics {
             mMeasurement.description += " src{" + socketAddressToString(mSocketAddress) + "}";
 
             // Build a trivial ICMP packet.
-            final byte[] icmpPacket = {
-                    (byte) mIcmpType, 0, 0, 0, 0, 0, 0, 0  // ICMP header
-            };
+            // The v4 ICMP header ICMP_HEADER_LEN (which is 8) and v6 is only 4 bytes (4 bytes
+            // message body followed by header before the payload).
+            // Use 8 bytes for both v4 and v6 for simplicity.
+            final byte[] icmpPacket = new byte[ICMP_HEADER_LEN + mPayloadSize];
+            icmpPacket[0] = (byte) mIcmpType;
 
             int count = 0;
             mMeasurement.startTime = now();
@@ -675,7 +770,6 @@ public class NetworkDiagnostics {
     private class DnsTlsCheck extends DnsUdpCheck {
         private static final int TCP_CONNECT_TIMEOUT_MS = 2500;
         private static final int TCP_TIMEOUT_MS = 2000;
-        private static final int DNS_TLS_PORT = 853;
         private static final int DNS_HEADER_SIZE = 12;
 
         private final String mHostname;
@@ -714,7 +808,8 @@ public class NetworkDiagnostics {
             final byte[] dnsPacket = getDnsQueryPacket(sixRandomDigits);
 
             mMeasurement.startTime = now();
-            sslSocket.connect(new InetSocketAddress(mTarget, DNS_TLS_PORT), TCP_CONNECT_TIMEOUT_MS);
+            sslSocket.connect(new InetSocketAddress(mTarget, DNS_OVER_TLS_PORT),
+                    TCP_CONNECT_TIMEOUT_MS);
 
             // Synchronous call waiting for the TLS handshake complete.
             sslSocket.startHandshake();

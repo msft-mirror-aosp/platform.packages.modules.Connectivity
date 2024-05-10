@@ -13,6 +13,7 @@
 // limitations under the License.
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -44,6 +45,7 @@ android_test {
         "junit-params",
         "connectivity-net-module-utils-bpf",
         "net-utils-device-common-bpf",
+        "net-utils-device-common-struct-base",
     ],
 
     jni_libs: [

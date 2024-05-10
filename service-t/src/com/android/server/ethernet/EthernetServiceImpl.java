@@ -19,6 +19,7 @@ package com.android.server.ethernet;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 
+import android.annotation.CheckResult;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -72,8 +73,9 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
                 methodName + " is only available on automotive devices.");
     }
 
-    private boolean checkUseRestrictedNetworksPermission() {
-        return PermissionUtils.checkAnyPermissionOf(mContext,
+    @CheckResult
+    private boolean hasUseRestrictedNetworksPermission() {
+        return PermissionUtils.hasAnyPermissionOf(mContext,
                 android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS);
     }
 
@@ -92,7 +94,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     @Override
     public String[] getAvailableInterfaces() throws RemoteException {
         PermissionUtils.enforceAccessNetworkStatePermission(mContext, TAG);
-        return mTracker.getInterfaces(checkUseRestrictedNetworksPermission());
+        return mTracker.getClientModeInterfaces(hasUseRestrictedNetworksPermission());
     }
 
     /**
@@ -106,7 +108,11 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
             PermissionUtils.enforceRestrictedNetworkPermission(mContext, TAG);
         }
 
-        return new IpConfiguration(mTracker.getIpConfiguration(iface));
+        // This causes thread-unsafe access on mIpConfigurations which might
+        // race with calls to EthernetManager#updateConfiguration().
+        // EthernetManager#getConfiguration() has been marked as
+        // @UnsupportedAppUsage since Android R.
+        return mTracker.getIpConfiguration(iface);
     }
 
     /**
@@ -146,7 +152,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     public void addListener(IEthernetServiceListener listener) throws RemoteException {
         Objects.requireNonNull(listener, "listener must not be null");
         PermissionUtils.enforceAccessNetworkStatePermission(mContext, TAG);
-        mTracker.addListener(listener, checkUseRestrictedNetworksPermission());
+        mTracker.addListener(listener, hasUseRestrictedNetworksPermission());
     }
 
     /**
@@ -187,7 +193,7 @@ public class EthernetServiceImpl extends IEthernetManager.Stub {
     @Override
     protected void dump(FileDescriptor fd, PrintWriter writer, String[] args) {
         final IndentingPrintWriter pw = new IndentingPrintWriter(writer, "  ");
-        if (!PermissionUtils.checkDumpPermission(mContext, TAG, pw)) return;
+        if (!PermissionUtils.hasDumpPermission(mContext, TAG, pw)) return;
 
         pw.println("Current Ethernet state: ");
         pw.increaseIndent();

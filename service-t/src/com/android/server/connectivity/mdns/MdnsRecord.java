@@ -23,7 +23,9 @@ import android.annotation.Nullable;
 import android.os.SystemClock;
 import android.text.TextUtils;
 
-import com.android.internal.annotations.VisibleForTesting;
+import androidx.annotation.VisibleForTesting;
+
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -39,6 +41,7 @@ public abstract class MdnsRecord {
     public static final int TYPE_PTR = 0x000C;
     public static final int TYPE_SRV = 0x0021;
     public static final int TYPE_TXT = 0x0010;
+    public static final int TYPE_KEY = 0x0019;
     public static final int TYPE_NSEC = 0x002f;
     public static final int TYPE_ANY = 0x00ff;
 
@@ -46,6 +49,8 @@ public abstract class MdnsRecord {
 
     public static final long RECEIPT_TIME_NOT_SENT = 0L;
     public static final int CLASS_ANY = 0x00ff;
+    /** Max label length as per RFC 1034/1035 */
+    public static final int MAX_LABEL_LENGTH = 63;
 
     /** Status indicating that the record is current. */
     public static final int STATUS_OK = 0;
@@ -134,7 +139,7 @@ public abstract class MdnsRecord {
         }
 
         for (int i = 0; i < list1.length; ++i) {
-            if (!list1[i].equals(list2[i + offset])) {
+            if (!MdnsUtils.equalsIgnoreDnsCase(list1[i], list2[i + offset])) {
                 return false;
             }
         }
@@ -170,6 +175,16 @@ public abstract class MdnsRecord {
     /** Return whether the cache flush flag is set. */
     public final boolean getCacheFlush() {
         return (cls & FLAG_CACHE_FLUSH) != 0;
+    }
+
+    /**
+     * For questions, returns whether a unicast reply was requested.
+     *
+     * In practice this is identical to {@link #getCacheFlush()}, as the "cache flush" flag in
+     * replies is the same as "unicast reply requested" in questions.
+     */
+    public final boolean isUnicastReplyRequested() {
+        return (cls & MdnsConstants.QCLASS_UNICAST) != 0;
     }
 
     /**
@@ -218,7 +233,7 @@ public abstract class MdnsRecord {
      * @param writer The writer to use.
      * @param now    The current system time. This is used when writing the updated TTL.
      */
-    @VisibleForTesting
+    @VisibleForTesting(otherwise = VisibleForTesting.PACKAGE_PRIVATE)
     public final void write(MdnsPacketWriter writer, long now) throws IOException {
         writeHeaderFields(writer);
 
@@ -269,12 +284,13 @@ public abstract class MdnsRecord {
 
         MdnsRecord otherRecord = (MdnsRecord) other;
 
-        return Arrays.equals(name, otherRecord.name) && (type == otherRecord.type);
+        return MdnsUtils.equalsDnsLabelIgnoreDnsCase(name, otherRecord.name) && (type
+                == otherRecord.type);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(Arrays.hashCode(name), type);
+        return Objects.hash(Arrays.hashCode(MdnsUtils.toDnsLabelsLowerCase(name)), type);
     }
 
     /**
@@ -295,7 +311,7 @@ public abstract class MdnsRecord {
 
         public Key(int recordType, String[] recordName) {
             this.recordType = recordType;
-            this.recordName = recordName;
+            this.recordName = MdnsUtils.toDnsLabelsLowerCase(recordName);
         }
 
         @Override

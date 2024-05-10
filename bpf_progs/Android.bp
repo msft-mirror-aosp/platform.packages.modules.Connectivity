@@ -18,6 +18,7 @@
 // struct definitions shared with JNI
 //
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -45,6 +46,7 @@ cc_library_headers {
         "com.android.tethering",
     ],
     visibility: [
+        "//packages/modules/Connectivity/DnsResolver",
         "//packages/modules/Connectivity/netd",
         "//packages/modules/Connectivity/service",
         "//packages/modules/Connectivity/service/native/libs/libclat",
@@ -92,25 +94,13 @@ bpf {
 }
 
 bpf {
-    name: "offload@btf.o",
-    srcs: ["offload@btf.c"],
+    name: "offload@mainline.o",
+    srcs: ["offload@mainline.c"],
     btf: true,
     cflags: [
         "-Wall",
         "-Werror",
-        "-DBTF",
-    ],
-}
-
-bpf {
-    name: "offload@inprocess.o",
-    srcs: ["offload@inprocess.c"],
-    btf: true,
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-DBTF",
-        "-DINPROCESS",
+        "-DMAINLINE",
     ],
 }
 
@@ -124,25 +114,13 @@ bpf {
 }
 
 bpf {
-    name: "test@btf.o",
-    srcs: ["test@btf.c"],
+    name: "test@mainline.o",
+    srcs: ["test@mainline.c"],
     btf: true,
     cflags: [
         "-Wall",
         "-Werror",
-        "-DBTF",
-    ],
-}
-
-bpf {
-    name: "test@inprocess.o",
-    srcs: ["test@inprocess.c"],
-    btf: true,
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-DBTF",
-        "-DINPROCESS",
+        "-DMAINLINE",
     ],
 }
 

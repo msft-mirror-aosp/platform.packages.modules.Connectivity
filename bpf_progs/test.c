@@ -18,27 +18,21 @@
 #include <linux/in.h>
 #include <linux/ip.h>
 
-#ifdef BTF
+#ifdef MAINLINE
 // BTF is incompatible with bpfloaders < v0.10, hence for S (v0.2) we must
 // ship a different file than for later versions, but we need bpfloader v0.25+
 // for obj@ver.o support
-#define BPFLOADER_MIN_VER BPFLOADER_OBJ_AT_VER_VERSION
-#else /* BTF */
+#define BPFLOADER_MIN_VER BPFLOADER_MAINLINE_T_VERSION
+#else /* MAINLINE */
 // The resulting .o needs to load on the Android S bpfloader
 #define BPFLOADER_MIN_VER BPFLOADER_S_VERSION
-#define BPFLOADER_MAX_VER BPFLOADER_OBJ_AT_VER_VERSION
-#endif /* BTF */
+#define BPFLOADER_MAX_VER BPFLOADER_T_VERSION
+#endif /* MAINLINE */
 
 // Warning: values other than AID_ROOT don't work for map uid on BpfLoader < v0.21
 #define TETHERING_UID AID_ROOT
 
-#ifdef INPROCESS
-#define DEFAULT_BPF_MAP_SELINUX_CONTEXT "fs_bpf_net_shared"
-#define DEFAULT_BPF_PROG_SELINUX_CONTEXT "fs_bpf_net_shared"
-#define TETHERING_GID AID_SYSTEM
-#else
 #define TETHERING_GID AID_NETWORK_STACK
-#endif
 
 // This is non production code, only used for testing
 // Needed because the bitmap array definition is non-kosher for pre-T OS devices.
@@ -55,7 +49,7 @@ DEFINE_BPF_MAP_GRW(tether_downstream6_map, HASH, TetherDownstream6Key, Tether6Va
 DEFINE_BPF_MAP_GRW(bitmap, ARRAY, int, uint64_t, 2, TETHERING_GID)
 
 DEFINE_BPF_PROG_KVER("xdp/drop_ipv4_udp_ether", TETHERING_UID, TETHERING_GID,
-                      xdp_test, KVER(5, 9, 0))
+                      xdp_test, KVER_5_9)
 (struct xdp_md *ctx) {
     void *data = (void *)(long)ctx->data;
     void *data_end = (void *)(long)ctx->data_end;
@@ -73,3 +67,4 @@ DEFINE_BPF_PROG_KVER("xdp/drop_ipv4_udp_ether", TETHERING_UID, TETHERING_GID,
 }
 
 LICENSE("Apache 2.0");
+DISABLE_BTF_ON_USER_BUILDS();

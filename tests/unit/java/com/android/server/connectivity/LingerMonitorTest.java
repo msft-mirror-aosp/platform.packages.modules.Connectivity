@@ -34,7 +34,6 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
 import android.net.ConnectivityManager;
-import android.net.ConnectivityResources;
 import android.net.IDnsResolver;
 import android.net.INetd;
 import android.net.LinkProperties;
@@ -373,9 +372,10 @@ public class LingerMonitorTest {
         caps.addCapability(0);
         caps.addTransportType(transport);
         NetworkAgentInfo nai = new NetworkAgentInfo(null, new Network(netId), info,
-                new LinkProperties(), caps, new NetworkScore.Builder().setLegacyInt(50).build(),
-                mCtx, null, new NetworkAgentConfig.Builder().build(), mConnService, mNetd,
-                mDnsResolver, NetworkProvider.ID_NONE, Binder.getCallingUid(), TEST_LINGER_DELAY_MS,
+                new LinkProperties(), caps, null /* localNetworkConfiguration */,
+                new NetworkScore.Builder().setLegacyInt(50).build(), mCtx, null,
+                new NetworkAgentConfig.Builder().build(), mConnService, mNetd, mDnsResolver,
+                NetworkProvider.ID_NONE, Binder.getCallingUid(), TEST_LINGER_DELAY_MS,
                 mQosCallbackTracker, new ConnectivityService.Dependencies());
         if (setEverValidated) {
             // As tests in this class deal with testing lingering, most tests are interested

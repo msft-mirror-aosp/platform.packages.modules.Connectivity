@@ -64,6 +64,8 @@ public class DscpPolicyTracker {
         return "/sys/fs/bpf/net_shared/map_" + which + "_map";
     }
 
+    private final boolean mHaveProgram = TcUtils.isBpfProgramUsable(PROG_PATH);
+
     private Set<String> mAttachedIfaces;
 
     private final BpfMap<Struct.S32, DscpPolicyValue> mBpfDscpIpv4Policies;
@@ -85,10 +87,10 @@ public class DscpPolicyTracker {
     public DscpPolicyTracker() throws ErrnoException {
         mAttachedIfaces = new HashSet<String>();
         mIfaceIndexToPolicyIdBpfMapIndex = new HashMap<Integer, SparseIntArray>();
-        mBpfDscpIpv4Policies = new BpfMap<Struct.S32, DscpPolicyValue>(IPV4_POLICY_MAP_PATH,
-                BpfMap.BPF_F_RDWR, Struct.S32.class, DscpPolicyValue.class);
-        mBpfDscpIpv6Policies = new BpfMap<Struct.S32, DscpPolicyValue>(IPV6_POLICY_MAP_PATH,
-                BpfMap.BPF_F_RDWR, Struct.S32.class, DscpPolicyValue.class);
+        mBpfDscpIpv4Policies = new BpfMap<>(IPV4_POLICY_MAP_PATH,
+                Struct.S32.class, DscpPolicyValue.class);
+        mBpfDscpIpv6Policies = new BpfMap<>(IPV6_POLICY_MAP_PATH,
+                Struct.S32.class, DscpPolicyValue.class);
     }
 
     private boolean isUnusedIndex(int index) {
@@ -325,6 +327,7 @@ public class DscpPolicyTracker {
      * Attach BPF program
      */
     private boolean attachProgram(@NonNull String iface) {
+        if (!mHaveProgram) return false;
         try {
             NetworkInterface netIface = NetworkInterface.getByName(iface);
             TcUtils.tcFilterAddDevBpf(netIface.getIndex(), false, PRIO_DSCP, (short) ETH_P_ALL,

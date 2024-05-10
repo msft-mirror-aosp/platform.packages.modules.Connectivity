@@ -27,6 +27,7 @@ import android.net.INetworkOfferCallback;
 import android.net.IQosCallback;
 import android.net.ISocketKeepaliveCallback;
 import android.net.LinkProperties;
+import android.net.LocalNetworkConfig;
 import android.net.Network;
 import android.net.NetworkAgentConfig;
 import android.net.NetworkCapabilities;
@@ -146,7 +147,8 @@ interface IConnectivityManager
     void declareNetworkRequestUnfulfillable(in NetworkRequest request);
 
     Network registerNetworkAgent(in INetworkAgent na, in NetworkInfo ni, in LinkProperties lp,
-            in NetworkCapabilities nc, in NetworkScore score, in NetworkAgentConfig config,
+            in NetworkCapabilities nc, in NetworkScore score,
+            in LocalNetworkConfig localNetworkConfig, in NetworkAgentConfig config,
             in int factorySerialNumber);
 
     NetworkRequest requestNetwork(int uid, in NetworkCapabilities networkCapabilities, int reqType,
@@ -195,6 +197,8 @@ interface IConnectivityManager
 
     void stopKeepalive(in ISocketKeepaliveCallback cb);
 
+    int[] getSupportedKeepalives();
+
     String getCaptivePortalServerUrl();
 
     byte[] getNetworkWatchlistConfigHash();
@@ -236,9 +240,7 @@ interface IConnectivityManager
 
     void setTestAllowBadWifiUntil(long timeMs);
 
-    void updateMeteredNetworkAllowList(int uid, boolean add);
-
-    void updateMeteredNetworkDenyList(int uid, boolean add);
+    void setDataSaverEnabled(boolean enable);
 
     void setUidFirewallRule(int chain, int uid, int rule);
 
@@ -255,4 +257,6 @@ interface IConnectivityManager
     void setVpnNetworkPreference(String session, in UidRange[] ranges);
 
     void setTestLowTcpPollingTimerForKeepalive(long timeMs);
+
+    IBinder getRoutingCoordinatorService();
 }

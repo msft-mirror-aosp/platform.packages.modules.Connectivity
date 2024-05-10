@@ -151,7 +151,7 @@ public abstract class NetworkAgent {
 
     /**
      * Sent by the NetworkAgent to ConnectivityService to pass the current
-     * NetworkCapabilties.
+     * NetworkCapabilities.
      * obj = NetworkCapabilities
      * @hide
      */
@@ -281,9 +281,8 @@ public abstract class NetworkAgent {
      *
      *   arg1 = the hardware slot number of the keepalive to start
      *   arg2 = interval in seconds
-     *   obj = AutomaticKeepaliveInfo object
+     *   obj = KeepalivePacketData object describing the data to be sent
      *
-     * Also used internally by ConnectivityService / KeepaliveTracker, with different semantics.
      * @hide
      */
     public static final int CMD_START_SOCKET_KEEPALIVE = BASE + 11;
@@ -436,6 +435,22 @@ public abstract class NetworkAgent {
     public static final int CMD_DSCP_POLICY_STATUS = BASE + 28;
 
     /**
+     * Sent by the NetworkAgent to ConnectivityService to notify that this network is expected to be
+     * replaced within the specified time by a similar network.
+     * arg1 = timeout in milliseconds
+     * @hide
+     */
+    public static final int EVENT_UNREGISTER_AFTER_REPLACEMENT = BASE + 29;
+
+    /**
+     * Sent by the NetworkAgent to ConnectivityService to pass the new value of the local
+     * network agent config.
+     * obj = {@code Pair<NetworkAgentInfo, LocalNetworkConfig>}
+     * @hide
+     */
+    public static final int EVENT_LOCAL_NETWORK_CONFIG_CHANGED = BASE + 30;
+
+    /**
      * DSCP policy was successfully added.
      */
     public static final int DSCP_POLICY_STATUS_SUCCESS = 0;
@@ -477,27 +492,6 @@ public abstract class NetworkAgent {
     @Retention(RetentionPolicy.SOURCE)
     public @interface DscpPolicyStatus {}
 
-    /**
-     * Sent by the NetworkAgent to ConnectivityService to notify that this network is expected to be
-     * replaced within the specified time by a similar network.
-     * arg1 = timeout in milliseconds
-     * @hide
-     */
-    public static final int EVENT_UNREGISTER_AFTER_REPLACEMENT = BASE + 29;
-
-    /**
-     * Sent by AutomaticOnOffKeepaliveTracker periodically (when relevant) to trigger monitor
-     * automatic keepalive request.
-     *
-     * NATT keepalives have an automatic mode where the system only sends keepalive packets when
-     * TCP sockets are open over a VPN. The system will check periodically for presence of
-     * such open sockets, and this message is what triggers the re-evaluation.
-     *
-     * obj = A Binder object associated with the keepalive.
-     * @hide
-     */
-    public static final int CMD_MONITOR_AUTOMATIC_KEEPALIVE = BASE + 30;
-
     private static NetworkInfo getLegacyNetworkInfo(final NetworkAgentConfig config) {
         final NetworkInfo ni = new NetworkInfo(config.legacyType, config.legacySubType,
                 config.legacyTypeName, config.legacySubTypeName);
@@ -531,20 +525,47 @@ public abstract class NetworkAgent {
             @NonNull NetworkCapabilities nc, @NonNull LinkProperties lp,
             @NonNull NetworkScore score, @NonNull NetworkAgentConfig config,
             @Nullable NetworkProvider provider) {
-        this(looper, context, logTag, nc, lp, score, config,
+        this(context, looper, logTag, nc, lp, null /* localNetworkConfig */, score, config,
+                provider);
+    }
+
+    /**
+     * Create a new network agent.
+     * @param context a {@link Context} to get system services from.
+     * @param looper the {@link Looper} on which to invoke the callbacks.
+     * @param logTag the tag for logs
+     * @param nc the initial {@link NetworkCapabilities} of this network. Update with
+     *           sendNetworkCapabilities.
+     * @param lp the initial {@link LinkProperties} of this network. Update with sendLinkProperties.
+     * @param localNetworkConfig the initial {@link LocalNetworkConfig} of this
+     *                                  network. Update with sendLocalNetworkConfig. Must be
+     *                                  non-null iff the nc have NET_CAPABILITY_LOCAL_NETWORK.
+     * @param score the initial score of this network. Update with sendNetworkScore.
+     * @param config an immutable {@link NetworkAgentConfig} for this agent.
+     * @param provider the {@link NetworkProvider} managing this agent.
+     * @hide
+     */
+    // TODO : expose
+    public NetworkAgent(@NonNull Context context, @NonNull Looper looper, @NonNull String logTag,
+            @NonNull NetworkCapabilities nc, @NonNull LinkProperties lp,
+            @Nullable LocalNetworkConfig localNetworkConfig, @NonNull NetworkScore score,
+            @NonNull NetworkAgentConfig config, @Nullable NetworkProvider provider) {
+        this(looper, context, logTag, nc, lp, localNetworkConfig, score, config,
                 provider == null ? NetworkProvider.ID_NONE : provider.getProviderId(),
                 getLegacyNetworkInfo(config));
     }
 
     private static class InitialConfiguration {
-        public final Context context;
-        public final NetworkCapabilities capabilities;
-        public final LinkProperties properties;
-        public final NetworkScore score;
-        public final NetworkAgentConfig config;
-        public final NetworkInfo info;
+        @NonNull public final Context context;
+        @NonNull public final NetworkCapabilities capabilities;
+        @NonNull public final LinkProperties properties;
+        @NonNull public final NetworkScore score;
+        @NonNull public final NetworkAgentConfig config;
+        @NonNull public final NetworkInfo info;
+        @Nullable public final LocalNetworkConfig localNetworkConfig;
         InitialConfiguration(@NonNull Context context, @NonNull NetworkCapabilities capabilities,
-                @NonNull LinkProperties properties, @NonNull NetworkScore score,
+                @NonNull LinkProperties properties,
+                @Nullable LocalNetworkConfig localNetworkConfig, @NonNull NetworkScore score,
                 @NonNull NetworkAgentConfig config, @NonNull NetworkInfo info) {
             this.context = context;
             this.capabilities = capabilities;
@@ -552,14 +573,15 @@ public abstract class NetworkAgent {
             this.score = score;
             this.config = config;
             this.info = info;
+            this.localNetworkConfig = localNetworkConfig;
         }
     }
     private volatile InitialConfiguration mInitialConfiguration;
 
     private NetworkAgent(@NonNull Looper looper, @NonNull Context context, @NonNull String logTag,
             @NonNull NetworkCapabilities nc, @NonNull LinkProperties lp,
-            @NonNull NetworkScore score, @NonNull NetworkAgentConfig config, int providerId,
-            @NonNull NetworkInfo ni) {
+            @Nullable LocalNetworkConfig localNetworkConfig, @NonNull NetworkScore score,
+            @NonNull NetworkAgentConfig config, int providerId, @NonNull NetworkInfo ni) {
         mHandler = new NetworkAgentHandler(looper);
         LOG_TAG = logTag;
         mNetworkInfo = new NetworkInfo(ni);
@@ -570,7 +592,7 @@ public abstract class NetworkAgent {
 
         mInitialConfiguration = new InitialConfiguration(context,
                 new NetworkCapabilities(nc, NetworkCapabilities.REDACT_NONE),
-                new LinkProperties(lp), score, config, ni);
+                new LinkProperties(lp), localNetworkConfig, score, config, ni);
     }
 
     private class NetworkAgentHandler extends Handler {
@@ -734,10 +756,20 @@ public abstract class NetworkAgent {
             }
             final ConnectivityManager cm = (ConnectivityManager) mInitialConfiguration.context
                     .getSystemService(Context.CONNECTIVITY_SERVICE);
-            mNetwork = cm.registerNetworkAgent(new NetworkAgentBinder(mHandler),
-                    new NetworkInfo(mInitialConfiguration.info),
-                    mInitialConfiguration.properties, mInitialConfiguration.capabilities,
-                    mInitialConfiguration.score, mInitialConfiguration.config, providerId);
+            if (mInitialConfiguration.localNetworkConfig == null) {
+                // Call registerNetworkAgent without localNetworkConfig argument to pass
+                // android.net.cts.NetworkAgentTest#testAgentStartsInConnecting in old cts
+                mNetwork = cm.registerNetworkAgent(new NetworkAgentBinder(mHandler),
+                        new NetworkInfo(mInitialConfiguration.info),
+                        mInitialConfiguration.properties, mInitialConfiguration.capabilities,
+                        mInitialConfiguration.score, mInitialConfiguration.config, providerId);
+            } else {
+                mNetwork = cm.registerNetworkAgent(new NetworkAgentBinder(mHandler),
+                        new NetworkInfo(mInitialConfiguration.info),
+                        mInitialConfiguration.properties, mInitialConfiguration.capabilities,
+                        mInitialConfiguration.localNetworkConfig, mInitialConfiguration.score,
+                        mInitialConfiguration.config, providerId);
+            }
             mInitialConfiguration = null; // All this memory can now be GC'd
         }
         return mNetwork;
@@ -1110,6 +1142,18 @@ public abstract class NetworkAgent {
         final NetworkCapabilities nc =
                 new NetworkCapabilities(networkCapabilities, NetworkCapabilities.REDACT_NONE);
         queueOrSendMessage(reg -> reg.sendNetworkCapabilities(nc));
+    }
+
+    /**
+     * Must be called by the agent when the network's {@link LocalNetworkConfig} changes.
+     * @param config the new LocalNetworkConfig
+     * @hide
+     */
+    public void sendLocalNetworkConfig(@NonNull LocalNetworkConfig config) {
+        Objects.requireNonNull(config);
+        // If the agent doesn't have NET_CAPABILITY_LOCAL_NETWORK, this will be ignored by
+        // ConnectivityService with a Log.wtf.
+        queueOrSendMessage(reg -> reg.sendLocalNetworkConfig(config));
     }
 
     /**

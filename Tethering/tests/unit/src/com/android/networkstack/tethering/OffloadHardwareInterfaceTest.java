@@ -20,36 +20,32 @@ import static android.system.OsConstants.AF_INET;
 import static android.system.OsConstants.AF_UNIX;
 import static android.system.OsConstants.SOCK_STREAM;
 
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_0;
-import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_1_1;
-import static com.android.networkstack.tethering.util.TetheringUtils.uint16;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.NF_NETLINK_CONNTRACK_DESTROY;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.NF_NETLINK_CONNTRACK_NEW;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_AIDL;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_HIDL_1_0;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_HIDL_1_1;
+import static com.android.networkstack.tethering.OffloadHardwareInterface.OFFLOAD_HAL_VERSION_NONE;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import android.hardware.tetheroffload.config.V1_0.IOffloadConfig;
-import android.hardware.tetheroffload.control.V1_0.IOffloadControl;
-import android.hardware.tetheroffload.control.V1_0.NatTimeoutUpdate;
-import android.hardware.tetheroffload.control.V1_0.NetworkProtocol;
-import android.hardware.tetheroffload.control.V1_1.ITetheringOffloadCallback;
-import android.hardware.tetheroffload.control.V1_1.OffloadCallbackEvent;
 import android.os.Handler;
 import android.os.NativeHandle;
 import android.os.test.TestLooper;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.system.OsConstants;
-import android.util.Pair;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
@@ -57,13 +53,13 @@ import androidx.test.runner.AndroidJUnit4;
 import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.netlink.StructNfGenMsg;
 import com.android.net.module.util.netlink.StructNlMsgHdr;
+import com.android.networkstack.tethering.OffloadHardwareInterface.ForwardedStats;
+import com.android.networkstack.tethering.OffloadHardwareInterface.OffloadHalCallback;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InOrder;
-import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 import java.io.FileDescriptor;
@@ -79,205 +75,218 @@ public final class OffloadHardwareInterfaceTest {
     private final TestLooper mTestLooper = new TestLooper();
 
     private OffloadHardwareInterface mOffloadHw;
-    private ITetheringOffloadCallback mTetheringOffloadCallback;
-    private OffloadHardwareInterface.ControlCallback mControlCallback;
+    private OffloadHalCallback mOffloadHalCallback;
 
-    @Mock private IOffloadConfig mIOffloadConfig;
-    private IOffloadControl mIOffloadControl;
-    @Mock private NativeHandle mNativeHandle;
+    private IOffloadHal mIOffload;
+    private NativeHandle mNativeHandle1;
+    private NativeHandle mNativeHandle2;
 
     // Random values to test Netlink message.
     private static final short TEST_TYPE = 184;
     private static final short TEST_FLAGS = 263;
 
     class MyDependencies extends OffloadHardwareInterface.Dependencies {
-        private final int mMockControlVersion;
-        MyDependencies(SharedLog log, final int mockControlVersion) {
-            super(log);
-            mMockControlVersion = mockControlVersion;
+        private final int mMockOffloadHalVersion;
+        MyDependencies(Handler handler, SharedLog log, final int mockOffloadHalVersion) {
+            super(handler, log);
+            mMockOffloadHalVersion = mockOffloadHalVersion;
+            when(mIOffload.getVersion()).thenReturn(mMockOffloadHalVersion);
         }
 
         @Override
-        public IOffloadConfig getOffloadConfig() {
-            return mIOffloadConfig;
-        }
-
-        @Override
-        public Pair<IOffloadControl, Integer> getOffloadControl() {
-            switch (mMockControlVersion) {
-                case OFFLOAD_HAL_VERSION_1_0:
-                    mIOffloadControl = mock(IOffloadControl.class);
-                    break;
-                case OFFLOAD_HAL_VERSION_1_1:
-                    mIOffloadControl =
-                            mock(android.hardware.tetheroffload.control.V1_1.IOffloadControl.class);
-                    break;
-                default:
-                    throw new IllegalArgumentException("Invalid offload control version "
-                            + mMockControlVersion);
-            }
-            return new Pair<IOffloadControl, Integer>(mIOffloadControl, mMockControlVersion);
+        public IOffloadHal getOffload() {
+            return mMockOffloadHalVersion == OFFLOAD_HAL_VERSION_NONE ? null : mIOffload;
         }
 
         @Override
         public NativeHandle createConntrackSocket(final int groups) {
-            return mNativeHandle;
+            return groups == (NF_NETLINK_CONNTRACK_NEW | NF_NETLINK_CONNTRACK_DESTROY)
+                    ? mNativeHandle1
+                    : mNativeHandle2;
         }
     }
 
     @Before
     public void setUp() {
         MockitoAnnotations.initMocks(this);
-        mControlCallback = spy(new OffloadHardwareInterface.ControlCallback());
+        mOffloadHalCallback = new OffloadHalCallback();
+        mIOffload = mock(IOffloadHal.class);
     }
 
-    private void startOffloadHardwareInterface(int controlVersion) throws Exception {
+    private void startOffloadHardwareInterface(int offloadHalVersion, boolean isHalInitSuccess)
+            throws Exception {
+        startOffloadHardwareInterface(offloadHalVersion, isHalInitSuccess, mock(NativeHandle.class),
+                mock(NativeHandle.class));
+    }
+
+    private void startOffloadHardwareInterface(int offloadHalVersion, boolean isHalInitSuccess,
+            NativeHandle handle1, NativeHandle handle2) throws Exception {
         final SharedLog log = new SharedLog("test");
-        mOffloadHw = new OffloadHardwareInterface(new Handler(mTestLooper.getLooper()), log,
-                new MyDependencies(log, controlVersion));
-        mOffloadHw.initOffloadConfig();
-        mOffloadHw.initOffloadControl(mControlCallback);
-        final ArgumentCaptor<ITetheringOffloadCallback> mOffloadCallbackCaptor =
-                ArgumentCaptor.forClass(ITetheringOffloadCallback.class);
-        verify(mIOffloadControl).initOffload(mOffloadCallbackCaptor.capture(), any());
-        mTetheringOffloadCallback = mOffloadCallbackCaptor.getValue();
+        final Handler handler = new Handler(mTestLooper.getLooper());
+        final boolean hasNullHandle = handle1 == null || handle2 == null;
+        // If offloadHalVersion is OFFLOAD_HAL_VERSION_NONE or it has null NativeHandle arguments,
+        // mIOffload.initOffload() shouldn't be called.
+        final int initNum = (offloadHalVersion != OFFLOAD_HAL_VERSION_NONE && !hasNullHandle)
+                ? 1
+                : 0;
+        // If it is HIDL or has null NativeHandle argument, NativeHandles should be closed.
+        final int handleCloseNum = (hasNullHandle
+                || offloadHalVersion == OFFLOAD_HAL_VERSION_HIDL_1_0
+                || offloadHalVersion == OFFLOAD_HAL_VERSION_HIDL_1_1) ? 1 : 0;
+        mNativeHandle1 = handle1;
+        mNativeHandle2 = handle2;
+        when(mIOffload.initOffload(any(NativeHandle.class), any(NativeHandle.class),
+                any(OffloadHalCallback.class))).thenReturn(isHalInitSuccess);
+        mOffloadHw = new OffloadHardwareInterface(handler, log,
+                new MyDependencies(handler, log, offloadHalVersion));
+        assertEquals(isHalInitSuccess && !hasNullHandle
+                ? offloadHalVersion
+                : OFFLOAD_HAL_VERSION_NONE,
+                mOffloadHw.initOffload(mOffloadHalCallback));
+        verify(mIOffload, times(initNum)).initOffload(any(NativeHandle.class),
+                any(NativeHandle.class), eq(mOffloadHalCallback));
+        if (mNativeHandle1 != null) verify(mNativeHandle1, times(handleCloseNum)).close();
+        if (mNativeHandle2 != null) verify(mNativeHandle2, times(handleCloseNum)).close();
+    }
+
+    @Test
+    public void testInitFailureWithNoHal() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_NONE, true);
+    }
+
+    @Test
+    public void testInitSuccessWithAidl() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_AIDL, true);
+    }
+
+    @Test
+    public void testInitSuccessWithHidl_1_0() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
+    }
+
+    @Test
+    public void testInitSuccessWithHidl_1_1() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_1, true);
+    }
+
+    @Test
+    public void testInitFailWithAidl() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_AIDL, false);
+    }
+
+    @Test
+    public void testInitFailWithHidl_1_0() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, false);
+    }
+
+    @Test
+    public void testInitFailWithHidl_1_1() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_1, false);
+    }
+
+    @Test
+    public void testInitFailDueToNullHandles() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_AIDL, true, mock(NativeHandle.class),
+                null);
     }
 
     @Test
     public void testGetForwardedStats() throws Exception {
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
-        final OffloadHardwareInterface.ForwardedStats stats = mOffloadHw.getForwardedStats(RMNET0);
-        verify(mIOffloadControl).getForwardedStats(eq(RMNET0), any());
-        assertNotNull(stats);
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
+        ForwardedStats stats = new ForwardedStats(12345, 56780);
+        when(mIOffload.getForwardedStats(anyString())).thenReturn(stats);
+        assertEquals(mOffloadHw.getForwardedStats(RMNET0), stats);
+        verify(mIOffload).getForwardedStats(eq(RMNET0));
     }
 
     @Test
     public void testSetLocalPrefixes() throws Exception {
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
         final ArrayList<String> localPrefixes = new ArrayList<>();
         localPrefixes.add("127.0.0.0/8");
         localPrefixes.add("fe80::/64");
-        mOffloadHw.setLocalPrefixes(localPrefixes);
-        verify(mIOffloadControl).setLocalPrefixes(eq(localPrefixes), any());
+        when(mIOffload.setLocalPrefixes(any())).thenReturn(true);
+        assertTrue(mOffloadHw.setLocalPrefixes(localPrefixes));
+        verify(mIOffload).setLocalPrefixes(eq(localPrefixes));
+        when(mIOffload.setLocalPrefixes(any())).thenReturn(false);
+        assertFalse(mOffloadHw.setLocalPrefixes(localPrefixes));
     }
 
     @Test
     public void testSetDataLimit() throws Exception {
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
         final long limit = 12345;
-        mOffloadHw.setDataLimit(RMNET0, limit);
-        verify(mIOffloadControl).setDataLimit(eq(RMNET0), eq(limit), any());
+        when(mIOffload.setDataLimit(anyString(), anyLong())).thenReturn(true);
+        assertTrue(mOffloadHw.setDataLimit(RMNET0, limit));
+        verify(mIOffload).setDataLimit(eq(RMNET0), eq(limit));
+        when(mIOffload.setDataLimit(anyString(), anyLong())).thenReturn(false);
+        assertFalse(mOffloadHw.setDataLimit(RMNET0, limit));
+    }
+
+    @Test
+    public void testSetDataWarningAndLimitFailureWithHidl_1_0() throws Exception {
+        // Verify V1.0 control HAL would reject the function call with exception.
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
+        final long warning = 12345;
+        final long limit = 67890;
+        assertThrows(UnsupportedOperationException.class,
+                () -> mOffloadHw.setDataWarningAndLimit(RMNET0, warning, limit));
     }
 
     @Test
     public void testSetDataWarningAndLimit() throws Exception {
-        // Verify V1.0 control HAL would reject the function call with exception.
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
+        // Verify V1.1 control HAL could receive this function call.
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_1, true);
         final long warning = 12345;
         final long limit = 67890;
-        assertThrows(IllegalArgumentException.class,
-                () -> mOffloadHw.setDataWarningAndLimit(RMNET0, warning, limit));
-        reset(mIOffloadControl);
-
-        // Verify V1.1 control HAL could receive this function call.
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_1);
-        mOffloadHw.setDataWarningAndLimit(RMNET0, warning, limit);
-        verify((android.hardware.tetheroffload.control.V1_1.IOffloadControl) mIOffloadControl)
-                .setDataWarningAndLimit(eq(RMNET0), eq(warning), eq(limit), any());
+        when(mIOffload.setDataWarningAndLimit(anyString(), anyLong(), anyLong())).thenReturn(true);
+        assertTrue(mOffloadHw.setDataWarningAndLimit(RMNET0, warning, limit));
+        verify(mIOffload).setDataWarningAndLimit(eq(RMNET0), eq(warning), eq(limit));
+        when(mIOffload.setDataWarningAndLimit(anyString(), anyLong(), anyLong())).thenReturn(false);
+        assertFalse(mOffloadHw.setDataWarningAndLimit(RMNET0, warning, limit));
     }
 
     @Test
     public void testSetUpstreamParameters() throws Exception {
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
         final String v4addr = "192.168.10.1";
         final String v4gateway = "192.168.10.255";
         final ArrayList<String> v6gws = new ArrayList<>(0);
         v6gws.add("2001:db8::1");
-        mOffloadHw.setUpstreamParameters(RMNET0, v4addr, v4gateway, v6gws);
-        verify(mIOffloadControl).setUpstreamParameters(eq(RMNET0), eq(v4addr), eq(v4gateway),
-                eq(v6gws), any());
+        when(mIOffload.setUpstreamParameters(anyString(), anyString(), anyString(), any()))
+                .thenReturn(true);
+        assertTrue(mOffloadHw.setUpstreamParameters(RMNET0, v4addr, v4gateway, v6gws));
+        verify(mIOffload).setUpstreamParameters(eq(RMNET0), eq(v4addr), eq(v4gateway), eq(v6gws));
 
         final ArgumentCaptor<ArrayList<String>> mArrayListCaptor =
                 ArgumentCaptor.forClass(ArrayList.class);
-        mOffloadHw.setUpstreamParameters(null, null, null, null);
-        verify(mIOffloadControl).setUpstreamParameters(eq(""), eq(""), eq(""),
-                mArrayListCaptor.capture(), any());
+        when(mIOffload.setUpstreamParameters(anyString(), anyString(), anyString(), any()))
+                .thenReturn(false);
+        assertFalse(mOffloadHw.setUpstreamParameters(null, null, null, null));
+        verify(mIOffload).setUpstreamParameters(eq(""), eq(""), eq(""), mArrayListCaptor.capture());
         assertEquals(mArrayListCaptor.getValue().size(), 0);
     }
 
     @Test
-    public void testUpdateDownstreamPrefix() throws Exception {
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
+    public void testUpdateDownstream() throws Exception {
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
         final String ifName = "wlan1";
         final String prefix = "192.168.43.0/24";
-        mOffloadHw.addDownstreamPrefix(ifName, prefix);
-        verify(mIOffloadControl).addDownstream(eq(ifName), eq(prefix), any());
-
-        mOffloadHw.removeDownstreamPrefix(ifName, prefix);
-        verify(mIOffloadControl).removeDownstream(eq(ifName), eq(prefix), any());
-    }
-
-    @Test
-    public void testTetheringOffloadCallback() throws Exception {
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
-
-        mTetheringOffloadCallback.onEvent(OffloadCallbackEvent.OFFLOAD_STARTED);
-        mTestLooper.dispatchAll();
-        verify(mControlCallback).onStarted();
-
-        mTetheringOffloadCallback.onEvent(OffloadCallbackEvent.OFFLOAD_STOPPED_ERROR);
-        mTestLooper.dispatchAll();
-        verify(mControlCallback).onStoppedError();
-
-        mTetheringOffloadCallback.onEvent(OffloadCallbackEvent.OFFLOAD_STOPPED_UNSUPPORTED);
-        mTestLooper.dispatchAll();
-        verify(mControlCallback).onStoppedUnsupported();
-
-        mTetheringOffloadCallback.onEvent(OffloadCallbackEvent.OFFLOAD_SUPPORT_AVAILABLE);
-        mTestLooper.dispatchAll();
-        verify(mControlCallback).onSupportAvailable();
-
-        mTetheringOffloadCallback.onEvent(OffloadCallbackEvent.OFFLOAD_STOPPED_LIMIT_REACHED);
-        mTestLooper.dispatchAll();
-        verify(mControlCallback).onStoppedLimitReached();
-
-        final NatTimeoutUpdate tcpParams = buildNatTimeoutUpdate(NetworkProtocol.TCP);
-        mTetheringOffloadCallback.updateTimeout(tcpParams);
-        mTestLooper.dispatchAll();
-        verify(mControlCallback).onNatTimeoutUpdate(eq(OsConstants.IPPROTO_TCP),
-                eq(tcpParams.src.addr),
-                eq(uint16(tcpParams.src.port)),
-                eq(tcpParams.dst.addr),
-                eq(uint16(tcpParams.dst.port)));
-
-        final NatTimeoutUpdate udpParams = buildNatTimeoutUpdate(NetworkProtocol.UDP);
-        mTetheringOffloadCallback.updateTimeout(udpParams);
-        mTestLooper.dispatchAll();
-        verify(mControlCallback).onNatTimeoutUpdate(eq(OsConstants.IPPROTO_UDP),
-                eq(udpParams.src.addr),
-                eq(uint16(udpParams.src.port)),
-                eq(udpParams.dst.addr),
-                eq(uint16(udpParams.dst.port)));
-        reset(mControlCallback);
-
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_1);
-
-        // Verify the interface will process the events that comes from V1.1 HAL.
-        mTetheringOffloadCallback.onEvent_1_1(OffloadCallbackEvent.OFFLOAD_STARTED);
-        mTestLooper.dispatchAll();
-        final InOrder inOrder = inOrder(mControlCallback);
-        inOrder.verify(mControlCallback).onStarted();
-        inOrder.verifyNoMoreInteractions();
-
-        mTetheringOffloadCallback.onEvent_1_1(OffloadCallbackEvent.OFFLOAD_WARNING_REACHED);
-        mTestLooper.dispatchAll();
-        inOrder.verify(mControlCallback).onWarningReached();
-        inOrder.verifyNoMoreInteractions();
+        when(mIOffload.addDownstream(anyString(), anyString())).thenReturn(true);
+        assertTrue(mOffloadHw.addDownstream(ifName, prefix));
+        verify(mIOffload).addDownstream(eq(ifName), eq(prefix));
+        when(mIOffload.addDownstream(anyString(), anyString())).thenReturn(false);
+        assertFalse(mOffloadHw.addDownstream(ifName, prefix));
+        when(mIOffload.removeDownstream(anyString(), anyString())).thenReturn(true);
+        assertTrue(mOffloadHw.removeDownstream(ifName, prefix));
+        verify(mIOffload).removeDownstream(eq(ifName), eq(prefix));
+        when(mIOffload.removeDownstream(anyString(), anyString())).thenReturn(false);
+        assertFalse(mOffloadHw.removeDownstream(ifName, prefix));
     }
 
     @Test
     public void testSendIpv4NfGenMsg() throws Exception {
-        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_1_0);
+        startOffloadHardwareInterface(OFFLOAD_HAL_VERSION_HIDL_1_0, true);
         FileDescriptor writeSocket = new FileDescriptor();
         FileDescriptor readSocket = new FileDescriptor();
         try {
@@ -286,9 +295,9 @@ public final class OffloadHardwareInterfaceTest {
             fail();
             return;
         }
-        when(mNativeHandle.getFileDescriptor()).thenReturn(writeSocket);
+        when(mNativeHandle1.getFileDescriptor()).thenReturn(writeSocket);
 
-        mOffloadHw.sendIpv4NfGenMsg(mNativeHandle, TEST_TYPE, TEST_FLAGS);
+        mOffloadHw.sendIpv4NfGenMsg(mNativeHandle1, TEST_TYPE, TEST_FLAGS);
 
         ByteBuffer buffer = ByteBuffer.allocate(9823);  // Arbitrary value > expectedLen.
         buffer.order(ByteOrder.nativeOrder());
@@ -307,15 +316,5 @@ public final class OffloadHardwareInterfaceTest {
         assertEquals(0 /* error */, buffer.get());       // version
         assertEquals(0 /* error */, buffer.getShort());  // res_id
         assertEquals(expectedLen, buffer.position());
-    }
-
-    private NatTimeoutUpdate buildNatTimeoutUpdate(final int proto) {
-        final NatTimeoutUpdate params = new NatTimeoutUpdate();
-        params.proto = proto;
-        params.src.addr = "192.168.43.200";
-        params.src.port = 100;
-        params.dst.addr = "172.50.46.169";
-        params.dst.port = 150;
-        return params;
     }
 }

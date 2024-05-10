@@ -16,19 +16,37 @@
 
 package android.net;
 
+import static android.system.OsConstants.AF_INET6;
+import static android.system.OsConstants.IPPROTO_ICMPV6;
+import static android.system.OsConstants.SOCK_DGRAM;
+import static android.system.OsConstants.SOL_SOCKET;
+import static android.system.OsConstants.SO_RCVTIMEO;
+
+import static com.android.compatibility.common.util.PropertyUtil.getVsrApiLevel;
+
 import static junit.framework.Assert.assertEquals;
 
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
+
 import android.os.Build;
+import android.system.ErrnoException;
+import android.system.Os;
+import android.system.StructTimeval;
 
 import androidx.test.filters.SmallTest;
 
+import com.android.net.module.util.SocketUtils;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
 
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.io.FileDescriptor;
 import java.math.BigInteger;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.TreeSet;
 
 @RunWith(DevSdkIgnoreRunner.class)
@@ -130,5 +148,43 @@ public class NetworkUtilsTest {
         set.add(new IpPrefix("f00b:a33::/112"));
         assertEquals(BigInteger.valueOf(7l - 4 + 4 + 16 + 65536),
                 NetworkUtils.routedIPv6AddressCount(set));
+    }
+
+    private byte[] getTimevalBytes(StructTimeval tv) {
+        byte[] timeval = new byte[16];
+        ByteBuffer buf = ByteBuffer.wrap(timeval);
+        buf.order(ByteOrder.nativeOrder());
+        buf.putLong(tv.tv_sec);
+        buf.putLong(tv.tv_usec);
+        return timeval;
+    }
+
+    private void testSetSockOptBytes(FileDescriptor sock, long timeValMillis)
+            throws ErrnoException {
+        final StructTimeval writeTimeval = StructTimeval.fromMillis(timeValMillis);
+        byte[] timeval = getTimevalBytes(writeTimeval);
+        final StructTimeval readTimeval;
+
+        NetworkUtils.setsockoptBytes(sock, SOL_SOCKET, SO_RCVTIMEO, timeval);
+        readTimeval = Os.getsockoptTimeval(sock, SOL_SOCKET, SO_RCVTIMEO);
+
+        assertEquals(writeTimeval, readTimeval);
+    }
+
+    @Test
+    public void testSetSockOptBytes() throws ErrnoException {
+        final FileDescriptor sock = Os.socket(AF_INET6, SOCK_DGRAM, IPPROTO_ICMPV6);
+
+        testSetSockOptBytes(sock, 3000);
+
+        testSetSockOptBytes(sock, 5000);
+
+        SocketUtils.closeSocketQuietly(sock);
+    }
+
+    @Test
+    public void testIsKernel64Bit() {
+        assumeTrue(getVsrApiLevel() > Build.VERSION_CODES.TIRAMISU);
+        assertTrue(NetworkUtils.isKernel64Bit());
     }
 }

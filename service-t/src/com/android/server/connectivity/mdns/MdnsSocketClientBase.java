@@ -19,9 +19,11 @@ package com.android.server.connectivity.mdns;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.net.Network;
+import android.os.Looper;
 
 import java.io.IOException;
 import java.net.DatagramPacket;
+import java.util.List;
 
 /**
  * Base class for multicast socket client.
@@ -38,44 +40,49 @@ public interface MdnsSocketClientBase {
     /*** Set callback for receiving mDns response */
     void setCallback(@Nullable Callback callback);
 
-    /*** Sends a mDNS request packet that asks for multicast response. */
-    void sendMulticastPacket(@NonNull DatagramPacket packet);
+    /**
+     * Send mDNS request packets via given network that asks for multicast response.
+     */
+    void sendPacketRequestingMulticastResponse(@NonNull List<DatagramPacket> packets,
+            boolean onlyUseIpv6OnIpv6OnlyNetworks);
 
     /**
-     * Sends a mDNS request packet via given network that asks for multicast response. Null network
-     * means sending packet via all networks.
+     * Send mDNS request packets via given network that asks for unicast response.
      */
-    default void sendMulticastPacket(@NonNull DatagramPacket packet, @Nullable Network network) {
-        throw new UnsupportedOperationException(
-                "This socket client doesn't support per-network sending");
-    }
-
-    /*** Sends a mDNS request packet that asks for unicast response. */
-    void sendUnicastPacket(@NonNull DatagramPacket packet);
-
-    /**
-     * Sends a mDNS request packet via given network that asks for unicast response. Null network
-     * means sending packet via all networks.
-     */
-    default void sendUnicastPacket(@NonNull DatagramPacket packet, @Nullable Network network) {
-        throw new UnsupportedOperationException(
-                "This socket client doesn't support per-network sending");
-    }
+    void sendPacketRequestingUnicastResponse(@NonNull List<DatagramPacket> packets,
+            boolean onlyUseIpv6OnIpv6OnlyNetworks);
 
     /*** Notify that the given network is requested for mdns discovery / resolution */
-    default void notifyNetworkRequested(@NonNull MdnsServiceBrowserListener listener,
-            @Nullable Network network) { }
+    void notifyNetworkRequested(@NonNull MdnsServiceBrowserListener listener,
+            @Nullable Network network, @NonNull SocketCreationCallback socketCreationCallback);
 
     /*** Notify that the network is unrequested */
     default void notifyNetworkUnrequested(@NonNull MdnsServiceBrowserListener listener) { }
 
+    /*** Gets looper that used by the socket client */
+    default Looper getLooper() {
+        return null;
+    }
+
+    /** Returns whether the socket client support requesting per network */
+    boolean supportsRequestingSpecificNetworks();
+
     /*** Callback for mdns response  */
     interface Callback {
         /*** Receive a mdns response */
-        void onResponseReceived(@NonNull MdnsPacket packet, int interfaceIndex,
-                @Nullable Network network);
+        void onResponseReceived(@NonNull MdnsPacket packet, @NonNull SocketKey socketKey);
 
         /*** Parse a mdns response failed */
-        void onFailedToParseMdnsResponse(int receivedPacketNumber, int errorCode);
+        void onFailedToParseMdnsResponse(int receivedPacketNumber, int errorCode,
+                @NonNull SocketKey socketKey);
+    }
+
+    /*** Callback for requested socket creation  */
+    interface SocketCreationCallback {
+        /*** Notify requested socket is created */
+        void onSocketCreated(@NonNull SocketKey socketKey);
+
+        /*** Notify requested socket is destroyed */
+        void onSocketDestroyed(@NonNull SocketKey socketKey);
     }
 }

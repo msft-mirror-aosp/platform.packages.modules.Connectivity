@@ -313,8 +313,7 @@ public class ClatCoordinatorTest {
          * Stop clatd.
          */
         @Override
-        public void stopClatd(@NonNull String iface, @NonNull String pfx96, @NonNull String v4,
-                @NonNull String v6, int pid) throws IOException {
+        public void stopClatd(int pid) throws IOException {
             if (pid == -1) {
                 fail("unsupported arg: " + pid);
             }
@@ -479,8 +478,7 @@ public class ClatCoordinatorTest {
                 eq((short) PRIO_CLAT), eq((short) ETH_P_IP));
         inOrder.verify(mEgressMap).deleteEntry(eq(EGRESS_KEY));
         inOrder.verify(mIngressMap).deleteEntry(eq(INGRESS_KEY));
-        inOrder.verify(mDeps).stopClatd(eq(BASE_IFACE), eq(NAT64_PREFIX_STRING),
-                eq(XLAT_LOCAL_IPV4ADDR_STRING), eq(XLAT_LOCAL_IPV6ADDR_STRING), eq(CLATD_PID));
+        inOrder.verify(mDeps).stopClatd(eq(CLATD_PID));
         inOrder.verify(mCookieTagMap).deleteEntry(eq(COOKIE_TAG_KEY));
         assertNull(coordinator.getClatdTrackerForTesting());
         inOrder.verifyNoMoreInteractions();
@@ -510,10 +508,10 @@ public class ClatCoordinatorTest {
         // Expected mtu is that the detected mtu minus MTU_DELTA(28).
         assertEquals(1372, ClatCoordinator.adjustMtu(1400));
         assertEquals(1472, ClatCoordinator.adjustMtu(ETHER_MTU));
-        assertEquals(65508, ClatCoordinator.adjustMtu(CLAT_MAX_MTU));
+        assertEquals(1500, ClatCoordinator.adjustMtu(CLAT_MAX_MTU));
 
-        // Expected mtu is that CLAT_MAX_MTU(65536) minus MTU_DELTA(28).
-        assertEquals(65508, ClatCoordinator.adjustMtu(CLAT_MAX_MTU + 1 /* over maximum mtu */));
+        // Expected mtu is that CLAT_MAX_MTU(1528) minus MTU_DELTA(28).
+        assertEquals(1500, ClatCoordinator.adjustMtu(CLAT_MAX_MTU + 1 /* over maximum mtu */));
     }
 
     private void verifyDump(final ClatCoordinator coordinator, boolean clatStarted) {
@@ -528,13 +526,13 @@ public class ClatCoordinatorTest {
                     + "v4: /192.0.0.46, v6: /2001:db8:0:b11::464, pfx96: /64:ff9b::, "
                     + "pid: 10483, cookie: 27149", dumpStrings[0].trim());
             assertEquals("Forwarding rules:", dumpStrings[1].trim());
-            assertEquals("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif",
+            assertEquals("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif (packets bytes)",
                     dumpStrings[2].trim());
-            assertEquals("1000 /64:ff9b::/96 /2001:db8:0:b11::464 -> /192.0.0.46 1001",
+            assertEquals("1000 /64:ff9b::/96 /2001:db8:0:b11::464 -> /192.0.0.46 1001 (0 0)",
                     dumpStrings[3].trim());
-            assertEquals("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif",
+            assertEquals("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif (packets bytes)",
                     dumpStrings[4].trim());
-            assertEquals("1001 /192.0.0.46 -> /2001:db8:0:b11::464 /64:ff9b::/96 1000 ether",
+            assertEquals("1001 /192.0.0.46 -> /2001:db8:0:b11::464 /64:ff9b::/96 1000 ether (0 0)",
                     dumpStrings[5].trim());
         } else {
             assertEquals(1, dumpStrings.length);

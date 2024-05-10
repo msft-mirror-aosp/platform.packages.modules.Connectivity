@@ -16,6 +16,8 @@
 package com.android.networkstack.tethering;
 
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
+import static android.net.TetheringManager.CONNECTIVITY_SCOPE_GLOBAL;
+import static android.net.TetheringManager.CONNECTIVITY_SCOPE_LOCAL;
 import static android.net.TetheringManager.TETHERING_BLUETOOTH;
 import static android.net.TetheringManager.TETHERING_WIFI_P2P;
 
@@ -34,7 +36,6 @@ import android.net.Network;
 import android.net.ip.IpServer;
 import android.util.ArrayMap;
 import android.util.ArraySet;
-import android.util.SparseArray;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -77,7 +78,8 @@ public class PrivateAddressCoordinator {
     private final ConnectivityManager mConnectivityMgr;
     private final TetheringConfiguration mConfig;
     // keyed by downstream type(TetheringManager.TETHERING_*).
-    private final SparseArray<LinkAddress> mCachedAddresses;
+    private final ArrayMap<AddressKey, LinkAddress> mCachedAddresses;
+    private final Random mRandom;
 
     public PrivateAddressCoordinator(Context context, TetheringConfiguration config) {
         mDownstreams = new ArraySet<>();
@@ -85,13 +87,16 @@ public class PrivateAddressCoordinator {
         mConnectivityMgr = (ConnectivityManager) context.getSystemService(
                 Context.CONNECTIVITY_SERVICE);
         mConfig = config;
-        mCachedAddresses = new SparseArray<>();
+        mCachedAddresses = new ArrayMap<AddressKey, LinkAddress>();
         // Reserved static addresses for bluetooth and wifi p2p.
-        mCachedAddresses.put(TETHERING_BLUETOOTH, new LinkAddress(LEGACY_BLUETOOTH_IFACE_ADDRESS));
-        mCachedAddresses.put(TETHERING_WIFI_P2P, new LinkAddress(LEGACY_WIFI_P2P_IFACE_ADDRESS));
+        mCachedAddresses.put(new AddressKey(TETHERING_BLUETOOTH, CONNECTIVITY_SCOPE_GLOBAL),
+                new LinkAddress(LEGACY_BLUETOOTH_IFACE_ADDRESS));
+        mCachedAddresses.put(new AddressKey(TETHERING_WIFI_P2P, CONNECTIVITY_SCOPE_LOCAL),
+                new LinkAddress(LEGACY_WIFI_P2P_IFACE_ADDRESS));
 
         mTetheringPrefixes = new ArrayList<>(Arrays.asList(new IpPrefix("192.168.0.0/16"),
             new IpPrefix("172.16.0.0/12"), new IpPrefix("10.0.0.0/8")));
+        mRandom = new Random();
     }
 
     /**
@@ -166,33 +171,60 @@ public class PrivateAddressCoordinator {
      * returns null if there is no available address.
      */
     @Nullable
-    public LinkAddress requestDownstreamAddress(final IpServer ipServer, boolean useLastAddress) {
+    public LinkAddress requestDownstreamAddress(final IpServer ipServer, final int scope,
+            boolean useLastAddress) {
         if (mConfig.shouldEnableWifiP2pDedicatedIp()
                 && ipServer.interfaceType() == TETHERING_WIFI_P2P) {
             return new LinkAddress(LEGACY_WIFI_P2P_IFACE_ADDRESS);
         }
 
+        final AddressKey addrKey = new AddressKey(ipServer.interfaceType(), scope);
         // This ensures that tethering isn't started on 2 different interfaces with the same type.
         // Once tethering could support multiple interface with the same type,
         // TetheringSoftApCallback would need to handle it among others.
-        final LinkAddress cachedAddress = mCachedAddresses.get(ipServer.interfaceType());
+        final LinkAddress cachedAddress = mCachedAddresses.get(addrKey);
         if (useLastAddress && cachedAddress != null
                 && !isConflictWithUpstream(asIpPrefix(cachedAddress))) {
             mDownstreams.add(ipServer);
             return cachedAddress;
         }
 
-        for (IpPrefix prefixRange : mTetheringPrefixes) {
+        final int prefixIndex = getStartedPrefixIndex();
+        for (int i = 0; i < mTetheringPrefixes.size(); i++) {
+            final IpPrefix prefixRange = mTetheringPrefixes.get(
+                    (prefixIndex + i) % mTetheringPrefixes.size());
             final LinkAddress newAddress = chooseDownstreamAddress(prefixRange);
             if (newAddress != null) {
                 mDownstreams.add(ipServer);
-                mCachedAddresses.put(ipServer.interfaceType(), newAddress);
+                mCachedAddresses.put(addrKey, newAddress);
                 return newAddress;
             }
         }
 
         // No available address.
         return null;
+    }
+
+    private int getStartedPrefixIndex() {
+        if (!mConfig.isRandomPrefixBaseEnabled()) return 0;
+
+        final int random = getRandomInt() & 0xffffff;
+        // This is to select the starting prefix range (/8, /12, or /16) instead of the actual
+        // LinkAddress. To avoid complex operations in the selection logic and make the selected
+        // rate approximate consistency with that /8 is around 2^4 times of /12 and /12 is around
+        // 2^4 times of /16, we simply define a map between the value and the prefix value like
+        // this:
+        //
+        // Value 0 ~ 0xffff (65536/16777216 = 0.39%) -> 192.168.0.0/16
+        // Value 0x10000 ~ 0xfffff (983040/16777216 = 5.86%) -> 172.16.0.0/12
+        // Value 0x100000 ~ 0xffffff (15728640/16777216 = 93.7%) -> 10.0.0.0/8
+        if (random > 0xfffff) {
+            return 2;
+        } else if (random > 0xffff) {
+            return 1;
+        } else {
+            return 0;
+        }
     }
 
     private int getPrefixBaseAddress(final IpPrefix prefix) {
@@ -258,12 +290,13 @@ public class PrivateAddressCoordinator {
         // is less than 127.0.0.0 = 0x7f000000 = 2130706432.
         //
         // Additionally, it makes debug output easier to read by making the numbers smaller.
-        final int randomPrefixStart = getRandomInt() & ~prefixRangeMask & prefixMask;
+        final int randomInt = getRandomInt();
+        final int randomPrefixStart = randomInt & ~prefixRangeMask & prefixMask;
 
         // A random offset within the prefix. Used to determine the local address once the prefix
         // is selected. It does not result in an IPv4 address ending in .0, .1, or .255
-        // For a PREFIX_LENGTH of 255, this is a number between 2 and 254.
-        final int subAddress = getSanitizedSubAddr(~prefixMask);
+        // For a PREFIX_LENGTH of 24, this is a number between 2 and 254.
+        final int subAddress = getSanitizedSubAddr(randomInt, ~prefixMask);
 
         // Find a prefix length PREFIX_LENGTH between randomPrefixStart and the end of the block,
         // such that the prefix does not conflict with any upstream.
@@ -305,12 +338,12 @@ public class PrivateAddressCoordinator {
     /** Get random int which could be used to generate random address. */
     @VisibleForTesting
     public int getRandomInt() {
-        return (new Random()).nextInt();
+        return mRandom.nextInt();
     }
 
     /** Get random subAddress and avoid selecting x.x.x.0, x.x.x.1 and x.x.x.255 address. */
-    private int getSanitizedSubAddr(final int subAddrMask) {
-        final int randomSubAddr = getRandomInt() & subAddrMask;
+    private int getSanitizedSubAddr(final int randomInt, final int subAddrMask) {
+        final int randomSubAddr = randomInt & subAddrMask;
         // If prefix length > 30, the selecting speace would be less than 4 which may be hard to
         // avoid 3 consecutive address.
         if (PREFIX_LENGTH > 30) return randomSubAddr;
@@ -382,6 +415,34 @@ public class PrivateAddressCoordinator {
         final LinkAddress address = downstream.getAddress();
 
         return asIpPrefix(address);
+    }
+
+    private static class AddressKey {
+        private final int mTetheringType;
+        private final int mScope;
+
+        private AddressKey(int type, int scope) {
+            mTetheringType = type;
+            mScope = scope;
+        }
+
+        @Override
+        public int hashCode() {
+            return (mTetheringType << 16) + mScope;
+        }
+
+        @Override
+        public boolean equals(@Nullable Object obj) {
+            if (!(obj instanceof AddressKey)) return false;
+            final AddressKey other = (AddressKey) obj;
+
+            return mTetheringType == other.mTetheringType && mScope == other.mScope;
+        }
+
+        @Override
+        public String toString() {
+            return "AddressKey(" + mTetheringType + ", " + mScope + ")";
+        }
     }
 
     void dump(final IndentingPrintWriter pw) {

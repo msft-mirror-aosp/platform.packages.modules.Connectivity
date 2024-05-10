@@ -16,15 +16,15 @@
 
 package com.android.server.connectivity.mdns;
 
-import static com.android.server.connectivity.mdns.MdnsSocketProvider.ensureRunningOnHandlerThread;
+import static com.android.server.connectivity.mdns.util.MdnsUtils.ensureRunningOnHandlerThread;
 
 import android.annotation.NonNull;
 import android.os.Handler;
 import android.os.ParcelFileDescriptor;
 import android.system.Os;
-import android.util.ArraySet;
 
 import com.android.net.module.util.FdEventsReader;
+import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.FileDescriptor;
 import java.net.InetSocketAddress;
@@ -39,9 +39,15 @@ public class MulticastPacketReader extends FdEventsReader<MulticastPacketReader.
     @NonNull
     private final Handler mHandler;
     @NonNull
-    private final Set<PacketHandler> mPacketHandlers = new ArraySet<>();
+    private final Set<PacketHandler> mPacketHandlers = MdnsUtils.newSet();
 
     interface PacketHandler {
+        /**
+         * Handle an incoming packet.
+         *
+         * The recvbuf and src <b>will be reused and modified</b> after this method returns, so
+         * implementers must ensure that they are not accessed after handlePacket returns.
+         */
         void handlePacket(byte[] recvbuf, int length, InetSocketAddress src);
     }
 
@@ -59,11 +65,14 @@ public class MulticastPacketReader extends FdEventsReader<MulticastPacketReader.
      * Create a new {@link MulticastPacketReader}.
      * @param socket Socket to read from. This will *not* be closed when the reader terminates.
      * @param buffer Buffer to read packets into. Will only be used from the handler thread.
+     * @param port the port number for the socket
      */
     protected MulticastPacketReader(@NonNull String interfaceTag,
             @NonNull ParcelFileDescriptor socket, @NonNull Handler handler,
             @NonNull byte[] buffer) {
-        super(handler, new RecvBuffer(buffer, new InetSocketAddress()));
+        // Set the port to zero as placeholder as the recvfrom() call will fill the actual port
+        // value later.
+        super(handler, new RecvBuffer(buffer, new InetSocketAddress(0 /* port */)));
         mLogTag = MulticastPacketReader.class.getSimpleName() + "/" + interfaceTag;
         mSocket = socket;
         mHandler = handler;

@@ -16,12 +16,12 @@
 <configuration description="Config for CTS net host test cases">
     <option name="test-suite-tag" value="cts" />
     <option name="config-descriptor:metadata" key="component" value="networking" />
+    <option name="config-descriptor:metadata" key="token" value="SIM_CARD" />
     <option name="config-descriptor:metadata" key="parameter" value="instant_app" />
     <option name="config-descriptor:metadata" key="parameter" value="not_multi_abi" />
     <option name="config-descriptor:metadata" key="parameter" value="secondary_user" />
 
     <target_preparer class="com.android.compatibility.common.tradefed.targetprep.LocationCheck" />
-    <target_preparer class="com.android.cts.net.NetworkPolicyTestsPreparer" />
 
     <!-- Enabling change id ALLOW_TEST_API_ACCESS allows that package to access @TestApi methods -->
     <target_preparer class="com.android.tradefed.targetprep.RunCommandTargetPreparer">
@@ -29,7 +29,12 @@
         <option name="teardown-command" value="am compat reset ALLOW_TEST_API_ACCESS com.android.cts.net.hostside.app2" />
         <option name="teardown-command" value="cmd power set-mode 0" />
         <option name="teardown-command" value="cmd battery reset" />
-        <option name="teardown-command" value="cmd netpolicy stop-watching" />
+    </target_preparer>
+
+    <target_preparer class="com.android.tradefed.targetprep.DeviceSetup">
+        <option name="force-skip-system-props" value="true" />
+        <option name="set-global-setting" key="verifier_verify_adb_installs" value="0" />
+        <option name="set-global-setting" key="low_power_standby_enabled" value="0" />
     </target_preparer>
 
     <test class="com.android.compatibility.common.tradefed.testtype.JarHostTest" >

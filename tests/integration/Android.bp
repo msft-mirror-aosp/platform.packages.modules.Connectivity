@@ -15,13 +15,17 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
 android_test {
     name: "FrameworksNetIntegrationTests",
-    defaults: ["framework-connectivity-internal-test-defaults"],
+    defaults: [
+        "framework-connectivity-internal-test-defaults",
+        "NetworkStackApiShimSettingsForCurrentBranch",
+    ],
     platform_apis: true,
     certificate: "platform",
     srcs: [
@@ -33,8 +37,16 @@ android_test {
         "ServiceConnectivityResources",
     ],
     static_libs: [
+        // It does not matter if NetworkStackApiStableLib or NetworkStackApiCurrentLib is used here,
+        // since the shims for the branch are already included via
+        // NetworkStackApiShimSettingsForCurrentBranch, and will be used in priority as they are
+        // first in the classpath.
+        // If the wrong shims are used for some reason, tests that use newer APIs fail.
+        // TODO: have NetworkStackApiStableLib link dynamically against the shims to remove this
+        // order-dependent setup.
         "NetworkStackApiStableLib",
         "androidx.test.ext.junit",
+        "compatibility-device-util-axt",
         "frameworks-net-integration-testutils",
         "kotlin-reflect",
         "mockito-target-extended-minus-junit4",
@@ -63,7 +75,10 @@ android_test {
 java_library {
     name: "frameworks-net-integration-testutils",
     defaults: ["framework-connectivity-test-defaults"],
-    srcs: ["util/**/*.java", "util/**/*.kt"],
+    srcs: [
+        "util/**/*.java",
+        "util/**/*.kt",
+    ],
     static_libs: [
         "androidx.annotation_annotation",
         "androidx.test.rules",

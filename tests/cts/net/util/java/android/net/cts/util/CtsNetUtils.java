@@ -16,6 +16,7 @@
 
 package android.net.cts.util;
 
+import static android.Manifest.permission.MODIFY_PHONE_STATE;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
@@ -54,12 +55,17 @@ import android.os.ConditionVariable;
 import android.os.IBinder;
 import android.system.Os;
 import android.system.OsConstants;
+import android.telephony.SubscriptionManager;
+import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
+
+import androidx.annotation.Nullable;
 
 import com.android.compatibility.common.util.PollingCheck;
 import com.android.compatibility.common.util.ShellIdentityUtils;
 import com.android.compatibility.common.util.SystemUtil;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ConnectivitySettingsUtils;
 import com.android.testutils.ConnectUtil;
 
@@ -68,6 +74,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.ArrayList;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -75,10 +83,17 @@ import java.util.concurrent.TimeoutException;
 
 public final class CtsNetUtils {
     private static final String TAG = CtsNetUtils.class.getSimpleName();
-    private static final int SOCKET_TIMEOUT_MS = 2000;
+
+    // Redefine this flag here so that IPsec code shipped in a mainline module can build on old
+    // platforms before FEATURE_IPSEC_TUNNEL_MIGRATION API is released.
+    // TODO: b/275378783 Remove this flag and use the platform API when it is available.
+    private static final String FEATURE_IPSEC_TUNNEL_MIGRATION =
+            "android.software.ipsec_tunnel_migration";
+
+    private static final int SOCKET_TIMEOUT_MS = 10_000;
     private static final int PRIVATE_DNS_PROBE_MS = 1_000;
 
-    private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 10_000;
+    private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 30_000;
     private static final int CONNECTIVITY_CHANGE_TIMEOUT_SECS = 30;
 
     private static final String PRIVATE_DNS_MODE_OPPORTUNISTIC = "opportunistic";
@@ -113,6 +128,11 @@ public final class CtsNetUtils {
     public boolean hasIpsecTunnelsFeature() {
         return mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_IPSEC_TUNNELS)
                 || getFirstApiLevel() >= Build.VERSION_CODES.Q;
+    }
+
+    /** Checks if FEATURE_IPSEC_TUNNEL_MIGRATION is enabled on the device */
+    public boolean hasIpsecTunnelMigrateFeature() {
+        return mContext.getPackageManager().hasSystemFeature(FEATURE_IPSEC_TUNNEL_MIGRATION);
     }
 
     /**
@@ -153,21 +173,39 @@ public final class CtsNetUtils {
         return cb;
     }
 
-    // Toggle WiFi twice, leaving it in the state it started in
-    public void toggleWifi() throws Exception {
-        if (mWifiManager.isWifiEnabled()) {
-            Network wifiNetwork = getWifiNetwork();
-            // Ensure system default network is WIFI because it's expected in disconnectFromWifi()
-            expectNetworkIsSystemDefault(wifiNetwork);
-            disconnectFromWifi(wifiNetwork);
-            connectToWifi();
-        } else {
-            connectToWifi();
-            Network wifiNetwork = getWifiNetwork();
-            // Ensure system default network is WIFI because it's expected in disconnectFromWifi()
-            expectNetworkIsSystemDefault(wifiNetwork);
-            disconnectFromWifi(wifiNetwork);
+    /**
+     * Toggle Wi-Fi off and on, waiting for the {@link ConnectivityManager#CONNECTIVITY_ACTION}
+     * broadcast in both cases.
+     */
+    public void reconnectWifiAndWaitForConnectivityAction() throws Exception {
+        assertTrue(mWifiManager.isWifiEnabled());
+        Network wifiNetwork = getWifiNetwork();
+        // Ensure system default network is WIFI because it's expected in disconnectFromWifi()
+        expectNetworkIsSystemDefault(wifiNetwork);
+        disconnectFromWifi(wifiNetwork, true /* expectLegacyBroadcast */);
+        connectToWifi(true /* expectLegacyBroadcast */);
+    }
+
+    /**
+     * Turn Wi-Fi off, then back on and make sure it connects, if it is supported.
+     */
+    public void reconnectWifiIfSupported() throws Exception {
+        if (!mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_WIFI)) {
+            return;
         }
+        disableWifi();
+        ensureWifiConnected();
+    }
+
+    /**
+     * Turn cell data off, then back on and make sure it connects, if it is supported.
+     */
+    public void reconnectCellIfSupported() throws Exception {
+        if (!mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) {
+            return;
+        }
+        setMobileDataEnabled(false);
+        setMobileDataEnabled(true);
     }
 
     public Network expectNetworkIsSystemDefault(Network network)
@@ -370,38 +408,8 @@ public final class CtsNetUtils {
         return network;
     }
 
-    public Network connectToCell() throws InterruptedException {
-        if (cellConnectAttempted()) {
-            mCm.unregisterNetworkCallback(mCellNetworkCallback);
-        }
-        NetworkRequest cellRequest = new NetworkRequest.Builder()
-                .addTransportType(TRANSPORT_CELLULAR)
-                .addCapability(NET_CAPABILITY_INTERNET)
-                .build();
-        mCellNetworkCallback = new TestNetworkCallback();
-        mCm.requestNetwork(cellRequest, mCellNetworkCallback);
-        final Network cellNetwork = mCellNetworkCallback.waitForAvailable();
-        assertNotNull("Cell network not available. " +
-                "Please ensure the device has working mobile data.", cellNetwork);
-        return cellNetwork;
-    }
-
-    public void disconnectFromCell() {
-        if (!cellConnectAttempted()) {
-            throw new IllegalStateException("Cell connection not attempted");
-        }
-        mCm.unregisterNetworkCallback(mCellNetworkCallback);
-        mCellNetworkCallback = null;
-    }
-
     public boolean cellConnectAttempted() {
         return mCellNetworkCallback != null;
-    }
-
-    public void tearDown() {
-        if (cellConnectAttempted()) {
-            disconnectFromCell();
-        }
     }
 
     private NetworkRequest makeWifiNetworkRequest() {
@@ -410,7 +418,7 @@ public final class CtsNetUtils {
                 .build();
     }
 
-    private void testHttpRequest(Socket s) throws IOException {
+    public void testHttpRequest(Socket s) throws IOException {
         OutputStream out = s.getOutputStream();
         InputStream in = s.getInputStream();
 
@@ -418,7 +426,9 @@ public final class CtsNetUtils {
         byte[] responseBytes = new byte[4096];
         out.write(requestBytes);
         in.read(responseBytes);
-        assertTrue(new String(responseBytes, "UTF-8").startsWith("HTTP/1.0 204 No Content\r\n"));
+        final String response = new String(responseBytes, "UTF-8");
+        assertTrue("Received unexpected response: " + response,
+                response.startsWith("HTTP/1.0 204 No Content\r\n"));
     }
 
     private Socket getBoundSocket(Network network, String host, int port) throws IOException {
@@ -494,17 +504,18 @@ public final class CtsNetUtils {
      * @throws InterruptedException If the thread is interrupted.
      */
     public void awaitPrivateDnsSetting(@NonNull String msg, @NonNull Network network,
-            @NonNull String server, boolean requiresValidatedServer) throws InterruptedException {
+            @Nullable String server, boolean requiresValidatedServer) throws InterruptedException {
         final CountDownLatch latch = new CountDownLatch(1);
         final NetworkRequest request = new NetworkRequest.Builder().clearCapabilities().build();
-        NetworkCallback callback = new NetworkCallback() {
+        final NetworkCallback callback = new NetworkCallback() {
             @Override
             public void onLinkPropertiesChanged(Network n, LinkProperties lp) {
                 Log.i(TAG, "Link properties of network " + n + " changed to " + lp);
                 if (requiresValidatedServer && lp.getValidatedPrivateDnsServers().isEmpty()) {
                     return;
                 }
-                if (network.equals(n) && server.equals(lp.getPrivateDnsServerName())) {
+                Log.i(TAG, "Set private DNS server to " + server);
+                if (network.equals(n) && Objects.equals(server, lp.getPrivateDnsServerName())) {
                     latch.countDown();
                 }
             }
@@ -523,6 +534,67 @@ public final class CtsNetUtils {
         // just sleep.
         if (requiresValidatedServer) {
             Thread.sleep(PRIVATE_DNS_PROBE_MS);
+        }
+    }
+
+    /**
+     * Get all testable Networks with internet capability.
+     */
+    public Network[] getTestableNetworks() {
+        final ArrayList<Network> testableNetworks = new ArrayList<Network>();
+        for (Network network : mCm.getAllNetworks()) {
+            final NetworkCapabilities nc = mCm.getNetworkCapabilities(network);
+            if (nc != null
+                    && nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                    && nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) {
+                testableNetworks.add(network);
+            }
+        }
+
+        assertTrue("This test requires that at least one public Internet-providing"
+                        + " network be connected. Please ensure that the device is connected to"
+                        + " a network.",
+                testableNetworks.size() >= 1);
+        return testableNetworks.toArray(new Network[0]);
+    }
+
+    /**
+     * Enables or disables the mobile data and waits for the state to change.
+     *
+     * @param enabled - true to enable, false to disable the mobile data.
+     */
+    public void setMobileDataEnabled(boolean enabled) throws InterruptedException {
+        final TelephonyManager tm =  mContext.getSystemService(TelephonyManager.class)
+                .createForSubscriptionId(SubscriptionManager.getDefaultDataSubscriptionId());
+        final NetworkRequest request = new NetworkRequest.Builder()
+                .addTransportType(TRANSPORT_CELLULAR)
+                .addCapability(NET_CAPABILITY_INTERNET)
+                .build();
+        final TestNetworkCallback callback = new TestNetworkCallback();
+        mCm.requestNetwork(request, callback);
+
+        try {
+            if (!enabled) {
+                assertNotNull("Cannot disable mobile data unless mobile data is connected",
+                        callback.waitForAvailable());
+            }
+
+            if (SdkLevel.isAtLeastS()) {
+                runAsShell(MODIFY_PHONE_STATE, () -> tm.setDataEnabledForReason(
+                        TelephonyManager.DATA_ENABLED_REASON_USER, enabled));
+            } else {
+                runAsShell(MODIFY_PHONE_STATE, () -> tm.setDataEnabled(enabled));
+            }
+            if (enabled) {
+                assertNotNull("Enabling mobile data did not connect mobile data",
+                        callback.waitForAvailable());
+            } else {
+                assertNotNull("Disabling mobile data did not disconnect mobile data",
+                        callback.waitForLost());
+            }
+
+        } finally {
+            mCm.unregisterNetworkCallback(callback);
         }
     }
 

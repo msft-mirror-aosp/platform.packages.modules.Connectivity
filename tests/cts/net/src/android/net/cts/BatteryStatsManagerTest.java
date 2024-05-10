@@ -18,6 +18,7 @@ package android.net.cts;
 
 import static android.Manifest.permission.UPDATE_DEVICE_STATS;
 import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
+import static android.content.pm.PackageManager.FEATURE_WIFI;
 
 import static androidx.test.InstrumentationRegistry.getContext;
 
@@ -47,6 +48,7 @@ import androidx.test.filters.RequiresDevice;
 import androidx.test.filters.SdkSuppress;
 import androidx.test.runner.AndroidJUnit4;
 
+import com.android.testutils.AutoReleaseNetworkCallbackRule;
 import com.android.testutils.DevSdkIgnoreRule;
 
 import org.junit.Before;
@@ -66,7 +68,10 @@ import java.util.function.Supplier;
 @RunWith(AndroidJUnit4.class)
 @SdkSuppress(minSdkVersion = Build.VERSION_CODES.R) // BatteryStatsManager did not exist on Q
 public class BatteryStatsManagerTest{
-    @Rule
+    @Rule(order = 1)
+    public final AutoReleaseNetworkCallbackRule
+            networkCallbackRule = new AutoReleaseNetworkCallbackRule();
+    @Rule(order = 2)
     public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
     private static final String TAG = BatteryStatsManagerTest.class.getSimpleName();
     private static final String TEST_URL = "https://connectivitycheck.gstatic.com/generate_204";
@@ -118,8 +123,10 @@ public class BatteryStatsManagerTest{
             // side effect is the point of using --write here.
             executeShellCommand("dumpsys batterystats --write");
 
-            // Make sure wifi is disabled.
-            mCtsNetUtils.ensureWifiDisconnected(null /* wifiNetworkToCheck */);
+            if (mPm.hasSystemFeature(FEATURE_WIFI)) {
+                // Make sure wifi is disabled.
+                mCtsNetUtils.ensureWifiDisconnected(null /* wifiNetworkToCheck */);
+            }
 
             verifyGetCellBatteryStats();
             verifyGetWifiBatteryStats();
@@ -128,6 +135,9 @@ public class BatteryStatsManagerTest{
             // Reset battery settings.
             executeShellCommand("dumpsys batterystats disable no-auto-reset");
             executeShellCommand("cmd battery reset");
+            if (mPm.hasSystemFeature(FEATURE_WIFI)) {
+                mCtsNetUtils.ensureWifiConnected();
+            }
         }
     }
 
@@ -139,7 +149,7 @@ public class BatteryStatsManagerTest{
             return;
         }
 
-        final Network cellNetwork = mCtsNetUtils.connectToCell();
+        final Network cellNetwork = networkCallbackRule.requestCell();
         final URL url = new URL(TEST_URL);
 
         // Get cellular battery stats
@@ -153,23 +163,31 @@ public class BatteryStatsManagerTest{
         // The mobile battery stats are updated when a network stops being the default network.
         // ConnectivityService will call BatteryStatsManager.reportMobileRadioPowerState when
         // removing data activity tracking.
-        mCtsNetUtils.ensureWifiConnected();
+        try {
+            mCtsNetUtils.setMobileDataEnabled(false);
 
-        // There's rate limit to update mobile battery so if ConnectivityService calls
-        // BatteryStatsManager.reportMobileRadioPowerState when default network changed,
-        // the mobile stats might not be updated. But if the mobile update due to other
-        // reasons (plug/unplug, battery level change, etc) will be unaffected. Thus here
-        // dumps the battery stats to trigger a full sync of data.
-        executeShellCommand("dumpsys batterystats");
+            // There's rate limit to update mobile battery so if ConnectivityService calls
+            // BatteryStatsManager.reportMobileRadioPowerState when default network changed,
+            // the mobile stats might not be updated. But if the mobile update due to other
+            // reasons (plug/unplug, battery level change, etc) will be unaffected. Thus here
+            // dumps the battery stats to trigger a full sync of data.
+            executeShellCommand("dumpsys batterystats");
 
-        // Check cellular battery stats are updated.
-        runAsShell(UPDATE_DEVICE_STATS,
-                () -> assertStatsEventually(mBsm::getCellularBatteryStats,
-                    cellularStatsAfter -> cellularBatteryStatsIncreased(
-                    cellularStatsBefore, cellularStatsAfter)));
+            // Check cellular battery stats are updated.
+            runAsShell(UPDATE_DEVICE_STATS,
+                    () -> assertStatsEventually(mBsm::getCellularBatteryStats,
+                        cellularStatsAfter -> cellularBatteryStatsIncreased(
+                        cellularStatsBefore, cellularStatsAfter)));
+        } finally {
+            mCtsNetUtils.setMobileDataEnabled(true);
+        }
     }
 
     private void verifyGetWifiBatteryStats() throws Exception {
+        if (!mPm.hasSystemFeature(FEATURE_WIFI)) {
+            return;
+        }
+
         final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
         final URL url = new URL(TEST_URL);
 
@@ -185,7 +203,8 @@ public class BatteryStatsManagerTest{
         Log.d(TAG, "Generate traffic on wifi network.");
         generateNetworkTraffic(wifiNetwork, url);
         // Wifi battery stats are updated when wifi on.
-        mCtsNetUtils.toggleWifi();
+        mCtsNetUtils.disableWifi();
+        mCtsNetUtils.ensureWifiConnected();
 
         // Check wifi battery stats are updated.
         runAsShell(UPDATE_DEVICE_STATS,
@@ -199,9 +218,9 @@ public class BatteryStatsManagerTest{
     @Test
     public void testReportNetworkInterfaceForTransports_throwsSecurityException()
             throws Exception {
-        Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
-        final String iface = mCm.getLinkProperties(wifiNetwork).getInterfaceName();
-        final int[] transportType = mCm.getNetworkCapabilities(wifiNetwork).getTransportTypes();
+        final Network network = mCm.getActiveNetwork();
+        final String iface = mCm.getLinkProperties(network).getInterfaceName();
+        final int[] transportType = mCm.getNetworkCapabilities(network).getTransportTypes();
         assertThrows(SecurityException.class,
                 () -> mBsm.reportNetworkInterfaceForTransports(iface, transportType));
     }

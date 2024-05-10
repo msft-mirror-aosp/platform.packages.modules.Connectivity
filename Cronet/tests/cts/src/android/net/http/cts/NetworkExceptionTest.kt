@@ -19,8 +19,10 @@ package android.net.http.cts
 import android.net.http.HttpEngine
 import android.net.http.NetworkException
 import android.net.http.cts.util.TestUrlRequestCallback
+import android.os.Build
 import androidx.test.core.app.ApplicationProvider
-import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.android.testutils.DevSdkIgnoreRule
+import com.android.testutils.DevSdkIgnoreRunner
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertSame
@@ -28,7 +30,8 @@ import kotlin.test.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@RunWith(AndroidJUnit4::class)
+@RunWith(DevSdkIgnoreRunner::class)
+@DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)
 class NetworkExceptionTest {
 
     @Test
@@ -50,7 +53,7 @@ class NetworkExceptionTest {
         val httpEngine = HttpEngine.Builder(ApplicationProvider.getApplicationContext()).build()
         val callback = TestUrlRequestCallback()
         val request =
-            httpEngine.newUrlRequestBuilder("http://localhost", callback, callback.executor).build()
+            httpEngine.newUrlRequestBuilder("http://localhost", callback.executor, callback).build()
 
         request.start()
         callback.blockForDone()

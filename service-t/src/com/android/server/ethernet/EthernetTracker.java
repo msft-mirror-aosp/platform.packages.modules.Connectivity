@@ -25,15 +25,12 @@ import static com.android.internal.annotations.VisibleForTesting.Visibility.PACK
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
-import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.IEthernetServiceListener;
 import android.net.INetd;
 import android.net.ITetheredInterfaceCallback;
 import android.net.InterfaceConfigurationParcel;
 import android.net.IpConfiguration;
-import android.net.IpConfiguration.IpAssignment;
-import android.net.IpConfiguration.ProxySettings;
 import android.net.LinkAddress;
 import android.net.NetworkCapabilities;
 import android.net.StaticIpConfiguration;
@@ -49,6 +46,7 @@ import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.SharedLog;
@@ -57,6 +55,7 @@ import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkMessage;
 import com.android.net.module.util.netlink.RtNetlinkLinkMessage;
 import com.android.net.module.util.netlink.StructIfinfoMsg;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.FileDescriptor;
 import java.net.InetAddress;
@@ -110,6 +109,7 @@ public class EthernetTracker {
     /** Mapping between {iface name | mac address} -> {NetworkCapabilities} */
     private final ConcurrentHashMap<String, NetworkCapabilities> mNetworkCapabilities =
             new ConcurrentHashMap<>();
+    /** Mapping between {iface name | mac address} -> {IpConfiguration} */
     private final ConcurrentHashMap<String, IpConfiguration> mIpConfigurations =
             new ConcurrentHashMap<>();
 
@@ -130,6 +130,10 @@ public class EthernetTracker {
     // returned when a tethered interface is requested; until then, it remains in client mode. Its
     // current mode is reflected in mTetheringInterfaceMode.
     private String mTetheringInterface;
+    // If the tethering interface is in server mode, it is not tracked by factory. The HW address
+    // must be maintained by the EthernetTracker. Its current mode is reflected in
+    // mTetheringInterfaceMode.
+    private String mTetheringInterfaceHwAddr;
     private int mTetheringInterfaceMode = INTERFACE_MODE_CLIENT;
     // Tracks whether clients were notified that the tethered interface is available
     private boolean mTetheredInterfaceWasAvailable = false;
@@ -237,7 +241,18 @@ public class EthernetTracker {
         mDeps = deps;
 
         // Interface match regex.
-        mIfaceMatch = mDeps.getInterfaceRegexFromResource(mContext);
+        String ifaceMatchRegex = mDeps.getInterfaceRegexFromResource(mContext);
+        // "*" is a magic string to indicate "pick the default".
+        if (ifaceMatchRegex.equals("*")) {
+            if (SdkLevel.isAtLeastV()) {
+                // On V+, include both usb%d and eth%d interfaces.
+                ifaceMatchRegex = "(usb|eth)\\d+";
+            } else {
+                // On T and U, include only eth%d interfaces.
+                ifaceMatchRegex = "eth\\d+";
+            }
+        }
+        mIfaceMatch = ifaceMatchRegex;
 
         // Read default Ethernet interface configuration from resources
         final String[] interfaceConfigs = mDeps.getInterfaceConfigFromResource(context);
@@ -282,7 +297,7 @@ public class EthernetTracker {
     }
 
     private IpConfiguration getIpConfigurationForCallback(String iface, int state) {
-        return (state == EthernetManager.STATE_ABSENT) ? null : getOrCreateIpConfiguration(iface);
+        return (state == EthernetManager.STATE_ABSENT) ? null : getIpConfiguration(iface);
     }
 
     private void ensureRunningOnEthernetServiceThread() {
@@ -325,7 +340,7 @@ public class EthernetTracker {
     protected void unicastInterfaceStateChange(@NonNull IEthernetServiceListener listener,
             @NonNull String iface) {
         ensureRunningOnEthernetServiceThread();
-        final int state = mFactory.getInterfaceState(iface);
+        final int state = getInterfaceState(iface);
         final int role = getInterfaceRole(iface);
         final IpConfiguration config = getIpConfigurationForCallback(iface, state);
         try {
@@ -370,14 +385,88 @@ public class EthernetTracker {
         });
     }
 
-    @VisibleForTesting(visibility = PACKAGE)
-    protected void setInterfaceEnabled(@NonNull final String iface, boolean enabled,
-            @Nullable final EthernetCallback cb) {
-        mHandler.post(() -> updateInterfaceState(iface, enabled, cb));
+    /** Configure the administrative state of ethernet interface by toggling IFF_UP. */
+    public void setInterfaceEnabled(String iface, boolean enabled, EthernetCallback cb) {
+        mHandler.post(() -> setInterfaceAdministrativeState(iface, enabled, cb));
     }
 
-    IpConfiguration getIpConfiguration(String iface) {
-        return mIpConfigurations.get(iface);
+    private @Nullable String getHwAddress(String iface) {
+        if (getInterfaceRole(iface) == EthernetManager.ROLE_SERVER) {
+            return mTetheringInterfaceHwAddr;
+        }
+
+        return mFactory.getHwAddress(iface);
+    }
+
+    /**
+     * Get the IP configuration of the interface, or the default if the interface doesn't exist.
+     * @param iface the name of the interface to retrieve.
+     *
+     * @return The IP configuration
+     */
+    public IpConfiguration getIpConfiguration(String iface) {
+        return getIpConfiguration(iface, getHwAddress(iface));
+    }
+
+    private IpConfiguration getIpConfiguration(String iface, @Nullable String hwAddress) {
+        // Look up Ip configuration first by ifname, then by MAC address.
+        IpConfiguration ipConfig = mIpConfigurations.get(iface);
+        if (ipConfig != null) {
+            return ipConfig;
+        }
+
+        if (hwAddress == null) {
+            // should never happen.
+            Log.wtf(TAG, "No hardware address for interface " + iface);
+        } else {
+            ipConfig = mIpConfigurations.get(hwAddress);
+        }
+
+        if (ipConfig == null) {
+            ipConfig = new IpConfiguration.Builder().build();
+        }
+
+        return ipConfig;
+    }
+
+    private NetworkCapabilities getNetworkCapabilities(String iface) {
+        return getNetworkCapabilities(iface, getHwAddress(iface));
+    }
+
+    private NetworkCapabilities getNetworkCapabilities(String iface, @Nullable String hwAddress) {
+        // Look up network capabilities first by ifname, then by MAC address.
+        NetworkCapabilities networkCapabilities = mNetworkCapabilities.get(iface);
+        if (networkCapabilities != null) {
+            return networkCapabilities;
+        }
+
+        if (hwAddress == null) {
+            // should never happen.
+            Log.wtf(TAG, "No hardware address for interface " + iface);
+        } else {
+            networkCapabilities = mNetworkCapabilities.get(hwAddress);
+        }
+
+        if (networkCapabilities != null) {
+            return networkCapabilities;
+        }
+
+        final NetworkCapabilities.Builder builder = createNetworkCapabilities(
+                false /* clear default capabilities */, null, null)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED);
+
+        if (isValidTestInterface(iface)) {
+            builder.addTransportType(NetworkCapabilities.TRANSPORT_TEST);
+        } else {
+            builder.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+        }
+
+        return builder.build();
     }
 
     @VisibleForTesting(visibility = PACKAGE)
@@ -385,7 +474,7 @@ public class EthernetTracker {
         return mFactory.hasInterface(iface);
     }
 
-    String[] getInterfaces(boolean includeRestricted) {
+    String[] getClientModeInterfaces(boolean includeRestricted) {
         return mFactory.getAvailableInterfaces(includeRestricted);
     }
 
@@ -418,8 +507,8 @@ public class EthernetTracker {
      * NET_CAPABILITY_NOT_RESTRICTED) capability. Otherwise, returns false.
      */
     boolean isRestrictedInterface(String iface) {
-        final NetworkCapabilities nc = mNetworkCapabilities.get(iface);
-        return nc != null && !nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED);
+        final NetworkCapabilities nc = getNetworkCapabilities(iface);
+        return !nc.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED);
     }
 
     void addListener(IEthernetServiceListener listener, boolean canUseRestrictedNetworks) {
@@ -428,8 +517,11 @@ public class EthernetTracker {
                 // Remote process has already died
                 return;
             }
-            for (String iface : getInterfaces(canUseRestrictedNetworks)) {
+            for (String iface : getClientModeInterfaces(canUseRestrictedNetworks)) {
                 unicastInterfaceStateChange(listener, iface);
+            }
+            if (mTetheringInterface != null && mTetheringInterfaceMode == INTERFACE_MODE_SERVER) {
+                unicastInterfaceStateChange(listener, mTetheringInterface);
             }
 
             unicastEthernetStateChange(listener, mEthernetState);
@@ -446,7 +538,7 @@ public class EthernetTracker {
             if (!include) {
                 removeTestData();
             }
-            mHandler.post(() -> trackAvailableInterfaces());
+            trackAvailableInterfaces();
         });
     }
 
@@ -568,6 +660,7 @@ public class EthernetTracker {
         removeInterface(iface);
         if (iface.equals(mTetheringInterface)) {
             mTetheringInterface = null;
+            mTetheringInterfaceHwAddr = null;
         }
         broadcastInterfaceStateChange(iface);
     }
@@ -596,24 +689,17 @@ public class EthernetTracker {
             return;
         }
 
+        final String hwAddress = config.hwAddr;
+
         if (getInterfaceMode(iface) == INTERFACE_MODE_SERVER) {
             maybeUpdateServerModeInterfaceState(iface, true);
+            mTetheringInterfaceHwAddr = hwAddress;
             return;
         }
 
-        final String hwAddress = config.hwAddr;
+        final NetworkCapabilities nc = getNetworkCapabilities(iface, hwAddress);
+        final IpConfiguration ipConfiguration = getIpConfiguration(iface, hwAddress);
 
-        NetworkCapabilities nc = mNetworkCapabilities.get(iface);
-        if (nc == null) {
-            // Try to resolve using mac address
-            nc = mNetworkCapabilities.get(hwAddress);
-            if (nc == null) {
-                final boolean isTestIface = iface.matches(TEST_IFACE_REGEXP);
-                nc = createDefaultNetworkCapabilities(isTestIface);
-            }
-        }
-
-        IpConfiguration ipConfiguration = getOrCreateIpConfiguration(iface);
         Log.d(TAG, "Tracking interface in client mode: " + iface);
         mFactory.addInterface(iface, hwAddress, ipConfiguration, nc);
 
@@ -628,25 +714,40 @@ public class EthernetTracker {
         }
     }
 
-    private void updateInterfaceState(String iface, boolean up) {
-        updateInterfaceState(iface, up, new EthernetCallback(null /* cb */));
-    }
-
-    // TODO(b/225315248): enable/disableInterface() should not affect link state.
-    private void updateInterfaceState(String iface, boolean up, EthernetCallback cb) {
-        final int mode = getInterfaceMode(iface);
-        if (mode == INTERFACE_MODE_SERVER || !mFactory.hasInterface(iface)) {
-            // The interface is in server mode or is not tracked.
-            cb.onError("Failed to set link state " + (up ? "up" : "down") + " for " + iface);
+    private void setInterfaceAdministrativeState(String iface, boolean up, EthernetCallback cb) {
+        if (getInterfaceState(iface) == EthernetManager.STATE_ABSENT) {
+            cb.onError("Failed to enable/disable absent interface: " + iface);
+            return;
+        }
+        if (getInterfaceRole(iface) == EthernetManager.ROLE_SERVER) {
+            // TODO: support setEthernetState for server mode interfaces.
+            cb.onError("Failed to enable/disable interface in server mode: " + iface);
             return;
         }
 
+        if (up) {
+            // WARNING! setInterfaceUp() clears the IPv4 address and readds it. Calling
+            // enableInterface() on an active interface can lead to a provisioning failure which
+            // will cause IpClient to be restarted.
+            // TODO: use netlink directly rather than calling into netd.
+            NetdUtils.setInterfaceUp(mNetd, iface);
+        } else {
+            NetdUtils.setInterfaceDown(mNetd, iface);
+        }
+        cb.onResult(iface);
+    }
+
+    private void updateInterfaceState(String iface, boolean up) {
+        final int mode = getInterfaceMode(iface);
+        if (mode == INTERFACE_MODE_SERVER) {
+            // TODO: support tracking link state for interfaces in server mode.
+            return;
+        }
+
+        // If updateInterfaceLinkState returns false, the interface is already in the correct state.
         if (mFactory.updateInterfaceLinkState(iface, up)) {
             broadcastInterfaceStateChange(iface);
         }
-        // If updateInterfaceLinkState returns false, the interface is already in the correct state.
-        // Always return success.
-        cb.onResult(iface);
     }
 
     private void maybeUpdateServerModeInterfaceState(String iface, boolean available) {
@@ -736,25 +837,6 @@ public class EthernetTracker {
     static EthernetTrackerConfig createEthernetTrackerConfig(@NonNull final String configString) {
         Objects.requireNonNull(configString, "EthernetTrackerConfig requires non-null config");
         return new EthernetTrackerConfig(configString.split(";", /* limit of tokens */ 4));
-    }
-
-    private static NetworkCapabilities createDefaultNetworkCapabilities(boolean isTestIface) {
-        NetworkCapabilities.Builder builder = createNetworkCapabilities(
-                false /* clear default capabilities */, null, null)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED);
-
-        if (isTestIface) {
-            builder.addTransportType(NetworkCapabilities.TRANSPORT_TEST);
-        } else {
-            builder.addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
-        }
-
-        return builder.build();
     }
 
     /**
@@ -891,15 +973,6 @@ public class EthernetTracker {
         return new IpConfiguration.Builder().setStaticIpConfiguration(staticIpConfig).build();
     }
 
-    private IpConfiguration getOrCreateIpConfiguration(String iface) {
-        IpConfiguration ret = mIpConfigurations.get(iface);
-        if (ret != null) return ret;
-        ret = new IpConfiguration();
-        ret.setIpAssignment(IpAssignment.DHCP);
-        ret.setProxySettings(ProxySettings.NONE);
-        return ret;
-    }
-
     private boolean isValidEthernetInterface(String iface) {
         return iface.matches(mIfaceMatch) || isValidTestInterface(iface);
     }
@@ -986,7 +1059,7 @@ public class EthernetTracker {
             pw.println("IP Configurations:");
             pw.increaseIndent();
             for (String iface : mIpConfigurations.keySet()) {
-                pw.println(iface + ": " + mIpConfigurations.get(iface));
+                pw.println(iface + ": " + getIpConfiguration(iface));
             }
             pw.decreaseIndent();
             pw.println();
@@ -994,7 +1067,7 @@ public class EthernetTracker {
             pw.println("Network Capabilities:");
             pw.increaseIndent();
             for (String iface : mNetworkCapabilities.keySet()) {
-                pw.println(iface + ": " + mNetworkCapabilities.get(iface));
+                pw.println(iface + ": " + getNetworkCapabilities(iface));
             }
             pw.decreaseIndent();
             pw.println();

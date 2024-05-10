@@ -63,13 +63,17 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 
+import android.net.InetAddresses;
 import android.net.IpSecAlgorithm;
 import android.net.IpSecManager;
 import android.net.IpSecManager.SecurityParameterIndex;
 import android.net.IpSecManager.UdpEncapsulationSocket;
 import android.net.IpSecTransform;
+import android.net.IpSecTransformState;
+import android.net.NetworkUtils;
 import android.net.TrafficStats;
 import android.os.Build;
+import android.os.OutcomeReceiver;
 import android.platform.test.annotations.AppModeFull;
 import android.system.ErrnoException;
 import android.system.Os;
@@ -79,8 +83,10 @@ import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.modules.utils.build.SdkLevel;
+import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.SkipMainlinePresubmit;
 
 import org.junit.Rule;
 import org.junit.Test;
@@ -97,7 +103,11 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
+@ConnectivityModuleTest
 @RunWith(AndroidJUnit4.class)
 @AppModeFull(reason = "Socket cannot bind in instant app mode")
 public class IpSecManagerTest extends IpSecBaseTest {
@@ -364,10 +374,36 @@ public class IpSecManagerTest extends IpSecBaseTest {
         });
     }
 
-    private void assumeExperimentalIpv6UdpEncapSupported() throws Exception {
+    private static boolean isIpv6UdpEncapSupportedByKernel() {
+        return isKernelVersionAtLeast("5.15.31")
+                || (isKernelVersionAtLeast("5.10.108") && !isKernelVersionAtLeast("5.15.0"));
+    }
+
+    // Packet private for use in IpSecManagerTunnelTest
+    static boolean isIpv6UdpEncapSupported() {
+        return SdkLevel.isAtLeastU() && isIpv6UdpEncapSupportedByKernel();
+    }
+
+    // Packet private for use in IpSecManagerTunnelTest
+    static void assumeExperimentalIpv6UdpEncapSupported() throws Exception {
         assumeTrue("Not supported before U", SdkLevel.isAtLeastU());
-        assumeTrue("Not supported by kernel", isKernelVersionAtLeast("5.15.31")
-                || (isKernelVersionAtLeast("5.10.108") && !isKernelVersionAtLeast("5.15.0")));
+        assumeTrue("Not supported by kernel", isIpv6UdpEncapSupportedByKernel());
+    }
+
+    // TODO: b/319532485 Figure out whether to support x86_32
+    private static boolean isRequestTransformStateSupportedByKernel() {
+        return NetworkUtils.isKernel64Bit() || !NetworkUtils.isKernelX86();
+    }
+
+    // Package private for use in IpSecManagerTunnelTest
+    static boolean isRequestTransformStateSupported() {
+        return SdkLevel.isAtLeastV() && isRequestTransformStateSupportedByKernel();
+    }
+
+    // Package private for use in IpSecManagerTunnelTest
+    static void assumeRequestIpSecTransformStateSupported() {
+        assumeTrue("Not supported before V", SdkLevel.isAtLeastV());
+        assumeTrue("Not supported by kernel", isRequestTransformStateSupportedByKernel());
     }
 
     @Test
@@ -415,6 +451,11 @@ public class IpSecManagerTest extends IpSecBaseTest {
             long uidTxDelta = 0;
             long uidRxDelta = 0;
             for (int i = 0; i < 100; i++) {
+                // Clear TrafficStats cache is needed to avoid rate-limit caching for
+                // TrafficStats API results on V+ devices.
+                if (SdkLevel.isAtLeastV()) {
+                    runAsShell(NETWORK_SETTINGS, () -> TrafficStats.clearRateLimitCaches());
+                }
                 uidTxDelta = TrafficStats.getUidTxPackets(Os.getuid()) - uidTxPackets;
                 uidRxDelta = TrafficStats.getUidRxPackets(Os.getuid()) - uidRxPackets;
 
@@ -447,9 +488,8 @@ public class IpSecManagerTest extends IpSecBaseTest {
             long newUidRxPackets = TrafficStats.getUidRxPackets(Os.getuid());
 
             assertEquals(expectedTxByteDelta, newUidTxBytes - uidTxBytes);
-            assertTrue(
-                    newUidRxBytes - uidRxBytes >= minRxByteDelta
-                            && newUidRxBytes - uidRxBytes <= maxRxByteDelta);
+            assertTrue("Not enough bytes", newUidRxBytes - uidRxBytes >= minRxByteDelta);
+            assertTrue("Too many bytes", newUidRxBytes - uidRxBytes <= maxRxByteDelta);
             assertEquals(expectedTxPacketDelta, newUidTxPackets - uidTxPackets);
             assertEquals(expectedRxPacketDelta, newUidRxPackets - uidRxPackets);
         }
@@ -490,6 +530,11 @@ public class IpSecManagerTest extends IpSecBaseTest {
         }
 
         private static void initStatsChecker() throws Exception {
+            // Clear TrafficStats cache is needed to avoid rate-limit caching for
+            // TrafficStats API results on V+ devices.
+            if (SdkLevel.isAtLeastV()) {
+                runAsShell(NETWORK_SETTINGS, () -> TrafficStats.clearRateLimitCaches());
+            }
             uidTxBytes = TrafficStats.getUidTxBytes(Os.getuid());
             uidRxBytes = TrafficStats.getUidRxBytes(Os.getuid());
             uidTxPackets = TrafficStats.getUidTxPackets(Os.getuid());
@@ -707,6 +752,7 @@ public class IpSecManagerTest extends IpSecBaseTest {
     }
 
     @Test
+    @SkipMainlinePresubmit(reason = "Out of SLO flakiness")
     public void testIkeOverUdpEncapSocket() throws Exception {
         // IPv6 not supported for UDP-encap-ESP
         InetAddress local = InetAddress.getByName(IPV4_LOOPBACK);
@@ -1583,6 +1629,67 @@ public class IpSecManagerTest extends IpSecBaseTest {
     public void testOpenUdpEncapSocketRandomPort() throws Exception {
         try (UdpEncapsulationSocket encapSocket = mISM.openUdpEncapsulationSocket()) {
             assertTrue("Returned invalid port", encapSocket.getPort() != 0);
+        }
+    }
+
+    @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @Test
+    public void testRequestIpSecTransformState() throws Exception {
+        assumeRequestIpSecTransformStateSupported();
+
+        final InetAddress localAddr = InetAddresses.parseNumericAddress(IPV6_LOOPBACK);
+        try (SecurityParameterIndex spi = mISM.allocateSecurityParameterIndex(localAddr);
+                IpSecTransform transform =
+                        buildTransportModeTransform(spi, localAddr, null /* encapSocket*/)) {
+            final SocketPair<JavaUdpSocket> sockets =
+                    getJavaUdpSocketPair(localAddr, mISM, transform, false);
+
+            sockets.mLeftSock.sendTo(TEST_DATA, localAddr, sockets.mRightSock.getPort());
+            sockets.mRightSock.receive();
+
+            final int expectedPacketCount = 1;
+            final int expectedInnerPacketSize = TEST_DATA.length + UDP_HDRLEN;
+
+            checkTransformState(
+                    transform,
+                    expectedPacketCount,
+                    expectedPacketCount,
+                    2 * (long) expectedPacketCount,
+                    2 * (long) expectedInnerPacketSize,
+                    newReplayBitmap(expectedPacketCount));
+        }
+    }
+
+    @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @Test
+    public void testRequestIpSecTransformStateOnClosedTransform() throws Exception {
+        assumeRequestIpSecTransformStateSupported();
+
+        final InetAddress localAddr = InetAddresses.parseNumericAddress(IPV6_LOOPBACK);
+        final CompletableFuture<RuntimeException> futureError = new CompletableFuture<>();
+
+        try (SecurityParameterIndex spi = mISM.allocateSecurityParameterIndex(localAddr);
+                IpSecTransform transform =
+                        buildTransportModeTransform(spi, localAddr, null /* encapSocket*/)) {
+            transform.close();
+
+            transform.requestIpSecTransformState(
+                    Executors.newSingleThreadExecutor(),
+                    new OutcomeReceiver<IpSecTransformState, RuntimeException>() {
+                        @Override
+                        public void onResult(IpSecTransformState state) {
+                            fail("Expect to fail but received a state");
+                        }
+
+                        @Override
+                        public void onError(RuntimeException error) {
+                            futureError.complete(error);
+                        }
+                    });
+
+            assertTrue(
+                    futureError.get(SOCK_TIMEOUT, TimeUnit.MILLISECONDS)
+                            instanceof IllegalStateException);
         }
     }
 }

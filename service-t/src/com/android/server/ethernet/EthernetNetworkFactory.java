@@ -20,7 +20,6 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.net.ConnectivityManager;
-import android.net.ConnectivityResources;
 import android.net.EthernetManager;
 import android.net.EthernetNetworkSpecifier;
 import android.net.IpConfiguration;
@@ -50,6 +49,7 @@ import com.android.connectivity.resources.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.net.module.util.InterfaceParams;
+import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.FileDescriptor;
 import java.util.Objects;
@@ -250,6 +250,17 @@ public class EthernetNetworkFactory {
         return mTrackingInterfaces.containsKey(ifaceName);
     }
 
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    @Nullable
+    protected String getHwAddress(@NonNull final String ifaceName) {
+        if (!hasInterface(ifaceName)) {
+            return null;
+        }
+
+        NetworkInterfaceState iface = mTrackingInterfaces.get(ifaceName);
+        return iface.mHwAddress;
+    }
+
     @VisibleForTesting
     static class NetworkInterfaceState {
         final String name;
@@ -313,17 +324,12 @@ public class EthernetNetworkFactory {
                 mIpClientShutdownCv.block();
             }
 
-            // At the time IpClient is stopped, an IpClient event may have already been posted on
-            // the back of the handler and is awaiting execution. Once that event is executed, the
-            // associated callback object may not be valid anymore
-            // (NetworkInterfaceState#mIpClientCallback points to a different object / null).
-            private boolean isCurrentCallback() {
-                return this == mIpClientCallback;
-            }
-
-            private void handleIpEvent(final @NonNull Runnable r) {
+            private void safelyPostOnHandler(Runnable r) {
                 mHandler.post(() -> {
-                    if (!isCurrentCallback()) {
+                    if (this != mIpClientCallback) {
+                        // At the time IpClient is stopped, an IpClient event may have already been
+                        // posted on the handler and is awaiting execution. Once that event is
+                        // executed, the associated callback object may not be valid anymore.
                         Log.i(TAG, "Ignoring stale IpClientCallbacks " + this);
                         return;
                     }
@@ -333,24 +339,24 @@ public class EthernetNetworkFactory {
 
             @Override
             public void onProvisioningSuccess(LinkProperties newLp) {
-                handleIpEvent(() -> onIpLayerStarted(newLp));
+                safelyPostOnHandler(() -> handleOnProvisioningSuccess(newLp));
             }
 
             @Override
             public void onProvisioningFailure(LinkProperties newLp) {
                 // This cannot happen due to provisioning timeout, because our timeout is 0. It can
                 // happen due to errors while provisioning or on provisioning loss.
-                handleIpEvent(() -> onIpLayerStopped());
+                safelyPostOnHandler(() -> handleOnProvisioningFailure());
             }
 
             @Override
             public void onLinkPropertiesChange(LinkProperties newLp) {
-                handleIpEvent(() -> updateLinkProperties(newLp));
+                safelyPostOnHandler(() -> handleOnLinkPropertiesChange(newLp));
             }
 
             @Override
             public void onReachabilityLost(String logMsg) {
-                handleIpEvent(() -> updateNeighborLostEvent(logMsg));
+                safelyPostOnHandler(() -> handleOnReachabilityLost(logMsg));
             }
 
             @Override
@@ -504,7 +510,7 @@ public class EthernetNetworkFactory {
             mIpClient.startProvisioning(createProvisioningConfiguration(mIpConfig));
         }
 
-        void onIpLayerStarted(@NonNull final LinkProperties linkProperties) {
+        private void handleOnProvisioningSuccess(@NonNull final LinkProperties linkProperties) {
             if (mNetworkAgent != null) {
                 Log.e(TAG, "Already have a NetworkAgent - aborting new request");
                 stop();
@@ -538,7 +544,7 @@ public class EthernetNetworkFactory {
             mNetworkAgent.markConnected();
         }
 
-        void onIpLayerStopped() {
+        private void handleOnProvisioningFailure() {
             // There is no point in continuing if the interface is gone as stop() will be triggered
             // by removeInterface() when processed on the handler thread and start() won't
             // work for a non-existent interface.
@@ -558,15 +564,15 @@ public class EthernetNetworkFactory {
             }
         }
 
-        void updateLinkProperties(LinkProperties linkProperties) {
+        private void handleOnLinkPropertiesChange(LinkProperties linkProperties) {
             mLinkProperties = linkProperties;
             if (mNetworkAgent != null) {
                 mNetworkAgent.sendLinkPropertiesImpl(linkProperties);
             }
         }
 
-        void updateNeighborLostEvent(String logMsg) {
-            Log.i(TAG, "updateNeighborLostEvent " + logMsg);
+        private void handleOnReachabilityLost(String logMsg) {
+            Log.i(TAG, "handleOnReachabilityLost " + logMsg);
             if (mIpConfig.getIpAssignment() == IpAssignment.STATIC) {
                 // Ignore NUD failures for static IP configurations, where restarting the IpClient
                 // will not fix connectivity.

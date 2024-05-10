@@ -17,13 +17,13 @@
 package android.net;
 
 import static android.Manifest.permission.READ_NETWORK_USAGE_HISTORY;
-import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 import static android.net.NetworkStats.UID_ALL;
 import static android.net.TrafficStats.UID_REMOVED;
 import static android.net.TrafficStats.UID_TETHERING;
 
 import android.Manifest;
 import android.annotation.IntDef;
+import android.annotation.Nullable;
 import android.app.AppOpsManager;
 import android.app.admin.DevicePolicyManager;
 import android.content.Context;
@@ -32,6 +32,8 @@ import android.os.Binder;
 import android.os.Process;
 import android.os.UserHandle;
 import android.telephony.TelephonyManager;
+
+import com.android.net.module.util.PermissionUtils;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -100,6 +102,7 @@ public final class NetworkStatsAccess {
          * <li>Device owners.
          * <li>Carrier-privileged applications.
          * <li>The system UID.
+         * <li>NetworkStack application.
          * </ul>
          */
         int DEVICE = 3;
@@ -107,7 +110,7 @@ public final class NetworkStatsAccess {
 
     /** Returns the {@link NetworkStatsAccess.Level} for the given caller. */
     public static @NetworkStatsAccess.Level int checkAccessLevel(
-            Context context, int callingPid, int callingUid, String callingPackage) {
+            Context context, int callingPid, int callingUid, @Nullable String callingPackage) {
         final DevicePolicyManager mDpm = context.getSystemService(DevicePolicyManager.class);
         final TelephonyManager tm = (TelephonyManager)
                 context.getSystemService(Context.TELEPHONY_SERVICE);
@@ -125,9 +128,9 @@ public final class NetworkStatsAccess {
 
         final int appId = UserHandle.getAppId(callingUid);
 
-        final boolean isNetworkStack = context.checkPermission(
-                android.Manifest.permission.NETWORK_STACK, callingPid, callingUid)
-                == PERMISSION_GRANTED;
+        final boolean isNetworkStack = PermissionUtils.hasAnyPermissionOf(
+                context, callingPid, callingUid, android.Manifest.permission.NETWORK_STACK,
+                NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
 
         if (hasCarrierPrivileges || isDeviceOwner
                 || appId == Process.SYSTEM_UID || isNetworkStack) {

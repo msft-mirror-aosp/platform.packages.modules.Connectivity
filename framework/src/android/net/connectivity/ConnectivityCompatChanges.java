@@ -73,6 +73,51 @@ public final class ConnectivityCompatChanges {
     @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.TIRAMISU)
     public static final long ENABLE_SELF_CERTIFIED_CAPABILITIES_DECLARATION = 266524688;
 
+    /**
+     * Apps targeting < Android 14 use a legacy NSD backend.
+     *
+     * The legacy apps use a legacy native daemon as NsdManager backend, but other apps use a
+     * platform-integrated mDNS implementation as backend.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.TIRAMISU)
+    public static final long ENABLE_PLATFORM_MDNS_BACKEND = 270306772L;
+
+    /**
+     * Apps targeting Android V or higher receive network callbacks from local networks as default
+     *
+     * Apps targeting lower than {@link android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM} need
+     * to add {@link android.net.NetworkCapabilities#NET_CAPABILITY_LOCAL_NETWORK} to the
+     * {@link android.net.NetworkCapabilities} of the {@link android.net.NetworkRequest} to receive
+     * {@link android.net.ConnectivityManager.NetworkCallback} from local networks.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public static final long ENABLE_MATCH_LOCAL_NETWORK = 319212206L;
+
+    /**
+     * On Android {@link android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM} or higher releases, when
+     * apps targeting Android {@link android.os.Build.VERSION_CODES.VANILLA_ICE_CREAM} or higher
+     * that do not have the {@link android.Manifest.permission#INTERNET} permission call
+     * {@link android.net.ConnectivityManager#getActiveNetworkInfo()}, the state of the returned
+     * {@link android.net.NetworkInfo} object will always be
+     * {@link android.net.NetworkInfo.DetailedState#BLOCKED}. This is because apps without the
+     * permission cannot access any network.
+     * <p>
+     * For backwards compatibility, apps running on older releases, or targeting older SDK levels,
+     * will instead receive objects with the network's current state,
+     * such as {@link android.net.NetworkInfo.DetailedState#CONNECTED}.
+     *
+     * @hide
+     */
+    @ChangeId
+    @EnabledAfter(targetSdkVersion = Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    public static final long NETWORKINFO_WITHOUT_INTERNET_BLOCKED = 333340911L;
+
     private ConnectivityCompatChanges() {
     }
 }

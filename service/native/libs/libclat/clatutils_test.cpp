@@ -26,6 +26,10 @@ extern "C" {
 #include "checksum.h"
 }
 
+#include <aidl/android/net/INetd.h>
+#include "clat_mark.h"
+static_assert(aidl::android::net::INetd::CLAT_MARK == CLAT_MARK, "must be 0xDEADC1A7");
+
 // Default translation parameters.
 static const char kIPv4LocalAddr[] = "192.0.0.4";
 
@@ -165,7 +169,7 @@ TEST_F(ClatUtils, ConfigurePacketSocket) {
     TunInterface v6Iface;
     ASSERT_EQ(0, v6Iface.init());
 
-    int s = socket(AF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC, htons(ETH_P_IPV6));
+    const int s = socket(AF_PACKET, SOCK_RAW | SOCK_CLOEXEC, htons(ETH_P_IPV6));
     EXPECT_LE(0, s);
     struct in6_addr addr6;
     EXPECT_EQ(1, inet_pton(AF_INET6, "2001:db8::f00", &addr6));

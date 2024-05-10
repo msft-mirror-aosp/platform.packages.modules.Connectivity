@@ -15,9 +15,16 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
+
+service_remoteauth_pre_jarjar_lib = "service-remoteauth-pre-jarjar"
+
+// The above variables may have different values
+// depending on the branch, and this comment helps
+// separate them from the rest of the file to avoid merge conflicts
 
 aidl_interface {
     name: "connectivity_native_aidl_interface",
@@ -104,8 +111,8 @@ cc_library_shared {
     ],
     srcs: [
         ":services.connectivity-netstats-jni-sources",
-        "jni/com_android_server_BpfNetMaps.cpp",
         "jni/com_android_server_connectivity_ClatCoordinator.cpp",
+        "jni/com_android_server_ServiceManagerWrapper.cpp",
         "jni/com_android_server_TestNetworkService.cpp",
         "jni/onload.cpp",
     ],
@@ -118,11 +125,11 @@ cc_library_shared {
         "libmodules-utils-build",
         "libnetjniutils",
         "libnet_utils_device_common_bpfjni",
-        "libtraffic_controller",
         "netd_aidl_interface-lateststable-ndk",
     ],
     shared_libs: [
         "libbase",
+        "libbinder_ndk",
         "libcutils",
         "libnetdutils",
         "liblog",
@@ -138,6 +145,14 @@ java_library {
     name: "service-connectivity-pre-jarjar",
     sdk_version: "system_server_current",
     min_sdk_version: "30",
+    // NetworkStackApiShimSettingsForCurrentBranch provides the latest available shims depending on
+    // the branch to "service-connectivity".
+    // There are Tethering.apk and TetheringNext.apk variants for the tethering APEX,
+    // which use NetworkStackApiStableShims and NetworkStackApiCurrentShims respectively.
+    // Note that there can be no service-connectivity-next because it would need to be configured in
+    // default_art_config.mk which doesn't support conditionals, hence this scheme of using a
+    // variable here.
+    defaults: ["NetworkStackApiShimSettingsForCurrentBranch"],
     srcs: [
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
@@ -164,6 +179,8 @@ java_library {
         "unsupportedappusage",
         "ServiceConnectivityResources",
         "framework-statsd",
+        "framework-permission",
+        "framework-permission-s",
     ],
     static_libs: [
         // Do not add libs here if they are already included
@@ -171,10 +188,9 @@ java_library {
         "androidx.annotation_annotation",
         "connectivity-net-module-utils-bpf",
         "connectivity_native_aidl_interface-lateststable-java",
-        "dnsresolver_aidl_interface-V11-java",
+        "dnsresolver_aidl_interface-V14-java",
         "modules-utils-shell-command-handler",
         "net-utils-device-common",
-        "net-utils-device-common-bpf",
         "net-utils-device-common-ip",
         "net-utils-device-common-netlink",
         "net-utils-services-common",
@@ -183,15 +199,22 @@ java_library {
         "PlatformProperties",
         "service-connectivity-protos",
         "service-connectivity-stats-protos",
-        "NetworkStackApiStableShims",
+        // The required dependency net-utils-device-common-struct-base is in the classpath via
+        // framework-connectivity
+        "net-utils-device-common-struct",
     ],
     apex_available: [
         "com.android.tethering",
     ],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+
+    },
     visibility: [
         "//packages/modules/Connectivity/service-t",
         "//packages/modules/Connectivity/tests:__subpackages__",
+        "//packages/modules/Connectivity/thread/service:__subpackages__",
+        "//packages/modules/Connectivity/thread/tests:__subpackages__",
     ],
 }
 
@@ -211,6 +234,7 @@ java_library {
     ],
     lint: {
         strict_updatability_linting: true,
+
     },
 }
 
@@ -229,6 +253,8 @@ java_defaults {
         "service-connectivity-pre-jarjar",
         "service-connectivity-tiramisu-pre-jarjar",
         "service-nearby-pre-jarjar",
+        service_remoteauth_pre_jarjar_lib,
+        "service-thread-pre-jarjar",
     ],
     // The below libraries are not actually needed to build since no source is compiled
     // (only combining prebuilt static_libs), but they are necessary so that R8 has the right
@@ -244,6 +270,8 @@ java_defaults {
         "framework-tethering.impl",
         "framework-wifi",
         "libprotobuf-java-nano",
+        "framework-permission",
+        "framework-permission-s",
     ],
     jarjar_rules: ":connectivity-jarjar-rules",
     apex_available: [
@@ -251,9 +279,6 @@ java_defaults {
     ],
     optimize: {
         proguard_flags_files: ["proguard.flags"],
-    },
-    lint: {
-        strict_updatability_linting: true,
     },
 }
 
@@ -296,6 +321,8 @@ genrule {
         ":framework-connectivity-jarjar-rules",
         ":service-connectivity-jarjar-gen",
         ":service-nearby-jarjar-gen",
+        ":service-remoteauth-jarjar-gen",
+        ":service-thread-jarjar-gen",
     ],
     out: ["connectivity-jarjar-rules.txt"],
     visibility: ["//packages/modules/Connectivity:__subpackages__"],
@@ -342,6 +369,42 @@ java_genrule {
     cmd: "$(location jarjar-rules-generator) " +
         "$(location :service-nearby-pre-jarjar{.jar}) " +
         "--prefix com.android.server.nearby " +
+        "--excludes $(location jarjar-excludes.txt) " +
+        "--output $(out)",
+    visibility: ["//visibility:private"],
+}
+
+java_genrule {
+    name: "service-remoteauth-jarjar-gen",
+    tool_files: [
+        ":" + service_remoteauth_pre_jarjar_lib + "{.jar}",
+        "jarjar-excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["service_remoteauth_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "$(location :" + service_remoteauth_pre_jarjar_lib + "{.jar}) " +
+        "--prefix com.android.server.remoteauth " +
+        "--excludes $(location jarjar-excludes.txt) " +
+        "--output $(out)",
+    visibility: ["//visibility:private"],
+}
+
+java_genrule {
+    name: "service-thread-jarjar-gen",
+    tool_files: [
+        ":service-thread-pre-jarjar{.jar}",
+        "jarjar-excludes.txt",
+    ],
+    tools: [
+        "jarjar-rules-generator",
+    ],
+    out: ["service_thread_jarjar_rules.txt"],
+    cmd: "$(location jarjar-rules-generator) " +
+        "$(location :service-thread-pre-jarjar{.jar}) " +
+        "--prefix com.android.server.thread " +
         "--excludes $(location jarjar-excludes.txt) " +
         "--output $(out)",
     visibility: ["//visibility:private"],
