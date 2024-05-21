@@ -176,7 +176,7 @@ public class ThreadIntegrationTest {
 
     // TODO (b/323300829): add test for removing an OT address
     @Test
-    public void tunInterface_joinedNetwork_otAddressesAddedToTunInterface() throws Exception {
+    public void tunInterface_joinedNetwork_otAndTunAddressesMatch() throws Exception {
         mController.joinAndWait(DEFAULT_DATASET);
 
         List<Inet6Address> otAddresses = mOtCtl.getAddresses();
@@ -185,9 +185,12 @@ public class ThreadIntegrationTest {
         // that we can write assertThat() in the Predicate
         waitFor(
                 () -> {
-                    String ifconfig = runShellCommand("ifconfig thread-wpan");
-                    return otAddresses.stream()
-                            .allMatch(addr -> ifconfig.contains(addr.getHostAddress()));
+                    List<Inet6Address> tunAddresses =
+                            getIpv6LinkAddresses("thread-wpan").stream()
+                                    .map(linkAddr -> (Inet6Address) linkAddr.getAddress())
+                                    .toList();
+                    return otAddresses.containsAll(tunAddresses)
+                            && tunAddresses.containsAll(otAddresses);
                 },
                 TUN_ADDR_UPDATE_TIMEOUT);
     }
@@ -300,6 +303,23 @@ public class ThreadIntegrationTest {
                     return !getPrefixesFromNetData(netData).contains(TEST_NO_SLAAC_PREFIX);
                 },
                 NET_DATA_UPDATE_TIMEOUT);
+
+        LinkProperties lp = cm.getLinkProperties(getThreadNetwork(CALLBACK_TIMEOUT));
+        assertThat(lp).isNotNull();
+        assertThat(lp.getRoutes().stream().anyMatch(r -> r.matches(TEST_NO_SLAAC_PREFIX_ADDRESS)))
+                .isFalse();
+    }
+
+    @Test
+    public void toggleThreadNetwork_routeFromPreviousNetDataIsRemoved() throws Exception {
+        ConnectivityManager cm = mContext.getSystemService(ConnectivityManager.class);
+        mController.joinAndWait(DEFAULT_DATASET);
+        mOtCtl.executeCommand("prefix add " + TEST_NO_SLAAC_PREFIX + " pros med");
+        mOtCtl.executeCommand("netdata register");
+
+        mController.leaveAndWait();
+        mOtCtl.factoryReset();
+        mController.joinAndWait(DEFAULT_DATASET);
 
         LinkProperties lp = cm.getLinkProperties(getThreadNetwork(CALLBACK_TIMEOUT));
         assertThat(lp).isNotNull();
