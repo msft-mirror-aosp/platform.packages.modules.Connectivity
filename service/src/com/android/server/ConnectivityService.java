@@ -64,6 +64,7 @@ import static android.net.ConnectivityManager.TYPE_WIFI_P2P;
 import static android.net.ConnectivityManager.getNetworkTypeName;
 import static android.net.ConnectivityManager.isNetworkTypeValid;
 import static android.net.ConnectivitySettingsManager.PRIVATE_DNS_MODE_OPPORTUNISTIC;
+import static android.net.INetd.PERMISSION_INTERNET;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_PRIVDNS;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_PARTIAL;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_RESULT_SKIPPED;
@@ -101,6 +102,7 @@ import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
 import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_MATCH_LOCAL_NETWORK;
 import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_SELF_CERTIFIED_CAPABILITIES_DECLARATION;
+import static android.net.connectivity.ConnectivityCompatChanges.NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION;
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
 import static android.system.OsConstants.ETH_P_ALL;
@@ -552,6 +554,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
      * default network for each app.
      * Order ints passed to netd must be in the 0~999 range. Larger values code for
      * a lower priority, see {@link NativeUidRangeConfig}.
+     * Note that only the highest priority preference is applied if the uid is the target of
+     * multiple preferences.
      *
      * Requests that don't code for a per-app preference use PREFERENCE_ORDER_INVALID.
      * The default request uses PREFERENCE_ORDER_DEFAULT.
@@ -2227,6 +2231,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return nai;
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private boolean hasInternetPermission(final int uid) {
+        return (mBpfNetMaps.getNetPermForUid(uid) & PERMISSION_INTERNET) != 0;
+    }
+
     /**
      * Check if UID should be blocked from using the specified network.
      */
@@ -2240,7 +2249,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final long ident = Binder.clearCallingIdentity();
         try {
             final boolean metered = nc == null ? true : nc.isMetered();
-            return mPolicyManager.isUidNetworkingBlocked(uid, metered);
+            if (mDeps.isAtLeastV()) {
+                final boolean hasInternetPermission = hasInternetPermission(uid);
+                final boolean blockedByUidRules = mBpfNetMaps.isUidNetworkingBlocked(uid, metered);
+                if (mDeps.isChangeEnabled(NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION, uid)) {
+                    return blockedByUidRules || !hasInternetPermission;
+                } else {
+                    return hasInternetPermission && blockedByUidRules;
+                }
+            } else {
+                return mPolicyManager.isUidNetworkingBlocked(uid, metered);
+            }
         } finally {
             Binder.restoreCallingIdentity(ident);
         }
@@ -2318,7 +2337,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final int uid = mDeps.getCallingUid();
         final NetworkAgentInfo nai = getNetworkAgentInfoForUid(uid);
         if (nai == null) return null;
-        final NetworkInfo networkInfo = getFilteredNetworkInfo(nai, uid, false);
+        final NetworkInfo networkInfo = getFilteredNetworkInfo(nai, uid, false /* ignoreBlocked */);
         maybeLogBlockedNetworkInfo(networkInfo, uid);
         return networkInfo;
     }
@@ -7949,6 +7968,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
         if (networkCapabilities.hasCapability(NET_CAPABILITY_NOT_METERED)) {
             // Policy already enforced.
+            return;
+        }
+        if (mDeps.isAtLeastV()) {
+            if (mBpfNetMaps.isUidRestrictedOnMeteredNetworks(uid)) {
+                // If UID is restricted, don't allow them to bring up metered APNs.
+                networkCapabilities.addCapability(NET_CAPABILITY_NOT_METERED);
+            }
             return;
         }
         final long ident = Binder.clearCallingIdentity();

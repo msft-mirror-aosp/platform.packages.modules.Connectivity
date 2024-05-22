@@ -32,6 +32,8 @@ import static android.net.BpfNetMapsConstants.UID_RULES_CONFIGURATION_KEY;
 import static android.net.BpfNetMapsUtils.getMatchByFirewallChain;
 import static android.net.BpfNetMapsUtils.isFirewallAllowList;
 import static android.net.BpfNetMapsUtils.matchToString;
+import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_MASK;
+import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.INetd.PERMISSION_INTERNET;
@@ -804,6 +806,25 @@ public class BpfNetMaps {
     }
 
     /**
+     * Get granted permissions for specified uid. If uid is not in the map, this method returns
+     * {@link android.net.INetd.PERMISSION_INTERNET} since this is a default permission.
+     * See {@link #setNetPermForUids}
+     *
+     * @param uid target uid
+     * @return    granted permissions.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public int getNetPermForUid(final int uid) {
+        try {
+            final U8 permissions = sUidPermissionMap.getValue(new S32(uid));
+            return permissions != null ? permissions.val : PERMISSION_INTERNET;
+        } catch (ErrnoException e) {
+            Log.wtf(TAG, "Failed to get permission for uid: " + uid);
+            return PERMISSION_INTERNET;
+        }
+    }
+
+    /**
      * Set Data Saver enabled or disabled
      *
      * @param enable     whether Data Saver is enabled or disabled.
@@ -861,6 +882,49 @@ public class BpfNetMaps {
         } catch (ErrnoException e) {
             Log.e(TAG, "Failed to remove ingress discard rule for " + address + ", " + e);
         }
+    }
+
+    /**
+     * Get blocked reasons for specified uid
+     *
+     * @param uid Target Uid
+     * @return Reasons of network access blocking for an UID
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public int getUidNetworkingBlockedReasons(final int uid) {
+        return BpfNetMapsUtils.getUidNetworkingBlockedReasons(uid,
+                sConfigurationMap, sUidOwnerMap, sDataSaverEnabledMap);
+    }
+
+    /**
+     * Return whether the network access of specified uid is blocked on metered networks
+     *
+     * @param uid The target uid.
+     * @return True if the network access is blocked on metered networks. Otherwise, false
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public boolean isUidRestrictedOnMeteredNetworks(final int uid) {
+        final int blockedReasons = getUidNetworkingBlockedReasons(uid);
+        return (blockedReasons & BLOCKED_METERED_REASON_MASK) != BLOCKED_REASON_NONE;
+    }
+
+    /*
+     * Return whether the network is blocked by firewall chains for the given uid.
+     *
+     * Note that {@link #getDataSaverEnabled()} has a latency before V.
+     *
+     * @param uid The target uid.
+     * @param isNetworkMetered Whether the target network is metered.
+     *
+     * @return True if the network is blocked. Otherwise, false.
+     * @throws ServiceSpecificException if the read fails.
+     *
+     * @hide
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public boolean isUidNetworkingBlocked(final int uid, boolean isNetworkMetered) {
+        return BpfNetMapsUtils.isUidNetworkingBlocked(uid, isNetworkMetered,
+                sConfigurationMap, sUidOwnerMap, sDataSaverEnabledMap);
     }
 
     /** Register callback for statsd to pull atom. */
