@@ -57,7 +57,9 @@ public final class FullThreadDevice {
     private static final int PING_SIZE = 100;
     // There may not be a response for the ping command, using a short timeout to keep the tests
     // short.
-    private static final float PING_TIMEOUT_SECONDS = 0.1f;
+    private static final float PING_TIMEOUT_0_1_SECOND = 0.1f;
+    // 1 second timeout should be used when response is expected.
+    private static final float PING_TIMEOUT_1_SECOND = 1f;
 
     private final Process mProcess;
     private final BufferedReader mReader;
@@ -78,9 +80,10 @@ public final class FullThreadDevice {
      */
     public FullThreadDevice(int nodeId) {
         try {
-            mProcess = Runtime.getRuntime().exec("/system/bin/ot-cli-ftd " + nodeId);
+            mProcess = Runtime.getRuntime().exec("/system/bin/ot-cli-ftd -Leth1 " + nodeId);
         } catch (IOException e) {
-            throw new IllegalStateException("Failed to start ot-cli-ftd (id=" + nodeId + ")", e);
+            throw new IllegalStateException(
+                    "Failed to start ot-cli-ftd -Leth1 (id=" + nodeId + ")", e);
         }
         mReader = new BufferedReader(new InputStreamReader(mProcess.getInputStream()));
         mWriter = new BufferedWriter(new OutputStreamWriter(mProcess.getOutputStream()));
@@ -408,7 +411,7 @@ public final class FullThreadDevice {
                 1 /* count */,
                 PING_INTERVAL,
                 HOP_LIMIT,
-                PING_TIMEOUT_SECONDS);
+                PING_TIMEOUT_0_1_SECOND);
     }
 
     public void ping(Inet6Address address) {
@@ -419,7 +422,7 @@ public final class FullThreadDevice {
                 1 /* count */,
                 PING_INTERVAL,
                 HOP_LIMIT,
-                PING_TIMEOUT_SECONDS);
+                PING_TIMEOUT_0_1_SECOND);
     }
 
     /** Returns the number of ping reply packets received. */
@@ -432,7 +435,7 @@ public final class FullThreadDevice {
                         count,
                         PING_INTERVAL,
                         HOP_LIMIT,
-                        PING_TIMEOUT_SECONDS);
+                        PING_TIMEOUT_1_SECOND);
         return getReceivedPacketsCount(output);
     }
 

@@ -306,6 +306,7 @@ static int doLoad(char** argv, char * const envp[]) {
 
         if (bad && !isGSI()) {
             ALOGE("Unsupported kernel version (%07x).", kernelVersion());
+            sleep(60);
         }
     }
 
@@ -432,6 +433,7 @@ int main(int argc, char** argv, char * const envp[]) {
             ALOGE("Failed to set bpf.progs_loaded property to 1.");
             return 125;
         }
+        ALOGI("success.");
         return 0;
     }
 

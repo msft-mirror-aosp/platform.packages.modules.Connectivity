@@ -1,4 +1,5 @@
-// Copyright (C) 2022 The Android Open Source Project
+//
+// Copyright (C) 2024 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,32 +15,29 @@
 //
 
 package {
-    default_team: "trendy_team_fwk_core_networking",
+    default_team: "trendy_team_fwk_thread_network",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-cc_test {
-    name: "bpf_existence_test",
+python_test_host {
+    name: "ThreadNetworkMultiDeviceTests",
+    main: "thread_network_multi_device_test.py",
+    srcs: ["thread_network_multi_device_test.py"],
+    test_config: "AndroidTest.xml",
+    libs: [
+        "mobly",
+    ],
+    test_options: {
+        unit_test: false,
+        tags: ["mobly"],
+    },
     test_suites: [
-        "general-tests",
         "mts-tethering",
+        "general-tests",
     ],
-    defaults: [
-        "connectivity-mainline-presubmit-cc-defaults",
-    ],
-    require_root: true,
-    header_libs: [
-        "bpf_headers",
-    ],
-    version_script: ":connectivity_mainline_test_map",
-    stl: "libc++_static",
-    static_libs: [
-        "libbase",
-        "libmodules-utils-build",
-    ],
-    srcs: [
-        "bpf_existence_test.cpp",
-    ],
-    compile_multilib: "first",
-    min_sdk_version: "30", // Ensure test runs on R and above.
+    version: {
+        py3: {
+            embedded_launcher: true,
+        },
+    },
 }

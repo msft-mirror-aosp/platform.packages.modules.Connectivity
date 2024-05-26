@@ -152,7 +152,7 @@ import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_UNINITIALIZED;
 import static android.net.Proxy.PROXY_CHANGE_ACTION;
 import static android.net.RouteInfo.RTN_UNREACHABLE;
-import static android.net.connectivity.ConnectivityCompatChanges.NETWORKINFO_WITHOUT_INTERNET_BLOCKED;
+import static android.net.connectivity.ConnectivityCompatChanges.NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION;
 import static android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener.PREFIX_OPERATION_ADDED;
 import static android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener.PREFIX_OPERATION_REMOVED;
 import static android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener.VALIDATION_RESULT_FAILURE;
@@ -163,7 +163,6 @@ import static android.telephony.DataConnectionRealTimeInfo.DC_POWER_STATE_HIGH;
 import static android.telephony.DataConnectionRealTimeInfo.DC_POWER_STATE_LOW;
 
 import static com.android.server.ConnectivityService.ALLOW_SATALLITE_NETWORK_FALLBACK;
-import static com.android.server.ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION;
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
 import static com.android.server.ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS;
 import static com.android.server.ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION;
@@ -178,6 +177,7 @@ import static com.android.server.ConnectivityServiceTestUtils.transportToLegacyT
 import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackRegister;
 import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister;
 import static com.android.server.connectivity.ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN;
+import static com.android.server.connectivity.ConnectivityFlags.DELAY_DESTROY_SOCKETS;
 import static com.android.server.connectivity.ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.ConcurrentUtils.await;
@@ -1948,7 +1948,8 @@ public class ConnectivityServiceTest {
         setAlwaysOnNetworks(false);
         setPrivateDnsSettings(PRIVATE_DNS_MODE_OFF, "ignored.example.com");
 
-        mDeps.setChangeIdEnabled(true, NETWORKINFO_WITHOUT_INTERNET_BLOCKED, Process.myUid());
+        mDeps.setChangeIdEnabled(
+                true, NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION, Process.myUid());
         doReturn(PERMISSION_INTERNET).when(mBpfNetMaps).getNetPermForUid(anyInt());
         // Note : Please do not add any new instrumentation here. If you need new instrumentation,
         // please add it in CSTest and use subclasses of CSTest instead of adding more
@@ -2168,8 +2169,6 @@ public class ConnectivityServiceTest {
                     return true;
                 case KEY_DESTROY_FROZEN_SOCKETS_VERSION:
                     return true;
-                case DELAY_DESTROY_FROZEN_SOCKETS_VERSION:
-                    return true;
                 default:
                     return super.isFeatureEnabled(context, name);
             }
@@ -2185,6 +2184,8 @@ public class ConnectivityServiceTest {
                 case INGRESS_TO_VPN_ADDRESS_FILTERING:
                     return true;
                 case BACKGROUND_FIREWALL_CHAIN:
+                    return true;
+                case DELAY_DESTROY_SOCKETS:
                     return true;
                 default:
                     return super.isFeatureNotChickenedOut(context, name);
