@@ -51,6 +51,7 @@ import android.system.OsConstants.SOCK_NONBLOCK
 import android.util.Log
 import androidx.test.filters.RequiresDevice
 import androidx.test.platform.app.InstrumentationRegistry
+import com.android.compatibility.common.util.PropertyUtil.getFirstApiLevel
 import com.android.compatibility.common.util.PropertyUtil.getVsrApiLevel
 import com.android.compatibility.common.util.SystemUtil.runShellCommand
 import com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow
@@ -318,7 +319,7 @@ class ApfIntegrationTest {
 
         if (caps.apfVersionSupported > 4) {
             assertThat(caps.maximumApfProgramSize).isAtLeast(2048)
-            assertThat(caps.apfVersionSupported).isEqualTo(6000)  // v6.0000
+            assertThat(caps.apfVersionSupported).isEqualTo(6000) // v6.0000
         }
 
         // DEVICEs launching with Android 15 (AOSP experimental) or higher with CHIPSETs that set
@@ -356,9 +357,15 @@ class ApfIntegrationTest {
     fun testReadWriteProgram() {
         assumeApfVersionSupportAtLeast(4)
 
-        // Only test down to 2 bytes. The first byte always stays PASS.
+        val minReadWriteSize = if (getFirstApiLevel() >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            2
+        } else {
+            8
+        }
+
+        // The minReadWriteSize is 2 bytes. The first byte always stays PASS.
         val program = ByteArray(caps.maximumApfProgramSize)
-        for (i in caps.maximumApfProgramSize downTo 2) {
+        for (i in caps.maximumApfProgramSize downTo minReadWriteSize) {
             // Randomize bytes in range [1, i). And install first [0, i) bytes of program.
             // Note that only the very first instruction (PASS) is valid APF bytecode.
             Random.nextBytes(program, 1 /* fromIndex */, i /* toIndex */)
@@ -388,6 +395,10 @@ class ApfIntegrationTest {
     @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     @Test
     fun testDropPingReply() {
+        // VSR-14 mandates APF to be turned on when the screen is off and the Wi-Fi link
+        // is idle or traffic is less than 10 Mbps. Before that, we don't mandate when the APF
+        // should be turned on.
+        assume().that(getVsrApiLevel()).isAtLeast(34)
         assumeApfVersionSupportAtLeast(4)
 
         // clear any active APF filter
@@ -427,6 +438,10 @@ class ApfIntegrationTest {
     @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     @Test
     fun testPrefilledMemorySlotsV4() {
+        // VSR-14 mandates APF to be turned on when the screen is off and the Wi-Fi link
+        // is idle or traffic is less than 10 Mbps. Before that, we don't mandate when the APF
+        // should be turned on.
+        assume().that(getVsrApiLevel()).isAtLeast(34)
         // Test v4 memory slots on both v4 and v6 interpreters.
         assumeApfVersionSupportAtLeast(4)
         clearApfMemory()
@@ -467,5 +482,43 @@ class ApfIntegrationTest {
         // Ping packet (64) + IPv6 header (40) + ethernet header (14)
         expect.withMessage("PACKET_SIZE").that(buffer.getInt()).isEqualTo(64 + 40 + 14)
         expect.withMessage("FILTER_AGE_SECONDS").that(buffer.getInt()).isLessThan(5)
+    }
+
+    // APF integration is mostly broken before V
+    @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
+    @Test
+    fun testFilterAgeIncreasesBetweenPackets() {
+        assumeApfVersionSupportAtLeast(4)
+        clearApfMemory()
+        val gen = ApfV4Generator(4)
+
+        // If not ICMPv6 Echo Reply -> PASS
+        gen.addPassIfNotIcmpv6EchoReply()
+
+        // Store all prefilled memory slots in counter region [500, 520)
+        val counterRegion = 500
+        gen.addLoadImmediate(R1, counterRegion)
+        gen.addLoadFromMemory(R0, MemorySlot.FILTER_AGE_SECONDS)
+        gen.addStoreData(R0, 0)
+
+        installProgram(gen.generate())
+        readProgram() // wait for install completion
+
+        val data = ByteArray(56).also { Random.nextBytes(it) }
+        packetReader.sendPing(data)
+        packetReader.expectPingReply()
+
+        var buffer = ByteBuffer.wrap(readProgram(), counterRegion, 4 /* length */)
+        val filterAgeSecondsOrig = buffer.getInt()
+
+        Thread.sleep(5100)
+
+        packetReader.sendPing(data)
+        packetReader.expectPingReply()
+
+        buffer = ByteBuffer.wrap(readProgram(), counterRegion, 4 /* length */)
+        val filterAgeSeconds = buffer.getInt()
+        // Assert that filter age has increased, but not too much.
+        assertThat(filterAgeSeconds - filterAgeSecondsOrig).isEqualTo(5)
     }
 }
