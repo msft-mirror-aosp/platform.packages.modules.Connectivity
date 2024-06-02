@@ -64,16 +64,19 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.os.UserManager;
 import android.os.test.TestLooper;
 import android.provider.Settings;
 import android.util.AtomicFile;
 
+import androidx.test.annotation.UiThreadTest;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.filters.SmallTest;
 
 import com.android.connectivity.resources.R;
+import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.thread.openthread.MeshcopTxtAttributes;
 import com.android.server.thread.openthread.testing.FakeOtDaemon;
@@ -89,7 +92,10 @@ import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
+import org.mockito.MockitoSession;
 
+import java.time.Clock;
+import java.time.DateTimeException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -97,6 +103,12 @@ import java.util.concurrent.atomic.AtomicReference;
 /** Unit tests for {@link ThreadNetworkControllerService}. */
 @SmallTest
 @RunWith(AndroidJUnit4.class)
+// This test doesn't really need to run on the UI thread, but @Before and @Test annotated methods
+// need to run in the same thread because there are code in {@code ThreadNetworkControllerService}
+// checking that all its methods are running in the thread of the handler it's using. This is due
+// to a bug in TestLooper that it executes all tasks on the current thread rather than the thread
+// associated to the backed Looper object.
+@UiThreadTest
 public final class ThreadNetworkControllerServiceTest {
     // A valid Thread Active Operational Dataset generated from OpenThread CLI "dataset new":
     // Active Timestamp: 1
@@ -525,6 +537,53 @@ public final class ThreadNetworkControllerServiceTest {
                 future.completeExceptionally(new ThreadNetworkException(errorCode, errorMessage));
             }
         };
+    }
+
+    @Test
+    public void
+            createRandomizedDataset_noNetworkTimeClock_datasetActiveTimestampIsNotAuthoritative()
+                    throws Exception {
+        MockitoSession session =
+                ExtendedMockito.mockitoSession().mockStatic(SystemClock.class).startMocking();
+        final IActiveOperationalDatasetReceiver mockReceiver =
+                ExtendedMockito.mock(IActiveOperationalDatasetReceiver.class);
+
+        try {
+            ExtendedMockito.when(SystemClock.currentNetworkTimeClock())
+                    .thenThrow(new DateTimeException("fake throw"));
+            mService.createRandomizedDataset(DEFAULT_NETWORK_NAME, mockReceiver);
+            mTestLooper.dispatchAll();
+        } finally {
+            session.finishMocking();
+        }
+
+        verify(mockReceiver, never()).onError(anyInt(), anyString());
+        verify(mockReceiver, times(1)).onSuccess(mActiveDatasetCaptor.capture());
+        ActiveOperationalDataset activeDataset = mActiveDatasetCaptor.getValue();
+        assertThat(activeDataset.getActiveTimestamp().isAuthoritativeSource()).isFalse();
+    }
+
+    @Test
+    public void createRandomizedDataset_hasNetworkTimeClock_datasetActiveTimestampIsAuthoritative()
+            throws Exception {
+        MockitoSession session =
+                ExtendedMockito.mockitoSession().mockStatic(SystemClock.class).startMocking();
+        final IActiveOperationalDatasetReceiver mockReceiver =
+                ExtendedMockito.mock(IActiveOperationalDatasetReceiver.class);
+
+        try {
+            ExtendedMockito.when(SystemClock.currentNetworkTimeClock())
+                    .thenReturn(Clock.systemUTC());
+            mService.createRandomizedDataset(DEFAULT_NETWORK_NAME, mockReceiver);
+            mTestLooper.dispatchAll();
+        } finally {
+            session.finishMocking();
+        }
+
+        verify(mockReceiver, never()).onError(anyInt(), anyString());
+        verify(mockReceiver, times(1)).onSuccess(mActiveDatasetCaptor.capture());
+        ActiveOperationalDataset activeDataset = mActiveDatasetCaptor.getValue();
+        assertThat(activeDataset.getActiveTimestamp().isAuthoritativeSource()).isTrue();
     }
 
     @Test
