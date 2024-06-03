@@ -91,6 +91,7 @@ open class RecorderCallback private constructor(
             override val network: Network,
             val reason: Int
         ) : CallbackEntry()
+
         // Convenience constants for expecting a type
         companion object {
             @JvmField
@@ -216,7 +217,11 @@ open class TestableNetworkCallback private constructor(
     ) : this(null, timeoutMs, noCallbackTimeoutMs, waiterFunc)
 
     fun createLinkedCopy() = TestableNetworkCallback(
-            this, defaultTimeoutMs, defaultNoCallbackTimeoutMs, waiterFunc)
+        this,
+        defaultTimeoutMs,
+        defaultNoCallbackTimeoutMs,
+        waiterFunc
+    )
 
     // The last available network, or null if any network was lost since the last call to
     // onAvailable. TODO : fix this by fixing the tests that rely on this behavior
@@ -355,16 +360,28 @@ open class TestableNetworkCallback private constructor(
         timeoutMs: Long = defaultTimeoutMs,
         errorMsg: String? = null,
         test: (T) -> Boolean = { true }
-    ) = (poll(timeoutMs) ?: fail("Did not receive ${T::class.simpleName} after ${timeoutMs}ms"))
+    ) = (poll(timeoutMs) ?: failWithErrorReason(errorMsg,
+        "Did not receive ${T::class.simpleName} after ${timeoutMs}ms"))
             .also {
-                if (it !is T) fail("Expected callback ${T::class.simpleName}, got $it")
+                if (it !is T) {
+                    failWithErrorReason(
+                        errorMsg,
+                        "Expected callback ${T::class.simpleName}, got $it"
+                    )
+                }
                 if (ANY_NETWORK !== network && it.network != network) {
-                    fail("Expected network $network for callback : $it")
+                    failWithErrorReason(errorMsg, "Expected network $network for callback : $it")
                 }
                 if (!test(it)) {
-                    fail("${errorMsg ?: "Callback doesn't match predicate"} : $it")
+                    failWithErrorReason(errorMsg, "Callback doesn't match predicate : $it")
                 }
             } as T
+
+    // "Nothing" is the return type to declare a function never returns a value.
+    fun failWithErrorReason(errorMsg: String?, errorReason: String): Nothing {
+        val message = if (errorMsg != null) "$errorMsg : $errorReason" else errorReason
+        fail(message)
+    }
 
     inline fun <reified T : CallbackEntry> expect(
         network: HasNetwork,
@@ -402,8 +419,11 @@ open class TestableNetworkCallback private constructor(
         from: Int = mark,
         crossinline predicate: (T) -> Boolean = { true }
     ): T = history.poll(timeoutMs, from) { it is T && predicate(it) }.also {
-        assertNotNull(it, "Callback ${T::class} not received within ${timeoutMs}ms. " +
-                "Got ${history.backtrace()}")
+        assertNotNull(
+            it,
+            "Callback ${T::class} not received within ${timeoutMs}ms. " +
+                "Got ${history.backtrace()}"
+        )
     } as T
 
     @JvmOverloads
@@ -412,8 +432,11 @@ open class TestableNetworkCallback private constructor(
         timeoutMs: Long = defaultTimeoutMs,
         predicate: (cb: T) -> Boolean = { true }
     ) = history.poll(timeoutMs) { type.java.isInstance(it) && predicate(it as T) }.also {
-        assertNotNull(it, "Callback ${type.java} not received within ${timeoutMs}ms. " +
-                "Got ${history.backtrace()}")
+        assertNotNull(
+            it,
+            "Callback ${type.java} not received within ${timeoutMs}ms. " +
+                "Got ${history.backtrace()}"
+        )
     } as T
 
     fun <T : CallbackEntry> eventuallyExpect(
@@ -422,8 +445,11 @@ open class TestableNetworkCallback private constructor(
         from: Int = mark,
         predicate: (cb: T) -> Boolean = { true }
     ) = history.poll(timeoutMs, from) { type.java.isInstance(it) && predicate(it as T) }.also {
-        assertNotNull(it, "Callback ${type.java} not received within ${timeoutMs}ms. " +
-                "Got ${history.backtrace()}")
+        assertNotNull(
+            it,
+            "Callback ${type.java} not received within ${timeoutMs}ms. " +
+                "Got ${history.backtrace()}"
+        )
     } as T
 
     // Expects onAvailable and the callbacks that follow it. These are:
@@ -534,8 +560,13 @@ open class TestableNetworkCallback private constructor(
         blockedReason: Int,
         tmt: Long = defaultTimeoutMs
     ) {
-        expectAvailableCallbacks(net, validated = false, suspended = false,
-                blockedReason = blockedReason, tmt = tmt)
+        expectAvailableCallbacks(
+            net,
+            validated = false,
+            suspended = false,
+            blockedReason = blockedReason,
+            tmt = tmt
+        )
         expectCaps(net, tmt) { it.hasCapability(NET_CAPABILITY_VALIDATED) }
     }
 

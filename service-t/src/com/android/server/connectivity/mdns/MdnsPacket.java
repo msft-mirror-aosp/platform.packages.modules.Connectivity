@@ -42,7 +42,7 @@ public class MdnsPacket {
     @NonNull
     public final List<MdnsRecord> additionalRecords;
 
-    MdnsPacket(int flags,
+    public MdnsPacket(int flags,
             @NonNull List<MdnsRecord> questions,
             @NonNull List<MdnsRecord> answers,
             @NonNull List<MdnsRecord> authorityRecords,
@@ -193,6 +193,15 @@ public class MdnsPacket {
                 } catch (IOException e) {
                     throw new ParseException(MdnsResponseErrorCode.ERROR_READING_TXT_RDATA,
                             "Failed to read TXT record from mDNS response.", e);
+                }
+            }
+
+            case MdnsRecord.TYPE_KEY: {
+                try {
+                    return new MdnsKeyRecord(name, reader, isQuestion);
+                } catch (IOException e) {
+                    throw new ParseException(MdnsResponseErrorCode.ERROR_READING_KEY_RDATA,
+                            "Failed to read KEY record from mDNS response.", e);
                 }
             }
 

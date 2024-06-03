@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "NetBpfLoader"
+#define LOG_TAG "NetBpfLoad"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -512,7 +512,7 @@ static int readCodeSections(ifstream& elfFile, vector<codeSection>& cs, size_t s
 
         ret = readSectionByIdx(elfFile, i, cs_temp.data);
         if (ret) return ret;
-        ALOGD("Loaded code section %d (%s)", i, name.c_str());
+        ALOGV("Loaded code section %d (%s)", i, name.c_str());
 
         vector<string> csSymNames;
         ret = getSectionSymNames(elfFile, oldName, csSymNames, STT_FUNC);
@@ -532,13 +532,13 @@ static int readCodeSections(ifstream& elfFile, vector<codeSection>& cs, size_t s
             if (name == (".rel" + oldName)) {
                 ret = readSectionByIdx(elfFile, i + 1, cs_temp.rel_data);
                 if (ret) return ret;
-                ALOGD("Loaded relo section %d (%s)", i, name.c_str());
+                ALOGV("Loaded relo section %d (%s)", i, name.c_str());
             }
         }
 
         if (cs_temp.data.size() > 0) {
             cs.push_back(std::move(cs_temp));
-            ALOGD("Adding section %d to cs list", i);
+            ALOGV("Adding section %d to cs list", i);
         }
     }
     return 0;
@@ -736,15 +736,15 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
         domain selinux_context = getDomainFromSelinuxContext(md[i].selinux_context);
         if (specified(selinux_context)) {
             ALOGI("map %s selinux_context [%-32s] -> %d -> '%s' (%s)", mapNames[i].c_str(),
-                  md[i].selinux_context, selinux_context, lookupSelinuxContext(selinux_context),
-                  lookupPinSubdir(selinux_context));
+                  md[i].selinux_context, static_cast<int>(selinux_context),
+                  lookupSelinuxContext(selinux_context), lookupPinSubdir(selinux_context));
         }
 
         domain pin_subdir = getDomainFromPinSubdir(md[i].pin_subdir);
         if (unrecognized(pin_subdir)) return -ENOTDIR;
         if (specified(pin_subdir)) {
             ALOGI("map %s pin_subdir [%-32s] -> %d -> '%s'", mapNames[i].c_str(), md[i].pin_subdir,
-                  pin_subdir, lookupPinSubdir(pin_subdir));
+                  static_cast<int>(pin_subdir), lookupPinSubdir(pin_subdir));
         }
 
         // Format of pin location is /sys/fs/bpf/<pin_subdir|prefix>map_<objName>_<mapName>
@@ -769,7 +769,7 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
               .max_entries = max_entries,
               .map_flags = md[i].map_flags,
             };
-            if (isAtLeastKernelVersion(4, 14, 0))
+            if (isAtLeastKernelVersion(4, 15, 0))
                 strlcpy(req.map_name, mapNames[i].c_str(), sizeof(req.map_name));
             fd.reset(bpf(BPF_MAP_CREATE, req));
             saved_errno = errno;
@@ -869,7 +869,7 @@ static void applyRelo(void* insnsPtr, Elf64_Addr offset, int fd) {
 
     // Occasionally might be useful for relocation debugging, but pretty spammy
     if (0) {
-        ALOGD("applying relo to instruction at byte offset: %llu, "
+        ALOGV("applying relo to instruction at byte offset: %llu, "
               "insn offset %d, insn %llx",
               (unsigned long long)offset, insnIndex, *(unsigned long long*)insn);
     }
@@ -974,13 +974,14 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
 
         if (specified(selinux_context)) {
             ALOGI("prog %s selinux_context [%-32s] -> %d -> '%s' (%s)", name.c_str(),
-                  cs[i].prog_def->selinux_context, selinux_context,
+                  cs[i].prog_def->selinux_context, static_cast<int>(selinux_context),
                   lookupSelinuxContext(selinux_context), lookupPinSubdir(selinux_context));
         }
 
         if (specified(pin_subdir)) {
             ALOGI("prog %s pin_subdir [%-32s] -> %d -> '%s'", name.c_str(),
-                  cs[i].prog_def->pin_subdir, pin_subdir, lookupPinSubdir(pin_subdir));
+                  cs[i].prog_def->pin_subdir, static_cast<int>(pin_subdir),
+                  lookupPinSubdir(pin_subdir));
         }
 
         // strip any potential $foo suffix
@@ -1012,7 +1013,7 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
               .log_size = static_cast<__u32>(log_buf.size()),
               .expected_attach_type = cs[i].expected_attach_type,
             };
-            if (isAtLeastKernelVersion(4, 14, 0))
+            if (isAtLeastKernelVersion(4, 15, 0))
                 strlcpy(req.prog_name, cs[i].name.c_str(), sizeof(req.prog_name));
             fd.reset(bpf(BPF_PROG_LOAD, req));
 
@@ -1177,7 +1178,7 @@ int loadProg(const char* const elfPath, bool* const isCritical, const unsigned i
     }
 
     for (int i = 0; i < (int)mapFds.size(); i++)
-        ALOGD("map_fd found at %d is %d in %s", i, mapFds[i].get(), elfPath);
+        ALOGV("map_fd found at %d is %d in %s", i, mapFds[i].get(), elfPath);
 
     applyMapRelo(elfFile, mapFds, cs);
 

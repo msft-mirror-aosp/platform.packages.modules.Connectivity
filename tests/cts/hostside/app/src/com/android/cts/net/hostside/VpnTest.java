@@ -22,9 +22,10 @@ import static android.Manifest.permission.READ_DEVICE_CONFIG;
 import static android.Manifest.permission.WRITE_DEVICE_CONFIG;
 import static android.content.pm.PackageManager.FEATURE_TELEPHONY;
 import static android.content.pm.PackageManager.FEATURE_WIFI;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.TYPE_VPN;
-import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
+import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.os.Process.INVALID_UID;
 import static android.system.OsConstants.AF_INET;
 import static android.system.OsConstants.AF_INET6;
@@ -51,6 +52,7 @@ import static com.android.networkstack.apishim.ConstantsShim.RECEIVER_EXPORTED;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 import static com.android.testutils.RecorderCallback.CallbackEntry.BLOCKED_STATUS_INT;
+import static com.android.testutils.TestPermissionUtil.runAsShell;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -123,6 +125,8 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.PacketBuilder;
+import com.android.testutils.AutoReleaseNetworkCallbackRule;
+import com.android.testutils.ConnectUtil;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.RecorderCallback;
@@ -220,6 +224,7 @@ public class VpnTest {
     private WifiManager mWifiManager;
     private RemoteSocketFactoryClient mRemoteSocketFactoryClient;
     private CtsNetUtils mCtsNetUtils;
+    private ConnectUtil mConnectUtil;
     private PackageManager mPackageManager;
     private Context mTestContext;
     private Context mTargetContext;
@@ -233,8 +238,12 @@ public class VpnTest {
     // The registered callbacks.
     private List<NetworkCallback> mRegisteredCallbacks = new ArrayList<>();
 
-    @Rule
+    @Rule(order = 1)
     public final DevSdkIgnoreRule mDevSdkIgnoreRule = new DevSdkIgnoreRule();
+
+    @Rule(order = 2)
+    public final AutoReleaseNetworkCallbackRule
+            mNetworkCallbackRule = new AutoReleaseNetworkCallbackRule();
 
     private boolean supportedHardware() {
         final PackageManager pm = getInstrumentation().getContext().getPackageManager();
@@ -252,7 +261,6 @@ public class VpnTest {
 
     @Before
     public void setUp() throws Exception {
-        assumeTrue(supportedHardware());
         mNetwork = null;
         mTestContext = getInstrumentation().getContext();
         mTargetContext = getInstrumentation().getTargetContext();
@@ -266,14 +274,15 @@ public class VpnTest {
         mRemoteSocketFactoryClient.bind();
         mDevice.waitForIdle();
         mCtsNetUtils = new CtsNetUtils(mTestContext);
+        mConnectUtil = new ConnectUtil(mTestContext);
         mPackageManager = mTestContext.getPackageManager();
+        assumeTrue(supportedHardware());
     }
 
     @After
     public void tearDown() throws Exception {
         restorePrivateDnsSetting();
         mRemoteSocketFactoryClient.unbind();
-        mCtsNetUtils.tearDown();
         Log.i(TAG, "Stopping VPN");
         stopVpn();
         unregisterRegisteredCallbacks();
@@ -889,10 +898,8 @@ public class VpnTest {
         final boolean isWifiEnabled = mWifiManager.isWifiEnabled();
         testAndCleanup(() -> {
             // Ensure both of wifi and mobile data are connected.
-            final Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
-            assertTrue("Wifi is not connected", (wifiNetwork != null));
-            final Network cellNetwork = mCtsNetUtils.connectToCell();
-            assertTrue("Mobile data is not connected", (cellNetwork != null));
+            final Network wifiNetwork = mConnectUtil.ensureWifiValidated();
+            final Network cellNetwork = mNetworkCallbackRule.requestCell();
             // Store current default network.
             final Network defaultNetwork = mCM.getActiveNetwork();
             // Start VPN and set empty array as its underlying networks.
@@ -972,11 +979,18 @@ public class VpnTest {
                 registerDefaultNetworkCallbackForUid(otherUid, otherUidCallback, h);
                 registerDefaultNetworkCallbackForUid(Process.myUid(), myUidCallback, h);
             }, NETWORK_SETTINGS);
-            for (TestableNetworkCallback callback :
-                    List.of(systemDefaultCallback, otherUidCallback, myUidCallback)) {
+            for (TestableNetworkCallback callback : List.of(systemDefaultCallback, myUidCallback)) {
                 callback.expectAvailableCallbacks(defaultNetwork, false /* suspended */,
                         true /* validated */, false /* blocked */, TIMEOUT_MS);
             }
+            // On V+, ConnectivityService generates blockedReasons based on bpf map contents even if
+            // the otherUid does not exist on device. So if the background chain is enabled,
+            // otherUid is blocked.
+            final boolean isOtherUidBlocked = SdkLevel.isAtLeastV()
+                    && runAsShell(NETWORK_SETTINGS, () -> mCM.getFirewallChainEnabled(
+                            FIREWALL_CHAIN_BACKGROUND));
+            otherUidCallback.expectAvailableCallbacks(defaultNetwork, false /* suspended */,
+                    true /* validated */, isOtherUidBlocked, TIMEOUT_MS);
         }
 
         FileDescriptor fd = openSocketFdInOtherApp(TEST_HOST, 80, TIMEOUT_MS);
@@ -1938,7 +1952,7 @@ public class VpnTest {
                 .build();
         final CtsNetUtils.TestNetworkCallback callback = new CtsNetUtils.TestNetworkCallback();
         mCM.requestNetwork(request, callback);
-        final FileDescriptor srcTunFd = runWithShellPermissionIdentity(() -> {
+        final ParcelFileDescriptor srcTunFd = runWithShellPermissionIdentity(() -> {
             final TestNetworkManager tnm = mTestContext.getSystemService(TestNetworkManager.class);
             List<LinkAddress> linkAddresses = duplicatedAddress
                     ? List.of(new LinkAddress("192.0.2.2/24"),
@@ -1947,7 +1961,7 @@ public class VpnTest {
                             new LinkAddress("2001:db8:3:4::ffe/64"));
             final TestNetworkInterface iface = tnm.createTunInterface(linkAddresses);
             tnm.setupTestNetwork(iface.getInterfaceName(), new Binder());
-            return iface.getFileDescriptor().getFileDescriptor();
+            return iface.getFileDescriptor();
         }, MANAGE_TEST_NETWORKS);
         final Network testNetwork = callback.waitForAvailable();
         assertNotNull(testNetwork);
@@ -1961,11 +1975,11 @@ public class VpnTest {
                     false /* isAlwaysMetered */);
 
             final FileDescriptor dstUdpFd = dstSock.getFileDescriptor$();
-            checkBlockUdp(srcTunFd, dstUdpFd,
+            checkBlockUdp(srcTunFd.getFileDescriptor(), dstUdpFd,
                     InetAddresses.parseNumericAddress("192.0.2.2") /* dstAddress */,
                     InetAddresses.parseNumericAddress("192.0.2.1") /* srcAddress */,
                     duplicatedAddress ? EXPECT_PASS : EXPECT_BLOCK);
-            checkBlockUdp(srcTunFd, dstUdpFd,
+            checkBlockUdp(srcTunFd.getFileDescriptor(), dstUdpFd,
                     InetAddresses.parseNumericAddress("2001:db8:1:2::ffe") /* dstAddress */,
                     InetAddresses.parseNumericAddress("2001:db8:1:2::ffa") /* srcAddress */,
                     duplicatedAddress ? EXPECT_PASS : EXPECT_BLOCK);
@@ -1973,7 +1987,7 @@ public class VpnTest {
             // Traffic on VPN should not be affected
             checkTrafficOnVpn();
         }, /* cleanup */ () -> {
-                Os.close(srcTunFd);
+                srcTunFd.close();
                 dstSock.close();
             }, /* cleanup */ () -> {
                 runWithShellPermissionIdentity(() -> {
