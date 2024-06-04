@@ -192,8 +192,8 @@ class ApfIntegrationTest {
             futureReply!!.complete(recvbuf.sliceArray(8..<length))
         }
 
-        fun sendPing(data: ByteArray) {
-            require(data.size == 56)
+        fun sendPing(data: ByteArray, payloadSize: Int) {
+            require(data.size == payloadSize)
 
             // rfc4443#section-4.1: Echo Request Message
             //   0                   1                   2                   3
@@ -415,8 +415,13 @@ class ApfIntegrationTest {
         readProgram() // wait for install completion
 
         // Assert that initial ping does not get filtered.
-        val data = ByteArray(56).also { Random.nextBytes(it) }
-        packetReader.sendPing(data)
+        val payloadSize = if (getFirstApiLevel() >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            68
+        } else {
+            4
+        }
+        val data = ByteArray(payloadSize).also { Random.nextBytes(it) }
+        packetReader.sendPing(data, payloadSize)
         assertThat(packetReader.expectPingReply()).isEqualTo(data)
 
         // Generate an APF program that drops the next ping
@@ -436,7 +441,7 @@ class ApfIntegrationTest {
         installProgram(program)
         readProgram() // wait for install completion
 
-        packetReader.sendPing(data)
+        packetReader.sendPing(data, payloadSize)
         packetReader.expectPingDropped()
     }
 
@@ -478,8 +483,13 @@ class ApfIntegrationTest {
         readProgram() // wait for install completion
 
         // Trigger the program by sending a ping and waiting on the reply.
-        val data = ByteArray(56).also { Random.nextBytes(it) }
-        packetReader.sendPing(data)
+        val payloadSize = if (getFirstApiLevel() >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+            68
+        } else {
+            4
+        }
+        val data = ByteArray(payloadSize).also { Random.nextBytes(it) }
+        packetReader.sendPing(data, payloadSize)
         packetReader.expectPingReply()
 
         val readResult = readProgram()
@@ -487,8 +497,8 @@ class ApfIntegrationTest {
         expect.withMessage("PROGRAM_SIZE").that(buffer.getInt()).isEqualTo(program.size)
         expect.withMessage("RAM_LEN").that(buffer.getInt()).isEqualTo(caps.maximumApfProgramSize)
         expect.withMessage("IPV4_HEADER_SIZE").that(buffer.getInt()).isEqualTo(0)
-        // Ping packet (64) + IPv6 header (40) + ethernet header (14)
-        expect.withMessage("PACKET_SIZE").that(buffer.getInt()).isEqualTo(64 + 40 + 14)
+        // Ping packet payload + ICMPv6 header (8)  + IPv6 header (40) + ethernet header (14)
+        expect.withMessage("PACKET_SIZE").that(buffer.getInt()).isEqualTo(payloadSize + 8 + 40 + 14)
         expect.withMessage("FILTER_AGE_SECONDS").that(buffer.getInt()).isLessThan(5)
     }
 
@@ -496,6 +506,10 @@ class ApfIntegrationTest {
     @IgnoreUpTo(Build.VERSION_CODES.UPSIDE_DOWN_CAKE)
     @Test
     fun testFilterAgeIncreasesBetweenPackets() {
+        // VSR-14 mandates APF to be turned on when the screen is off and the Wi-Fi link
+        // is idle or traffic is less than 10 Mbps. Before that, we don't mandate when the APF
+        // should be turned on.
+        assume().that(getVsrApiLevel()).isAtLeast(34)
         assumeApfVersionSupportAtLeast(4)
         clearApfMemory()
         val gen = ApfV4Generator(4)
@@ -512,8 +526,9 @@ class ApfIntegrationTest {
         installProgram(gen.generate())
         readProgram() // wait for install completion
 
-        val data = ByteArray(56).also { Random.nextBytes(it) }
-        packetReader.sendPing(data)
+        val payloadSize = 56
+        val data = ByteArray(payloadSize).also { Random.nextBytes(it) }
+        packetReader.sendPing(data, payloadSize)
         packetReader.expectPingReply()
 
         var buffer = ByteBuffer.wrap(readProgram(), counterRegion, 4 /* length */)
@@ -521,7 +536,7 @@ class ApfIntegrationTest {
 
         Thread.sleep(5100)
 
-        packetReader.sendPing(data)
+        packetReader.sendPing(data, payloadSize)
         packetReader.expectPingReply()
 
         buffer = ByteBuffer.wrap(readProgram(), counterRegion, 4 /* length */)
