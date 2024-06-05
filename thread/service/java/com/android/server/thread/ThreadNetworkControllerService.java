@@ -73,7 +73,6 @@ import android.content.IntentFilter;
 import android.content.res.Resources;
 import android.net.ConnectivityManager;
 import android.net.InetAddresses;
-import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.LocalNetworkConfig;
 import android.net.LocalNetworkInfo;
@@ -108,6 +107,7 @@ import android.os.Looper;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserManager;
+import android.provider.Settings;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -123,16 +123,17 @@ import com.android.server.thread.openthread.IOtDaemonCallback;
 import com.android.server.thread.openthread.IOtStatusReceiver;
 import com.android.server.thread.openthread.Ipv6AddressInfo;
 import com.android.server.thread.openthread.MeshcopTxtAttributes;
+import com.android.server.thread.openthread.OnMeshPrefixConfig;
 import com.android.server.thread.openthread.OtDaemonState;
 
 import libcore.util.HexEncoding;
 
 import java.io.IOException;
 import java.net.Inet6Address;
-import java.net.InetAddress;
-import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
+import java.time.Clock;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
@@ -164,6 +165,9 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     // This regex pattern allows "XXXXXX", "XX:XX:XX" and "XX-XX-XX" OUI formats.
     // Note that this regex allows "XX:XX-XX" as well but we don't need to be a strict checker
     private static final String OUI_REGEX = "^([0-9A-Fa-f]{2}[:-]?){2}([0-9A-Fa-f]{2})$";
+
+    // The channel mask that indicates all channels from channel 11 to channel 24
+    private static final int CHANNEL_MASK_11_TO_24 = 0x1FFF800;
 
     // Below member fields can be accessed from both the binder and handler threads
 
@@ -200,6 +204,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private final ThreadPersistentSettings mPersistentSettings;
     private final UserManager mUserManager;
     private boolean mUserRestricted;
+    private boolean mAirplaneModeOn;
     private boolean mForceStopOtDaemonEnabled;
 
     private BorderRouterConfigurationParcel mBorderRouterConfig;
@@ -260,38 +265,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 countryCodeSupplier);
     }
 
-    private static Inet6Address bytesToInet6Address(byte[] addressBytes) {
-        try {
-            return (Inet6Address) Inet6Address.getByAddress(addressBytes);
-        } catch (UnknownHostException e) {
-            // This is unlikely to happen unless the Thread daemon is critically broken
-            return null;
-        }
-    }
-
-    private static InetAddress addressInfoToInetAddress(Ipv6AddressInfo addressInfo) {
-        return bytesToInet6Address(addressInfo.address);
-    }
-
-    private static LinkAddress newLinkAddress(Ipv6AddressInfo addressInfo) {
-        long deprecationTimeMillis =
-                addressInfo.isPreferred
-                        ? LinkAddress.LIFETIME_PERMANENT
-                        : SystemClock.elapsedRealtime();
-
-        InetAddress address = addressInfoToInetAddress(addressInfo);
-
-        // flags and scope will be adjusted automatically depending on the address and
-        // its lifetimes.
-        return new LinkAddress(
-                address,
-                addressInfo.prefixLength,
-                0 /* flags */,
-                0 /* scope */,
-                deprecationTimeMillis,
-                LinkAddress.LIFETIME_PERMANENT /* expirationTime */);
-    }
-
     private NetworkRequest newUpstreamNetworkRequest() {
         NetworkRequest.Builder builder = new NetworkRequest.Builder().clearCapabilities();
 
@@ -315,7 +288,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     }
 
     private void maybeInitializeOtDaemon() {
-        if (!isEnabled()) {
+        if (!shouldEnableThread()) {
             return;
         }
 
@@ -350,7 +323,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
         otDaemon.initialize(
                 mTunIfController.getTunFd(),
-                isEnabled(),
+                shouldEnableThread(),
                 mNsdPublisher,
                 getMeshcopTxtAttributes(mResources.get()),
                 mOtDaemonCallbackProxy,
@@ -415,7 +388,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                     Log.d(
                             TAG,
                             "Initializing Thread system service: Thread is "
-                                    + (isEnabled() ? "enabled" : "disabled"));
+                                    + (shouldEnableThread() ? "enabled" : "disabled"));
                     try {
                         mTunIfController.createTunInterface();
                     } catch (IOException e) {
@@ -427,6 +400,8 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                     requestThreadNetwork();
                     mUserRestricted = isThreadUserRestricted();
                     registerUserRestrictionsReceiver();
+                    mAirplaneModeOn = isAirplaneModeOn();
+                    registerAirplaneModeReceiver();
                     maybeInitializeOtDaemon();
                 });
     }
@@ -493,6 +468,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
     private void setEnabledInternal(
             boolean isEnabled, boolean persist, @NonNull OperationReceiverWrapper receiver) {
+        checkOnHandlerThread();
         if (isEnabled && isThreadUserRestricted()) {
             receiver.onError(
                     ERROR_FAILED_PRECONDITION,
@@ -507,6 +483,15 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             // the otDaemon set enabled state operation succeeded or not, so that it can recover
             // to the desired value after reboot.
             mPersistentSettings.put(ThreadPersistentSettings.THREAD_ENABLED.key, isEnabled);
+
+            // Remember whether the user wanted to keep Thread enabled in airplane mode. If once
+            // the user disabled Thread again in airplane mode, the persistent settings state is
+            // reset (so that Thread will be auto-disabled again when airplane mode is turned on).
+            // This behavior is consistent with Wi-Fi and bluetooth.
+            if (mAirplaneModeOn) {
+                mPersistentSettings.put(
+                        ThreadPersistentSettings.THREAD_ENABLED_IN_AIRPLANE_MODE.key, isEnabled);
+            }
         }
 
         try {
@@ -543,41 +528,106 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                         + newUserRestrictedState);
         mUserRestricted = newUserRestrictedState;
 
-        final boolean isEnabled = isEnabled();
+        final boolean shouldEnableThread = shouldEnableThread();
         final IOperationReceiver receiver =
                 new IOperationReceiver.Stub() {
                     @Override
                     public void onSuccess() {
                         Log.d(
                                 TAG,
-                                (isEnabled ? "Enabled" : "Disabled")
+                                (shouldEnableThread ? "Enabled" : "Disabled")
                                         + " Thread due to user restriction change");
                     }
 
                     @Override
-                    public void onError(int otError, String messages) {
+                    public void onError(int errorCode, String errorMessage) {
                         Log.e(
                                 TAG,
                                 "Failed to "
-                                        + (isEnabled ? "enable" : "disable")
+                                        + (shouldEnableThread ? "enable" : "disable")
                                         + " Thread for user restriction change");
                     }
                 };
         // Do not save the user restriction state to persistent settings so that the user
         // configuration won't be overwritten
-        setEnabledInternal(isEnabled, false /* persist */, new OperationReceiverWrapper(receiver));
-    }
-
-    /** Returns {@code true} if Thread is set enabled. */
-    private boolean isEnabled() {
-        return !mForceStopOtDaemonEnabled
-                && !mUserRestricted
-                && mPersistentSettings.get(ThreadPersistentSettings.THREAD_ENABLED);
+        setEnabledInternal(
+                shouldEnableThread, false /* persist */, new OperationReceiverWrapper(receiver));
     }
 
     /** Returns {@code true} if Thread has been restricted for the user. */
     private boolean isThreadUserRestricted() {
         return mUserManager.hasUserRestriction(DISALLOW_THREAD_NETWORK);
+    }
+
+    private void registerAirplaneModeReceiver() {
+        mContext.registerReceiver(
+                new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(Context context, Intent intent) {
+                        onAirplaneModeChanged(isAirplaneModeOn());
+                    }
+                },
+                new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED),
+                null /* broadcastPermission */,
+                mHandler);
+    }
+
+    private void onAirplaneModeChanged(boolean newAirplaneModeOn) {
+        checkOnHandlerThread();
+        if (mAirplaneModeOn == newAirplaneModeOn) {
+            return;
+        }
+        Log.i(TAG, "Airplane mode changed: " + mAirplaneModeOn + " -> " + newAirplaneModeOn);
+        mAirplaneModeOn = newAirplaneModeOn;
+
+        final boolean shouldEnableThread = shouldEnableThread();
+        final IOperationReceiver receiver =
+                new IOperationReceiver.Stub() {
+                    @Override
+                    public void onSuccess() {
+                        Log.d(
+                                TAG,
+                                (shouldEnableThread ? "Enabled" : "Disabled")
+                                        + " Thread due to airplane mode change");
+                    }
+
+                    @Override
+                    public void onError(int errorCode, String errorMessage) {
+                        Log.e(
+                                TAG,
+                                "Failed to "
+                                        + (shouldEnableThread ? "enable" : "disable")
+                                        + " Thread for airplane mode change");
+                    }
+                };
+        // Do not save the user restriction state to persistent settings so that the user
+        // configuration won't be overwritten
+        setEnabledInternal(
+                shouldEnableThread, false /* persist */, new OperationReceiverWrapper(receiver));
+    }
+
+    /** Returns {@code true} if Airplane mode has been turned on. */
+    private boolean isAirplaneModeOn() {
+        return Settings.Global.getInt(
+                        mContext.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0)
+                == 1;
+    }
+
+    /**
+     * Returns {@code true} if Thread should be enabled based on current settings, runtime user
+     * restriction and airplane mode state.
+     */
+    private boolean shouldEnableThread() {
+        final boolean enabledInAirplaneMode =
+                mPersistentSettings.get(ThreadPersistentSettings.THREAD_ENABLED_IN_AIRPLANE_MODE);
+
+        return !mForceStopOtDaemonEnabled
+                && !mUserRestricted
+                // FIXME(b/340744397): Note that here we need to call `isAirplaneModeOn()` to get
+                // the latest state of airplane mode but can't use `mIsAirplaneMode`. This is for
+                // avoiding the race conditions described in b/340744397
+                && (!isAirplaneModeOn() || enabledInAirplaneMode)
+                && mPersistentSettings.get(ThreadPersistentSettings.THREAD_ENABLED);
     }
 
     private void requestUpstreamNetwork() {
@@ -667,6 +717,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 if (mNetworkToInterface.containsKey(mUpstreamNetwork)) {
                     enableBorderRouting(mNetworkToInterface.get(mUpstreamNetwork));
                 }
+                mNsdPublisher.setNetworkForHostResolution(mUpstreamNetwork);
             }
         }
     }
@@ -777,7 +828,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                                 networkName,
                                 supportedChannelMask,
                                 preferredChannelMask,
-                                Instant.now(),
                                 new Random(),
                                 new SecureRandom());
 
@@ -795,9 +845,18 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             String networkName,
             int supportedChannelMask,
             int preferredChannelMask,
-            Instant now,
             Random random,
             SecureRandom secureRandom) {
+        boolean authoritative = false;
+        Instant now = Instant.now();
+        try {
+            Clock clock = SystemClock.currentNetworkTimeClock();
+            now = clock.instant();
+            authoritative = true;
+        } catch (DateTimeException e) {
+            Log.w(TAG, "Failed to get authoritative time", e);
+        }
+
         int panId = random.nextInt(/* bound= */ 0xffff);
         final byte[] meshLocalPrefix = newRandomBytes(random, LENGTH_MESH_LOCAL_PREFIX_BITS / 8);
         meshLocalPrefix[0] = MESH_LOCAL_PREFIX_FIRST_BYTE;
@@ -811,7 +870,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         return new ActiveOperationalDataset.Builder()
                 .setActiveTimestamp(
                         new OperationalDatasetTimestamp(
-                                now.getEpochSecond() & 0xffffffffffffL, 0, false))
+                                now.getEpochSecond() & 0xffffffffffffL, 0, authoritative))
                 .setExtendedPanId(newRandomBytes(random, LENGTH_EXTENDED_PAN_ID))
                 .setPanId(panId)
                 .setNetworkName(networkName)
@@ -826,6 +885,14 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
     private static int selectChannel(
             int supportedChannelMask, int preferredChannelMask, Random random) {
+        // Due to radio hardware performance reasons, many Thread radio chips need to reduce their
+        // transmit power on edge channels to pass regulatory RF certification. Thread edge channel
+        // 25 and 26 are not preferred here.
+        //
+        // If users want to use channel 25 or 26, they can change the channel via the method
+        // ActiveOperationalDataset.Builder(activeOperationalDataset).setChannel(channel).build().
+        preferredChannelMask = preferredChannelMask & CHANNEL_MASK_11_TO_24;
+
         // If the preferred channel mask is not empty, select a random channel from it, otherwise
         // choose one from the supported channel mask.
         preferredChannelMask = preferredChannelMask & supportedChannelMask;
@@ -909,7 +976,11 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
     private void checkOnHandlerThread() {
         if (Looper.myLooper() != mHandler.getLooper()) {
-            Log.wtf(TAG, "Must be on the handler thread!");
+            throw new IllegalStateException(
+                    "Not running on ThreadNetworkControllerService thread ("
+                            + mHandler.getLooper()
+                            + ") : "
+                            + Looper.myLooper());
         }
     }
 
@@ -1007,7 +1078,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     }
 
     @Override
-    public void leave(@NonNull IOperationReceiver receiver) throws RemoteException {
+    public void leave(@NonNull IOperationReceiver receiver) {
         enforceAllPermissionsGranted(PERMISSION_THREAD_NETWORK_PRIVILEGED);
 
         mHandler.post(() -> leaveInternal(new OperationReceiverWrapper(receiver)));
@@ -1043,7 +1114,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         checkOnHandlerThread();
 
         // Fails early to avoid waking up ot-daemon by the ThreadNetworkCountryCode class
-        if (!isEnabled()) {
+        if (!shouldEnableThread()) {
             receiver.onError(
                     ERROR_THREAD_DISABLED, "Can't set country code when Thread is disabled");
             return;
@@ -1172,20 +1243,22 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
     }
 
-    private void handleAddressChanged(Ipv6AddressInfo addressInfo, boolean isAdded) {
+    private void handleAddressChanged(List<Ipv6AddressInfo> addressInfoList) {
         checkOnHandlerThread();
-        InetAddress address = addressInfoToInetAddress(addressInfo);
-        if (address.isMulticastAddress()) {
-            Log.i(TAG, "Ignoring multicast address " + address.getHostAddress());
-            return;
-        }
 
-        LinkAddress linkAddress = newLinkAddress(addressInfo);
-        if (isAdded) {
-            mTunIfController.addAddress(linkAddress);
-        } else {
-            mTunIfController.removeAddress(linkAddress);
+        mTunIfController.updateAddresses(addressInfoList);
+
+        // The OT daemon can send link property updates before the networkAgent is
+        // registered
+        if (mNetworkAgent != null) {
+            mNetworkAgent.sendLinkProperties(mTunIfController.getLinkProperties());
         }
+    }
+
+    private void handlePrefixChanged(List<OnMeshPrefixConfig> onMeshPrefixConfigList) {
+        checkOnHandlerThread();
+
+        mTunIfController.updatePrefixes(onMeshPrefixConfigList);
 
         // The OT daemon can send link property updates before the networkAgent is
         // registered
@@ -1315,15 +1388,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             }
         }
 
-        private void notifyThreadEnabledUpdated(IStateCallback callback, int enabledState) {
-            try {
-                callback.onThreadEnableStateChanged(enabledState);
-                Log.i(TAG, "onThreadEnableStateChanged " + enabledState);
-            } catch (RemoteException ignored) {
-                // do nothing if the client is dead
-            }
-        }
-
         public void unregisterStateCallback(IStateCallback callback) {
             checkOnHandlerThread();
             if (!mStateCallbacks.containsKey(callback)) {
@@ -1390,15 +1454,19 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             }
         }
 
-        @Override
-        public void onThreadEnabledChanged(int state) {
-            mHandler.post(() -> onThreadEnabledChangedInternal(state));
-        }
-
-        private void onThreadEnabledChangedInternal(int state) {
+        private void onThreadEnabledChanged(int state, long listenerId) {
             checkOnHandlerThread();
-            for (IStateCallback callback : mStateCallbacks.keySet()) {
-                notifyThreadEnabledUpdated(callback, otStateToAndroidState(state));
+            boolean stateChanged = (mState == null || mState.threadEnabled != state);
+
+            for (var callbackEntry : mStateCallbacks.entrySet()) {
+                if (!stateChanged && callbackEntry.getValue().id != listenerId) {
+                    continue;
+                }
+                try {
+                    callbackEntry.getKey().onThreadEnableStateChanged(otStateToAndroidState(state));
+                } catch (RemoteException ignored) {
+                    // do nothing if the client is dead
+                }
             }
         }
 
@@ -1425,6 +1493,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             onInterfaceStateChanged(newState.isInterfaceUp);
             onDeviceRoleChanged(newState.deviceRole, listenerId);
             onPartitionIdChanged(newState.partitionId, listenerId);
+            onThreadEnabledChanged(newState.threadEnabled, listenerId);
             mState = newState;
 
             ActiveOperationalDataset newActiveDataset;
@@ -1534,13 +1603,18 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
 
         @Override
-        public void onAddressChanged(Ipv6AddressInfo addressInfo, boolean isAdded) {
-            mHandler.post(() -> handleAddressChanged(addressInfo, isAdded));
+        public void onAddressChanged(List<Ipv6AddressInfo> addressInfoList) {
+            mHandler.post(() -> handleAddressChanged(addressInfoList));
         }
 
         @Override
         public void onBackboneRouterStateChanged(BackboneRouterState state) {
             mHandler.post(() -> handleMulticastForwardingChanged(state));
+        }
+
+        @Override
+        public void onPrefixChanged(List<OnMeshPrefixConfig> onMeshPrefixConfigList) {
+            mHandler.post(() -> handlePrefixChanged(onMeshPrefixConfigList));
         }
     }
 }

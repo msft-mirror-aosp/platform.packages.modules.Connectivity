@@ -27,6 +27,7 @@ import android.content.pm.UserInfo
 import android.content.res.Resources
 import android.net.ConnectivityManager
 import android.net.INetd
+import android.net.INetd.PERMISSION_INTERNET
 import android.net.InetAddresses
 import android.net.LinkProperties
 import android.net.LocalNetworkConfig
@@ -89,6 +90,7 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.rules.TestName
 import org.mockito.AdditionalAnswers.delegatesTo
+import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
@@ -157,11 +159,11 @@ open class CSTest {
         it[ConnectivityFlags.NO_REMATCH_ALL_REQUESTS_ON_REGISTER] = true
         it[ConnectivityFlags.REQUEST_RESTRICTED_WIFI] = true
         it[ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION] = true
-        it[ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS] = true
         it[ConnectivityService.ALLOW_SATALLITE_NETWORK_FALLBACK] = true
         it[ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING] = true
         it[ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN] = true
+        it[ConnectivityFlags.DELAY_DESTROY_SOCKETS] = true
     }
     fun setFeatureEnabled(flag: String, enabled: Boolean) = enabledFeatures.set(flag, enabled)
 
@@ -171,7 +173,11 @@ open class CSTest {
     val contentResolver = makeMockContentResolver(context)
 
     val PRIMARY_USER = 0
-    val PRIMARY_USER_INFO = UserInfo(PRIMARY_USER, "" /* name */, UserInfo.FLAG_PRIMARY)
+    val PRIMARY_USER_INFO = UserInfo(
+            PRIMARY_USER,
+            "", // name
+            UserInfo.FLAG_PRIMARY
+    )
     val PRIMARY_USER_HANDLE = UserHandle(PRIMARY_USER)
     val userManager = makeMockUserManager(PRIMARY_USER_INFO, PRIMARY_USER_HANDLE)
     val activityManager = makeActivityManager()
@@ -183,10 +189,16 @@ open class CSTest {
     val connResources = makeMockConnResources(sysResources, packageManager)
 
     val netd = mock<INetd>()
-    val bpfNetMaps = mock<BpfNetMaps>()
+    val bpfNetMaps = mock<BpfNetMaps>().also {
+        doReturn(PERMISSION_INTERNET).`when`(it).getNetPermForUid(anyInt())
+    }
     val clatCoordinator = mock<ClatCoordinator>()
     val networkRequestStateStatsMetrics = mock<NetworkRequestStateStatsMetrics>()
-    val proxyTracker = ProxyTracker(context, mock<Handler>(), 16 /* EVENT_PROXY_HAS_CHANGED */)
+    val proxyTracker = ProxyTracker(
+            context,
+            mock<Handler>(),
+            16 // EVENT_PROXY_HAS_CHANGED
+    )
     val systemConfigManager = makeMockSystemConfigManager()
     val batteryStats = mock<IBatteryStats>()
     val batteryManager = BatteryStatsManager(batteryStats)
@@ -198,6 +210,7 @@ open class CSTest {
 
     val multicastRoutingCoordinatorService = mock<MulticastRoutingCoordinatorService>()
     val satelliteAccessController = mock<SatelliteAccessController>()
+    val destroySocketsWrapper = mock<DestroySocketsWrapper>()
 
     val deps = CSDeps()
 
@@ -249,6 +262,11 @@ open class CSTest {
         csHandlerThread.join()
         alarmHandlerThread.quitSafely()
         alarmHandlerThread.join()
+    }
+
+    // Class to be mocked and used to verify destroy sockets methods call
+    open inner class DestroySocketsWrapper {
+        open fun destroyLiveTcpSocketsByOwnerUids(ownerUids: Set<Int>) {}
     }
 
     inner class CSDeps : ConnectivityService.Dependencies() {
@@ -356,6 +374,11 @@ open class CSTest {
 
         override fun getCallingUid() =
                 if (callingUid == CALLING_UID_UNMOCKED) super.getCallingUid() else callingUid
+
+        override fun destroyLiveTcpSocketsByOwnerUids(ownerUids: Set<Int>) {
+            // Call mocked destroyLiveTcpSocketsByOwnerUids so that test can verify this method call
+            destroySocketsWrapper.destroyLiveTcpSocketsByOwnerUids(ownerUids)
+        }
     }
 
     inner class CSContext(base: Context) : BroadcastInterceptingContext(base) {

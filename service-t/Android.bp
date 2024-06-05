@@ -20,7 +20,7 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-service_remoteauth_pre_jarjar_lib = "service-remoteauth-pre-jarjar-udc-compat"
+service_remoteauth_pre_jarjar_lib = "service-remoteauth-pre-jarjar"
 
 // Include build rules from Sources.bp
 build = ["Sources.bp"]

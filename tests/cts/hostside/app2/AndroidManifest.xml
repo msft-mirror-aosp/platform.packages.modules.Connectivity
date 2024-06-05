@@ -40,33 +40,8 @@
     <application android:usesCleartextTraffic="true"
             android:testOnly="true"
             android:debuggable="true">
-
-        <activity android:name=".MyActivity"
-             android:exported="true"/>
-        <service android:name=".MyService"
-             android:exported="true"/>
-        <service android:name=".MyForegroundService"
-             android:foregroundServiceType="specialUse"
-             android:exported="true">
-            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" 
-                      android:value="Connectivity" />
-        </service>
         <service android:name=".RemoteSocketFactoryService"
              android:exported="true"/>
-
-        <receiver android:name=".MyBroadcastReceiver"
-             android:exported="true">
-            <intent-filter>
-                <action android:name="android.net.conn.RESTRICT_BACKGROUND_CHANGED"/>
-                <action android:name="com.android.cts.net.hostside.app2.action.GET_COUNTERS"/>
-                <action android:name="com.android.cts.net.hostside.app2.action.GET_RESTRICT_BACKGROUND_STATUS"/>
-                <action android:name="com.android.cts.net.hostside.app2.action.CHECK_NETWORK"/>
-                <action android:name="com.android.cts.net.hostside.app2.action.SEND_NOTIFICATION"/>
-                <action android:name="com.android.cts.net.hostside.app2.action.SHOW_TOAST"/>
-                </intent-filter>
-        </receiver>
-        <service android:name=".MyJobService"
-            android:permission="android.permission.BIND_JOB_SERVICE" />
     </application>
 
     <!--

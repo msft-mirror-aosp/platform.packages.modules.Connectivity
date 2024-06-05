@@ -15,6 +15,7 @@
  */
 package android.net.thread.utils;
 
+import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
 import static android.system.OsConstants.IPPROTO_ICMPV6;
 
 import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
@@ -24,15 +25,24 @@ import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ROUTER_AD
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
+import android.net.ConnectivityManager;
+import android.net.InetAddresses;
+import android.net.LinkAddress;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.net.TestNetworkInterface;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ThreadNetworkController;
+import android.os.Build;
 import android.os.Handler;
 import android.os.SystemClock;
 
 import androidx.annotation.NonNull;
+import androidx.test.core.app.ApplicationProvider;
 
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.Icmpv6Header;
@@ -85,7 +95,7 @@ public final class IntegrationTestUtils {
      */
     public static void waitFor(Supplier<Boolean> condition, Duration timeout)
             throws TimeoutException {
-        final long intervalMills = 1000;
+        final long intervalMills = 500;
         final long timeoutMills = timeout.toMillis();
 
         for (long i = 0; i < timeoutMills; i += intervalMills) {
@@ -291,6 +301,20 @@ public final class IntegrationTestUtils {
         return false;
     }
 
+    public static List<LinkAddress> getIpv6LinkAddresses(String interfaceName) {
+        List<LinkAddress> addresses = new ArrayList<>();
+        final String cmd = " ip -6 addr show dev " + interfaceName;
+        final String output = runShellCommandOrThrow(cmd);
+
+        for (final String line : output.split("\\n")) {
+            if (line.contains("inet6")) {
+                addresses.add(parseAddressLine(line));
+            }
+        }
+
+        return addresses;
+    }
+
     /** Return the first discovered service of {@code serviceType}. */
     public static NsdServiceInfo discoverService(NsdManager nsdManager, String serviceType)
             throws Exception {
@@ -359,6 +383,36 @@ public final class IntegrationTestUtils {
         }
     }
 
+    public static String getPrefixesFromNetData(String netData) {
+        int startIdx = netData.indexOf("Prefixes:");
+        int endIdx = netData.indexOf("Routes:");
+        return netData.substring(startIdx, endIdx);
+    }
+
+    public static Network getThreadNetwork(Duration timeout) throws Exception {
+        CompletableFuture<Network> networkFuture = new CompletableFuture<>();
+        ConnectivityManager cm =
+                ApplicationProvider.getApplicationContext()
+                        .getSystemService(ConnectivityManager.class);
+        NetworkRequest.Builder networkRequestBuilder =
+                new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_THREAD);
+        // Before V, we need to explicitly set `NET_CAPABILITY_LOCAL_NETWORK` capability to request
+        // a Thread network.
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            networkRequestBuilder.addCapability(NET_CAPABILITY_LOCAL_NETWORK);
+        }
+        NetworkRequest networkRequest = networkRequestBuilder.build();
+        ConnectivityManager.NetworkCallback networkCallback =
+                new ConnectivityManager.NetworkCallback() {
+                    @Override
+                    public void onAvailable(Network network) {
+                        networkFuture.complete(network);
+                    }
+                };
+        cm.registerNetworkCallback(networkRequest, networkCallback);
+        return networkFuture.get(timeout.toSeconds(), SECONDS);
+    }
+
     private static class DefaultDiscoveryListener implements NsdManager.DiscoveryListener {
         @Override
         public void onStartDiscoveryFailed(String serviceType, int errorCode) {}
@@ -391,5 +445,30 @@ public final class IntegrationTestUtils {
 
         @Override
         public void onServiceInfoCallbackUnregistered() {}
+    }
+
+    /**
+     * Parses a line of output from "ip -6 addr show" into a {@link LinkAddress}.
+     *
+     * <p>Example line: "inet6 2001:db8:1:1::1/64 scope global deprecated"
+     */
+    private static LinkAddress parseAddressLine(String line) {
+        String[] parts = line.trim().split("\\s+");
+        String addressString = parts[1];
+        String[] pieces = addressString.split("/", 2);
+        int prefixLength = Integer.parseInt(pieces[1]);
+        final InetAddress address = InetAddresses.parseNumericAddress(pieces[0]);
+        long deprecationTimeMillis =
+                line.contains("deprecated")
+                        ? SystemClock.elapsedRealtime()
+                        : LinkAddress.LIFETIME_PERMANENT;
+
+        return new LinkAddress(
+                address,
+                prefixLength,
+                0 /* flags */,
+                0 /* scope */,
+                deprecationTimeMillis,
+                LinkAddress.LIFETIME_PERMANENT /* expirationTime */);
     }
 }

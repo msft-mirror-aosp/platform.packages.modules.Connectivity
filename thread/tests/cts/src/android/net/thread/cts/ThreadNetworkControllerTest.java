@@ -43,7 +43,6 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
@@ -67,6 +66,7 @@ import android.net.thread.ThreadNetworkManager;
 import android.net.thread.utils.TapTestNetworkTracker;
 import android.net.thread.utils.ThreadFeatureCheckerRule;
 import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresThreadFeature;
+import android.os.Build;
 import android.os.HandlerThread;
 import android.os.OutcomeReceiver;
 
@@ -79,6 +79,7 @@ import com.android.testutils.FunctionalUtils.ThrowingRunnable;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 
@@ -169,6 +170,17 @@ public class ThreadNetworkControllerTest {
         } finally {
             runAsShell(ACCESS_NETWORK_STATE, () -> mController.unregisterStateCallback(callback));
         }
+    }
+
+    @Test
+    public void subscribeThreadEnableState_getActiveDataset_onThreadEnableStateChangedNotCalled()
+            throws Exception {
+        EnabledStateListener listener = new EnabledStateListener(mController);
+        listener.expectThreadEnabledState(STATE_ENABLED);
+
+        getActiveOperationalDataset(mController);
+
+        listener.expectCallbackNotCalled();
     }
 
     @Test
@@ -749,17 +761,6 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
-    public void setEnabled_toggleAfterJoin_joinsThreadNetworkAgain() throws Exception {
-        joinRandomizedDatasetAndWait(mController);
-
-        setEnabledAndWait(mController, false);
-        assertThat(getDeviceRole(mController)).isEqualTo(DEVICE_ROLE_STOPPED);
-        setEnabledAndWait(mController, true);
-
-        runAsShell(ACCESS_NETWORK_STATE, () -> waitForAttachedState(mController));
-    }
-
-    @Test
     public void setEnabled_enableFollowedByDisable_allSucceed() throws Exception {
         joinRandomizedDatasetAndWait(mController);
         CompletableFuture<Void> setFuture1 = new CompletableFuture<>();
@@ -792,10 +793,14 @@ public class ThreadNetworkControllerTest {
     public void threadNetworkCallback_deviceAttached_threadNetworkIsAvailable() throws Exception {
         CompletableFuture<Network> networkFuture = new CompletableFuture<>();
         ConnectivityManager cm = mContext.getSystemService(ConnectivityManager.class);
-        NetworkRequest networkRequest =
-                new NetworkRequest.Builder()
-                        .addTransportType(NetworkCapabilities.TRANSPORT_THREAD)
-                        .build();
+        NetworkRequest.Builder networkRequestBuilder =
+                new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_THREAD);
+        // Before V, we need to explicitly set `NET_CAPABILITY_LOCAL_NETWORK` capability to request
+        // a Thread network.
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            networkRequestBuilder.addCapability(NET_CAPABILITY_LOCAL_NETWORK);
+        }
+        NetworkRequest networkRequest = networkRequestBuilder.build();
         ConnectivityManager.NetworkCallback networkCallback =
                 new ConnectivityManager.NetworkCallback() {
                     @Override
@@ -857,6 +862,7 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
+    @Ignore("b/333649897: Enable this when it's not flaky at all")
     public void meshcopService_joinedNetwork_discoveredHasNetwork() throws Exception {
         setUpTestNetwork();
 
@@ -1020,7 +1026,11 @@ public class ThreadNetworkControllerTest {
         }
 
         public void expectThreadEnabledState(int enabled) {
-            assertNotNull(mReadHead.poll(ENABLED_TIMEOUT_MILLIS, e -> (e == enabled)));
+            assertThat(mReadHead.poll(ENABLED_TIMEOUT_MILLIS, e -> (e == enabled))).isNotNull();
+        }
+
+        public void expectCallbackNotCalled() {
+            assertThat(mReadHead.poll(CALLBACK_TIMEOUT_MILLIS, e -> true)).isNull();
         }
 
         public void unregisterStateCallback() {

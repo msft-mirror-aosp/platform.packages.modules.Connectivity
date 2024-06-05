@@ -23,23 +23,26 @@ package {
 // different value depending on the branch.
 java_defaults {
     name: "ConnectivityNextEnableDefaults",
-    enabled: false,
+    enabled: true,
 }
+
 java_defaults {
     name: "NetworkStackApiShimSettingsForCurrentBranch",
     // API shims to include in the networking modules built from the branch. Branches that disable
     // the "next" targets must use stable shims (latest stable API level) instead of current shims
     // (X_current API level).
-    static_libs: ["NetworkStackApiStableShims"],
+    static_libs: ["NetworkStackApiCurrentShims"],
 }
+
 apex_defaults {
     name: "ConnectivityApexDefaults",
     // Tethering app to include in the AOSP apex. Branches that disable the "next" targets may use
     // a stable tethering app instead, but will generally override the AOSP apex to use updatable
     // package names and keys, so that apex will be unused anyway.
-    apps: ["Tethering"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
+    apps: ["TetheringNext"], // Replace to "Tethering" if ConnectivityNextEnableDefaults is false.
 }
-enable_tethering_next_apex = false
+
+enable_tethering_next_apex = true
 // This is a placeholder comment to avoid merge conflicts
 // as the above target may have different "enabled" values
 // depending on the branch
@@ -110,6 +113,7 @@ apex {
     prebuilts: [
         "current_sdkinfo",
         "netbpfload.mainline.rc",
+        "netbpfload.35rc",
         "ot-daemon.init.34rc",
     ],
     manifest: "manifest.json",
