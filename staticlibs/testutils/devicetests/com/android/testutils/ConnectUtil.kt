@@ -86,6 +86,7 @@ class ConnectUtil(private val context: Context) {
         val callback = TestableNetworkCallback(timeoutMs = WIFI_CONNECT_TIMEOUT_MS)
         cm.registerNetworkCallback(NetworkRequest.Builder()
                 .addTransportType(TRANSPORT_WIFI)
+                .addCapability(NET_CAPABILITY_INTERNET)
                 .build(), callback)
 
         return tryTest {
@@ -116,7 +117,10 @@ class ConnectUtil(private val context: Context) {
         }
     }
 
-    private fun connectToWifiConfig(config: WifiConfiguration) {
+    // Suppress warning because WifiManager methods to connect to a config are
+    // documented not to be deprecated for privileged users.
+    @Suppress("DEPRECATION")
+    fun connectToWifiConfig(config: WifiConfiguration) {
         repeat(MAX_WIFI_CONNECT_RETRIES) {
             val error = runAsShell(permission.NETWORK_SETTINGS) {
                 val listener = ConnectWifiListener()

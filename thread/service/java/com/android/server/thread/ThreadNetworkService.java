@@ -18,6 +18,8 @@ package com.android.server.thread;
 
 import static android.content.pm.PackageManager.PERMISSION_GRANTED;
 
+import static java.util.Objects.requireNonNull;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
@@ -40,11 +42,13 @@ public class ThreadNetworkService extends IThreadNetworkManager.Stub {
     private final Context mContext;
     @Nullable private ThreadNetworkCountryCode mCountryCode;
     @Nullable private ThreadNetworkControllerService mControllerService;
+    private final ThreadPersistentSettings mPersistentSettings;
     @Nullable private ThreadNetworkShellCommand mShellCommand;
 
     /** Creates a new {@link ThreadNetworkService} object. */
     public ThreadNetworkService(Context context) {
         mContext = context;
+        mPersistentSettings = ThreadPersistentSettings.newInstance(context);
     }
 
     /**
@@ -54,15 +58,21 @@ public class ThreadNetworkService extends IThreadNetworkManager.Stub {
      */
     public void onBootPhase(int phase) {
         if (phase == SystemService.PHASE_SYSTEM_SERVICES_READY) {
-            mControllerService = ThreadNetworkControllerService.newInstance(mContext);
+            mPersistentSettings.initialize();
+            mControllerService =
+                    ThreadNetworkControllerService.newInstance(
+                            mContext, mPersistentSettings, () -> mCountryCode.getCountryCode());
+            mCountryCode =
+                    ThreadNetworkCountryCode.newInstance(
+                            mContext, mControllerService, mPersistentSettings);
             mControllerService.initialize();
         } else if (phase == SystemService.PHASE_BOOT_COMPLETED) {
             // Country code initialization is delayed to the BOOT_COMPLETED phase because it will
             // call into Wi-Fi and Telephony service whose country code module is ready after
             // PHASE_ACTIVITY_MANAGER_READY and PHASE_THIRD_PARTY_APPS_CAN_START
-            mCountryCode = ThreadNetworkCountryCode.newInstance(mContext, mControllerService);
             mCountryCode.initialize();
-            mShellCommand = new ThreadNetworkShellCommand(mCountryCode);
+            mShellCommand =
+                    new ThreadNetworkShellCommand(requireNonNull(mControllerService), mCountryCode);
         }
     }
 

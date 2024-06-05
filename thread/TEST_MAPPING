@@ -5,11 +5,14 @@
     },
     {
       "name": "ThreadNetworkUnitTests"
+    },
+    {
+      "name": "ThreadNetworkIntegrationTests"
     }
   ],
   "postsubmit": [
     {
-      "name": "ThreadNetworkIntegrationTests"
+      "name": "ThreadNetworkMultiDeviceTests"
     }
   ]
 }

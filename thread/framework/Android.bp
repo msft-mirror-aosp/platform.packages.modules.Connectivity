@@ -15,6 +15,7 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_thread_network",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
@@ -27,5 +28,16 @@ filegroup {
     path: "java",
     visibility: [
         "//packages/modules/Connectivity:__subpackages__",
+    ],
+}
+
+filegroup {
+    name: "framework-thread-ot-daemon-shared-aidl-sources",
+    srcs: [
+        "java/android/net/thread/ChannelMaxPower.aidl",
+    ],
+    path: "java",
+    visibility: [
+        "//external/ot-br-posix:__subpackages__",
     ],
 }

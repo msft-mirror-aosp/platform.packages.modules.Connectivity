@@ -93,7 +93,7 @@ public final class CtsNetUtils {
     private static final int SOCKET_TIMEOUT_MS = 10_000;
     private static final int PRIVATE_DNS_PROBE_MS = 1_000;
 
-    private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 10_000;
+    private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 30_000;
     private static final int CONNECTIVITY_CHANGE_TIMEOUT_SECS = 30;
 
     private static final String PRIVATE_DNS_MODE_OPPORTUNISTIC = "opportunistic";
@@ -173,21 +173,39 @@ public final class CtsNetUtils {
         return cb;
     }
 
-    // Toggle WiFi twice, leaving it in the state it started in
-    public void toggleWifi() throws Exception {
-        if (mWifiManager.isWifiEnabled()) {
-            Network wifiNetwork = getWifiNetwork();
-            // Ensure system default network is WIFI because it's expected in disconnectFromWifi()
-            expectNetworkIsSystemDefault(wifiNetwork);
-            disconnectFromWifi(wifiNetwork);
-            connectToWifi();
-        } else {
-            connectToWifi();
-            Network wifiNetwork = getWifiNetwork();
-            // Ensure system default network is WIFI because it's expected in disconnectFromWifi()
-            expectNetworkIsSystemDefault(wifiNetwork);
-            disconnectFromWifi(wifiNetwork);
+    /**
+     * Toggle Wi-Fi off and on, waiting for the {@link ConnectivityManager#CONNECTIVITY_ACTION}
+     * broadcast in both cases.
+     */
+    public void reconnectWifiAndWaitForConnectivityAction() throws Exception {
+        assertTrue(mWifiManager.isWifiEnabled());
+        Network wifiNetwork = getWifiNetwork();
+        // Ensure system default network is WIFI because it's expected in disconnectFromWifi()
+        expectNetworkIsSystemDefault(wifiNetwork);
+        disconnectFromWifi(wifiNetwork, true /* expectLegacyBroadcast */);
+        connectToWifi(true /* expectLegacyBroadcast */);
+    }
+
+    /**
+     * Turn Wi-Fi off, then back on and make sure it connects, if it is supported.
+     */
+    public void reconnectWifiIfSupported() throws Exception {
+        if (!mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_WIFI)) {
+            return;
         }
+        disableWifi();
+        ensureWifiConnected();
+    }
+
+    /**
+     * Turn cell data off, then back on and make sure it connects, if it is supported.
+     */
+    public void reconnectCellIfSupported() throws Exception {
+        if (!mContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) {
+            return;
+        }
+        setMobileDataEnabled(false);
+        setMobileDataEnabled(true);
     }
 
     public Network expectNetworkIsSystemDefault(Network network)
@@ -390,38 +408,8 @@ public final class CtsNetUtils {
         return network;
     }
 
-    public Network connectToCell() throws InterruptedException {
-        if (cellConnectAttempted()) {
-            mCm.unregisterNetworkCallback(mCellNetworkCallback);
-        }
-        NetworkRequest cellRequest = new NetworkRequest.Builder()
-                .addTransportType(TRANSPORT_CELLULAR)
-                .addCapability(NET_CAPABILITY_INTERNET)
-                .build();
-        mCellNetworkCallback = new TestNetworkCallback();
-        mCm.requestNetwork(cellRequest, mCellNetworkCallback);
-        final Network cellNetwork = mCellNetworkCallback.waitForAvailable();
-        assertNotNull("Cell network not available. " +
-                "Please ensure the device has working mobile data.", cellNetwork);
-        return cellNetwork;
-    }
-
-    public void disconnectFromCell() {
-        if (!cellConnectAttempted()) {
-            throw new IllegalStateException("Cell connection not attempted");
-        }
-        mCm.unregisterNetworkCallback(mCellNetworkCallback);
-        mCellNetworkCallback = null;
-    }
-
     public boolean cellConnectAttempted() {
         return mCellNetworkCallback != null;
-    }
-
-    public void tearDown() {
-        if (cellConnectAttempted()) {
-            disconnectFromCell();
-        }
     }
 
     private NetworkRequest makeWifiNetworkRequest() {

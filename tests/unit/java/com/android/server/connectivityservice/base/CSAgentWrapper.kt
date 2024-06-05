@@ -19,6 +19,8 @@ package com.android.server
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.INetworkMonitor
+import android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_DNS
+import android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_HTTP
 import android.net.INetworkMonitorCallbacks
 import android.net.LinkProperties
 import android.net.LocalNetworkConfig
@@ -26,6 +28,7 @@ import android.net.Network
 import android.net.NetworkAgent
 import android.net.NetworkAgentConfig
 import android.net.NetworkCapabilities
+import android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK
 import android.net.NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED
 import android.net.NetworkCapabilities.TRANSPORT_CELLULAR
 import android.net.NetworkProvider
@@ -37,6 +40,9 @@ import android.os.HandlerThread
 import com.android.testutils.RecorderCallback.CallbackEntry.Available
 import com.android.testutils.RecorderCallback.CallbackEntry.Lost
 import com.android.testutils.TestableNetworkCallback
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertEquals
+import kotlin.test.fail
 import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyInt
@@ -44,9 +50,6 @@ import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doNothing
 import org.mockito.Mockito.verify
 import org.mockito.stubbing.Answer
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.test.assertEquals
-import kotlin.test.fail
 
 const val SHORT_TIMEOUT_MS = 200L
 
@@ -75,10 +78,15 @@ class CSAgentWrapper(
 ) : TestableNetworkCallback.HasNetwork {
     private val TAG = "CSAgent${nextAgentId()}"
     private val VALIDATION_RESULT_INVALID = 0
+    private val NO_PROBE_RESULT = 0
     private val VALIDATION_TIMESTAMP = 1234L
     private val agent: NetworkAgent
     private val nmCallbacks: INetworkMonitorCallbacks
     val networkMonitor = mock<INetworkMonitor>()
+    private var nmValidationRedirectUrl: String? = null
+    private var nmValidationResult = NO_PROBE_RESULT
+    private var nmProbesCompleted = NO_PROBE_RESULT
+    private var nmProbesSucceeded = NO_PROBE_RESULT
 
     override val network: Network get() = agent.network!!
 
@@ -120,10 +128,10 @@ class CSAgentWrapper(
         }
         nmCallbacks.notifyProbeStatusChanged(0 /* completed */, 0 /* succeeded */)
         val p = NetworkTestResultParcelable()
-        p.result = VALIDATION_RESULT_INVALID
-        p.probesAttempted = 0
-        p.probesSucceeded = 0
-        p.redirectUrl = null
+        p.result = nmValidationResult
+        p.probesAttempted = nmProbesCompleted
+        p.probesSucceeded = nmProbesSucceeded
+        p.redirectUrl = nmValidationRedirectUrl
         p.timestampMillis = VALIDATION_TIMESTAMP
         nmCallbacks.notifyNetworkTestedWithExtras(p)
     }
@@ -133,6 +141,9 @@ class CSAgentWrapper(
         val request = NetworkRequest.Builder().apply {
             clearCapabilities()
             if (nc.transportTypes.isNotEmpty()) addTransportType(nc.transportTypes[0])
+            if (nc.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)) {
+                addCapability(NET_CAPABILITY_LOCAL_NETWORK)
+            }
         }.build()
         val cb = TestableNetworkCallback()
         mgr.registerNetworkCallback(request, cb)
@@ -159,6 +170,9 @@ class CSAgentWrapper(
         val request = NetworkRequest.Builder().apply {
             clearCapabilities()
             if (nc.transportTypes.isNotEmpty()) addTransportType(nc.transportTypes[0])
+            if (nc.hasCapability(NET_CAPABILITY_LOCAL_NETWORK)) {
+                addCapability(NET_CAPABILITY_LOCAL_NETWORK)
+            }
         }.build()
         val cb = TestableNetworkCallback(timeoutMs = SHORT_TIMEOUT_MS)
         mgr.registerNetworkCallback(request, cb)
@@ -171,4 +185,27 @@ class CSAgentWrapper(
 
     fun sendLocalNetworkConfig(lnc: LocalNetworkConfig) = agent.sendLocalNetworkConfig(lnc)
     fun sendNetworkCapabilities(nc: NetworkCapabilities) = agent.sendNetworkCapabilities(nc)
+    fun sendLinkProperties(lp: LinkProperties) = agent.sendLinkProperties(lp)
+
+    fun connectWithCaptivePortal(redirectUrl: String) {
+        setCaptivePortal(redirectUrl)
+        connect()
+    }
+
+    fun setProbesStatus(probesCompleted: Int, probesSucceeded: Int) {
+        nmProbesCompleted = probesCompleted
+        nmProbesSucceeded = probesSucceeded
+    }
+
+    fun setCaptivePortal(redirectUrl: String) {
+        nmValidationResult = VALIDATION_RESULT_INVALID
+        nmValidationRedirectUrl = redirectUrl
+        // Suppose the portal is found when NetworkMonitor probes NETWORK_VALIDATION_PROBE_HTTP
+        // in the beginning. Because NETWORK_VALIDATION_PROBE_HTTP is the decisive probe for captive
+        // portal, considering the NETWORK_VALIDATION_PROBE_HTTPS hasn't probed yet and set only
+        // DNS and HTTP probes completed.
+        setProbesStatus(
+            NETWORK_VALIDATION_PROBE_DNS or NETWORK_VALIDATION_PROBE_HTTP /* probesCompleted */,
+            VALIDATION_RESULT_INVALID /* probesSucceeded */)
+    }
 }

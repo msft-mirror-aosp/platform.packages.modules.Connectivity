@@ -25,10 +25,12 @@ import android.annotation.IntDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
+import android.annotation.Size;
 import android.annotation.SystemApi;
 import android.os.Binder;
 import android.os.OutcomeReceiver;
 import android.os.RemoteException;
+import android.util.SparseIntArray;
 
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
@@ -68,6 +70,15 @@ public final class ThreadNetworkController {
     /** The device is a Thread Leader. */
     public static final int DEVICE_ROLE_LEADER = 4;
 
+    /** The Thread radio is disabled. */
+    public static final int STATE_DISABLED = 0;
+
+    /** The Thread radio is enabled. */
+    public static final int STATE_ENABLED = 1;
+
+    /** The Thread radio is being disabled. */
+    public static final int STATE_DISABLING = 2;
+
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
     @IntDef({
@@ -79,8 +90,21 @@ public final class ThreadNetworkController {
     })
     public @interface DeviceRole {}
 
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @IntDef(
+            prefix = {"STATE_"},
+            value = {STATE_DISABLED, STATE_ENABLED, STATE_DISABLING})
+    public @interface EnabledState {}
+
     /** Thread standard version 1.3. */
     public static final int THREAD_VERSION_1_3 = 4;
+
+    /** Minimum value of max power in unit of 0.01dBm. @hide */
+    private static final int POWER_LIMITATION_MIN = -32768;
+
+    /** Maximum value of max power in unit of 0.01dBm. @hide */
+    private static final int POWER_LIMITATION_MAX = 32767;
 
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
@@ -104,6 +128,40 @@ public final class ThreadNetworkController {
     public ThreadNetworkController(@NonNull IThreadNetworkController controllerService) {
         requireNonNull(controllerService, "controllerService cannot be null");
         mControllerService = controllerService;
+    }
+
+    /**
+     * Enables/Disables the radio of this ThreadNetworkController. The requested enabled state will
+     * be persistent and survives device reboots.
+     *
+     * <p>When Thread is in {@code STATE_DISABLED}, {@link ThreadNetworkController} APIs which
+     * require the Thread radio will fail with error code {@link
+     * ThreadNetworkException#ERROR_THREAD_DISABLED}. When Thread is in {@code STATE_DISABLING},
+     * {@link ThreadNetworkController} APIs that return a {@link ThreadNetworkException} will fail
+     * with error code {@link ThreadNetworkException#ERROR_BUSY}.
+     *
+     * <p>On success, {@link OutcomeReceiver#onResult} of {@code receiver} is called. It indicates
+     * the operation has completed. But there maybe subsequent calls to update the enabled state,
+     * callers of this method should use {@link #registerStateCallback} to subscribe to the Thread
+     * enabled state changes.
+     *
+     * <p>On failure, {@link OutcomeReceiver#onError} of {@code receiver} will be invoked with a
+     * specific error in {@link ThreadNetworkException#ERROR_}.
+     *
+     * @param enabled {@code true} for enabling Thread
+     * @param executor the executor to execute {@code receiver}
+     * @param receiver the receiver to receive result of this operation
+     */
+    @RequiresPermission("android.permission.THREAD_NETWORK_PRIVILEGED")
+    public void setEnabled(
+            boolean enabled,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OutcomeReceiver<Void, ThreadNetworkException> receiver) {
+        try {
+            mControllerService.setEnabled(enabled, new OperationReceiverProxy(executor, receiver));
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
     }
 
     /** Returns the Thread version this device is operating on. */
@@ -170,6 +228,16 @@ public final class ThreadNetworkController {
          * @param partitionId the new Thread partition ID
          */
         default void onPartitionIdChanged(long partitionId) {}
+
+        /**
+         * The Thread enabled state has changed.
+         *
+         * <p>The Thread enabled state can be set with {@link setEnabled}, it may also be updated by
+         * airplane mode or admin control.
+         *
+         * @param enabledState the new Thread enabled state
+         */
+        default void onThreadEnableStateChanged(@EnabledState int enabledState) {}
     }
 
     private static final class StateCallbackProxy extends IStateCallback.Stub {
@@ -196,6 +264,16 @@ public final class ThreadNetworkController {
             final long identity = Binder.clearCallingIdentity();
             try {
                 mExecutor.execute(() -> mCallback.onPartitionIdChanged(partitionId));
+            } finally {
+                Binder.restoreCallingIdentity(identity);
+            }
+        }
+
+        @Override
+        public void onThreadEnableStateChanged(@EnabledState int enabled) {
+            final long identity = Binder.clearCallingIdentity();
+            try {
+                mExecutor.execute(() -> mCallback.onThreadEnableStateChanged(enabled));
             } finally {
                 Binder.restoreCallingIdentity(identity);
             }
@@ -510,7 +588,8 @@ public final class ThreadNetworkController {
      * @hide
      */
     @VisibleForTesting
-    @RequiresPermission("android.permission.THREAD_NETWORK_PRIVILEGED")
+    @RequiresPermission(
+            allOf = {"android.permission.THREAD_NETWORK_PRIVILEGED", permission.NETWORK_SETTINGS})
     public void setTestNetworkAsUpstream(
             @Nullable String testNetworkInterfaceName,
             @NonNull @CallbackExecutor Executor executor,
@@ -523,6 +602,98 @@ public final class ThreadNetworkController {
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+    }
+
+    /**
+     * Sets max power of each channel.
+     *
+     * <p>If not set, the default max power is set by the Thread HAL service or the Thread radio
+     * chip firmware.
+     *
+     * <p>On success, the Pending Dataset is successfully registered and persisted on the Leader and
+     * {@link OutcomeReceiver#onResult} of {@code receiver} will be called; When failed, {@link
+     * OutcomeReceiver#onError} will be called with a specific error:
+     *
+     * <ul>
+     *   <li>{@link ThreadNetworkException#ERROR_UNSUPPORTED_OPERATION} the operation is no
+     *       supported by the platform.
+     * </ul>
+     *
+     * @param channelMaxPowers SparseIntArray (key: channel, value: max power) consists of channel
+     *     and corresponding max power. Valid channel values should be between {@link
+     *     ActiveOperationalDataset#CHANNEL_MIN_24_GHZ} and {@link
+     *     ActiveOperationalDataset#CHANNEL_MAX_24_GHZ}. The unit of the max power is 0.01dBm. Max
+     *     power values should be between INT16_MIN (-32768) and INT16_MAX (32767). If the max power
+     *     is set to INT16_MAX, the corresponding channel is not supported.
+     * @param executor the executor to execute {@code receiver}.
+     * @param receiver the receiver to receive the result of this operation.
+     * @throws IllegalArgumentException if the size of {@code channelMaxPowers} is smaller than 1,
+     *     or invalid channel or max power is configured.
+     * @hide
+     */
+    @RequiresPermission("android.permission.THREAD_NETWORK_PRIVILEGED")
+    public final void setChannelMaxPowers(
+            @NonNull @Size(min = 1) SparseIntArray channelMaxPowers,
+            @NonNull @CallbackExecutor Executor executor,
+            @NonNull OutcomeReceiver<Void, ThreadNetworkException> receiver) {
+        requireNonNull(channelMaxPowers, "channelMaxPowers cannot be null");
+        requireNonNull(executor, "executor cannot be null");
+        requireNonNull(receiver, "receiver cannot be null");
+
+        if (channelMaxPowers.size() < 1) {
+            throw new IllegalArgumentException("channelMaxPowers cannot be empty");
+        }
+
+        for (int i = 0; i < channelMaxPowers.size(); i++) {
+            int channel = channelMaxPowers.keyAt(i);
+            int maxPower = channelMaxPowers.get(channel);
+
+            if ((channel < ActiveOperationalDataset.CHANNEL_MIN_24_GHZ)
+                    || (channel > ActiveOperationalDataset.CHANNEL_MAX_24_GHZ)) {
+                throw new IllegalArgumentException(
+                        "Channel "
+                                + channel
+                                + " exceeds allowed range ["
+                                + ActiveOperationalDataset.CHANNEL_MIN_24_GHZ
+                                + ", "
+                                + ActiveOperationalDataset.CHANNEL_MAX_24_GHZ
+                                + "]");
+            }
+
+            if ((maxPower < POWER_LIMITATION_MIN) || (maxPower > POWER_LIMITATION_MAX)) {
+                throw new IllegalArgumentException(
+                        "Channel power ({channel: "
+                                + channel
+                                + ", maxPower: "
+                                + maxPower
+                                + "}) exceeds allowed range ["
+                                + POWER_LIMITATION_MIN
+                                + ", "
+                                + POWER_LIMITATION_MAX
+                                + "]");
+            }
+        }
+
+        try {
+            mControllerService.setChannelMaxPowers(
+                    toChannelMaxPowerArray(channelMaxPowers),
+                    new OperationReceiverProxy(executor, receiver));
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    private static ChannelMaxPower[] toChannelMaxPowerArray(
+            @NonNull SparseIntArray channelMaxPowers) {
+        final ChannelMaxPower[] powerArray = new ChannelMaxPower[channelMaxPowers.size()];
+
+        for (int i = 0; i < channelMaxPowers.size(); i++) {
+            powerArray[i] = new ChannelMaxPower();
+            powerArray[i].channel = channelMaxPowers.keyAt(i);
+            powerArray[i].maxPower = channelMaxPowers.get(powerArray[i].channel);
+        }
+
+        return powerArray;
     }
 
     private static <T> void propagateError(

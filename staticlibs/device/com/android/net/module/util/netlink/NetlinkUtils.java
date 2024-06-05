@@ -29,6 +29,7 @@ import static android.system.OsConstants.SOL_SOCKET;
 import static android.system.OsConstants.SO_RCVBUF;
 import static android.system.OsConstants.SO_RCVTIMEO;
 import static android.system.OsConstants.SO_SNDTIMEO;
+
 import static com.android.net.module.util.netlink.NetlinkConstants.hexify;
 import static com.android.net.module.util.netlink.NetlinkConstants.NLMSG_DONE;
 import static com.android.net.module.util.netlink.NetlinkConstants.RTNL_FAMILY_IP6MR;
@@ -49,6 +50,7 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -56,7 +58,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
-import java.util.stream.Collectors;
 
 /**
  * Utilities for netlink related class that may not be able to fit into a specific class.
@@ -85,6 +86,7 @@ public class NetlinkUtils {
 
     public static final int DEFAULT_RECV_BUFSIZE = 8 * 1024;
     public static final int SOCKET_RECV_BUFSIZE = 64 * 1024;
+    public static final int SOCKET_DUMP_RECV_BUFSIZE = 128 * 1024;
 
     /**
      * Return whether the input ByteBuffer contains enough remaining bytes for
@@ -159,7 +161,7 @@ public class NetlinkUtils {
      */
     public static void sendOneShotKernelMessage(int nlProto, byte[] msg) throws ErrnoException {
         final String errPrefix = "Error in NetlinkSocket.sendOneShotKernelMessage";
-        final FileDescriptor fd = netlinkSocketForProto(nlProto);
+        final FileDescriptor fd = netlinkSocketForProto(nlProto, SOCKET_RECV_BUFSIZE);
 
         try {
             connectToKernel(fd);
@@ -177,19 +179,19 @@ public class NetlinkUtils {
     }
 
     /**
-     * Send an RTM_NEWADDR message to kernel to add or update an IPv6 address.
+     * Send an RTM_NEWADDR message to kernel to add or update an IP address.
      *
      * @param ifIndex interface index.
-     * @param ip IPv6 address to be added.
-     * @param prefixlen IPv6 address prefix length.
-     * @param flags IPv6 address flags.
-     * @param scope IPv6 address scope.
-     * @param preferred The preferred lifetime of IPv6 address.
-     * @param valid The valid lifetime of IPv6 address.
+     * @param ip IP address to be added.
+     * @param prefixlen IP address prefix length.
+     * @param flags IP address flags.
+     * @param scope IP address scope.
+     * @param preferred The preferred lifetime of IP address.
+     * @param valid The valid lifetime of IP address.
      */
-    public static boolean sendRtmNewAddressRequest(int ifIndex, @NonNull final Inet6Address ip,
+    public static boolean sendRtmNewAddressRequest(int ifIndex, @NonNull final InetAddress ip,
             short prefixlen, int flags, byte scope, long preferred, long valid) {
-        Objects.requireNonNull(ip, "IPv6 address to be added should not be null.");
+        Objects.requireNonNull(ip, "IP address to be added should not be null.");
         final byte[] msg = RtNetlinkAddressMessage.newRtmNewAddressMessage(1 /* seqNo*/, ip,
                 prefixlen, flags, scope, ifIndex, preferred, valid);
         try {
@@ -223,22 +225,41 @@ public class NetlinkUtils {
     }
 
     /**
-     * Create netlink socket with the given netlink protocol type.
+     * Create netlink socket with the given netlink protocol type and buffersize.
+     *
+     * @param nlProto the netlink protocol
+     * @param bufferSize the receive buffer size to set when the value is not 0
      *
      * @return fd the fileDescriptor of the socket.
      * @throws ErrnoException if the FileDescriptor not connect to be created successfully
      */
-    public static FileDescriptor netlinkSocketForProto(int nlProto) throws ErrnoException {
-        final FileDescriptor fd = Os.socket(AF_NETLINK, SOCK_DGRAM, nlProto);
-        Os.setsockoptInt(fd, SOL_SOCKET, SO_RCVBUF, SOCKET_RECV_BUFSIZE);
+    public static FileDescriptor netlinkSocketForProto(int nlProto, int bufferSize)
+            throws ErrnoException {
+        final FileDescriptor fd = Os.socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, nlProto);
+        if (bufferSize > 0) {
+            Os.setsockoptInt(fd, SOL_SOCKET, SO_RCVBUF, bufferSize);
+        }
         return fd;
+    }
+
+    /**
+     * Create netlink socket with the given netlink protocol type. Receive buffer size is not set.
+     *
+     * @param nlProto the netlink protocol
+     *
+     * @return fd the fileDescriptor of the socket.
+     * @throws ErrnoException if the FileDescriptor not connect to be created successfully
+     */
+    public static FileDescriptor netlinkSocketForProto(int nlProto)
+            throws ErrnoException {
+        return netlinkSocketForProto(nlProto, 0);
     }
 
     /**
      * Construct a netlink inet_diag socket.
      */
     public static FileDescriptor createNetLinkInetDiagSocket() throws ErrnoException {
-        return Os.socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_INET_DIAG);
+        return netlinkSocketForProto(NETLINK_INET_DIAG);
     }
 
     /**
@@ -373,7 +394,7 @@ public class NetlinkUtils {
             Consumer<T> func)
             throws SocketException, InterruptedIOException, ErrnoException {
         // Create socket
-        final FileDescriptor fd = netlinkSocketForProto(nlFamily);
+        final FileDescriptor fd = netlinkSocketForProto(nlFamily, SOCKET_DUMP_RECV_BUFSIZE);
         try {
             getAndProcessNetlinkDumpMessagesWithFd(fd, dumpRequestMessage, nlFamily,
                     msgClass, func);

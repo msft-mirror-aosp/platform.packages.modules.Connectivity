@@ -28,34 +28,35 @@
 // though they are not in the current.txt files.
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
 java_library {
-  name: "net-utils-device-common",
-  srcs: [
-      "device/com/android/net/module/util/arp/ArpPacket.java",
-      "device/com/android/net/module/util/DeviceConfigUtils.java",
-      "device/com/android/net/module/util/DomainUtils.java",
-      "device/com/android/net/module/util/FdEventsReader.java",
-      "device/com/android/net/module/util/NetworkMonitorUtils.java",
-      "device/com/android/net/module/util/PacketReader.java",
-      "device/com/android/net/module/util/SharedLog.java",
-      "device/com/android/net/module/util/SocketUtils.java",
-      "device/com/android/net/module/util/FeatureVersions.java",
-      "device/com/android/net/module/util/HandlerUtils.java",
-      // This library is used by system modules, for which the system health impact of Kotlin
-      // has not yet been evaluated. Annotations may need jarjar'ing.
-      // "src_devicecommon/**/*.kt",
-  ],
-  sdk_version: "module_current",
-  min_sdk_version: "30",
-  target_sdk_version: "30",
-  apex_available: [
-      "//apex_available:anyapex",
-      "//apex_available:platform",
-  ],
-  visibility: [
+    name: "net-utils-device-common",
+    srcs: [
+        "device/com/android/net/module/util/arp/ArpPacket.java",
+        "device/com/android/net/module/util/DeviceConfigUtils.java",
+        "device/com/android/net/module/util/DomainUtils.java",
+        "device/com/android/net/module/util/FdEventsReader.java",
+        "device/com/android/net/module/util/NetworkMonitorUtils.java",
+        "device/com/android/net/module/util/PacketReader.java",
+        "device/com/android/net/module/util/SharedLog.java",
+        "device/com/android/net/module/util/SocketUtils.java",
+        "device/com/android/net/module/util/FeatureVersions.java",
+        "device/com/android/net/module/util/HandlerUtils.java",
+        // This library is used by system modules, for which the system health impact of Kotlin
+        // has not yet been evaluated. Annotations may need jarjar'ing.
+        // "src_devicecommon/**/*.kt",
+    ],
+    sdk_version: "module_current",
+    min_sdk_version: "30",
+    target_sdk_version: "30",
+    apex_available: [
+        "//apex_available:anyapex",
+        "//apex_available:platform",
+    ],
+    visibility: [
         "//frameworks/base/packages/Tethering",
         "//packages/modules/Connectivity:__subpackages__",
         "//packages/modules/Connectivity/framework:__subpackages__",
@@ -65,26 +66,26 @@ java_library {
         "//frameworks/opt/net/telephony",
         "//packages/modules/NetworkStack:__subpackages__",
         "//packages/modules/CaptivePortalLogin",
-  ],
-  static_libs: [
-      "net-utils-framework-common",
-  ],
-  libs: [
-      "androidx.annotation_annotation",
-      "framework-annotations-lib",
-      "framework-configinfrastructure",
-      "framework-connectivity.stubs.module_lib",
-  ],
-  lint: {
-      strict_updatability_linting: true,
-      error_checks: ["NewApi"],
-  },
+    ],
+    static_libs: [
+        "net-utils-framework-common",
+    ],
+    libs: [
+        "androidx.annotation_annotation",
+        "framework-annotations-lib",
+        "framework-configinfrastructure",
+        "framework-connectivity.stubs.module_lib",
+    ],
+    lint: {
+        strict_updatability_linting: true,
+        error_checks: ["NewApi"],
+    },
 }
 
 java_defaults {
     name: "lib_mockito_extended",
     static_libs: [
-        "mockito-target-extended-minus-junit4"
+        "mockito-target-extended-minus-junit4",
     ],
     jni_libs: [
         "libdexmakerjvmtiagent",
@@ -95,12 +96,12 @@ java_defaults {
 java_library {
     name: "net-utils-dnspacket-common",
     srcs: [
-    "framework/**/DnsPacket.java",
-    "framework/**/DnsPacketUtils.java",
-    "framework/**/DnsSvcbPacket.java",
-    "framework/**/DnsSvcbRecord.java",
-    "framework/**/HexDump.java",
-    "framework/**/NetworkStackConstants.java",
+        "framework/**/DnsPacket.java",
+        "framework/**/DnsPacketUtils.java",
+        "framework/**/DnsSvcbPacket.java",
+        "framework/**/DnsSvcbRecord.java",
+        "framework/**/HexDump.java",
+        "framework/**/NetworkStackConstants.java",
     ],
     sdk_version: "module_current",
     visibility: [
@@ -123,6 +124,8 @@ filegroup {
     ],
 }
 
+// The net-utils-device-common-bpf library requires the callers to contain
+// net-utils-device-common-struct-base.
 java_library {
     name: "net-utils-device-common-bpf",
     srcs: [
@@ -132,9 +135,7 @@ java_library {
         "device/com/android/net/module/util/BpfUtils.java",
         "device/com/android/net/module/util/IBpfMap.java",
         "device/com/android/net/module/util/JniUtil.java",
-        "device/com/android/net/module/util/Struct.java",
         "device/com/android/net/module/util/TcUtils.java",
-        "framework/com/android/net/module/util/HexDump.java",
     ],
     sdk_version: "module_current",
     min_sdk_version: "30",
@@ -145,6 +146,7 @@ java_library {
     libs: [
         "androidx.annotation_annotation",
         "framework-connectivity.stubs.module_lib",
+        "net-utils-device-common-struct-base",
     ],
     apex_available: [
         "com.android.tethering",
@@ -157,12 +159,9 @@ java_library {
 }
 
 java_library {
-    name: "net-utils-device-common-struct",
+    name: "net-utils-device-common-struct-base",
     srcs: [
-        "device/com/android/net/module/util/Ipv6Utils.java",
-        "device/com/android/net/module/util/PacketBuilder.java",
         "device/com/android/net/module/util/Struct.java",
-        "device/com/android/net/module/util/structs/*.java",
     ],
     sdk_version: "module_current",
     min_sdk_version: "30",
@@ -175,6 +174,7 @@ java_library {
     ],
     libs: [
         "androidx.annotation_annotation",
+        "framework-annotations-lib", // Required by InetAddressUtils.java
         "framework-connectivity.stubs.module_lib",
     ],
     apex_available: [
@@ -187,8 +187,39 @@ java_library {
     },
 }
 
+// The net-utils-device-common-struct library requires the callers to contain
+// net-utils-device-common-struct-base.
+java_library {
+    name: "net-utils-device-common-struct",
+    srcs: [
+        "device/com/android/net/module/util/Ipv6Utils.java",
+        "device/com/android/net/module/util/PacketBuilder.java",
+        "device/com/android/net/module/util/structs/*.java",
+    ],
+    sdk_version: "module_current",
+    min_sdk_version: "30",
+    visibility: [
+        "//packages/modules/Connectivity:__subpackages__",
+        "//packages/modules/NetworkStack:__subpackages__",
+    ],
+    libs: [
+        "androidx.annotation_annotation",
+        "framework-annotations-lib", // Required by IpUtils.java
+        "framework-connectivity.stubs.module_lib",
+        "net-utils-device-common-struct-base",
+    ],
+    apex_available: [
+        "com.android.tethering",
+        "//apex_available:platform",
+    ],
+    lint: {
+        strict_updatability_linting: true,
+        error_checks: ["NewApi"],
+    },
+}
+
 // The net-utils-device-common-netlink library requires the callers to contain
-// net-utils-device-common-struct.
+// net-utils-device-common-struct and net-utils-device-common-struct-base.
 java_library {
     name: "net-utils-device-common-netlink",
     srcs: [
@@ -207,6 +238,7 @@ java_library {
         // statically link here because callers of this library might already have a static
         // version linked.
         "net-utils-device-common-struct",
+        "net-utils-device-common-struct-base",
     ],
     apex_available: [
         "com.android.tethering",
@@ -219,7 +251,7 @@ java_library {
 }
 
 // The net-utils-device-common-ip library requires the callers to contain
-// net-utils-device-common-struct.
+// net-utils-device-common-struct and net-utils-device-common-struct-base.
 java_library {
     // TODO : this target should probably be folded into net-utils-device-common
     name: "net-utils-device-common-ip",
@@ -247,7 +279,7 @@ java_library {
         "//apex_available:platform",
     ],
     lint: {
-        strict_updatability_linting: true,
+        baseline_filename: "lint-baseline.xml",
         error_checks: ["NewApi"],
     },
 }
@@ -271,13 +303,11 @@ java_library {
         "//cts/tests/tests/net",
         "//cts/tests/tests/wifi",
         "//packages/modules/Connectivity/tests/cts/net",
-        "//frameworks/base/packages/Tethering",
         "//packages/modules/Connectivity/Tethering",
         "//frameworks/base/tests:__subpackages__",
         "//frameworks/opt/net/ike",
         "//frameworks/opt/telephony",
         "//frameworks/base/wifi:__subpackages__",
-        "//frameworks/base/packages/Connectivity:__subpackages__",
         "//packages/modules/Connectivity:__subpackages__",
         "//packages/modules/NetworkStack:__subpackages__",
         "//packages/modules/CaptivePortalLogin",
@@ -464,10 +494,10 @@ filegroup {
 filegroup {
     name: "net-utils-wifi-service-common-srcs",
     srcs: [
-       "device/android/net/NetworkFactory.java",
-       "device/android/net/NetworkFactoryImpl.java",
-       "device/android/net/NetworkFactoryLegacyImpl.java",
-       "device/android/net/NetworkFactoryShim.java",
+        "device/android/net/NetworkFactory.java",
+        "device/android/net/NetworkFactoryImpl.java",
+        "device/android/net/NetworkFactoryLegacyImpl.java",
+        "device/android/net/NetworkFactoryShim.java",
     ],
     visibility: [
         "//frameworks/opt/net/wifi/service",

@@ -36,6 +36,14 @@ public final class ConnectivityFlags {
     public static final String CARRIER_SERVICE_CHANGED_USE_CALLBACK =
             "carrier_service_changed_use_callback_version";
 
+    public static final String REQUEST_RESTRICTED_WIFI =
+            "request_restricted_wifi";
+
+    public static final String INGRESS_TO_VPN_ADDRESS_FILTERING =
+            "ingress_to_vpn_address_filtering";
+
+    public static final String BACKGROUND_FIREWALL_CHAIN = "background_firewall_chain";
+
     private boolean mNoRematchAllRequestsOnRegister;
 
     /**

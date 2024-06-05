@@ -15,11 +15,16 @@
 //
 
 package {
+    default_team: "trendy_team_fwk_core_networking",
     // See: http://go/android-license-faq
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-// The library requires the final artifact to contain net-utils-device-common-struct.
+// This is a placeholder comment to avoid merge conflicts
+// as the above target may not exist
+// depending on the branch
+
+// The library requires the final artifact to contain net-utils-device-common-struct-base.
 java_library {
     name: "connectivity-net-module-utils-bpf",
     srcs: [
@@ -38,10 +43,12 @@ java_library {
         // For libraries which are statically linked in framework-connectivity, do not
         // statically link here because callers of this library might already have a static
         // version linked.
-        "net-utils-device-common-struct",
+        "net-utils-device-common-struct-base",
     ],
     apex_available: [
         "com.android.tethering",
     ],
-    lint: { strict_updatability_linting: true },
+    lint: {
+        strict_updatability_linting: true,
+    },
 }

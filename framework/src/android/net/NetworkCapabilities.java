@@ -20,6 +20,7 @@ import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIV
 import static com.android.net.module.util.BitUtils.appendStringRepresentationOfBitMaskToStringBuilder;
 import static com.android.net.module.util.BitUtils.describeDifferences;
 
+import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
 import android.annotation.LongDef;
 import android.annotation.NonNull;
@@ -29,9 +30,6 @@ import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.net.ConnectivityManager.NetworkCallback;
-// Can't be imported because aconfig tooling doesn't exist on udc-mainline-prod yet
-// See inner class Flags which mimics this for the time being
-// import android.net.flags.Flags;
 import android.os.Build;
 import android.os.Parcel;
 import android.os.Parcelable;
@@ -130,6 +128,12 @@ public final class NetworkCapabilities implements Parcelable {
     public static class Flags {
         static final String FLAG_FORBIDDEN_CAPABILITY =
                 "com.android.net.flags.forbidden_capability";
+        static final String FLAG_NET_CAPABILITY_LOCAL_NETWORK =
+                "com.android.net.flags.net_capability_local_network";
+        static final String REQUEST_RESTRICTED_WIFI =
+                "com.android.net.flags.request_restricted_wifi";
+        static final String SUPPORT_TRANSPORT_SATELLITE =
+                "com.android.net.flags.support_transport_satellite";
     }
 
     /**
@@ -716,17 +720,24 @@ public final class NetworkCapabilities implements Parcelable {
     public static final int NET_CAPABILITY_PRIORITIZE_BANDWIDTH = 35;
 
     /**
-     * This is a local network, e.g. a tethering downstream or a P2P direct network.
+     * Indicates that this network is a local network.
      *
-     * <p>
-     * Note that local networks are not sent to callbacks by default. To receive callbacks about
-     * them, the {@link NetworkRequest} instance must be prepared to see them, either by
-     * adding the capability with {@link NetworkRequest.Builder#addCapability}, by removing
-     * this forbidden capability with {@link NetworkRequest.Builder#removeForbiddenCapability},
-     * or by clearing all capabilites with {@link NetworkRequest.Builder#clearCapabilities()}.
-     * </p>
-     * @hide
+     * Local networks are networks where the device is not obtaining IP addresses from the
+     * network, but advertising IP addresses itself. Examples of local networks are:
+     * <ul>
+     * <li>USB tethering or Wi-Fi hotspot networks to which the device is sharing its Internet
+     * connectivity.
+     * <li>Thread networks where the current device is the Thread Border Router.
+     * <li>Wi-Fi P2P networks where the current device is the Group Owner.
+     * </ul>
+     *
+     * Networks used to obtain Internet access are never local networks.
+     *
+     * Apps that target an SDK before {@link Build.VERSION_CODES.VANILLA_ICE_CREAM} will not see
+     * networks with this capability unless they explicitly set the NET_CAPABILITY_LOCAL_NETWORK
+     * in their NetworkRequests.
      */
+    @FlaggedApi(Flags.FLAG_NET_CAPABILITY_LOCAL_NETWORK)
     public static final int NET_CAPABILITY_LOCAL_NETWORK = 36;
 
     private static final int MAX_NET_CAPABILITY = NET_CAPABILITY_LOCAL_NETWORK;
@@ -738,22 +749,22 @@ public final class NetworkCapabilities implements Parcelable {
      * Network capabilities that are expected to be mutable, i.e., can change while a particular
      * network is connected.
      */
-    private static final long MUTABLE_CAPABILITIES = BitUtils.packBitList(
+    private static final long MUTABLE_CAPABILITIES =
             // TRUSTED can change when user explicitly connects to an untrusted network in Settings.
             // http://b/18206275
-            NET_CAPABILITY_TRUSTED,
-            NET_CAPABILITY_VALIDATED,
-            NET_CAPABILITY_CAPTIVE_PORTAL,
-            NET_CAPABILITY_NOT_ROAMING,
-            NET_CAPABILITY_FOREGROUND,
-            NET_CAPABILITY_NOT_CONGESTED,
-            NET_CAPABILITY_NOT_SUSPENDED,
-            NET_CAPABILITY_PARTIAL_CONNECTIVITY,
-            NET_CAPABILITY_TEMPORARILY_NOT_METERED,
-            NET_CAPABILITY_NOT_VCN_MANAGED,
+            (1L << NET_CAPABILITY_TRUSTED) |
+            (1L << NET_CAPABILITY_VALIDATED) |
+            (1L << NET_CAPABILITY_CAPTIVE_PORTAL) |
+            (1L << NET_CAPABILITY_NOT_ROAMING) |
+            (1L << NET_CAPABILITY_FOREGROUND) |
+            (1L << NET_CAPABILITY_NOT_CONGESTED) |
+            (1L << NET_CAPABILITY_NOT_SUSPENDED) |
+            (1L << NET_CAPABILITY_PARTIAL_CONNECTIVITY) |
+            (1L << NET_CAPABILITY_TEMPORARILY_NOT_METERED) |
+            (1L << NET_CAPABILITY_NOT_VCN_MANAGED) |
             // The value of NET_CAPABILITY_HEAD_UNIT is 32, which cannot use int to do bit shift,
             // otherwise there will be an overflow. Use long to do bit shift instead.
-            NET_CAPABILITY_HEAD_UNIT);
+            (1L << NET_CAPABILITY_HEAD_UNIT);
 
     /**
      * Network capabilities that are not allowed in NetworkRequests. This exists because the
@@ -773,10 +784,10 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Capabilities that are set by default when the object is constructed.
      */
-    private static final long DEFAULT_CAPABILITIES = BitUtils.packBitList(
-            NET_CAPABILITY_NOT_RESTRICTED,
-            NET_CAPABILITY_TRUSTED,
-            NET_CAPABILITY_NOT_VPN);
+    private static final long DEFAULT_CAPABILITIES =
+            (1L << NET_CAPABILITY_NOT_RESTRICTED) |
+            (1L << NET_CAPABILITY_TRUSTED) |
+            (1L << NET_CAPABILITY_NOT_VPN);
 
     /**
      * Capabilities that are managed by ConnectivityService.
@@ -784,11 +795,10 @@ public final class NetworkCapabilities implements Parcelable {
      */
     @VisibleForTesting
     public static final long CONNECTIVITY_MANAGED_CAPABILITIES =
-            BitUtils.packBitList(
-                    NET_CAPABILITY_VALIDATED,
-                    NET_CAPABILITY_CAPTIVE_PORTAL,
-                    NET_CAPABILITY_FOREGROUND,
-                    NET_CAPABILITY_PARTIAL_CONNECTIVITY);
+            (1L << NET_CAPABILITY_VALIDATED) |
+            (1L << NET_CAPABILITY_CAPTIVE_PORTAL) |
+            (1L << NET_CAPABILITY_FOREGROUND) |
+            (1L << NET_CAPABILITY_PARTIAL_CONNECTIVITY);
 
     /**
      * Capabilities that are allowed for all test networks. This list must be set so that it is safe
@@ -797,15 +807,14 @@ public final class NetworkCapabilities implements Parcelable {
      * IMS, SUPL, etc.
      */
     private static final long TEST_NETWORKS_ALLOWED_CAPABILITIES =
-            BitUtils.packBitList(
-            NET_CAPABILITY_NOT_METERED,
-            NET_CAPABILITY_TEMPORARILY_NOT_METERED,
-            NET_CAPABILITY_NOT_RESTRICTED,
-            NET_CAPABILITY_NOT_VPN,
-            NET_CAPABILITY_NOT_ROAMING,
-            NET_CAPABILITY_NOT_CONGESTED,
-            NET_CAPABILITY_NOT_SUSPENDED,
-            NET_CAPABILITY_NOT_VCN_MANAGED);
+            (1L << NET_CAPABILITY_NOT_METERED) |
+            (1L << NET_CAPABILITY_TEMPORARILY_NOT_METERED) |
+            (1L << NET_CAPABILITY_NOT_RESTRICTED) |
+            (1L << NET_CAPABILITY_NOT_VPN) |
+            (1L << NET_CAPABILITY_NOT_ROAMING) |
+            (1L << NET_CAPABILITY_NOT_CONGESTED) |
+            (1L << NET_CAPABILITY_NOT_SUSPENDED) |
+            (1L << NET_CAPABILITY_NOT_VCN_MANAGED);
 
     /**
      * Extra allowed capabilities for test networks that do not have TRANSPORT_CELLULAR. Test
@@ -813,7 +822,9 @@ public final class NetworkCapabilities implements Parcelable {
      * the risk of being used by running apps.
      */
     private static final long TEST_NETWORKS_EXTRA_ALLOWED_CAPABILITIES_ON_NON_CELL =
-            BitUtils.packBitList(NET_CAPABILITY_CBS, NET_CAPABILITY_DUN, NET_CAPABILITY_RCS);
+            (1L << NET_CAPABILITY_CBS) |
+            (1L << NET_CAPABILITY_DUN) |
+            (1L << NET_CAPABILITY_RCS);
 
     /**
      * Adds the given capability to this {@code NetworkCapability} instance.
@@ -1163,7 +1174,7 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     public void maybeMarkCapabilitiesRestricted() {
-        if (NetworkCapabilitiesUtils.inferRestrictedCapability(this)) {
+        if (NetworkCapabilitiesUtils.inferRestrictedCapability(mNetworkCapabilities)) {
             removeCapability(NET_CAPABILITY_NOT_RESTRICTED);
         }
     }
@@ -1257,6 +1268,7 @@ public final class NetworkCapabilities implements Parcelable {
             TRANSPORT_TEST,
             TRANSPORT_USB,
             TRANSPORT_THREAD,
+            TRANSPORT_SATELLITE,
     })
     public @interface Transport { }
 
@@ -1313,10 +1325,16 @@ public final class NetworkCapabilities implements Parcelable {
      */
     public static final int TRANSPORT_THREAD = 9;
 
+    /**
+     * Indicates this network uses a Satellite transport.
+     */
+    @FlaggedApi(Flags.SUPPORT_TRANSPORT_SATELLITE)
+    public static final int TRANSPORT_SATELLITE = 10;
+
     /** @hide */
     public static final int MIN_TRANSPORT = TRANSPORT_CELLULAR;
     /** @hide */
-    public static final int MAX_TRANSPORT = TRANSPORT_THREAD;
+    public static final int MAX_TRANSPORT = TRANSPORT_SATELLITE;
 
     private static final int ALL_VALID_TRANSPORTS;
     static {
@@ -1343,18 +1361,18 @@ public final class NetworkCapabilities implements Parcelable {
         "TEST",
         "USB",
         "THREAD",
+        "SATELLITE",
     };
 
     /**
      * Allowed transports on an unrestricted test network (in addition to TRANSPORT_TEST).
      */
     private static final long UNRESTRICTED_TEST_NETWORKS_ALLOWED_TRANSPORTS =
-            BitUtils.packBitList(
-                    TRANSPORT_TEST,
-                    // Test eth networks are created with EthernetManager#setIncludeTestInterfaces
-                    TRANSPORT_ETHERNET,
-                    // Test VPN networks can be created but their UID ranges must be empty.
-                    TRANSPORT_VPN);
+            (1L << TRANSPORT_TEST) |
+            // Test eth networks are created with EthernetManager#setIncludeTestInterfaces
+            (1L << TRANSPORT_ETHERNET) |
+            // Test VPN networks can be created but their UID ranges must be empty.
+            (1L << TRANSPORT_VPN);
 
     /**
      * Adds the given transport type to this {@code NetworkCapability} instance.
@@ -1751,9 +1769,12 @@ public final class NetworkCapabilities implements Parcelable {
     public @NonNull NetworkCapabilities setNetworkSpecifier(
             @NonNull NetworkSpecifier networkSpecifier) {
         if (networkSpecifier != null
-                // Transport can be test, or test + a single other transport
+                // Transport can be test, or test + a single other transport or cellular + satellite
+                // transport. Note: cellular + satellite combination is allowed since both transport
+                // use the same specifier, TelephonyNetworkSpecifier.
                 && mTransportTypes != (1L << TRANSPORT_TEST)
-                && Long.bitCount(mTransportTypes & ~(1L << TRANSPORT_TEST)) != 1) {
+                && Long.bitCount(mTransportTypes & ~(1L << TRANSPORT_TEST)) != 1
+                && !specifierAcceptableForMultipleTransports(mTransportTypes)) {
             throw new IllegalStateException("Must have a single non-test transport specified to "
                     + "use setNetworkSpecifier");
         }
@@ -1761,6 +1782,12 @@ public final class NetworkCapabilities implements Parcelable {
         mNetworkSpecifier = networkSpecifier;
 
         return this;
+    }
+
+    private boolean specifierAcceptableForMultipleTransports(long transportTypes) {
+        return (transportTypes & ~(1L << TRANSPORT_TEST))
+                // Cellular and satellite use the same NetworkSpecifier.
+                == (1 << TRANSPORT_CELLULAR | 1 << TRANSPORT_SATELLITE);
     }
 
     /**
@@ -2794,10 +2821,9 @@ public final class NetworkCapabilities implements Parcelable {
      * receiver holds the NETWORK_FACTORY permission. In all other cases, it will be the empty set.
      *
      * @return
-     * @hide
      */
     @NonNull
-    @SystemApi
+    @FlaggedApi(Flags.REQUEST_RESTRICTED_WIFI)
     public Set<Integer> getSubscriptionIds() {
         return new ArraySet<>(mSubIds);
     }

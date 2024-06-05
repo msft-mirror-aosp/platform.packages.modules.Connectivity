@@ -38,6 +38,7 @@ import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
@@ -418,21 +419,6 @@ public class ClatCoordinatorTest {
         inOrder.verify(mDeps).generateIpv6Address(eq(BASE_IFACE),
                 eq(XLAT_LOCAL_IPV4ADDR_STRING), eq(NAT64_PREFIX_STRING), eq(MARK));
 
-        // Open, configure and bring up the tun interface.
-        inOrder.verify(mDeps).createTunInterface(eq(STACKED_IFACE));
-        inOrder.verify(mDeps).adoptFd(eq(TUN_FD));
-        inOrder.verify(mDeps).getInterfaceIndex(eq(STACKED_IFACE));
-        inOrder.verify(mNetd).interfaceSetEnableIPv6(eq(STACKED_IFACE), eq(false /* enable */));
-        inOrder.verify(mDeps).detectMtu(eq(NAT64_PREFIX_STRING), eq(GOOGLE_DNS_4), eq(MARK));
-        inOrder.verify(mNetd).interfaceSetMtu(eq(STACKED_IFACE),
-                eq(1472 /* ETHER_MTU(1500) - MTU_DELTA(28) */));
-        inOrder.verify(mNetd).interfaceSetCfg(argThat(cfg ->
-                STACKED_IFACE.equals(cfg.ifName)
-                && XLAT_LOCAL_IPV4ADDR_STRING.equals(cfg.ipv4Addr)
-                && (32 == cfg.prefixLength)
-                && "".equals(cfg.hwAddr)
-                && assertContainsFlag(cfg.flags, IF_STATE_UP)));
-
         // Open and configure 464xlat read/write sockets.
         inOrder.verify(mDeps).openPacketSocket();
         inOrder.verify(mDeps).adoptFd(eq(PACKET_SOCK_FD));
@@ -448,6 +434,21 @@ public class ClatCoordinatorTest {
         inOrder.verify(mDeps).configurePacketSocket(
                 argThat(fd -> Objects.equals(PACKET_SOCK_PFD.getFileDescriptor(), fd)),
                 eq(XLAT_LOCAL_IPV6ADDR_STRING), eq(BASE_IFINDEX));
+
+        // Open, configure and bring up the tun interface.
+        inOrder.verify(mDeps).createTunInterface(eq(STACKED_IFACE));
+        inOrder.verify(mDeps).adoptFd(eq(TUN_FD));
+        inOrder.verify(mDeps).getInterfaceIndex(eq(STACKED_IFACE));
+        inOrder.verify(mNetd).interfaceSetEnableIPv6(eq(STACKED_IFACE), eq(false /* enable */));
+        inOrder.verify(mDeps).detectMtu(eq(NAT64_PREFIX_STRING), eq(GOOGLE_DNS_4), eq(MARK));
+        inOrder.verify(mNetd).interfaceSetMtu(eq(STACKED_IFACE),
+                eq(1472 /* ETHER_MTU(1500) - MTU_DELTA(28) */));
+        inOrder.verify(mNetd).interfaceSetCfg(argThat(cfg ->
+                STACKED_IFACE.equals(cfg.ifName)
+                        && XLAT_LOCAL_IPV4ADDR_STRING.equals(cfg.ipv4Addr)
+                        && (32 == cfg.prefixLength)
+                        && "".equals(cfg.hwAddr)
+                        && assertContainsFlag(cfg.flags, IF_STATE_UP)));
 
         // Start clatd.
         inOrder.verify(mDeps).startClatd(
@@ -526,13 +527,13 @@ public class ClatCoordinatorTest {
                     + "v4: /192.0.0.46, v6: /2001:db8:0:b11::464, pfx96: /64:ff9b::, "
                     + "pid: 10483, cookie: 27149", dumpStrings[0].trim());
             assertEquals("Forwarding rules:", dumpStrings[1].trim());
-            assertEquals("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif",
+            assertEquals("BPF ingress map: iif nat64Prefix v6Addr -> v4Addr oif (packets bytes)",
                     dumpStrings[2].trim());
-            assertEquals("1000 /64:ff9b::/96 /2001:db8:0:b11::464 -> /192.0.0.46 1001",
+            assertEquals("1000 /64:ff9b::/96 /2001:db8:0:b11::464 -> /192.0.0.46 1001 (0 0)",
                     dumpStrings[3].trim());
-            assertEquals("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif",
+            assertEquals("BPF egress map: iif v4Addr -> v6Addr nat64Prefix oif (packets bytes)",
                     dumpStrings[4].trim());
-            assertEquals("1001 /192.0.0.46 -> /2001:db8:0:b11::464 /64:ff9b::/96 1000 ether",
+            assertEquals("1001 /192.0.0.46 -> /2001:db8:0:b11::464 /64:ff9b::/96 1000 ether (0 0)",
                     dumpStrings[5].trim());
         } else {
             assertEquals(1, dumpStrings.length);
@@ -630,9 +631,13 @@ public class ClatCoordinatorTest {
             public int createTunInterface(@NonNull String tuniface) throws IOException {
                 throw new IOException();
             }
+            @Override
+            public IBpfMap<CookieTagMapKey, CookieTagMapValue> getBpfCookieTagMap() {
+                return  mock(IBpfMap.class);
+            }
         }
         checkNotStartClat(new FailureDependencies(), false /* needToCloseTunFd */,
-                false /* needToClosePacketSockFd */, false /* needToCloseRawSockFd */);
+                true /* needToClosePacketSockFd */, true /* needToCloseRawSockFd */);
     }
 
     @Test
@@ -643,9 +648,14 @@ public class ClatCoordinatorTest {
                     throws IOException {
                 throw new IOException();
             }
+
+            @Override
+            public IBpfMap<CookieTagMapKey, CookieTagMapValue> getBpfCookieTagMap() {
+                return  mock(IBpfMap.class);
+            }
         }
         checkNotStartClat(new FailureDependencies(), true /* needToCloseTunFd */,
-                false /* needToClosePacketSockFd */, false /* needToCloseRawSockFd */);
+                true /* needToClosePacketSockFd */, true /* needToCloseRawSockFd */);
     }
 
     @Test
@@ -656,7 +666,7 @@ public class ClatCoordinatorTest {
                 throw new IOException();
             }
         }
-        checkNotStartClat(new FailureDependencies(), true /* needToCloseTunFd */,
+        checkNotStartClat(new FailureDependencies(), false /* needToCloseTunFd */,
                 false /* needToClosePacketSockFd */, false /* needToCloseRawSockFd */);
     }
 
@@ -668,7 +678,7 @@ public class ClatCoordinatorTest {
                 throw new IOException();
             }
         }
-        checkNotStartClat(new FailureDependencies(), true /* needToCloseTunFd */,
+        checkNotStartClat(new FailureDependencies(), false /* needToCloseTunFd */,
                 true /* needToClosePacketSockFd */, false /* needToCloseRawSockFd */);
     }
 
@@ -681,7 +691,7 @@ public class ClatCoordinatorTest {
                 throw new IOException();
             }
         }
-        checkNotStartClat(new FailureDependencies(), true /* needToCloseTunFd */,
+        checkNotStartClat(new FailureDependencies(), false /* needToCloseTunFd */,
                 true /* needToClosePacketSockFd */, true /* needToCloseRawSockFd */);
     }
 
@@ -694,7 +704,7 @@ public class ClatCoordinatorTest {
                 throw new IOException();
             }
         }
-        checkNotStartClat(new FailureDependencies(), true /* needToCloseTunFd */,
+        checkNotStartClat(new FailureDependencies(), false /* needToCloseTunFd */,
                 true /* needToClosePacketSockFd */, true /* needToCloseRawSockFd */);
     }
 
@@ -721,7 +731,7 @@ public class ClatCoordinatorTest {
                 throw new IOException();
             }
         }
-        checkNotStartClat(new FailureDependencies(), true /* needToCloseTunFd */,
+        checkNotStartClat(new FailureDependencies(), false /* needToCloseTunFd */,
                 true /* needToClosePacketSockFd */, true /* needToCloseRawSockFd */);
     }
 
@@ -733,7 +743,7 @@ public class ClatCoordinatorTest {
                 return null;
             }
         }
-        checkNotStartClat(new FailureDependencies(), true /* needToCloseTunFd */,
+        checkNotStartClat(new FailureDependencies(), false /* needToCloseTunFd */,
                 true /* needToClosePacketSockFd */, true /* needToCloseRawSockFd */);
     }
 }

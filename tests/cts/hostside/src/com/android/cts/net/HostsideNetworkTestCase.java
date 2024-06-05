@@ -18,9 +18,7 @@ package com.android.cts.net;
 
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.fail;
 
-import com.android.ddmlib.Log;
 import com.android.modules.utils.build.testing.DeviceSdkLevel;
 import com.android.tradefed.device.DeviceNotAvailableException;
 import com.android.tradefed.invoker.TestInformation;
@@ -31,14 +29,11 @@ import com.android.tradefed.testtype.DeviceJUnit4ClassRunner;
 import com.android.tradefed.testtype.junit4.AfterClassWithInfo;
 import com.android.tradefed.testtype.junit4.BaseHostJUnit4Test;
 import com.android.tradefed.testtype.junit4.BeforeClassWithInfo;
-import com.android.tradefed.util.RunUtil;
 
 import org.junit.runner.RunWith;
 
 @RunWith(DeviceJUnit4ClassRunner.class)
 abstract class HostsideNetworkTestCase extends BaseHostJUnit4Test {
-    protected static final boolean DEBUG = false;
-    protected static final String TAG = "HostsideNetworkTests";
     protected static final String TEST_PKG = "com.android.cts.net.hostside";
     protected static final String TEST_APK = "CtsHostsideNetworkTestsApp.apk";
     protected static final String TEST_APK_NEXT = "CtsHostsideNetworkTestsAppNext.apk";
@@ -99,57 +94,5 @@ abstract class HostsideNetworkTestCase extends BaseHostJUnit4Test {
             boolean shouldSucceed)
             throws DeviceNotAvailableException {
         uninstallPackage(getTestInformation(), packageName, shouldSucceed);
-    }
-
-    protected void assertPackageUninstalled(String packageName) throws DeviceNotAvailableException,
-            InterruptedException {
-        final String command = "cmd package list packages " + packageName;
-        final int max_tries = 5;
-        for (int i = 1; i <= max_tries; i++) {
-            final String result = runCommand(command);
-            if (result.trim().isEmpty()) {
-                return;
-            }
-            // 'list packages' filters by substring, so we need to iterate with the results
-            // and check one by one, otherwise 'com.android.cts.net.hostside' could return
-            // 'com.android.cts.net.hostside.app2'
-            boolean found = false;
-            for (String line : result.split("[\\r\\n]+")) {
-                if (line.endsWith(packageName)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                return;
-            }
-            i++;
-            Log.v(TAG, "Package " + packageName + " not uninstalled yet (" + result
-                    + "); sleeping 1s before polling again");
-            RunUtil.getDefault().sleep(1000);
-        }
-        fail("Package '" + packageName + "' not uinstalled after " + max_tries + " seconds");
-    }
-
-    protected int getUid(String packageName) throws DeviceNotAvailableException {
-        final int currentUser = getDevice().getCurrentUser();
-        final String uidLines = runCommand(
-                "cmd package list packages -U --user " + currentUser + " " + packageName);
-        for (String uidLine : uidLines.split("\n")) {
-            if (uidLine.startsWith("package:" + packageName + " uid:")) {
-                final String[] uidLineParts = uidLine.split(":");
-                // 3rd entry is package uid
-                return Integer.parseInt(uidLineParts[2].trim());
-            }
-        }
-        throw new IllegalStateException("Failed to find the test app on the device; pkg="
-                + packageName + ", u=" + currentUser);
-    }
-
-    protected String runCommand(String command) throws DeviceNotAvailableException {
-        Log.d(TAG, "Command: '" + command + "'");
-        final String output = getDevice().executeShellCommand(command);
-        if (DEBUG) Log.v(TAG, "Output: " + output.trim());
-        return output;
     }
 }

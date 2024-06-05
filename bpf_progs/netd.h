@@ -178,10 +178,10 @@ ASSERT_STRING_EQUAL(XT_BPF_DENYLIST_PROG_PATH,  BPF_NETD_PATH "prog_netd_skfilte
 #endif // __cplusplus
 
 // LINT.IfChange(match_type)
-enum UidOwnerMatchType {
+enum UidOwnerMatchType : uint32_t {
     NO_MATCH = 0,
     HAPPY_BOX_MATCH = (1 << 0),
-    PENALTY_BOX_MATCH = (1 << 1),
+    PENALTY_BOX_USER_MATCH = (1 << 1),
     DOZABLE_MATCH = (1 << 2),
     STANDBY_MATCH = (1 << 3),
     POWERSAVE_MATCH = (1 << 4),
@@ -192,18 +192,19 @@ enum UidOwnerMatchType {
     OEM_DENY_1_MATCH = (1 << 9),
     OEM_DENY_2_MATCH = (1 << 10),
     OEM_DENY_3_MATCH = (1 << 11),
-    BACKGROUND_MATCH = (1 << 12)
+    BACKGROUND_MATCH = (1 << 12),
+    PENALTY_BOX_ADMIN_MATCH = (1 << 13),
 };
 // LINT.ThenChange(../framework/src/android/net/BpfNetMapsConstants.java)
 
-enum BpfPermissionMatch {
+enum BpfPermissionMatch : uint8_t {
     BPF_PERMISSION_INTERNET = 1 << 2,
     BPF_PERMISSION_UPDATE_DEVICE_STATS = 1 << 3,
 };
 // In production we use two identical stats maps to record per uid stats and
 // do swap and clean based on the configuration specified here. The statsMapType
 // value in configuration map specified which map is currently in use.
-enum StatsMapType {
+enum StatsMapType : uint32_t {
     SELECT_MAP_A,
     SELECT_MAP_B,
 };
