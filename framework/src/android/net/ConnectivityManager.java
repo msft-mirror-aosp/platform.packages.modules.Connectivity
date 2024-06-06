@@ -28,6 +28,7 @@ import static android.net.QosCallback.QosCallbackRegistrationException;
 import android.annotation.CallbackExecutor;
 import android.annotation.FlaggedApi;
 import android.annotation.IntDef;
+import android.annotation.LongDef;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.RequiresApi;
@@ -132,6 +133,8 @@ public class ConnectivityManager {
                 "com.android.net.flags.metered_network_firewall_chains";
         static final String BLOCKED_REASON_OEM_DENY_CHAINS =
                 "com.android.net.flags.blocked_reason_oem_deny_chains";
+        static final String BLOCKED_REASON_NETWORK_RESTRICTED =
+                "com.android.net.flags.blocked_reason_network_restricted";
     }
 
     /**
@@ -928,6 +931,17 @@ public class ConnectivityManager {
     public static final int BLOCKED_REASON_OEM_DENY = 1 << 7;
 
     /**
+     * Flag to indicate that an app does not have permission to access the specified network,
+     * for example, because it does not have the {@link android.Manifest.permission#INTERNET}
+     * permission.
+     *
+     * @hide
+     */
+    @FlaggedApi(Flags.BLOCKED_REASON_NETWORK_RESTRICTED)
+    @SystemApi(client = SystemApi.Client.MODULE_LIBRARIES)
+    public static final int BLOCKED_REASON_NETWORK_RESTRICTED = 1 << 8;
+
+    /**
      * Flag to indicate that an app is subject to Data saver restrictions that would
      * result in its metered network access being blocked.
      *
@@ -968,6 +982,7 @@ public class ConnectivityManager {
             BLOCKED_REASON_LOW_POWER_STANDBY,
             BLOCKED_REASON_APP_BACKGROUND,
             BLOCKED_REASON_OEM_DENY,
+            BLOCKED_REASON_NETWORK_RESTRICTED,
             BLOCKED_METERED_REASON_DATA_SAVER,
             BLOCKED_METERED_REASON_USER_RESTRICTED,
             BLOCKED_METERED_REASON_ADMIN_DISABLED,
@@ -1193,6 +1208,16 @@ public class ConnectivityManager {
     })
     public @interface FirewallRule {}
 
+    /** @hide */
+    public static final long FEATURE_USE_DECLARED_METHODS_FOR_CALLBACKS = 1L;
+
+    /** @hide */
+    @Retention(RetentionPolicy.SOURCE)
+    @LongDef(flag = true, prefix = "FEATURE_", value = {
+            FEATURE_USE_DECLARED_METHODS_FOR_CALLBACKS
+    })
+    public @interface ConnectivityManagerFeature {}
+
     /**
      * A kludge to facilitate static access where a Context pointer isn't available, like in the
      * case of the static set/getProcessDefaultNetwork methods and from the Network class.
@@ -1205,6 +1230,14 @@ public class ConnectivityManager {
 
     @GuardedBy("mTetheringEventCallbacks")
     private TetheringManager mTetheringManager;
+
+    private final Object mEnabledConnectivityManagerFeaturesLock = new Object();
+    // mEnabledConnectivityManagerFeatures is lazy-loaded in this ConnectivityManager instance, but
+    // fetched from ConnectivityService, where it is loaded in ConnectivityService startup, so it
+    // should have consistent values.
+    @GuardedBy("sEnabledConnectivityManagerFeaturesLock")
+    @ConnectivityManagerFeature
+    private Long mEnabledConnectivityManagerFeatures = null;
 
     private TetheringManager getTetheringManager() {
         synchronized (mTetheringEventCallbacks) {
@@ -4513,6 +4546,20 @@ public class ConnectivityManager {
             throw convertServiceException(e);
         }
         return request;
+    }
+
+    private boolean isFeatureEnabled(@ConnectivityManagerFeature long connectivityManagerFeature) {
+        synchronized (mEnabledConnectivityManagerFeaturesLock) {
+            if (mEnabledConnectivityManagerFeatures == null) {
+                try {
+                    mEnabledConnectivityManagerFeatures =
+                            mService.getEnabledConnectivityManagerFeatures();
+                } catch (RemoteException e) {
+                    e.rethrowFromSystemServer();
+                }
+            }
+            return (mEnabledConnectivityManagerFeatures & connectivityManagerFeature) != 0;
+        }
     }
 
     private NetworkRequest sendRequestForNetwork(NetworkCapabilities need, NetworkCallback callback,
