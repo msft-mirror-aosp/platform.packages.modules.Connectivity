@@ -39,6 +39,7 @@ import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_MASK;
 import static android.net.ConnectivityManager.BLOCKED_REASON_APP_BACKGROUND;
 import static android.net.ConnectivityManager.BLOCKED_REASON_LOCKDOWN_VPN;
 import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
+import static android.net.ConnectivityManager.BLOCKED_REASON_NETWORK_RESTRICTED;
 import static android.net.ConnectivityManager.CALLBACK_IP_CHANGED;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
@@ -76,6 +77,7 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_ENTERPRISE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_FOREGROUND;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_CONGESTED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED;
@@ -402,6 +404,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private static final String NETWORK_ARG = "networks";
     private static final String REQUEST_ARG = "requests";
     private static final String TRAFFICCONTROLLER_ARG = "trafficcontroller";
+    public static final String CLATEGRESS4RAWBPFMAP_ARG = "clatEgress4RawBpfMap";
+    public static final String CLATINGRESS6RAWBPFMAP_ARG = "clatIngress6RawBpfMap";
 
     private static final boolean DBG = true;
     private static final boolean DDBG = Log.isLoggable(TAG, Log.DEBUG);
@@ -485,6 +489,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     private final boolean mRequestRestrictedWifiEnabled;
     private final boolean mBackgroundFirewallChainEnabled;
+
+    private final boolean mUseDeclaredMethodsForCallbacksEnabled;
 
     /**
      * Uids ConnectivityService tracks blocked status of to send blocked status callbacks.
@@ -1847,6 +1853,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 && mDeps.isFeatureEnabled(context, REQUEST_RESTRICTED_WIFI);
         mBackgroundFirewallChainEnabled = mDeps.isAtLeastV() && mDeps.isFeatureNotChickenedOut(
                 context, ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN);
+        mUseDeclaredMethodsForCallbacksEnabled = mDeps.isFeatureEnabled(context,
+                ConnectivityFlags.USE_DECLARED_METHODS_FOR_CALLBACKS);
         mCarrierPrivilegeAuthenticator = mDeps.makeCarrierPrivilegeAuthenticator(
                 mContext, mTelephonyManager, mRequestRestrictedWifiEnabled,
                 this::handleUidCarrierPrivilegesLost, mHandler);
@@ -4140,6 +4148,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
             boolean verbose = !CollectionUtils.contains(args, SHORT_ARG);
             dumpTrafficController(pw, fd, verbose);
             return;
+        } else if (CollectionUtils.contains(args, CLATEGRESS4RAWBPFMAP_ARG)) {
+            dumpClatBpfRawMap(pw, true /* isEgress4Map */);
+            return;
+        } else if (CollectionUtils.contains(args, CLATINGRESS6RAWBPFMAP_ARG)) {
+            dumpClatBpfRawMap(pw, false /* isEgress4Map */);
+            return;
         }
 
         pw.println("NetworkProviders for:");
@@ -4396,6 +4410,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
             pw.println(e.getMessage());
         } catch (IOException e) {
             loge("Dump BPF maps failed, " + e);
+        }
+    }
+
+    private void dumpClatBpfRawMap(IndentingPrintWriter pw, boolean isEgress4Map) {
+        for (NetworkAgentInfo nai : networksSortedById()) {
+            if (nai.clatd != null) {
+                nai.clatd.dumpRawBpfMap(pw, isEgress4Map);
+                break;
+            }
         }
     }
 
@@ -4776,7 +4799,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 final String logMsg = !TextUtils.isEmpty(redirectUrl)
                         ? " with redirect to " + redirectUrl
                         : "";
-                log(nai.toShortString() + " validation " + (valid ? "passed" : "failed") + logMsg);
+                final String statusMsg;
+                if (valid) {
+                    statusMsg = "passed";
+                } else if (!TextUtils.isEmpty(redirectUrl)) {
+                    statusMsg = "detected a portal";
+                } else {
+                    statusMsg = "failed";
+                }
+                log(nai.toShortString() + " validation " + statusMsg + logMsg);
             }
             if (valid != wasValidated) {
                 final FullScore oldScore = nai.getScore();
@@ -11270,7 +11301,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         final boolean metered = nai.networkCapabilities.isMetered();
         final boolean vpnBlocked = isUidBlockedByVpn(nri.mAsUid, mVpnBlockedUidRanges);
         callCallbackForRequest(nri, nai, ConnectivityManager.CALLBACK_AVAILABLE,
-                getBlockedState(blockedReasons, metered, vpnBlocked));
+                getBlockedState(nri.mAsUid, blockedReasons, metered, vpnBlocked));
     }
 
     // Notify the requests on this NAI that the network is now lingered.
@@ -11279,7 +11310,21 @@ public class ConnectivityService extends IConnectivityManager.Stub
         notifyNetworkCallbacks(nai, ConnectivityManager.CALLBACK_LOSING, lingerTime);
     }
 
-    private static int getBlockedState(int reasons, boolean metered, boolean vpnBlocked) {
+    private int getPermissionBlockedState(final int uid, final int reasons) {
+        // Before V, the blocked reasons come from NPMS, and that code already behaves as if the
+        // change was disabled: apps without the internet permission will never be told they are
+        // blocked.
+        if (!mDeps.isAtLeastV()) return reasons;
+
+        if (hasInternetPermission(uid)) return reasons;
+
+        return mDeps.isChangeEnabled(NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION, uid)
+                ? reasons | BLOCKED_REASON_NETWORK_RESTRICTED
+                : BLOCKED_REASON_NONE;
+    }
+
+    private int getBlockedState(int uid, int reasons, boolean metered, boolean vpnBlocked) {
+        reasons = getPermissionBlockedState(uid, reasons);
         if (!metered) reasons &= ~BLOCKED_METERED_REASON_MASK;
         return vpnBlocked
                 ? reasons | BLOCKED_REASON_LOCKDOWN_VPN
@@ -11320,8 +11365,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     ? isUidBlockedByVpn(nri.mAsUid, newBlockedUidRanges)
                     : oldVpnBlocked;
 
-            final int oldBlockedState = getBlockedState(blockedReasons, oldMetered, oldVpnBlocked);
-            final int newBlockedState = getBlockedState(blockedReasons, newMetered, newVpnBlocked);
+            final int oldBlockedState = getBlockedState(
+                    nri.mAsUid, blockedReasons, oldMetered, oldVpnBlocked);
+            final int newBlockedState = getBlockedState(
+                    nri.mAsUid, blockedReasons, newMetered, newVpnBlocked);
             if (oldBlockedState != newBlockedState) {
                 callCallbackForRequest(nri, nai, ConnectivityManager.CALLBACK_BLK_CHANGED,
                         newBlockedState);
@@ -11340,8 +11387,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
             final boolean vpnBlocked = isUidBlockedByVpn(uid, mVpnBlockedUidRanges);
 
             final int oldBlockedState = getBlockedState(
-                    mUidBlockedReasons.get(uid, BLOCKED_REASON_NONE), metered, vpnBlocked);
-            final int newBlockedState = getBlockedState(blockedReasons, metered, vpnBlocked);
+                    uid, mUidBlockedReasons.get(uid, BLOCKED_REASON_NONE), metered, vpnBlocked);
+            final int newBlockedState =
+                    getBlockedState(uid, blockedReasons, metered, vpnBlocked);
             if (oldBlockedState == newBlockedState) {
                 continue;
             }
@@ -13239,11 +13287,12 @@ public class ConnectivityService extends IConnectivityManager.Stub
         requests.add(createDefaultInternetRequestForTransport(
                 TYPE_NONE, NetworkRequest.Type.TRACK_DEFAULT));
 
-        // request: restricted Satellite internet
+        // request: Satellite internet, satellite network could be restricted or constrained
         final NetworkCapabilities cap = new NetworkCapabilities.Builder()
                 .addCapability(NET_CAPABILITY_INTERNET)
                 .addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
                 .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
+                .removeCapability(NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED)
                 .addTransportType(NetworkCapabilities.TRANSPORT_SATELLITE)
                 .build();
         requests.add(createNetworkRequest(NetworkRequest.Type.REQUEST, cap));
@@ -14001,5 +14050,17 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public IBinder getRoutingCoordinatorService() {
         enforceNetworkStackPermission(mContext);
         return mRoutingCoordinatorService;
+    }
+
+    @Override
+    public long getEnabledConnectivityManagerFeatures() {
+        long features = 0;
+        // The bitmask must be built based on final properties initialized in the constructor, to
+        // ensure that it does not change over time and is always consistent between
+        // ConnectivityManager and ConnectivityService.
+        if (mUseDeclaredMethodsForCallbacksEnabled) {
+            features |= ConnectivityManager.FEATURE_USE_DECLARED_METHODS_FOR_CALLBACKS;
+        }
+        return features;
     }
 }
