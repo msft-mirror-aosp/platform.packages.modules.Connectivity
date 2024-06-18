@@ -1634,6 +1634,12 @@ public class NsdService extends INsdManager.Stub {
                         NsdManager.nameOf(code), transactionId));
                 switch (code) {
                     case NsdManager.SERVICE_FOUND:
+                        // Set the ServiceFromCache flag only if the service is actually being
+                        // retrieved from the cache. This flag should not be overridden by later
+                        // service found event, which may not be cached.
+                        if (event.mIsServiceFromCache) {
+                            request.setServiceFromCache(true);
+                        }
                         clientInfo.onServiceFound(clientRequestId, info, request);
                         break;
                     case NsdManager.SERVICE_LOST:
@@ -1917,13 +1923,13 @@ public class NsdService extends INsdManager.Stub {
                         mContext, MdnsFeatureFlags.NSD_FORCE_DISABLE_MDNS_OFFLOAD))
                 .setIncludeInetAddressRecordsInProbing(mDeps.isFeatureEnabled(
                         mContext, MdnsFeatureFlags.INCLUDE_INET_ADDRESS_RECORDS_IN_PROBING))
-                .setIsExpiredServicesRemovalEnabled(mDeps.isFeatureEnabled(
+                .setIsExpiredServicesRemovalEnabled(mDeps.isTetheringFeatureNotChickenedOut(
                         mContext, MdnsFeatureFlags.NSD_EXPIRED_SERVICES_REMOVAL))
                 .setIsLabelCountLimitEnabled(mDeps.isTetheringFeatureNotChickenedOut(
                         mContext, MdnsFeatureFlags.NSD_LIMIT_LABEL_COUNT))
-                .setIsKnownAnswerSuppressionEnabled(mDeps.isFeatureEnabled(
+                .setIsKnownAnswerSuppressionEnabled(mDeps.isTetheringFeatureNotChickenedOut(
                         mContext, MdnsFeatureFlags.NSD_KNOWN_ANSWER_SUPPRESSION))
-                .setIsUnicastReplyEnabled(mDeps.isFeatureEnabled(
+                .setIsUnicastReplyEnabled(mDeps.isTetheringFeatureNotChickenedOut(
                         mContext, MdnsFeatureFlags.NSD_UNICAST_REPLY_ENABLED))
                 .setIsAggressiveQueryModeEnabled(mDeps.isFeatureEnabled(
                         mContext, MdnsFeatureFlags.NSD_AGGRESSIVE_QUERY_MODE))
@@ -2887,7 +2893,8 @@ public class NsdService extends INsdManager.Stub {
                                 request.getFoundServiceCount(),
                                 request.getLostServiceCount(),
                                 request.getServicesCount(),
-                                request.getSentQueryCount());
+                                request.getSentQueryCount(),
+                                request.isServiceFromCache());
                     } else if (listener instanceof ResolutionListener) {
                         mMetrics.reportServiceResolutionStop(false /* isLegacy */, transactionId,
                                 request.calculateRequestDurationMs(mClock.elapsedRealtime()),
@@ -2927,7 +2934,8 @@ public class NsdService extends INsdManager.Stub {
                                 request.getFoundServiceCount(),
                                 request.getLostServiceCount(),
                                 request.getServicesCount(),
-                                NO_SENT_QUERY_COUNT);
+                                NO_SENT_QUERY_COUNT,
+                                request.isServiceFromCache());
                         break;
                     case NsdManager.RESOLVE_SERVICE:
                         stopResolveService(transactionId);
@@ -3050,7 +3058,8 @@ public class NsdService extends INsdManager.Stub {
                     request.getFoundServiceCount(),
                     request.getLostServiceCount(),
                     request.getServicesCount(),
-                    request.getSentQueryCount());
+                    request.getSentQueryCount(),
+                    request.isServiceFromCache());
             try {
                 mCb.onStopDiscoverySucceeded(listenerKey);
             } catch (RemoteException e) {
