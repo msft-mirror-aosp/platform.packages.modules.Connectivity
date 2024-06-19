@@ -42,6 +42,7 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeFalse;
@@ -104,7 +105,7 @@ public abstract class EthernetTetheringTestBase {
     // Used to check if any tethering interface is available. Choose 200ms to be request timeout
     // because the average interface requested time on cuttlefish@acloud is around 10ms.
     // See TetheredInterfaceRequester.getInterface, isInterfaceForTetheringAvailable.
-    private static final int SHORT_TIMEOUT_MS = 200;
+    private static final int AVAILABLE_TETHER_IFACE_REQUEST_TIMEOUT_MS = 200;
     private static final int TETHER_REACHABILITY_ATTEMPTS = 20;
     protected static final long WAIT_RA_TIMEOUT_MS = 2000;
 
@@ -153,7 +154,7 @@ public abstract class EthernetTetheringTestBase {
     private boolean mRunTests;
     private HandlerThread mHandlerThread;
     private Handler mHandler;
-    protected TetheredInterfaceRequester mTetheredInterfaceRequester;
+    private TetheredInterfaceRequester mTetheredInterfaceRequester;
 
     // Late initialization in initTetheringTester().
     private TapPacketReader mUpstreamReader;
@@ -244,14 +245,12 @@ public abstract class EthernetTetheringTestBase {
         maybeUnregisterTetheringEventCallback(mTetheringEventCallback);
         mTetheringEventCallback = null;
 
+        runAsShell(NETWORK_SETTINGS, () -> mTetheredInterfaceRequester.release());
         setIncludeTestInterfaces(false);
     }
 
     @After
     public void tearDown() throws Exception {
-        if (mTetheredInterfaceRequester != null) {
-            mTetheredInterfaceRequester.release();
-        }
         try {
             if (mRunTests) cleanUp();
         } finally {
@@ -264,17 +263,33 @@ public abstract class EthernetTetheringTestBase {
         }
     }
 
-    protected boolean isInterfaceForTetheringAvailable() throws Exception {
+    protected static boolean isInterfaceForTetheringAvailable() throws Exception {
+        // Before T, all ethernet interfaces could be used for server mode. Instead of
+        // waiting timeout, just checking whether the system currently has any
+        // ethernet interface is more reliable.
+        if (!SdkLevel.isAtLeastT()) {
+            return runAsShell(CONNECTIVITY_USE_RESTRICTED_NETWORKS, () -> sEm.isAvailable());
+        }
+
         // If previous test case doesn't release tethering interface successfully, the other tests
         // after that test may be skipped as unexcepted.
         // TODO: figure out a better way to check default tethering interface existenion.
-        // Use short timeout (200ms) for requesting an existing interface, if any, because
-        // it should reurn faster than requesting a new tethering interface. Using default
-        // timeout (5000ms, TIMEOUT_MS) may make that total testing time is over 1 minute
-        // test module timeout on internal testing.
-        // TODO: if this becomes flaky, consider using default timeout (5000ms) and moving
-        // this check into #setUpOnce.
-        return mTetheredInterfaceRequester.isPhysicalInterfaceAvailable(SHORT_TIMEOUT_MS);
+        final TetheredInterfaceRequester requester = new TetheredInterfaceRequester();
+        try {
+            // Use short timeout (200ms) for requesting an existing interface, if any, because
+            // it should reurn faster than requesting a new tethering interface. Using default
+            // timeout (5000ms, TIMEOUT_MS) may make that total testing time is over 1 minute
+            // test module timeout on internal testing.
+            // TODO: if this becomes flaky, consider using default timeout (5000ms) and moving
+            // this check into #setUpOnce.
+            return requester.getInterface(AVAILABLE_TETHER_IFACE_REQUEST_TIMEOUT_MS) != null;
+        } catch (TimeoutException e) {
+            return false;
+        } finally {
+            runAsShell(NETWORK_SETTINGS, () -> {
+                requester.release();
+            });
+        }
     }
 
     protected static void setIncludeTestInterfaces(boolean include) {
@@ -287,6 +302,14 @@ public abstract class EthernetTetheringTestBase {
         runAsShell(NETWORK_SETTINGS, () -> {
             sTm.setPreferTestNetworks(prefer);
         });
+    }
+
+    protected String getTetheredInterface() throws Exception {
+        return mTetheredInterfaceRequester.getInterface();
+    }
+
+    protected CompletableFuture<String> requestTetheredInterface() throws Exception {
+        return mTetheredInterfaceRequester.requestInterface();
     }
 
     protected static void waitForRouterAdvertisement(TapPacketReader reader, String iface,
@@ -582,11 +605,6 @@ public abstract class EthernetTetheringTestBase {
         private TetheredInterfaceRequest mRequest;
         private final CompletableFuture<String> mFuture = new CompletableFuture<>();
 
-        TetheredInterfaceRequester() {
-            mRequest = runAsShell(NETWORK_SETTINGS, () ->
-                    sEm.requestTetheredInterface(c -> c.run() /* executor */, this));
-        }
-
         @Override
         public void onAvailable(String iface) {
             Log.d(TAG, "Ethernet interface available: " + iface);
@@ -598,21 +616,28 @@ public abstract class EthernetTetheringTestBase {
             mFuture.completeExceptionally(new IllegalStateException("onUnavailable received"));
         }
 
-        public boolean isPhysicalInterfaceAvailable(int timeout) {
-            try {
-                final String iface = mFuture.get(timeout, TimeUnit.MILLISECONDS);
-                return !iface.startsWith("testtap");
-            } catch (Exception e) {
-                return false;
-            }
+        public CompletableFuture<String> requestInterface() {
+            assertNull("BUG: more than one tethered interface request", mRequest);
+            Log.d(TAG, "Requesting tethered interface");
+            mRequest = runAsShell(NETWORK_SETTINGS, () ->
+                    sEm.requestTetheredInterface(c -> c.run() /* executor */, this));
+            return mFuture;
+        }
+
+        public String getInterface(int timeout) throws Exception {
+            return requestInterface().get(timeout, TimeUnit.MILLISECONDS);
         }
 
         public String getInterface() throws Exception {
-            return mFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            return getInterface(TIMEOUT_MS);
         }
 
         public void release() {
-            runAsShell(NETWORK_SETTINGS, () -> mRequest.release());
+            if (mRequest != null) {
+                mFuture.obtrudeException(new IllegalStateException("Request already released"));
+                mRequest.release();
+                mRequest = null;
+            }
         }
     }
 
@@ -633,10 +658,7 @@ public abstract class EthernetTetheringTestBase {
         lp.setLinkAddresses(addresses);
         lp.setDnsServers(dnses);
 
-        // TODO: initTestNetwork can take up to 15 seconds on a workstation. Investigate when and
-        // why this is the case. It is unclear whether a 30 second timeout is enough when running
-        // these tests in the much slower test infra.
-        return runAsShell(MANAGE_TEST_NETWORKS, () -> initTestNetwork(sContext, lp, 30_000));
+        return runAsShell(MANAGE_TEST_NETWORKS, () -> initTestNetwork(sContext, lp, TIMEOUT_MS));
     }
 
     protected void sendDownloadPacketUdp(@NonNull final InetAddress srcIp,

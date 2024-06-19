@@ -72,7 +72,7 @@ class NsdManagerDownstreamTetheringTest : EthernetTetheringTestBase() {
 
         tryTest {
             downstreamIface = createTestInterface()
-            val iface = mTetheredInterfaceRequester.getInterface()
+            val iface = tetheredInterface
             assertEquals(iface, downstreamIface?.interfaceName)
             val request = TetheringRequest.Builder(TETHERING_ETHERNET)
                 .setConnectivityScope(CONNECTIVITY_SCOPE_LOCAL).build()
@@ -115,7 +115,7 @@ class NsdManagerDownstreamTetheringTest : EthernetTetheringTestBase() {
 
         tryTest {
             downstreamIface = createTestInterface()
-            val iface = mTetheredInterfaceRequester.getInterface()
+            val iface = tetheredInterface
             assertEquals(iface, downstreamIface?.interfaceName)
 
             val localAddr = LinkAddress("192.0.2.3/28")

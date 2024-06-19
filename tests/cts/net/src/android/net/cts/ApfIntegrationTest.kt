@@ -554,7 +554,6 @@ class ApfIntegrationTest {
         buffer = ByteBuffer.wrap(readProgram(), counterRegion, 4 /* length */)
         val filterAgeSeconds = buffer.getInt()
         // Assert that filter age has increased, but not too much.
-        val timeDiff = filterAgeSeconds - filterAgeSecondsOrig
-        assertThat(timeDiff).isAnyOf(5, 6)
+        assertThat(filterAgeSeconds - filterAgeSecondsOrig).isEqualTo(5)
     }
 }
