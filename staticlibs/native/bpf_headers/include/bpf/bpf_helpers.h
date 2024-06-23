@@ -117,9 +117,6 @@
     unsigned _btf_min_bpfloader_ver SECTION("btf_min_bpfloader_ver") = 39u; \
     unsigned _btf_user_min_bpfloader_ver SECTION("btf_user_min_bpfloader_ver") = 0xFFFFFFFFu
 
-#define DISABLE_ON_MAINLINE_BEFORE_U_QPR3() \
-    unsigned _netbpfload_min_ver SECTION("netbpfload_min_ver") = BPFLOADER_MAINLINE_U_QPR3_VERSION;
-
 /* flag the resulting bpf .o file as critical to system functionality,
  * loading all kernel version appropriate programs in it must succeed
  * for bpfloader success
@@ -140,6 +137,7 @@ struct kver_uint { unsigned int kver; };
 #define KVER_5_4  KVER(5, 4, 0)
 #define KVER_5_8  KVER(5, 8, 0)
 #define KVER_5_9  KVER(5, 9, 0)
+#define KVER_5_10 KVER(5, 10, 0)
 #define KVER_5_15 KVER(5, 15, 0)
 #define KVER_6_1  KVER(6, 1, 0)
 #define KVER_6_6  KVER(6, 6, 0)
