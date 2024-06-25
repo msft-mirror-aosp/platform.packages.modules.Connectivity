@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2024 The Android Open Source Project
+ * Copyright 2024 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,6 @@
  * limitations under the License.
  */
 
-#define BPFLOADER_MIN_VER BPFLOADER_MAINLINE_T_VERSION
+package android.net.thread;
 
-#include "bpf_helpers.h"
-#include "bpf_net_helpers.h"
-
-DEFINE_BPF_MAP_GRW(test, ARRAY, int, uint64_t, 1, AID_SYSTEM)
-
-DEFINE_BPF_PROG("skfilter/accept", AID_ROOT, AID_SYSTEM, accept)
-(struct __sk_buff *skb) {
-    return 1;
-}
-
-LICENSE("Apache 2.0");
-DISABLE_BTF_ON_USER_BUILDS();
+parcelable ThreadConfiguration;
