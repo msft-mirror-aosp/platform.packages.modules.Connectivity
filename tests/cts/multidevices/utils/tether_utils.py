@@ -11,18 +11,6 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
-#
-#  Licensed under the Apache License, Version 2.0 (the "License");
-#  you may not use this file except in compliance with the License.
-#  You may obtain a copy of the License at
-#
-#       http://www.apache.org/licenses/LICENSE-2.0
-#
-#  Unless required by applicable law or agreed to in writing, software
-#  distributed under the License is distributed on an "AS IS" BASIS,
-#  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-#  See the License for the specific language governing permissions and
-#  limitations under the License.
 
 import base64
 import uuid
@@ -32,6 +20,7 @@ from mobly.controllers import android_device
 
 
 class UpstreamType:
+  NONE = 0
   CELLULAR = 1
   WIFI = 2
 
@@ -44,6 +33,34 @@ def generate_uuid32_base64() -> str:
   """
   # Strip padding characters to make it safer for hotspot name length limit.
   return base64.b64encode(uuid.uuid1().bytes).decode("utf-8").strip("=")
+
+
+def assume_hotspot_test_preconditions(
+    server_device: android_device,
+    client_device: android_device,
+    upstream_type: UpstreamType,
+) -> None:
+  server = server_device.connectivity_multi_devices_snippet
+  client = client_device.connectivity_multi_devices_snippet
+
+  # Assert pre-conditions specific to each upstream type.
+  asserts.skip_if(not client.hasWifiFeature(), "Client requires Wifi feature")
+  asserts.skip_if(
+      not server.hasHotspotFeature(), "Server requires hotspot feature"
+  )
+  if upstream_type == UpstreamType.CELLULAR:
+    asserts.skip_if(
+        not server.hasTelephonyFeature(), "Server requires Telephony feature"
+    )
+  elif upstream_type == UpstreamType.WIFI:
+    asserts.skip_if(
+        not server.isStaApConcurrencySupported(),
+        "Server requires Wifi AP + STA concurrency",
+    )
+  elif upstream_type == UpstreamType.NONE:
+    pass
+  else:
+    raise ValueError(f"Invalid upstream type: {upstream_type}")
 
 
 def setup_hotspot_and_client_for_upstream_type(
@@ -60,22 +77,12 @@ def setup_hotspot_and_client_for_upstream_type(
   server = server_device.connectivity_multi_devices_snippet
   client = client_device.connectivity_multi_devices_snippet
 
-  # Assert pre-conditions specific to each upstream type.
-  asserts.skip_if(not client.hasWifiFeature(), "Client requires Wifi feature")
-  asserts.skip_if(
-      not server.hasHotspotFeature(), "Server requires hotspot feature"
-  )
   if upstream_type == UpstreamType.CELLULAR:
-    asserts.skip_if(
-        not server.hasTelephonyFeature(), "Server requires Telephony feature"
-    )
     server.requestCellularAndEnsureDefault()
   elif upstream_type == UpstreamType.WIFI:
-    asserts.skip_if(
-        not server.isStaApConcurrencySupported(),
-        "Server requires Wifi AP + STA concurrency",
-    )
     server.ensureWifiIsDefault()
+  elif upstream_type == UpstreamType.NONE:
+    pass
   else:
     raise ValueError(f"Invalid upstream type: {upstream_type}")
 
@@ -98,6 +105,6 @@ def cleanup_tethering_for_upstream_type(
 ) -> None:
   server = server_device.connectivity_multi_devices_snippet
   if upstream_type == UpstreamType.CELLULAR:
-    server.unrequestCellular()
+    server.unregisterAll()
   # Teardown the hotspot.
   server.stopAllTethering()
