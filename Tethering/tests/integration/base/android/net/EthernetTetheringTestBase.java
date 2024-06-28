@@ -16,7 +16,6 @@
 
 package android.net;
 
-import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
@@ -64,7 +63,6 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.test.platform.app.InstrumentationRegistry;
 
-import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.Ipv6Header;
 import com.android.testutils.HandlerUtils;
@@ -104,7 +102,7 @@ public abstract class EthernetTetheringTestBase {
     // Used to check if any tethering interface is available. Choose 200ms to be request timeout
     // because the average interface requested time on cuttlefish@acloud is around 10ms.
     // See TetheredInterfaceRequester.getInterface, isInterfaceForTetheringAvailable.
-    private static final int SHORT_TIMEOUT_MS = 200;
+    private static final int SHORT_TIMEOUT_MS = 1000;
     private static final int TETHER_REACHABILITY_ATTEMPTS = 20;
     protected static final long WAIT_RA_TIMEOUT_MS = 2000;
 
