@@ -46,6 +46,7 @@ import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DEFAULT;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
+import static android.net.ConnectivityManager.NetworkCallback.DECLARED_METHODS_NONE;
 import static android.net.ConnectivityManager.TYPE_BLUETOOTH;
 import static android.net.ConnectivityManager.TYPE_ETHERNET;
 import static android.net.ConnectivityManager.TYPE_MOBILE;
@@ -65,6 +66,7 @@ import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.net.ConnectivityManager.TYPE_WIFI_P2P;
 import static android.net.ConnectivityManager.getNetworkTypeName;
 import static android.net.ConnectivityManager.isNetworkTypeValid;
+import static android.net.ConnectivityManager.NetworkCallback.DECLARED_METHODS_ALL;
 import static android.net.ConnectivitySettingsManager.PRIVATE_DNS_MODE_OPPORTUNISTIC;
 import static android.net.INetd.PERMISSION_INTERNET;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_PRIVDNS;
@@ -109,7 +111,6 @@ import static android.net.connectivity.ConnectivityCompatChanges.NETWORK_BLOCKED
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
 import static android.system.OsConstants.ETH_P_ALL;
-import static android.system.OsConstants.F_OK;
 import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
 
@@ -136,8 +137,6 @@ import static com.android.server.ConnectivityStatsLog.CONNECTIVITY_STATE_SAMPLE;
 import static com.android.server.connectivity.ConnectivityFlags.DELAY_DESTROY_SOCKETS;
 import static com.android.server.connectivity.ConnectivityFlags.REQUEST_RESTRICTED_WIFI;
 import static com.android.server.connectivity.ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING;
-
-import static java.util.Map.Entry;
 
 import android.Manifest;
 import android.annotation.CheckResult;
@@ -279,7 +278,6 @@ import android.stats.connectivity.RequestType;
 import android.stats.connectivity.ValidatedState;
 import android.sysprop.NetworkProperties;
 import android.system.ErrnoException;
-import android.system.Os;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
@@ -393,7 +391,6 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.NoSuchElementException;
 import java.util.Objects;
-import java.util.Random;
 import java.util.Set;
 import java.util.SortedSet;
 import java.util.StringJoiner;
@@ -1791,7 +1788,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         mDefaultRequest = new NetworkRequestInfo(
                 Process.myUid(), defaultInternetRequest, null,
                 null /* binder */, NetworkCallback.FLAG_INCLUDE_LOCATION_INFO,
-                null /* attributionTags */);
+                null /* attributionTags */, DECLARED_METHODS_NONE);
         mNetworkRequests.put(defaultInternetRequest, mDefaultRequest);
         mDefaultNetworkRequests.add(mDefaultRequest);
         mNetworkRequestInfoLogs.log("REGISTER " + mDefaultRequest);
@@ -1845,33 +1842,6 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 new PermissionMonitor(mContext, mNetd, mBpfNetMaps, mHandlerThread);
         mHandlerThread.start();
         mHandler = new InternalHandler(mHandlerThread.getLooper());
-        // Temporary hack to report netbpfload result.
-        // TODO: remove in 2024-09 when netbpfload starts loading mainline bpf programs.
-        mHandler.postDelayed(() -> {
-            // Test Pitot pipeline, ignore this Log.wtf if it shows up in the logs.
-            final Random r = new Random();
-            if (Build.TYPE.equals("user") && r.nextInt(1000) == 0) {
-                Log.wtf(TAG, "NOT A FAILURE, PLEASE IGNORE! Test Pitot pipeline works correctly");
-            }
-            // Did netbpfload create the map?
-            try {
-                Os.access("/sys/fs/bpf/net_shared/map_gentle_test", F_OK);
-            } catch (ErrnoException e) {
-                Log.wtf(TAG, "netbpfload did not create map", e);
-            }
-            // Did netbpfload create the program?
-            try {
-                Os.access("/sys/fs/bpf/net_shared/prog_gentle_skfilter_accept", F_OK);
-            } catch (ErrnoException e) {
-                Log.wtf(TAG, "netbpfload did not create program", e);
-            }
-            // Did netbpfload run to completion?
-            try {
-                Os.access("/sys/fs/bpf/netd_shared/mainline_done", F_OK);
-            } catch (ErrnoException e) {
-                Log.wtf(TAG, "netbpfload did not run to completion", e);
-            }
-        }, 30_000 /* delayMillis */);
         mTrackerHandler = new NetworkStateTrackerHandler(mHandlerThread.getLooper());
         mConnectivityDiagnosticsHandler =
                 new ConnectivityDiagnosticsHandler(mHandlerThread.getLooper());
@@ -2205,7 +2175,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             handleRegisterNetworkRequest(new NetworkRequestInfo(
                     Process.myUid(), networkRequest, null /* messenger */, null /* binder */,
                     NetworkCallback.FLAG_INCLUDE_LOCATION_INFO,
-                    null /* attributionTags */));
+                    null /* attributionTags */, DECLARED_METHODS_NONE));
         } else {
             handleReleaseNetworkRequest(networkRequest, Process.SYSTEM_UID,
                     /* callOnUnavailable */ false);
@@ -7607,6 +7577,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // Preference order of this request.
         final int mPreferenceOrder;
 
+        final int mDeclaredMethodsFlags;
+
         // In order to preserve the mapping of NetworkRequest-to-callback when apps register
         // callbacks using a returned NetworkRequest, the original NetworkRequest needs to be
         // maintained for keying off of. This is only a concern when the original nri
@@ -7660,21 +7632,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mCallbackFlags = NetworkCallback.FLAG_NONE;
             mCallingAttributionTag = callingAttributionTag;
             mPreferenceOrder = preferenceOrder;
+            mDeclaredMethodsFlags = DECLARED_METHODS_NONE;
         }
 
         NetworkRequestInfo(int asUid, @NonNull final NetworkRequest r, @Nullable final Messenger m,
                 @Nullable final IBinder binder,
                 @NetworkCallback.Flag int callbackFlags,
-                @Nullable String callingAttributionTag) {
+                @Nullable String callingAttributionTag, int declaredMethodsFlags) {
             this(asUid, Collections.singletonList(r), r, m, binder, callbackFlags,
-                    callingAttributionTag);
+                    callingAttributionTag, declaredMethodsFlags);
         }
 
         NetworkRequestInfo(int asUid, @NonNull final List<NetworkRequest> r,
                 @NonNull final NetworkRequest requestForCallback, @Nullable final Messenger m,
                 @Nullable final IBinder binder,
                 @NetworkCallback.Flag int callbackFlags,
-                @Nullable String callingAttributionTag) {
+                @Nullable String callingAttributionTag, int declaredMethodsFlags) {
             super();
             ensureAllNetworkRequestsHaveType(r);
             mRequests = initializeRequests(r);
@@ -7689,6 +7662,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mCallbackFlags = callbackFlags;
             mCallingAttributionTag = callingAttributionTag;
             mPreferenceOrder = PREFERENCE_ORDER_INVALID;
+            mDeclaredMethodsFlags = declaredMethodsFlags;
             linkDeathRecipient();
         }
 
@@ -7729,6 +7703,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             mCallingAttributionTag = nri.mCallingAttributionTag;
             mUidTrackedForBlockedStatus = nri.mUidTrackedForBlockedStatus;
             mPreferenceOrder = PREFERENCE_ORDER_INVALID;
+            mDeclaredMethodsFlags = nri.mDeclaredMethodsFlags;
             linkDeathRecipient();
         }
 
@@ -7816,7 +7791,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     + (mPendingIntent == null ? "" : " to trigger " + mPendingIntent)
                     + " callback flags: " + mCallbackFlags
                     + " order: " + mPreferenceOrder
-                    + " isUidTracked: " + mUidTrackedForBlockedStatus;
+                    + " isUidTracked: " + mUidTrackedForBlockedStatus
+                    + " declaredMethods: 0x" + Integer.toHexString(mDeclaredMethodsFlags);
         }
     }
 
@@ -7954,7 +7930,21 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public NetworkRequest requestNetwork(int asUid, NetworkCapabilities networkCapabilities,
             int reqTypeInt, Messenger messenger, int timeoutMs, final IBinder binder,
             int legacyType, int callbackFlags, @NonNull String callingPackageName,
-            @Nullable String callingAttributionTag) {
+            @Nullable String callingAttributionTag, int declaredMethodsFlag) {
+        if (declaredMethodsFlag == 0) {
+            // This could happen if raw binder calls are used to call the previous overload of
+            // requestNetwork, as missing int arguments in a binder call end up as 0
+            // (Parcel.readInt returns 0 at the end of a parcel). Such raw calls this would be
+            // really unexpected bad behavior from the caller though.
+            // TODO: remove after verifying this does not happen. This could allow enabling the
+            // optimization for callbacks that do not override any method (right now they use
+            // DECLARED_METHODS_ALL), if it is OK to break NetworkCallbacks created using
+            // dexmaker-mockito-inline and either spy() or MockSettings.useConstructor (see
+            // comment in ConnectivityManager which sets the flag to DECLARED_METHODS_ALL).
+            Log.wtf(TAG, "requestNetwork called without declaredMethodsFlag from "
+                    + callingPackageName);
+            declaredMethodsFlag = DECLARED_METHODS_ALL;
+        }
         if (legacyType != TYPE_NONE && !hasNetworkStackPermission()) {
             if (isTargetSdkAtleast(Build.VERSION_CODES.M, mDeps.getCallingUid(),
                     callingPackageName)) {
@@ -8046,7 +8036,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 nextNetworkRequestId(), reqType);
         final NetworkRequestInfo nri = getNriToRegister(
                 asUid, networkRequest, messenger, binder, callbackFlags,
-                callingAttributionTag);
+                callingAttributionTag, declaredMethodsFlag);
         if (DBG) log("requestNetwork for " + nri);
         trackUidAndRegisterNetworkRequest(EVENT_REGISTER_NETWORK_REQUEST, nri);
         if (timeoutMs > 0) {
@@ -8072,7 +8062,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
     private NetworkRequestInfo getNriToRegister(final int asUid, @NonNull final NetworkRequest nr,
             @Nullable final Messenger msgr, @Nullable final IBinder binder,
             @NetworkCallback.Flag int callbackFlags,
-            @Nullable String callingAttributionTag) {
+            @Nullable String callingAttributionTag, int declaredMethodsFlags) {
         final List<NetworkRequest> requests;
         if (NetworkRequest.Type.TRACK_DEFAULT == nr.type) {
             requests = copyDefaultNetworkRequestsForUid(
@@ -8081,7 +8071,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             requests = Collections.singletonList(nr);
         }
         return new NetworkRequestInfo(
-                asUid, requests, nr, msgr, binder, callbackFlags, callingAttributionTag);
+                asUid, requests, nr, msgr, binder, callbackFlags, callingAttributionTag,
+                declaredMethodsFlags);
     }
 
     private boolean shouldCheckCapabilitiesDeclaration(
@@ -8371,7 +8362,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
     public NetworkRequest listenForNetwork(NetworkCapabilities networkCapabilities,
             Messenger messenger, IBinder binder,
             @NetworkCallback.Flag int callbackFlags,
-            @NonNull String callingPackageName, @NonNull String callingAttributionTag) {
+            @NonNull String callingPackageName, @NonNull String callingAttributionTag,
+            int declaredMethodsFlag) {
+        if (declaredMethodsFlag == 0) {
+            Log.wtf(TAG, "listenForNetwork called without declaredMethodsFlag from "
+                    + callingPackageName);
+            declaredMethodsFlag = DECLARED_METHODS_ALL;
+        }
         final int callingUid = mDeps.getCallingUid();
         if (!hasWifiNetworkListenPermission(networkCapabilities)) {
             enforceAccessPermission();
@@ -8393,7 +8390,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 NetworkRequest.Type.LISTEN);
         NetworkRequestInfo nri =
                 new NetworkRequestInfo(callingUid, networkRequest, messenger, binder, callbackFlags,
-                        callingAttributionTag);
+                        callingAttributionTag, declaredMethodsFlag);
         if (VDBG) log("listenForNetwork for " + nri);
 
         trackUidAndRegisterNetworkRequest(EVENT_REGISTER_NETWORK_LISTENER, nri);
@@ -9835,7 +9832,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             configBuilder.setUpstreamSelector(nr);
             final NetworkRequestInfo nri = new NetworkRequestInfo(
                     nai.creatorUid, nr, null /* messenger */, null /* binder */,
-                    0 /* callbackFlags */, null /* attributionTag */);
+                    0 /* callbackFlags */, null /* attributionTag */,
+                    DECLARED_METHODS_NONE);
             if (null != oldSatisfier) {
                 // Set the old satisfier in the new NRI so that the rematch will see any changes
                 nri.setSatisfier(oldSatisfier, nr);
@@ -10204,6 +10202,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // Default request has no msgr. Also prevents callbacks from being invoked for
             // NetworkRequestInfos registered with ConnectivityDiagnostics requests. Those callbacks
             // are Type.LISTEN, but should not have NetworkCallbacks invoked.
+            return;
+        }
+        if (mUseDeclaredMethodsForCallbacksEnabled
+                && (nri.mDeclaredMethodsFlags & (1 << notificationType)) == 0) {
+            // No need to send the notification as the recipient method is not overridden
             return;
         }
         final Bundle bundle = new Bundle();
@@ -11830,6 +11833,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         return 0;
                     }
                     case "get-package-networking-enabled": {
+                        if (!mDeps.isAtLeastT()) {
+                            throw new UnsupportedOperationException(
+                                    "This command is not supported on T-");
+                        }
                         final String packageName = getNextArg();
                         final int rule = getPackageFirewallRule(
                                 ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3, packageName);
@@ -11859,6 +11866,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
                         return 0;
                     }
                     case "get-background-networking-enabled-for-uid": {
+                        if (!mDeps.isAtLeastT()) {
+                            throw new UnsupportedOperationException(
+                                    "This command is not supported on T-");
+                        }
                         final Integer uid = parseIntegerArgument(getNextArg());
                         if (null == uid) {
                             onHelp();
@@ -13907,6 +13918,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private int getPackageFirewallRule(final int chain, final String packageName)
             throws PackageManager.NameNotFoundException {
         final PackageManager pm = mContext.getPackageManager();
@@ -13914,6 +13926,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return getUidFirewallRule(chain, appId);
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     @Override
     public int getUidFirewallRule(final int chain, final int uid) {
         enforceNetworkStackOrSettingsPermission();
