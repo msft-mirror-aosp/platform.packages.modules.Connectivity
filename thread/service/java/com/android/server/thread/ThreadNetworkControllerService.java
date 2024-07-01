@@ -61,6 +61,8 @@ import static com.android.server.thread.openthread.IOtDaemon.OT_STATE_DISABLING;
 import static com.android.server.thread.openthread.IOtDaemon.OT_STATE_ENABLED;
 import static com.android.server.thread.openthread.IOtDaemon.TUN_IF_NAME;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import android.Manifest.permission;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -89,12 +91,14 @@ import android.net.thread.ActiveOperationalDataset;
 import android.net.thread.ActiveOperationalDataset.SecurityPolicy;
 import android.net.thread.ChannelMaxPower;
 import android.net.thread.IActiveOperationalDatasetReceiver;
+import android.net.thread.IConfigurationReceiver;
 import android.net.thread.IOperationReceiver;
 import android.net.thread.IOperationalDatasetCallback;
 import android.net.thread.IStateCallback;
 import android.net.thread.IThreadNetworkController;
 import android.net.thread.OperationalDatasetTimestamp;
 import android.net.thread.PendingOperationalDataset;
+import android.net.thread.ThreadConfiguration;
 import android.net.thread.ThreadNetworkController;
 import android.net.thread.ThreadNetworkController.DeviceRole;
 import android.net.thread.ThreadNetworkException;
@@ -117,6 +121,7 @@ import com.android.server.ServiceManagerWrapper;
 import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.thread.openthread.BackboneRouterState;
 import com.android.server.thread.openthread.BorderRouterConfigurationParcel;
+import com.android.server.thread.openthread.DnsTxtAttribute;
 import com.android.server.thread.openthread.IChannelMasksReceiver;
 import com.android.server.thread.openthread.IOtDaemon;
 import com.android.server.thread.openthread.IOtDaemonCallback;
@@ -130,7 +135,6 @@ import libcore.util.HexEncoding;
 
 import java.io.IOException;
 import java.net.Inet6Address;
-import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.DateTimeException;
@@ -187,6 +191,8 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private final OtDaemonCallbackProxy mOtDaemonCallbackProxy = new OtDaemonCallbackProxy();
     private final ConnectivityResources mResources;
     private final Supplier<String> mCountryCodeSupplier;
+    private final Map<IConfigurationReceiver, IBinder.DeathRecipient> mConfigurationReceivers =
+            new HashMap<>();
 
     // This should not be directly used for calling IOtDaemon APIs because ot-daemon may die and
     // {@code mOtDaemon} will be set to {@code null}. Instead, use {@code getOtDaemon()}
@@ -338,9 +344,11 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         final String modelName = resources.getString(R.string.config_thread_model_name);
         final String vendorName = resources.getString(R.string.config_thread_vendor_name);
         final String vendorOui = resources.getString(R.string.config_thread_vendor_oui);
+        final boolean managedByGoogle =
+                resources.getBoolean(R.bool.config_thread_managed_by_google_home);
 
         if (!modelName.isEmpty()) {
-            if (modelName.getBytes(StandardCharsets.UTF_8).length > MAX_MODEL_NAME_UTF8_BYTES) {
+            if (modelName.getBytes(UTF_8).length > MAX_MODEL_NAME_UTF8_BYTES) {
                 throw new IllegalStateException(
                         "Model name is longer than "
                                 + MAX_MODEL_NAME_UTF8_BYTES
@@ -350,7 +358,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
 
         if (!vendorName.isEmpty()) {
-            if (vendorName.getBytes(StandardCharsets.UTF_8).length > MAX_VENDOR_NAME_UTF8_BYTES) {
+            if (vendorName.getBytes(UTF_8).length > MAX_VENDOR_NAME_UTF8_BYTES) {
                 throw new IllegalStateException(
                         "Vendor name is longer than "
                                 + MAX_VENDOR_NAME_UTF8_BYTES
@@ -367,7 +375,19 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         meshcopTxts.modelName = modelName;
         meshcopTxts.vendorName = vendorName;
         meshcopTxts.vendorOui = HexEncoding.decode(vendorOui.replace("-", "").replace(":", ""));
+        meshcopTxts.nonStandardTxtEntries = List.of(makeManagedByGoogleTxtAttr(managedByGoogle));
+
         return meshcopTxts;
+    }
+
+    /**
+     * Creates a DNS-SD TXT entry for indicating whether Thread on this device is managed by Google.
+     *
+     * @return TXT entry "vgh=1" if {@code managedByGoogle} is {@code true}; otherwise, "vgh=0"
+     */
+    private static DnsTxtAttribute makeManagedByGoogleTxtAttr(boolean managedByGoogle) {
+        final byte[] value = (managedByGoogle ? "1" : "0").getBytes(UTF_8);
+        return new DnsTxtAttribute("vgh", value);
     }
 
     private void onOtDaemonDied() {
@@ -502,17 +522,86 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
     }
 
+    @Override
+    public void setConfiguration(
+            @NonNull ThreadConfiguration configuration, @NonNull IOperationReceiver receiver) {
+        enforceAllPermissionsGranted(PERMISSION_THREAD_NETWORK_PRIVILEGED);
+        mHandler.post(() -> setConfigurationInternal(configuration, receiver));
+    }
+
+    private void setConfigurationInternal(
+            @NonNull ThreadConfiguration configuration,
+            @NonNull IOperationReceiver operationReceiver) {
+        checkOnHandlerThread();
+
+        Log.i(TAG, "Set Thread configuration: " + configuration);
+
+        final boolean changed = mPersistentSettings.putConfiguration(configuration);
+        try {
+            operationReceiver.onSuccess();
+        } catch (RemoteException e) {
+            // do nothing if the client is dead
+        }
+        if (changed) {
+            for (IConfigurationReceiver configReceiver : mConfigurationReceivers.keySet()) {
+                try {
+                    configReceiver.onConfigurationChanged(configuration);
+                } catch (RemoteException e) {
+                    // do nothing if the client is dead
+                }
+            }
+        }
+    }
+
+    @Override
+    public void registerConfigurationCallback(@NonNull IConfigurationReceiver callback) {
+        enforceAllPermissionsGranted(permission.THREAD_NETWORK_PRIVILEGED);
+        mHandler.post(() -> registerConfigurationCallbackInternal(callback));
+    }
+
+    private void registerConfigurationCallbackInternal(@NonNull IConfigurationReceiver callback) {
+        checkOnHandlerThread();
+        if (mConfigurationReceivers.containsKey(callback)) {
+            throw new IllegalStateException("Registering the same IConfigurationReceiver twice");
+        }
+        IBinder.DeathRecipient deathRecipient =
+                () -> mHandler.post(() -> unregisterConfigurationCallbackInternal(callback));
+        try {
+            callback.asBinder().linkToDeath(deathRecipient, 0);
+        } catch (RemoteException e) {
+            return;
+        }
+        mConfigurationReceivers.put(callback, deathRecipient);
+        try {
+            callback.onConfigurationChanged(mPersistentSettings.getConfiguration());
+        } catch (RemoteException e) {
+            // do nothing if the client is dead
+        }
+    }
+
+    @Override
+    public void unregisterConfigurationCallback(@NonNull IConfigurationReceiver callback) {
+        enforceAllPermissionsGranted(permission.THREAD_NETWORK_PRIVILEGED);
+        mHandler.post(() -> unregisterConfigurationCallbackInternal(callback));
+    }
+
+    private void unregisterConfigurationCallbackInternal(@NonNull IConfigurationReceiver callback) {
+        checkOnHandlerThread();
+        if (!mConfigurationReceivers.containsKey(callback)) {
+            return;
+        }
+        callback.asBinder().unlinkToDeath(mConfigurationReceivers.remove(callback), 0);
+    }
+
     private void registerUserRestrictionsReceiver() {
         mContext.registerReceiver(
                 new BroadcastReceiver() {
                     @Override
                     public void onReceive(Context context, Intent intent) {
-                        onUserRestrictionsChanged(isThreadUserRestricted());
+                        mHandler.post(() -> onUserRestrictionsChanged(isThreadUserRestricted()));
                     }
                 },
-                new IntentFilter(UserManager.ACTION_USER_RESTRICTIONS_CHANGED),
-                null /* broadcastPermission */,
-                mHandler);
+                new IntentFilter(UserManager.ACTION_USER_RESTRICTIONS_CHANGED));
     }
 
     private void onUserRestrictionsChanged(boolean newUserRestrictedState) {
@@ -564,12 +653,10 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 new BroadcastReceiver() {
                     @Override
                     public void onReceive(Context context, Intent intent) {
-                        onAirplaneModeChanged(isAirplaneModeOn());
+                        mHandler.post(() -> onAirplaneModeChanged(isAirplaneModeOn()));
                     }
                 },
-                new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED),
-                null /* broadcastPermission */,
-                mHandler);
+                new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED));
     }
 
     private void onAirplaneModeChanged(boolean newAirplaneModeOn) {
@@ -868,9 +955,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         final byte[] securityFlags = new byte[] {(byte) 0xff, (byte) 0xf8};
 
         return new ActiveOperationalDataset.Builder()
-                .setActiveTimestamp(
-                        new OperationalDatasetTimestamp(
-                                now.getEpochSecond() & 0xffffffffffffL, 0, authoritative))
+                .setActiveTimestamp(OperationalDatasetTimestamp.fromInstant(now, authoritative))
                 .setExtendedPanId(newRandomBytes(random, LENGTH_EXTENDED_PAN_ID))
                 .setPanId(panId)
                 .setNetworkName(networkName)
