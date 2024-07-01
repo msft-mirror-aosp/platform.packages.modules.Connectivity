@@ -34,7 +34,6 @@ import static android.system.OsConstants.RT_SCOPE_UNIVERSE;
 import static com.android.net.module.util.Inet4AddressUtils.intToInet4AddressHTH;
 import static com.android.net.module.util.NetworkStackConstants.RFC7421_PREFIX_LENGTH;
 import static com.android.networkstack.tethering.TetheringConfiguration.USE_SYNC_SM;
-import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
 import static com.android.networkstack.tethering.util.PrefixUtils.asIpPrefix;
 import static com.android.networkstack.tethering.util.TetheringMessageBase.BASE_IPSERVER;
 
@@ -48,7 +47,7 @@ import android.net.RouteInfo;
 import android.net.RoutingCoordinatorManager;
 import android.net.TetheredClient;
 import android.net.TetheringManager;
-import android.net.TetheringRequestParcel;
+import android.net.TetheringManager.TetheringRequest;
 import android.net.dhcp.DhcpLeaseParcelable;
 import android.net.dhcp.DhcpServerCallbacks;
 import android.net.dhcp.DhcpServingParamsParcel;
@@ -75,19 +74,15 @@ import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.SdkUtil.LateSdk;
 import com.android.net.module.util.SharedLog;
+import com.android.net.module.util.SyncStateMachine.StateInfo;
 import com.android.net.module.util.ip.InterfaceController;
-import com.android.net.module.util.ip.IpNeighborMonitor;
-import com.android.net.module.util.ip.IpNeighborMonitor.NeighborEvent;
 import com.android.networkstack.tethering.BpfCoordinator;
-import com.android.networkstack.tethering.BpfCoordinator.ClientInfo;
-import com.android.networkstack.tethering.BpfCoordinator.Ipv6DownstreamRule;
 import com.android.networkstack.tethering.PrivateAddressCoordinator;
 import com.android.networkstack.tethering.TetheringConfiguration;
 import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
 import com.android.networkstack.tethering.util.PrefixUtils;
 import com.android.networkstack.tethering.util.StateMachineShim;
-import com.android.networkstack.tethering.util.SyncStateMachine.StateInfo;
 
 import java.net.Inet4Address;
 import java.net.Inet6Address;
@@ -189,12 +184,6 @@ public class IpServer extends StateMachineShim {
             return new DadProxy(handler, ifParams);
         }
 
-        /** Create an IpNeighborMonitor to be used by this IpServer */
-        public IpNeighborMonitor getIpNeighborMonitor(Handler handler, SharedLog log,
-                IpNeighborMonitor.NeighborEventConsumer consumer) {
-            return new IpNeighborMonitor(handler, log, consumer);
-        }
-
         /** Create a RouterAdvertisementDaemon instance to be used by IpServer.*/
         public RouterAdvertisementDaemon getRouterAdvertisementDaemon(InterfaceParams ifParams) {
             return new RouterAdvertisementDaemon(ifParams);
@@ -234,13 +223,11 @@ public class IpServer extends StateMachineShim {
     public static final int CMD_TETHER_CONNECTION_CHANGED   = BASE_IPSERVER + 9;
     // new IPv6 tethering parameters need to be processed
     public static final int CMD_IPV6_TETHER_UPDATE          = BASE_IPSERVER + 10;
-    // new neighbor cache entry on our interface
-    public static final int CMD_NEIGHBOR_EVENT              = BASE_IPSERVER + 11;
     // request from DHCP server that it wants to have a new prefix
-    public static final int CMD_NEW_PREFIX_REQUEST          = BASE_IPSERVER + 12;
+    public static final int CMD_NEW_PREFIX_REQUEST          = BASE_IPSERVER + 11;
     // request from PrivateAddressCoordinator to restart tethering.
-    public static final int CMD_NOTIFY_PREFIX_CONFLICT      = BASE_IPSERVER + 13;
-    public static final int CMD_SERVICE_FAILED_TO_START     = BASE_IPSERVER + 14;
+    public static final int CMD_NOTIFY_PREFIX_CONFLICT      = BASE_IPSERVER + 12;
+    public static final int CMD_SERVICE_FAILED_TO_START     = BASE_IPSERVER + 13;
 
     private final State mInitialState;
     private final State mLocalHotspotState;
@@ -301,17 +288,8 @@ public class IpServer extends StateMachineShim {
     private List<TetheredClient> mDhcpLeases = Collections.emptyList();
 
     private int mLastIPv6UpstreamIfindex = 0;
-    private boolean mUpstreamSupportsBpf = false;
     @NonNull
     private Set<IpPrefix> mLastIPv6UpstreamPrefixes = Collections.emptySet();
-
-    private class MyNeighborEventConsumer implements IpNeighborMonitor.NeighborEventConsumer {
-        public void accept(NeighborEvent e) {
-            sendMessage(CMD_NEIGHBOR_EVENT, e);
-        }
-    }
-
-    private final IpNeighborMonitor mIpNeighborMonitor;
 
     private LinkAddress mIpv4Address;
 
@@ -345,15 +323,6 @@ public class IpServer extends StateMachineShim {
         resetLinkProperties();
         mLastError = TETHER_ERROR_NO_ERROR;
         mServingMode = STATE_AVAILABLE;
-
-        mIpNeighborMonitor = mDeps.getIpNeighborMonitor(getHandler(), mLog,
-                new MyNeighborEventConsumer());
-
-        // IP neighbor monitor monitors the neighbor events for adding/removing IPv6 downstream rule
-        // per client. If BPF offload is not supported, don't start listening for neighbor events.
-        if (mBpfCoordinator.isUsingBpfOffload() && !mIpNeighborMonitor.start()) {
-            mLog.e("Failed to create IpNeighborMonitor on " + mIfaceName);
-        }
 
         mInitialState = new InitialState();
         mLocalHotspotState = new LocalHotspotState();
@@ -410,6 +379,22 @@ public class IpServer extends StateMachineShim {
         return mIpv4Address;
     }
 
+    /** The IPv6 upstream interface index */
+    public int getIpv6UpstreamIfindex() {
+        return mLastIPv6UpstreamIfindex;
+    }
+
+    /** The IPv6 upstream interface prefixes */
+    @NonNull
+    public Set<IpPrefix> getIpv6UpstreamPrefixes() {
+        return Collections.unmodifiableSet(mLastIPv6UpstreamPrefixes);
+    }
+
+    /** The interface parameters which IpServer is using */
+    public InterfaceParams getInterfaceParams() {
+        return mInterfaceParams;
+    }
+
     /**
      * Get the latest list of DHCP leases that was reported. Must be called on the IpServer looper
      * thread.
@@ -419,7 +404,7 @@ public class IpServer extends StateMachineShim {
     }
 
     /** Enable this IpServer. IpServer state machine will be tethered or localHotspot state. */
-    public void enable(final int requestedState, final TetheringRequestParcel request) {
+    public void enable(final int requestedState, final TetheringRequest request) {
         sendMessage(CMD_TETHER_REQUESTED, requestedState, 0, request);
     }
 
@@ -813,14 +798,15 @@ public class IpServer extends StateMachineShim {
         setRaParams(params);
 
         // Not support BPF on virtual upstream interface
-        final boolean upstreamSupportsBpf = upstreamIface != null && !isVcnInterface(upstreamIface);
         final Set<IpPrefix> upstreamPrefixes = params != null ? params.prefixes : Set.of();
-        updateIpv6ForwardingRules(mLastIPv6UpstreamIfindex, mLastIPv6UpstreamPrefixes,
-                upstreamIfIndex, upstreamPrefixes, upstreamSupportsBpf);
+        // mBpfCoordinator#updateIpv6UpstreamInterface must be called before updating
+        // mLastIPv6UpstreamIfindex and mLastIPv6UpstreamPrefixes because BpfCoordinator will call
+        // IpServer#getIpv6UpstreamIfindex and IpServer#getIpv6UpstreamPrefixes to retrieve current
+        // upstream interface index and prefixes when handling upstream changes.
+        mBpfCoordinator.updateIpv6UpstreamInterface(this, upstreamIfIndex, upstreamPrefixes);
         mLastIPv6LinkProperties = v6only;
         mLastIPv6UpstreamIfindex = upstreamIfIndex;
         mLastIPv6UpstreamPrefixes = upstreamPrefixes;
-        mUpstreamSupportsBpf = upstreamSupportsBpf;
         if (mDadProxy != null) {
             mDadProxy.setUpstreamIface(upstreamIfaceParams);
         }
@@ -964,77 +950,6 @@ public class IpServer extends StateMachineShim {
         }
     }
 
-    private int getInterfaceIndexForRule(int ifindex, boolean supportsBpf) {
-        return supportsBpf ? ifindex : NO_UPSTREAM;
-    }
-
-    // Handles updates to IPv6 forwarding rules if the upstream or its prefixes change.
-    private void updateIpv6ForwardingRules(int prevUpstreamIfindex,
-            @NonNull Set<IpPrefix> prevUpstreamPrefixes, int upstreamIfindex,
-            @NonNull Set<IpPrefix> upstreamPrefixes, boolean upstreamSupportsBpf) {
-        // If the upstream interface has changed, remove all rules and re-add them with the new
-        // upstream interface. If upstream is a virtual network, treated as no upstream.
-        if (prevUpstreamIfindex != upstreamIfindex
-                || !prevUpstreamPrefixes.equals(upstreamPrefixes)) {
-            mBpfCoordinator.updateAllIpv6Rules(this, this.mInterfaceParams,
-                    getInterfaceIndexForRule(upstreamIfindex, upstreamSupportsBpf),
-                    upstreamPrefixes);
-        }
-    }
-
-    // Handles updates to IPv6 downstream rules if a neighbor event is received.
-    private void addOrRemoveIpv6Downstream(NeighborEvent e) {
-        // mInterfaceParams must be non-null or the event would not have arrived.
-        if (e == null) return;
-        if (!(e.ip instanceof Inet6Address) || e.ip.isMulticastAddress()
-                || e.ip.isLoopbackAddress() || e.ip.isLinkLocalAddress()) {
-            return;
-        }
-
-        // When deleting rules, we still need to pass a non-null MAC, even though it's ignored.
-        // Do this here instead of in the Ipv6DownstreamRule constructor to ensure that we
-        // never add rules with a null MAC, only delete them.
-        MacAddress dstMac = e.isValid() ? e.macAddr : NULL_MAC_ADDRESS;
-        Ipv6DownstreamRule rule = new Ipv6DownstreamRule(
-                getInterfaceIndexForRule(mLastIPv6UpstreamIfindex, mUpstreamSupportsBpf),
-                mInterfaceParams.index, (Inet6Address) e.ip, mInterfaceParams.macAddr, dstMac);
-        if (e.isValid()) {
-            mBpfCoordinator.addIpv6DownstreamRule(this, rule);
-        } else {
-            mBpfCoordinator.removeIpv6DownstreamRule(this, rule);
-        }
-    }
-
-    // TODO: consider moving into BpfCoordinator.
-    private void updateClientInfoIpv4(NeighborEvent e) {
-        if (e == null) return;
-        if (!(e.ip instanceof Inet4Address) || e.ip.isMulticastAddress()
-                || e.ip.isLoopbackAddress() || e.ip.isLinkLocalAddress()) {
-            return;
-        }
-
-        // When deleting clients, IpServer still need to pass a non-null MAC, even though it's
-        // ignored. Do this here instead of in the ClientInfo constructor to ensure that
-        // IpServer never add clients with a null MAC, only delete them.
-        final MacAddress clientMac = e.isValid() ? e.macAddr : NULL_MAC_ADDRESS;
-        final ClientInfo clientInfo = new ClientInfo(mInterfaceParams.index,
-                mInterfaceParams.macAddr, (Inet4Address) e.ip, clientMac);
-        if (e.isValid()) {
-            mBpfCoordinator.tetherOffloadClientAdd(this, clientInfo);
-        } else {
-            mBpfCoordinator.tetherOffloadClientRemove(this, clientInfo);
-        }
-    }
-
-    private void handleNeighborEvent(NeighborEvent e) {
-        if (mInterfaceParams != null
-                && mInterfaceParams.index == e.ifindex
-                && mInterfaceParams.hasMacAddress) {
-            addOrRemoveIpv6Downstream(e);
-            updateClientInfoIpv4(e);
-        }
-    }
-
     private byte getHopLimit(String upstreamIface, int adjustTTL) {
         try {
             int upstreamHopLimit = Integer.parseUnsignedInt(
@@ -1069,7 +984,6 @@ public class IpServer extends StateMachineShim {
         switch (what) {
             // Suppress some CMD_* to avoid log flooding.
             case CMD_IPV6_TETHER_UPDATE:
-            case CMD_NEIGHBOR_EVENT:
                 break;
             default:
                 mLog.log(state.getName() + " got "
@@ -1092,18 +1006,18 @@ public class IpServer extends StateMachineShim {
         mLinkProperties.setInterfaceName(mIfaceName);
     }
 
-    private void maybeConfigureStaticIp(final TetheringRequestParcel request) {
+    private void maybeConfigureStaticIp(final TetheringRequest request) {
         // Ignore static address configuration if they are invalid or null. In theory, static
         // addresses should not be invalid here because TetheringManager do not allow caller to
         // specify invalid static address configuration.
-        if (request == null || request.localIPv4Address == null
-                || request.staticClientAddress == null || !checkStaticAddressConfiguration(
-                request.localIPv4Address, request.staticClientAddress)) {
+        if (request == null || request.getLocalIpv4Address() == null
+                || request.getClientStaticIpv4Address() == null || !checkStaticAddressConfiguration(
+                request.getLocalIpv4Address(), request.getClientStaticIpv4Address())) {
             return;
         }
 
-        mStaticIpv4ServerAddr = request.localIPv4Address;
-        mStaticIpv4ClientAddr = request.staticClientAddress;
+        mStaticIpv4ServerAddr = request.getLocalIpv4Address();
+        mStaticIpv4ClientAddr = request.getClientStaticIpv4Address();
     }
 
     class InitialState extends State {
@@ -1120,11 +1034,11 @@ public class IpServer extends StateMachineShim {
                     mLastError = TETHER_ERROR_NO_ERROR;
                     switch (message.arg1) {
                         case STATE_LOCAL_ONLY:
-                            maybeConfigureStaticIp((TetheringRequestParcel) message.obj);
+                            maybeConfigureStaticIp((TetheringRequest) message.obj);
                             transitionTo(mLocalHotspotState);
                             break;
                         case STATE_TETHERED:
-                            maybeConfigureStaticIp((TetheringRequestParcel) message.obj);
+                            maybeConfigureStaticIp((TetheringRequest) message.obj);
                             transitionTo(mTetheredState);
                             break;
                         default:
@@ -1141,14 +1055,6 @@ public class IpServer extends StateMachineShim {
         }
     }
 
-    private void startConntrackMonitoring() {
-        mBpfCoordinator.startMonitoring(this);
-    }
-
-    private void stopConntrackMonitoring() {
-        mBpfCoordinator.stopMonitoring(this);
-    }
-
     abstract class BaseServingState extends State {
         private final int mDesiredInterfaceState;
 
@@ -1158,7 +1064,7 @@ public class IpServer extends StateMachineShim {
 
         @Override
         public void enter() {
-            startConntrackMonitoring();
+            mBpfCoordinator.addIpServer(IpServer.this);
 
             startServingInterface();
 
@@ -1226,7 +1132,7 @@ public class IpServer extends StateMachineShim {
             }
 
             stopIPv4();
-            stopConntrackMonitoring();
+            mBpfCoordinator.removeIpServer(IpServer.this);
 
             resetLinkProperties();
 
@@ -1397,8 +1303,8 @@ public class IpServer extends StateMachineShim {
 
             for (String ifname : mUpstreamIfaceSet.ifnames) cleanupUpstreamInterface(ifname);
             mUpstreamIfaceSet = null;
-            mBpfCoordinator.updateAllIpv6Rules(
-                    IpServer.this, IpServer.this.mInterfaceParams, NO_UPSTREAM, Set.of());
+            mBpfCoordinator.updateIpv6UpstreamInterface(IpServer.this, NO_UPSTREAM,
+                    Collections.emptySet());
         }
 
         private void cleanupUpstreamInterface(String upstreamIface) {
@@ -1473,9 +1379,6 @@ public class IpServer extends StateMachineShim {
                         }
                     }
                     break;
-                case CMD_NEIGHBOR_EVENT:
-                    handleNeighborEvent((NeighborEvent) message.obj);
-                    break;
                 default:
                     return false;
             }
@@ -1515,9 +1418,6 @@ public class IpServer extends StateMachineShim {
     class UnavailableState extends State {
         @Override
         public void enter() {
-            // TODO: move mIpNeighborMonitor.stop() to TetheredState#exit, and trigger a neighbours
-            //       dump after starting mIpNeighborMonitor.
-            mIpNeighborMonitor.stop();
             mLastError = TETHER_ERROR_NO_ERROR;
             sendInterfaceState(STATE_UNAVAILABLE);
         }

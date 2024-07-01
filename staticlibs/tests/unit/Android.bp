@@ -39,6 +39,7 @@ android_library {
         "//packages/modules/NetworkStack/tests/integration",
     ],
     lint: {
+        strict_updatability_linting: true,
         test: true,
     },
 }
@@ -56,4 +57,26 @@ android_test {
     ],
     jarjar_rules: "jarjar-rules.txt",
     test_suites: ["device-tests"],
+    lint: {
+        strict_updatability_linting: true,
+    },
+}
+
+python_test_host {
+    name: "NetworkStaticLibHostPythonTests",
+    srcs: [
+        "host/python/*.py",
+    ],
+    main: "host/python/run_tests.py",
+    libs: [
+        "mobly",
+        "net-tests-utils-host-python-common",
+    ],
+    test_config: "host/python/test_config.xml",
+    test_suites: [
+        "general-tests",
+    ],
+    test_options: {
+        unit_test: true,
+    },
 }

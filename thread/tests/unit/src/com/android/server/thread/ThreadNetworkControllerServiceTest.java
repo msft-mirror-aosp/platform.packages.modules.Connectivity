@@ -59,6 +59,7 @@ import android.net.NetworkProvider;
 import android.net.thread.ActiveOperationalDataset;
 import android.net.thread.IActiveOperationalDatasetReceiver;
 import android.net.thread.IOperationReceiver;
+import android.net.thread.ThreadConfiguration;
 import android.net.thread.ThreadNetworkException;
 import android.os.Handler;
 import android.os.IBinder;
@@ -78,6 +79,7 @@ import androidx.test.filters.SmallTest;
 import com.android.connectivity.resources.R;
 import com.android.dx.mockito.inline.extended.ExtendedMockito;
 import com.android.server.connectivity.ConnectivityResources;
+import com.android.server.thread.openthread.DnsTxtAttribute;
 import com.android.server.thread.openthread.MeshcopTxtAttributes;
 import com.android.server.thread.openthread.testing.FakeOtDaemon;
 
@@ -94,8 +96,11 @@ import org.mockito.Mockito;
 import org.mockito.MockitoAnnotations;
 import org.mockito.MockitoSession;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.DateTimeException;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -145,6 +150,7 @@ public final class ThreadNetworkControllerServiceTest {
     private static final byte[] TEST_VENDOR_OUI_BYTES = new byte[] {(byte) 0xAC, (byte) 0xDE, 0x48};
     private static final String TEST_VENDOR_NAME = "test vendor";
     private static final String TEST_MODEL_NAME = "test model";
+    private static final boolean TEST_VGH_VALUE = false;
 
     @Mock private ConnectivityManager mMockConnectivityManager;
     @Mock private NetworkAgent mMockNetworkAgent;
@@ -197,6 +203,8 @@ public final class ThreadNetworkControllerServiceTest {
                 .thenReturn(TEST_VENDOR_OUI);
         when(mResources.getString(eq(R.string.config_thread_model_name)))
                 .thenReturn(TEST_MODEL_NAME);
+        when(mResources.getBoolean(eq(R.bool.config_thread_managed_by_google_home)))
+                .thenReturn(TEST_VGH_VALUE);
 
         final AtomicFile storageFile = new AtomicFile(tempFolder.newFile("thread_settings.xml"));
         mPersistentSettings = new ThreadPersistentSettings(storageFile, mConnectivityResources);
@@ -232,13 +240,15 @@ public final class ThreadNetworkControllerServiceTest {
     }
 
     @Test
-    public void initialize_vendorAndModelNameInResourcesAreSetToOtDaemon() throws Exception {
+    public void initialize_resourceOverlayValuesAreSetToOtDaemon() throws Exception {
         when(mResources.getString(eq(R.string.config_thread_vendor_name)))
                 .thenReturn(TEST_VENDOR_NAME);
         when(mResources.getString(eq(R.string.config_thread_vendor_oui)))
                 .thenReturn(TEST_VENDOR_OUI);
         when(mResources.getString(eq(R.string.config_thread_model_name)))
                 .thenReturn(TEST_MODEL_NAME);
+        when(mResources.getBoolean(eq(R.bool.config_thread_managed_by_google_home)))
+                .thenReturn(true);
 
         mService.initialize();
         mTestLooper.dispatchAll();
@@ -247,6 +257,20 @@ public final class ThreadNetworkControllerServiceTest {
         assertThat(meshcopTxts.vendorName).isEqualTo(TEST_VENDOR_NAME);
         assertThat(meshcopTxts.vendorOui).isEqualTo(TEST_VENDOR_OUI_BYTES);
         assertThat(meshcopTxts.modelName).isEqualTo(TEST_MODEL_NAME);
+        assertThat(meshcopTxts.nonStandardTxtEntries)
+                .containsExactly(new DnsTxtAttribute("vgh", "1".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    public void getMeshcopTxtAttributes_managedByGoogleIsFalse_vghIsZero() {
+        when(mResources.getBoolean(eq(R.bool.config_thread_managed_by_google_home)))
+                .thenReturn(false);
+
+        MeshcopTxtAttributes meshcopTxts =
+                ThreadNetworkControllerService.getMeshcopTxtAttributes(mResources);
+
+        assertThat(meshcopTxts.nonStandardTxtEntries)
+                .containsExactly(new DnsTxtAttribute("vgh", "0".getBytes(StandardCharsets.UTF_8)));
     }
 
     @Test
@@ -518,9 +542,7 @@ public final class ThreadNetworkControllerServiceTest {
                 .when(mContext)
                 .registerReceiver(
                         any(BroadcastReceiver.class),
-                        argThat(actualIntentFilter -> actualIntentFilter.hasAction(action)),
-                        any(),
-                        any());
+                        argThat(actualIntentFilter -> actualIntentFilter.hasAction(action)));
 
         return receiverRef;
     }
@@ -561,6 +583,55 @@ public final class ThreadNetworkControllerServiceTest {
         verify(mockReceiver, times(1)).onSuccess(mActiveDatasetCaptor.capture());
         ActiveOperationalDataset activeDataset = mActiveDatasetCaptor.getValue();
         assertThat(activeDataset.getActiveTimestamp().isAuthoritativeSource()).isFalse();
+    }
+
+    @Test
+    public void createRandomizedDataset_zeroNanoseconds_returnsZeroTicks() throws Exception {
+        Instant now = Instant.ofEpochSecond(0, 0);
+        Clock clock = Clock.fixed(now, ZoneId.systemDefault());
+        MockitoSession session =
+                ExtendedMockito.mockitoSession().mockStatic(SystemClock.class).startMocking();
+        final IActiveOperationalDatasetReceiver mockReceiver =
+                ExtendedMockito.mock(IActiveOperationalDatasetReceiver.class);
+
+        try {
+            ExtendedMockito.when(SystemClock.currentNetworkTimeClock()).thenReturn(clock);
+            mService.createRandomizedDataset(DEFAULT_NETWORK_NAME, mockReceiver);
+            mTestLooper.dispatchAll();
+        } finally {
+            session.finishMocking();
+        }
+
+        verify(mockReceiver, never()).onError(anyInt(), anyString());
+        verify(mockReceiver, times(1)).onSuccess(mActiveDatasetCaptor.capture());
+        ActiveOperationalDataset activeDataset = mActiveDatasetCaptor.getValue();
+        assertThat(activeDataset.getActiveTimestamp().getTicks()).isEqualTo(0);
+    }
+
+    @Test
+    public void createRandomizedDataset_maxNanoseconds_returnsMaxTicks() throws Exception {
+        // The nanoseconds to ticks conversion is rounded in the current implementation.
+        // 32767.5 / 32768 * 1000000000 = 999984741.2109375, using 999984741 to
+        // produce the maximum ticks.
+        Instant now = Instant.ofEpochSecond(0, 999984741);
+        Clock clock = Clock.fixed(now, ZoneId.systemDefault());
+        MockitoSession session =
+                ExtendedMockito.mockitoSession().mockStatic(SystemClock.class).startMocking();
+        final IActiveOperationalDatasetReceiver mockReceiver =
+                ExtendedMockito.mock(IActiveOperationalDatasetReceiver.class);
+
+        try {
+            ExtendedMockito.when(SystemClock.currentNetworkTimeClock()).thenReturn(clock);
+            mService.createRandomizedDataset(DEFAULT_NETWORK_NAME, mockReceiver);
+            mTestLooper.dispatchAll();
+        } finally {
+            session.finishMocking();
+        }
+
+        verify(mockReceiver, never()).onError(anyInt(), anyString());
+        verify(mockReceiver, times(1)).onSuccess(mActiveDatasetCaptor.capture());
+        ActiveOperationalDataset activeDataset = mActiveDatasetCaptor.getValue();
+        assertThat(activeDataset.getActiveTimestamp().getTicks()).isEqualTo(32767);
     }
 
     @Test
@@ -686,5 +757,36 @@ public final class ThreadNetworkControllerServiceTest {
         InOrder inOrder = Mockito.inOrder(mMockTunIfController);
         inOrder.verify(mMockTunIfController, times(1)).setInterfaceUp(false);
         inOrder.verify(mMockTunIfController, times(1)).setInterfaceUp(true);
+    }
+
+    @Test
+    public void setConfiguration_configurationUpdated() throws Exception {
+        mService.initialize();
+        final IOperationReceiver mockReceiver1 = mock(IOperationReceiver.class);
+        final IOperationReceiver mockReceiver2 = mock(IOperationReceiver.class);
+        final IOperationReceiver mockReceiver3 = mock(IOperationReceiver.class);
+        ThreadConfiguration config1 =
+                new ThreadConfiguration.Builder()
+                        .setNat64Enabled(false)
+                        .setDhcp6PdEnabled(false)
+                        .build();
+        ThreadConfiguration config2 =
+                new ThreadConfiguration.Builder()
+                        .setNat64Enabled(true)
+                        .setDhcp6PdEnabled(true)
+                        .build();
+        ThreadConfiguration config3 =
+                new ThreadConfiguration.Builder(config2).build(); // Same as config2
+
+        mService.setConfiguration(config1, mockReceiver1);
+        mService.setConfiguration(config2, mockReceiver2);
+        mService.setConfiguration(config3, mockReceiver3);
+        mTestLooper.dispatchAll();
+
+        assertThat(mPersistentSettings.getConfiguration()).isEqualTo(config3);
+        InOrder inOrder = Mockito.inOrder(mockReceiver1, mockReceiver2, mockReceiver3);
+        inOrder.verify(mockReceiver1).onSuccess();
+        inOrder.verify(mockReceiver2).onSuccess();
+        inOrder.verify(mockReceiver3).onSuccess();
     }
 }
