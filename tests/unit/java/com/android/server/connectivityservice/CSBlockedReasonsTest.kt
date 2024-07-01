@@ -387,6 +387,10 @@ class CSBlockedReasonsTest : CSTest() {
                     BLOCKED_REASON_NETWORK_RESTRICTED or BLOCKED_REASON_APP_BACKGROUND
             )
         }
+        // waitForIdle since stubbing bpfNetMaps while CS handler thread calls
+        // bpfNetMaps.getNetPermForUid throws exception.
+        // ConnectivityService might haven't finished checking blocked status for all requests.
+        waitForIdle()
 
         // Disable background firewall chain
         doReturn(BLOCKED_REASON_NONE)
@@ -414,5 +418,31 @@ class CSBlockedReasonsTest : CSTest() {
     fun testBlockedReasonsNoInternetPermission_changeEnabled() {
         deps.setChangeIdEnabled(true, NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION)
         doTestBlockedReasonsNoInternetPermission(blockedByNoInternetPermission = true)
+    }
+
+    private fun doTestEnforceMeteredApnPolicy(restricted: Boolean) {
+        doReturn(restricted).`when`(bpfNetMaps).isUidRestrictedOnMeteredNetworks(Process.myUid())
+
+        val cellAgent = Agent(nc = cellNc())
+        cellAgent.connect()
+        val cb = TestableNetworkCallback()
+        cm.requestNetwork(cellRequest(), cb)
+
+        if (restricted) {
+            waitForIdle()
+            cb.assertNoCallback()
+        } else {
+            cb.expectAvailableCallbacks(cellAgent.network, validated = false)
+        }
+    }
+
+    @Test
+    fun testEnforceMeteredApnPolicy_restricted() {
+        doTestEnforceMeteredApnPolicy(restricted = true)
+    }
+
+    @Test
+    fun testEnforceMeteredApnPolicy_notRestricted() {
+        doTestEnforceMeteredApnPolicy(restricted = false)
     }
 }
