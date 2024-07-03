@@ -68,6 +68,8 @@ public class TetheringManager {
     public static class Flags {
         static final String TETHERING_REQUEST_WITH_SOFT_AP_CONFIG =
                 "com.android.net.flags.tethering_request_with_soft_ap_config";
+        static final String TETHERING_REQUEST_VIRTUAL =
+                "com.android.net.flags.tethering_request_virtual";
     }
 
     private static final String TAG = TetheringManager.class.getSimpleName();
@@ -195,10 +197,18 @@ public class TetheringManager {
     public static final int TETHERING_WIGIG = 6;
 
     /**
+     * VIRTUAL tethering type.
+     * @hide
+     */
+    @FlaggedApi(Flags.TETHERING_REQUEST_VIRTUAL)
+    @SystemApi
+    public static final int TETHERING_VIRTUAL = 7;
+
+    /**
      * The int value of last tethering type.
      * @hide
      */
-    public static final int MAX_TETHERING_TYPE = TETHERING_WIGIG;
+    public static final int MAX_TETHERING_TYPE = TETHERING_VIRTUAL;
 
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
@@ -688,7 +698,11 @@ public class TetheringManager {
         /** A configuration set for TetheringRequest. */
         private final TetheringRequestParcel mRequestParcel;
 
-        private TetheringRequest(@NonNull final TetheringRequestParcel request) {
+        /**
+         * @hide
+         */
+        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        public TetheringRequest(@NonNull final TetheringRequestParcel request) {
             mRequestParcel = request;
         }
 
@@ -890,6 +904,28 @@ public class TetheringManager {
                     + ", exemptFromEntitlementCheck= "
                     + mRequestParcel.exemptFromEntitlementCheck + ", showProvisioningUi= "
                     + mRequestParcel.showProvisioningUi + " ]";
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (!(obj instanceof TetheringRequest otherRequest)) return false;
+            TetheringRequestParcel parcel = getParcel();
+            TetheringRequestParcel otherParcel = otherRequest.getParcel();
+            return parcel.tetheringType == otherParcel.tetheringType
+                    && Objects.equals(parcel.localIPv4Address, otherParcel.localIPv4Address)
+                    && Objects.equals(parcel.staticClientAddress, otherParcel.staticClientAddress)
+                    && parcel.exemptFromEntitlementCheck == otherParcel.exemptFromEntitlementCheck
+                    && parcel.showProvisioningUi == otherParcel.showProvisioningUi
+                    && parcel.connectivityScope == otherParcel.connectivityScope;
+        }
+
+        @Override
+        public int hashCode() {
+            TetheringRequestParcel parcel = getParcel();
+            return Objects.hash(parcel.tetheringType, parcel.localIPv4Address,
+                    parcel.staticClientAddress, parcel.exemptFromEntitlementCheck,
+                    parcel.showProvisioningUi, parcel.connectivityScope);
         }
     }
 
