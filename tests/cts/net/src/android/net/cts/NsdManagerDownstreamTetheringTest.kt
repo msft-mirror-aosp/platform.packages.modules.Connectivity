@@ -28,7 +28,9 @@ import androidx.test.filters.SmallTest
 import com.android.testutils.ConnectivityModuleTest
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRunner
+import com.android.testutils.NsdDiscoveryRecord
 import com.android.testutils.TapPacketReader
+import com.android.testutils.pollForQuery
 import com.android.testutils.tryTest
 import java.util.Random
 import kotlin.test.assertEquals
@@ -57,7 +59,6 @@ class NsdManagerDownstreamTetheringTest : EthernetTetheringTestBase() {
     @After
     override fun tearDown() {
         super.tearDown()
-        setIncludeTestInterfaces(false)
     }
 
     @Test
@@ -72,7 +73,7 @@ class NsdManagerDownstreamTetheringTest : EthernetTetheringTestBase() {
 
         tryTest {
             downstreamIface = createTestInterface()
-            val iface = tetheredInterface
+            val iface = mTetheredInterfaceRequester.getInterface()
             assertEquals(iface, downstreamIface?.interfaceName)
             val request = TetheringRequest.Builder(TETHERING_ETHERNET)
                 .setConnectivityScope(CONNECTIVITY_SCOPE_LOCAL).build()
@@ -105,7 +106,6 @@ class NsdManagerDownstreamTetheringTest : EthernetTetheringTestBase() {
     @Test
     fun testMdnsDiscoveryWorkOnTetheringInterface() {
         assumeFalse(isInterfaceForTetheringAvailable())
-        setIncludeTestInterfaces(true)
 
         var downstreamIface: TestNetworkInterface? = null
         var tetheringEventCallback: MyTetheringEventCallback? = null
@@ -115,7 +115,7 @@ class NsdManagerDownstreamTetheringTest : EthernetTetheringTestBase() {
 
         tryTest {
             downstreamIface = createTestInterface()
-            val iface = tetheredInterface
+            val iface = mTetheredInterfaceRequester.getInterface()
             assertEquals(iface, downstreamIface?.interfaceName)
 
             val localAddr = LinkAddress("192.0.2.3/28")

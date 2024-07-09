@@ -155,7 +155,16 @@ ASSERT_STRING_EQUAL(XT_BPF_EGRESS_PROG_PATH,    BPF_NETD_PATH "prog_netd_skfilte
 ASSERT_STRING_EQUAL(XT_BPF_ALLOWLIST_PROG_PATH, BPF_NETD_PATH "prog_netd_skfilter_allowlist_xtbpf");
 ASSERT_STRING_EQUAL(XT_BPF_DENYLIST_PROG_PATH,  BPF_NETD_PATH "prog_netd_skfilter_denylist_xtbpf");
 
-#define CGROUP_SOCKET_PROG_PATH BPF_NETD_PATH "prog_netd_cgroupsock_inet_create"
+#define CGROUP_INET_CREATE_PROG_PATH BPF_NETD_PATH "prog_netd_cgroupsock_inet_create"
+#define CGROUP_INET_RELEASE_PROG_PATH BPF_NETD_PATH "prog_netd_cgroupsockrelease_inet_release"
+#define CGROUP_CONNECT4_PROG_PATH BPF_NETD_PATH "prog_netd_connect4_inet4_connect"
+#define CGROUP_CONNECT6_PROG_PATH BPF_NETD_PATH "prog_netd_connect6_inet6_connect"
+#define CGROUP_UDP4_RECVMSG_PROG_PATH BPF_NETD_PATH "prog_netd_recvmsg4_udp4_recvmsg"
+#define CGROUP_UDP6_RECVMSG_PROG_PATH BPF_NETD_PATH "prog_netd_recvmsg6_udp6_recvmsg"
+#define CGROUP_UDP4_SENDMSG_PROG_PATH BPF_NETD_PATH "prog_netd_sendmsg4_udp4_sendmsg"
+#define CGROUP_UDP6_SENDMSG_PROG_PATH BPF_NETD_PATH "prog_netd_sendmsg6_udp6_sendmsg"
+#define CGROUP_GETSOCKOPT_PROG_PATH BPF_NETD_PATH "prog_netd_getsockopt_prog"
+#define CGROUP_SETSOCKOPT_PROG_PATH BPF_NETD_PATH "prog_netd_setsockopt_prog"
 
 #define TC_BPF_INGRESS_ACCOUNT_PROG_NAME "prog_netd_schedact_ingress_account"
 #define TC_BPF_INGRESS_ACCOUNT_PROG_PATH BPF_NETD_PATH TC_BPF_INGRESS_ACCOUNT_PROG_NAME
@@ -261,5 +270,5 @@ static inline bool isBlockedByUidRules(BpfConfig enabledRules, uint32_t uidRules
 static inline bool is_system_uid(uint32_t uid) {
     // MIN_SYSTEM_UID is AID_ROOT == 0, so uint32_t is *always* >= 0
     // MAX_SYSTEM_UID is AID_NOBODY == 9999, while AID_APP_START == 10000
-    return (uid < AID_APP_START);
+    return ((uid % AID_USER_OFFSET) < AID_APP_START);
 }
