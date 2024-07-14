@@ -91,7 +91,6 @@ import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkInfo;
-import android.net.RoutingCoordinatorManager;
 import android.net.TetherStatesParcel;
 import android.net.TetheredClient;
 import android.net.TetheringCallbackStartedParcel;
@@ -138,6 +137,7 @@ import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.NetdUtils;
+import com.android.net.module.util.RoutingCoordinatorManager;
 import com.android.net.module.util.SdkUtil.LateSdk;
 import com.android.net.module.util.SharedLog;
 import com.android.networkstack.apishim.common.BluetoothPanShim;
@@ -2397,9 +2397,6 @@ public class Tethering {
                 hasCallingPermission(NETWORK_SETTINGS)
                         || hasCallingPermission(PERMISSION_MAINLINE_NETWORK_STACK)
                         || hasCallingPermission(NETWORK_STACK);
-        if (callback == null) {
-            throw new NullPointerException();
-        }
         mHandler.post(() -> {
             mTetheringEventCallbacks.register(callback, new CallbackCookie(hasListPermission));
             final TetheringCallbackStartedParcel parcel = new TetheringCallbackStartedParcel();
@@ -2437,9 +2434,6 @@ public class Tethering {
 
     /** Unregister tethering event callback */
     void unregisterTetheringEventCallback(ITetheringEventCallback callback) {
-        if (callback == null) {
-            throw new NullPointerException();
-        }
         mHandler.post(() -> {
             mTetheringEventCallbacks.unregister(callback);
         });
