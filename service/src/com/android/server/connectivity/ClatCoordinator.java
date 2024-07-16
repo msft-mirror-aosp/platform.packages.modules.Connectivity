@@ -256,6 +256,7 @@ public class ClatCoordinator {
         @Nullable
         public IBpfMap<ClatIngress6Key, ClatIngress6Value> getBpfIngress6Map() {
             try {
+                // written from clatd.c
                 return new BpfMap<>(CLAT_INGRESS6_MAP_PATH,
                        ClatIngress6Key.class, ClatIngress6Value.class);
             } catch (ErrnoException e) {
@@ -268,6 +269,7 @@ public class ClatCoordinator {
         @Nullable
         public IBpfMap<ClatEgress4Key, ClatEgress4Value> getBpfEgress4Map() {
             try {
+                // written from clatd.c
                 return new BpfMap<>(CLAT_EGRESS4_MAP_PATH,
                        ClatEgress4Key.class, ClatEgress4Value.class);
             } catch (ErrnoException e) {
@@ -280,6 +282,7 @@ public class ClatCoordinator {
         @Nullable
         public IBpfMap<CookieTagMapKey, CookieTagMapValue> getBpfCookieTagMap() {
             try {
+                // also read and written from other locations
                 return new BpfMap<>(COOKIE_TAG_MAP_PATH,
                        CookieTagMapKey.class, CookieTagMapValue.class);
             } catch (ErrnoException e) {
@@ -683,13 +686,25 @@ public class ClatCoordinator {
             throw new IOException("Failed to start clat ", e);
         } finally {
             if (tunFd != null) {
-                tunFd.close();
+                try {
+                    tunFd.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Fail to close tun file descriptor " + e);
+                }
             }
             if (readSock6 != null) {
-                readSock6.close();
+                try {
+                    readSock6.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Fail to close read socket " + e);
+                }
             }
             if (writeSock6 != null) {
-                writeSock6.close();
+                try {
+                    writeSock6.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Fail to close write socket " + e);
+                }
             }
         }
     }
