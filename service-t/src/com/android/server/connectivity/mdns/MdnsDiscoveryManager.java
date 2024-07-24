@@ -30,6 +30,7 @@ import android.util.Pair;
 import androidx.annotation.GuardedBy;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.DnsUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
@@ -66,8 +67,8 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
 
         public void put(@NonNull String serviceType, @NonNull SocketKey socketKey,
                 @NonNull MdnsServiceTypeClient client) {
-            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
-            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsLowerServiceType,
+            final String dnsUpperServiceType = DnsUtils.toDnsUpperCase(serviceType);
+            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsUpperServiceType,
                     socketKey);
             clients.put(perSocketServiceType, client);
         }
@@ -75,18 +76,18 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         @Nullable
         public MdnsServiceTypeClient get(
                 @NonNull String serviceType, @NonNull SocketKey socketKey) {
-            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
-            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsLowerServiceType,
+            final String dnsUpperServiceType = DnsUtils.toDnsUpperCase(serviceType);
+            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsUpperServiceType,
                     socketKey);
             return clients.getOrDefault(perSocketServiceType, null);
         }
 
         public List<MdnsServiceTypeClient> getByServiceType(@NonNull String serviceType) {
-            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
+            final String dnsUpperServiceType = DnsUtils.toDnsUpperCase(serviceType);
             final List<MdnsServiceTypeClient> list = new ArrayList<>();
             for (int i = 0; i < clients.size(); i++) {
                 final Pair<String, SocketKey> perSocketServiceType = clients.keyAt(i);
-                if (dnsLowerServiceType.equals(perSocketServiceType.first)) {
+                if (dnsUpperServiceType.equals(perSocketServiceType.first)) {
                     list.add(clients.valueAt(i));
                 }
             }
@@ -241,11 +242,30 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
             }
         }
         // Request the network for discovery.
+        // This requests sockets on all networks even if the searchOptions have a given interface
+        // index (with getNetwork==null, for local interfaces), and only uses matching interfaces
+        // in that case. While this is a simple solution to only use matching sockets, a better
+        // practice would be to only request the correct socket for discovery.
+        // TODO: avoid requesting extra sockets after migrating P2P and tethering networks to local
+        // NetworkAgents.
         socketClient.notifyNetworkRequested(listener, searchOptions.getNetwork(),
                 new MdnsSocketClientBase.SocketCreationCallback() {
                     @Override
                     public void onSocketCreated(@NonNull SocketKey socketKey) {
                         discoveryExecutor.ensureRunningOnHandlerThread();
+                        final int searchInterfaceIndex = searchOptions.getInterfaceIndex();
+                        if (searchOptions.getNetwork() == null
+                                && searchInterfaceIndex > 0
+                                // The interface index in options should only match interfaces that
+                                // do not have any Network; a matching Network should be provided
+                                // otherwise.
+                                && (socketKey.getNetwork() != null
+                                    || socketKey.getInterfaceIndex() != searchInterfaceIndex)) {
+                            sharedLog.i("Skipping " + socketKey + " as ifIndex "
+                                    + searchInterfaceIndex + " was requested.");
+                            return;
+                        }
+
                         // All listeners of the same service types shares the same
                         // MdnsServiceTypeClient.
                         MdnsServiceTypeClient serviceTypeClient =
@@ -362,7 +382,7 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         return new MdnsServiceTypeClient(
                 serviceType, socketClient,
                 executorProvider.newServiceTypeClientSchedulerExecutor(), socketKey,
-                sharedLog.forSubComponent(tag), looper, serviceCache);
+                sharedLog.forSubComponent(tag), looper, serviceCache, mdnsFeatureFlags);
     }
 
     /**

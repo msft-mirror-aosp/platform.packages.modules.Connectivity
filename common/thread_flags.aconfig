@@ -1,8 +1,9 @@
 package: "com.android.net.thread.flags"
-container: "system"
+container: "com.android.tethering"
 
 flag {
     name: "thread_enabled"
+    is_exported: true
     namespace: "thread_network"
     description: "Controls whether the Android Thread feature is enabled"
     bug: "301473012"

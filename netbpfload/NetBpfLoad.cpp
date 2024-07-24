@@ -51,23 +51,24 @@
 #include "bpf/BpfUtils.h"
 #include "loader.h"
 
-using android::base::EndsWith;
-using android::bpf::domain;
-using std::string;
+namespace android {
+namespace bpf {
 
-bool exists(const char* const path) {
+using base::StartsWith;
+using base::EndsWith;
+using std::string;
+using std::vector;
+
+static bool exists(const char* const path) {
     int v = access(path, F_OK);
-    if (!v) {
-        ALOGI("%s exists.", path);
-        return true;
-    }
+    if (!v) return true;
     if (errno == ENOENT) return false;
     ALOGE("FATAL: access(%s, F_OK) -> %d [%d:%s]", path, v, errno, strerror(errno));
     abort();  // can only hit this if permissions (likely selinux) are screwed up
 }
 
 
-const android::bpf::Location locations[] = {
+const Location locations[] = {
         // S+ Tethering mainline module (network_stack): tether offload
         {
                 .dir = "/apex/com.android.tethering/etc/bpf/",
@@ -97,7 +98,7 @@ const android::bpf::Location locations[] = {
         },
 };
 
-int loadAllElfObjects(const android::bpf::Location& location) {
+static int loadAllElfObjects(const unsigned int bpfloader_ver, const Location& location) {
     int retVal = 0;
     DIR* dir;
     struct dirent* ent;
@@ -111,12 +112,12 @@ int loadAllElfObjects(const android::bpf::Location& location) {
             progPath += s;
 
             bool critical;
-            int ret = android::bpf::loadProg(progPath.c_str(), &critical, location);
+            int ret = loadProg(progPath.c_str(), &critical, bpfloader_ver, location);
             if (ret) {
                 if (critical) retVal = ret;
                 ALOGE("Failed to load object: %s, ret: %s", progPath.c_str(), std::strerror(-ret));
             } else {
-                ALOGI("Loaded object: %s", progPath.c_str());
+                ALOGD("Loaded object: %s", progPath.c_str());
             }
         }
         closedir(dir);
@@ -124,7 +125,7 @@ int loadAllElfObjects(const android::bpf::Location& location) {
     return retVal;
 }
 
-int createSysFsBpfSubDir(const char* const prefix) {
+static int createSysFsBpfSubDir(const char* const prefix) {
     if (*prefix) {
         mode_t prevUmask = umask(0);
 
@@ -147,8 +148,8 @@ int createSysFsBpfSubDir(const char* const prefix) {
 // Technically 'value' doesn't need to be newline terminated, but it's best
 // to include a newline to match 'echo "value" > /proc/sys/...foo' behaviour,
 // which is usually how kernel devs test the actual sysctl interfaces.
-int writeProcSysFile(const char *filename, const char *value) {
-    android::base::unique_fd fd(open(filename, O_WRONLY | O_CLOEXEC));
+static int writeProcSysFile(const char *filename, const char *value) {
+    base::unique_fd fd(open(filename, O_WRONLY | O_CLOEXEC));
     if (fd < 0) {
         const int err = errno;
         ALOGE("open('%s', O_WRONLY | O_CLOEXEC) -> %s", filename, strerror(err));
@@ -171,10 +172,8 @@ int writeProcSysFile(const char *filename, const char *value) {
 
 #define APEX_MOUNT_POINT "/apex/com.android.tethering"
 const char * const platformBpfLoader = "/system/bin/bpfloader";
-const char * const platformNetBpfLoad = "/system/bin/netbpfload";
-const char * const apexNetBpfLoad = APEX_MOUNT_POINT "/bin/netbpfload";
 
-int logTetheringApexVersion(void) {
+static int logTetheringApexVersion(void) {
     char * found_blockdev = NULL;
     FILE * f = NULL;
     char buf[4096];
@@ -200,7 +199,7 @@ int logTetheringApexVersion(void) {
     f = NULL;
 
     if (!found_blockdev) return 2;
-    ALOGD("Found Tethering Apex mounted from blockdev %s", found_blockdev);
+    ALOGV("Found Tethering Apex mounted from blockdev %s", found_blockdev);
 
     f = fopen("/proc/mounts", "re");
     if (!f) { free(found_blockdev); return 3; }
@@ -226,45 +225,97 @@ int logTetheringApexVersion(void) {
     return 0;
 }
 
-int main(int argc, char** argv, char * const envp[]) {
-    (void)argc;
-    android::base::InitLogging(argv, &android::base::KernelLogger);
+static bool hasGSM() {
+    static string ph = base::GetProperty("gsm.current.phone-type", "");
+    static bool gsm = (ph != "");
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        ALOGI("hasGSM(gsm.current.phone-type='%s'): %s", ph.c_str(), gsm ? "true" : "false");
+    }
+    return gsm;
+}
 
-    ALOGI("NetBpfLoad '%s' starting...", argv[0]);
+static bool isTV() {
+    if (hasGSM()) return false;  // TVs don't do GSM
 
-    // true iff we are running from the module
-    const bool is_mainline = !strcmp(argv[0], apexNetBpfLoad);
+    static string key = base::GetProperty("ro.oem.key1", "");
+    static bool tv = StartsWith(key, "ATV00");
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        ALOGI("isTV(ro.oem.key1='%s'): %s.", key.c_str(), tv ? "true" : "false");
+    }
+    return tv;
+}
 
-    // true iff we are running from the platform
-    const bool is_platform = !strcmp(argv[0], platformNetBpfLoad);
+static bool isWear() {
+    static string wearSdkStr = base::GetProperty("ro.cw_build.wear_sdk.version", "");
+    static int wearSdkInt = base::GetIntProperty("ro.cw_build.wear_sdk.version", 0);
+    static string buildChars = base::GetProperty("ro.build.characteristics", "");
+    static vector<string> v = base::Tokenize(buildChars, ",");
+    static bool watch = (std::find(v.begin(), v.end(), "watch") != v.end());
+    static bool wear = (wearSdkInt > 0) || watch;
+    static bool logged = false;
+    if (!logged) {
+        logged = true;
+        ALOGI("isWear(ro.cw_build.wear_sdk.version=%d[%s] ro.build.characteristics='%s'): %s",
+              wearSdkInt, wearSdkStr.c_str(), buildChars.c_str(), wear ? "true" : "false");
+    }
+    return wear;
+}
 
-    const int device_api_level = android_get_device_api_level();
-    const bool isAtLeastT = (device_api_level >= __ANDROID_API_T__);
-    const bool isAtLeastU = (device_api_level >= __ANDROID_API_U__);
-    const bool isAtLeastV = (device_api_level >= __ANDROID_API_V__);
+static int doLoad(char** argv, char * const envp[]) {
+    const bool runningAsRoot = !getuid();  // true iff U QPR3 or V+
+
+    // Any released device will have codename REL instead of a 'real' codename.
+    // For safety: default to 'REL' so we default to unreleased=false on failure.
+    const bool unreleased = (base::GetProperty("ro.build.version.codename", "REL") != "REL");
+
+    // goog/main device_api_level is bumped *way* before aosp/main api level
+    // (the latter only gets bumped during the push of goog/main to aosp/main)
+    //
+    // Since we develop in AOSP, we want it to behave as if it was bumped too.
+    //
+    // Note that AOSP doesn't really have a good api level (for example during
+    // early V dev cycle, it would have *all* of T, some but not all of U, and some V).
+    // One could argue that for our purposes AOSP api level should be infinite or 10000.
+    //
+    // This could also cause api to be increased in goog/main or other branches,
+    // but I can't imagine a case where this would be a problem: the problem
+    // is rather a too low api level, rather than some ill defined high value.
+    // For example as I write this aosp is 34/U, and goog is 35/V,
+    // we want to treat both goog & aosp as 35/V, but it's harmless if we
+    // treat goog as 36 because that value isn't yet defined to mean anything,
+    // and we thus never compare against it.
+    //
+    // Also note that 'android_get_device_api_level()' is what the
+    //   //system/core/init/apex_init_util.cpp
+    // apex init .XXrc parsing code uses for XX filtering.
+    //
+    // That code has a hack to bump <35 to 35 (to force aosp/main to parse .35rc),
+    // but could (should?) perhaps be adjusted to match this.
+    const int effective_api_level = android_get_device_api_level() + (int)unreleased;
+    const bool isAtLeastT = (effective_api_level >= __ANDROID_API_T__);
+    const bool isAtLeastU = (effective_api_level >= __ANDROID_API_U__);
+    const bool isAtLeastV = (effective_api_level >= __ANDROID_API_V__);
 
     // last in U QPR2 beta1
     const bool has_platform_bpfloader_rc = exists("/system/etc/init/bpfloader.rc");
     // first in U QPR2 beta~2
     const bool has_platform_netbpfload_rc = exists("/system/etc/init/netbpfload.rc");
 
-    ALOGI("NetBpfLoad api:%d/%d kver:%07x platform:%d mainline:%d rc:%d%d",
-          android_get_application_target_sdk_version(), device_api_level,
-          android::bpf::kernelVersion(), is_platform, is_mainline,
+    // Version of Network BpfLoader depends on the Android OS version
+    unsigned int bpfloader_ver = 42u;    // [42] BPFLOADER_MAINLINE_VERSION
+    if (isAtLeastT) ++bpfloader_ver;     // [43] BPFLOADER_MAINLINE_T_VERSION
+    if (isAtLeastU) ++bpfloader_ver;     // [44] BPFLOADER_MAINLINE_U_VERSION
+    if (runningAsRoot) ++bpfloader_ver;  // [45] BPFLOADER_MAINLINE_U_QPR3_VERSION
+    if (isAtLeastV) ++bpfloader_ver;     // [46] BPFLOADER_MAINLINE_V_VERSION
+
+    ALOGI("NetBpfLoad v0.%u (%s) api:%d/%d kver:%07x (%s) uid:%d rc:%d%d",
+          bpfloader_ver, argv[0], android_get_device_api_level(), effective_api_level,
+          kernelVersion(), describeArch(), getuid(),
           has_platform_bpfloader_rc, has_platform_netbpfload_rc);
-
-    if (!is_platform && !is_mainline) {
-        ALOGE("Unable to determine if we're platform or mainline netbpfload.");
-        return 1;
-    }
-
-    if (is_platform) {
-        ALOGI("Executing apex netbpfload...");
-        const char * args[] = { apexNetBpfLoad, NULL, };
-        execve(args[0], (char**)args, envp);
-        ALOGE("exec '%s' fail: %d[%s]", apexNetBpfLoad, errno, strerror(errno));
-        return 1;
-    }
 
     if (!has_platform_bpfloader_rc && !has_platform_netbpfload_rc) {
         ALOGE("Unable to find platform's bpfloader & netbpfload init scripts.");
@@ -278,37 +329,72 @@ int main(int argc, char** argv, char * const envp[]) {
 
     logTetheringApexVersion();
 
-    if (is_mainline && has_platform_bpfloader_rc && !has_platform_netbpfload_rc) {
-        // Tethering apex shipped initrc file causes us to reach here
-        // but we're not ready to correctly handle anything before U QPR2
-        // in which the 'bpfloader' vs 'netbpfload' split happened
-        const char * args[] = { platformBpfLoader, NULL, };
-        execve(args[0], (char**)args, envp);
-        ALOGE("exec '%s' fail: %d[%s]", platformBpfLoader, errno, strerror(errno));
+    if (!isAtLeastT) {
+        ALOGE("Impossible - not reachable on Android <T.");
         return 1;
     }
 
-    if (isAtLeastT && !android::bpf::isAtLeastKernelVersion(4, 9, 0)) {
+    // both S and T require kernel 4.9 (and eBpf support)
+    if (isAtLeastT && !isAtLeastKernelVersion(4, 9, 0)) {
         ALOGE("Android T requires kernel 4.9.");
         return 1;
     }
 
-    if (isAtLeastU && !android::bpf::isAtLeastKernelVersion(4, 14, 0)) {
+    // U bumps the kernel requirement up to 4.14
+    if (isAtLeastU && !isAtLeastKernelVersion(4, 14, 0)) {
         ALOGE("Android U requires kernel 4.14.");
         return 1;
     }
 
-    if (isAtLeastV && !android::bpf::isAtLeastKernelVersion(4, 19, 0)) {
+    // V bumps the kernel requirement up to 4.19
+    // see also: //system/netd/tests/kernel_test.cpp TestKernel419
+    if (isAtLeastV && !isAtLeastKernelVersion(4, 19, 0)) {
         ALOGE("Android V requires kernel 4.19.");
         return 1;
     }
 
-    if (isAtLeastV && android::bpf::isX86() && !android::bpf::isKernel64Bit()) {
-        ALOGE("Android V requires X86 kernel to be 64-bit.");
-        return 1;
+    // Technically already required by U, but only enforce on V+
+    // see also: //system/netd/tests/kernel_test.cpp TestKernel64Bit
+    if (isAtLeastV && isKernel32Bit() && isAtLeastKernelVersion(5, 16, 0)) {
+        ALOGE("Android V+ platform with 32 bit kernel version >= 5.16.0 is unsupported");
+        if (!isTV()) return 1;
     }
 
-    if (android::bpf::isUserspace32bit() && android::bpf::isAtLeastKernelVersion(6, 2, 0)) {
+    // Various known ABI layout issues, particularly wrt. bpf and ipsec/xfrm.
+    if (isAtLeastV && isKernel32Bit() && isX86()) {
+        ALOGE("Android V requires X86 kernel to be 64-bit.");
+        if (!isTV()) return 1;
+    }
+
+    if (isAtLeastV) {
+        bool bad = false;
+
+        if (!isLtsKernel()) {
+            ALOGW("Android V only supports LTS kernels.");
+            bad = true;
+        }
+
+#define REQUIRE(maj, min, sub) \
+        if (isKernelVersion(maj, min) && !isAtLeastKernelVersion(maj, min, sub)) { \
+            ALOGW("Android V requires %d.%d kernel to be %d.%d.%d+.", maj, min, maj, min, sub); \
+            bad = true; \
+        }
+
+        REQUIRE(4, 19, 236)
+        REQUIRE(5, 4, 186)
+        REQUIRE(5, 10, 199)
+        REQUIRE(5, 15, 136)
+        REQUIRE(6, 1, 57)
+        REQUIRE(6, 6, 0)
+
+#undef REQUIRE
+
+        if (bad) {
+            ALOGE("Unsupported kernel version (%07x).", kernelVersion());
+        }
+    }
+
+    if (isUserspace32bit() && isAtLeastKernelVersion(6, 2, 0)) {
         /* Android 14/U should only launch on 64-bit kernels
          *   T launches on 5.10/5.15
          *   U launches on 5.15/6.1
@@ -324,28 +410,42 @@ int main(int argc, char** argv, char * const envp[]) {
          * Some of these have userspace or kernel workarounds/hacks.
          * Some of them don't...
          * We're going to be removing the hacks.
+         * (for example "ANDROID: xfrm: remove in_compat_syscall() checks").
+         * Note: this check/enforcement only applies to *system* userspace code,
+         * it does not affect unprivileged apps, the 32-on-64 compatibility
+         * problems are AFAIK limited to various CAP_NET_ADMIN protected interfaces.
          *
          * Additionally the 32-bit kernel jit support is poor,
          * and 32-bit userspace on 64-bit kernel bpf ringbuffer compatibility is broken.
          */
         ALOGE("64-bit userspace required on 6.2+ kernels.");
-        return 1;
+        // Stuff won't work reliably, but exempt TVs & Arm Wear devices
+        if (!isTV() && !(isWear() && isArm())) return 1;
     }
 
     // Ensure we can determine the Android build type.
-    if (!android::bpf::isEng() && !android::bpf::isUser() && !android::bpf::isUserdebug()) {
+    if (!isEng() && !isUser() && !isUserdebug()) {
         ALOGE("Failed to determine the build type: got %s, want 'eng', 'user', or 'userdebug'",
-              android::bpf::getBuildType().c_str());
+              getBuildType().c_str());
         return 1;
     }
 
-    if (isAtLeastU) {
+    if (runningAsRoot) {
+        // Note: writing this proc file requires being root (always the case on V+)
+
         // Linux 5.16-rc1 changed the default to 2 (disabled but changeable),
         // but we need 0 (enabled)
         // (this writeFile is known to fail on at least 4.19, but always defaults to 0 on
         // pre-5.13, on 5.13+ it depends on CONFIG_BPF_UNPRIV_DEFAULT_OFF)
         if (writeProcSysFile("/proc/sys/kernel/unprivileged_bpf_disabled", "0\n") &&
-            android::bpf::isAtLeastKernelVersion(5, 13, 0)) return 1;
+            isAtLeastKernelVersion(5, 13, 0)) return 1;
+    }
+
+    if (isAtLeastU) {
+        // Note: writing these proc files requires CAP_NET_ADMIN
+        // and sepolicy which is only present on U+,
+        // on Android T and earlier versions they're written from the 'load_bpf_programs'
+        // trigger (ie. by init itself) instead.
 
         // Enable the eBPF JIT -- but do note that on 64-bit kernels it is likely
         // already force enabled by the kernel config option BPF_JIT_ALWAYS_ON.
@@ -378,7 +478,7 @@ int main(int argc, char** argv, char * const envp[]) {
 
     // Load all ELF objects, create programs and maps, and pin them
     for (const auto& location : locations) {
-        if (loadAllElfObjects(location) != 0) {
+        if (loadAllElfObjects(bpfloader_ver, location) != 0) {
             ALOGE("=== CRITICAL FAILURE LOADING BPF PROGRAMS FROM %s ===", location.dir);
             ALOGE("If this triggers reliably, you're probably missing kernel options or patches.");
             ALOGE("If this triggers randomly, you might be hitting some memory allocation "
@@ -391,17 +491,49 @@ int main(int argc, char** argv, char * const envp[]) {
 
     int key = 1;
     int value = 123;
-    android::base::unique_fd map(
-            android::bpf::createMap(BPF_MAP_TYPE_ARRAY, sizeof(key), sizeof(value), 2, 0));
-    if (android::bpf::writeToMapEntry(map, &key, &value, BPF_ANY)) {
+    base::unique_fd map(
+            createMap(BPF_MAP_TYPE_ARRAY, sizeof(key), sizeof(value), 2, 0));
+    if (writeToMapEntry(map, &key, &value, BPF_ANY)) {
         ALOGE("Critical kernel bug - failure to write into index 1 of 2 element bpf map array.");
         return 1;
     }
 
+    // leave a flag that we're done
+    if (createSysFsBpfSubDir("netd_shared/mainline_done")) return 1;
+
+    // platform bpfloader will only succeed when run as root
+    if (!runningAsRoot) {
+        // unreachable on U QPR3+ which always runs netbpfload as root
+
+        ALOGI("mainline done, no need to transfer control to platform bpf loader.");
+        return 0;
+    }
+
+    // unreachable before U QPR3
     ALOGI("done, transferring control to platform bpfloader.");
 
+    // platform BpfLoader *needs* to run as root
     const char * args[] = { platformBpfLoader, NULL, };
     execve(args[0], (char**)args, envp);
     ALOGE("FATAL: execve('%s'): %d[%s]", platformBpfLoader, errno, strerror(errno));
     return 1;
+}
+
+}  // namespace bpf
+}  // namespace android
+
+int main(int argc, char** argv, char * const envp[]) {
+    android::base::InitLogging(argv, &android::base::KernelLogger);
+
+    if (argc == 2 && !strcmp(argv[1], "done")) {
+        // we're being re-exec'ed from platform bpfloader to 'finalize' things
+        if (!android::base::SetProperty("bpf.progs_loaded", "1")) {
+            ALOGE("Failed to set bpf.progs_loaded property to 1.");
+            return 125;
+        }
+        ALOGI("success.");
+        return 0;
+    }
+
+    return android::bpf::doLoad(argv, envp);
 }

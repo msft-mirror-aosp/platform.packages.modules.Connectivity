@@ -38,6 +38,7 @@ import android.net.TrafficStats
 import android.os.Build
 import android.os.Process
 import androidx.test.platform.app.InstrumentationRegistry
+import com.android.modules.utils.build.SdkLevel
 import com.android.server.net.integrationtests.NetworkStatsIntegrationTest.Direction.DOWNLOAD
 import com.android.server.net.integrationtests.NetworkStatsIntegrationTest.Direction.UPLOAD
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
@@ -214,6 +215,11 @@ class NetworkStatsIntegrationTest {
         // In practice, for one way 10k download payload, the download usage is about
         // 11222~12880 bytes, with 14~17 packets. And the upload usage is about 1279~1626 bytes
         // with 14~17 packets, which is majorly contributed by TCP ACK packets.
+        // Clear TrafficStats cache is needed to avoid rate-limit caching for
+        // TrafficStats API results on V+ devices.
+        if (SdkLevel.isAtLeastV()) {
+            TrafficStats.clearRateLimitCaches()
+        }
         val snapshotAfterDownload = StatsSnapshot(context, internalInterfaceName)
         val (expectedDownloadLower, expectedDownloadUpper) = getExpectedStatsBounds(
             TEST_DOWNLOAD_SIZE,
@@ -236,6 +242,9 @@ class NetworkStatsIntegrationTest {
         )
 
         // Verify upload data usage accounting.
+        if (SdkLevel.isAtLeastV()) {
+            TrafficStats.clearRateLimitCaches()
+        }
         val snapshotAfterUpload = StatsSnapshot(context, internalInterfaceName)
         val (expectedUploadLower, expectedUploadUpper) = getExpectedStatsBounds(
             TEST_UPLOAD_SIZE,
@@ -299,7 +308,8 @@ class NetworkStatsIntegrationTest {
         val buf = ByteArray(DEFAULT_BUFFER_SIZE)
 
         httpServer.addResponse(
-            TestHttpServer.Request(path, NanoHTTPD.Method.POST), NanoHTTPD.Response.Status.OK,
+            TestHttpServer.Request(path, NanoHTTPD.Method.POST),
+            NanoHTTPD.Response.Status.OK,
             content = getRandomString(downloadSize)
         )
         var httpConnection: HttpURLConnection? = null
@@ -349,15 +359,19 @@ class NetworkStatsIntegrationTest {
     ) {
         operator fun plus(other: BareStats): BareStats {
             return BareStats(
-                this.rxBytes + other.rxBytes, this.rxPackets + other.rxPackets,
-                this.txBytes + other.txBytes, this.txPackets + other.txPackets
+                this.rxBytes + other.rxBytes,
+                this.rxPackets + other.rxPackets,
+                this.txBytes + other.txBytes,
+                this.txPackets + other.txPackets
             )
         }
 
         operator fun minus(other: BareStats): BareStats {
             return BareStats(
-                this.rxBytes - other.rxBytes, this.rxPackets - other.rxPackets,
-                this.txBytes - other.txBytes, this.txPackets - other.txPackets
+                this.rxBytes - other.rxBytes,
+                this.rxPackets - other.rxPackets,
+                this.txBytes - other.txBytes,
+                this.txPackets - other.txPackets
             )
         }
 
@@ -405,8 +419,12 @@ class NetworkStatsIntegrationTest {
         private fun getUidDetail(iface: String, tag: Int): BareStats {
             return getNetworkStatsThat(iface, tag) { nsm, template ->
                 nsm.queryDetailsForUidTagState(
-                    template, Long.MIN_VALUE, Long.MAX_VALUE,
-                    Process.myUid(), tag, Bucket.STATE_ALL
+                    template,
+                    Long.MIN_VALUE,
+                    Long.MAX_VALUE,
+                    Process.myUid(),
+                    tag,
+                    Bucket.STATE_ALL
                 )
             }
         }
@@ -498,28 +516,36 @@ class NetworkStatsIntegrationTest {
         assertInRange(
             "Unexpected iface traffic stats",
             after.iface,
-            before.trafficStatsIface, after.trafficStatsIface,
-            lower, upper
+            before.trafficStatsIface,
+            after.trafficStatsIface,
+            lower,
+            upper
         )
         // Uid traffic stats are counted in both direction because the external network
         // traffic is also attributed to the test uid.
         assertInRange(
             "Unexpected uid traffic stats",
             after.iface,
-            before.trafficStatsUid, after.trafficStatsUid,
-            lower + lower.reverse(), upper + upper.reverse()
+            before.trafficStatsUid,
+            after.trafficStatsUid,
+            lower + lower.reverse(),
+            upper + upper.reverse()
         )
         assertInRange(
             "Unexpected non-tagged summary stats",
             after.iface,
-            before.statsSummary, after.statsSummary,
-            lower, upper
+            before.statsSummary,
+            after.statsSummary,
+            lower,
+            upper
         )
         assertInRange(
             "Unexpected non-tagged uid stats",
             after.iface,
-            before.statsUid, after.statsUid,
-            lower, upper
+            before.statsUid,
+            after.statsUid,
+            lower,
+            upper
         )
     }
 
@@ -546,14 +572,16 @@ class NetworkStatsIntegrationTest {
         assertInRange(
             "Unexpected tagged summary stats",
             after.iface,
-            before.taggedSummary, after.taggedSummary,
+            before.taggedSummary,
+            after.taggedSummary,
             lower,
             upper
         )
         assertInRange(
             "Unexpected tagged uid stats: ${Process.myUid()}",
             after.iface,
-            before.taggedUid, after.taggedUid,
+            before.taggedUid,
+            after.taggedUid,
             lower,
             upper
         )
@@ -570,7 +598,8 @@ class NetworkStatsIntegrationTest {
     ) {
         // Passing the value after operation and the value before operation to dump the actual
         // numbers if it fails.
-        assertTrue(checkInRange(before, after, lower, upper),
+        assertTrue(
+            checkInRange(before, after, lower, upper),
             "$tag on $iface: $after - $before is not within range [$lower, $upper]"
         )
     }

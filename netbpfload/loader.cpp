@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#define LOG_TAG "NetBpfLoader"
+#define LOG_TAG "NetBpfLoad"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -31,23 +31,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// This is BpfLoader v0.41
-// WARNING: If you ever hit cherrypick conflicts here you're doing it wrong:
-// You are NOT allowed to cherrypick bpfloader related patches out of order.
-// (indeed: cherrypicking is probably a bad idea and you should merge instead)
-// Mainline supports ONLY the published versions of the bpfloader for each Android release.
-#define BPFLOADER_VERSION_MAJOR 0u
-#define BPFLOADER_VERSION_MINOR 41u
-#define BPFLOADER_VERSION ((BPFLOADER_VERSION_MAJOR << 16) | BPFLOADER_VERSION_MINOR)
-
 #include "BpfSyscallWrappers.h"
 #include "bpf/BpfUtils.h"
 #include "bpf/bpf_map_def.h"
 #include "loader.h"
-
-#if BPFLOADER_VERSION < COMPILE_FOR_BPFLOADER_VERSION
-#error "BPFLOADER_VERSION is less than COMPILE_FOR_BPFLOADER_VERSION"
-#endif
 
 #include <cstdlib>
 #include <fstream>
@@ -178,32 +165,34 @@ typedef struct {
  * since they are less stable abi/api and may conflict with platform uses of bpf.
  */
 sectionType sectionNameTypes[] = {
-        {"bind4/",         BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_BIND},
-        {"bind6/",         BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_BIND},
-        {"cgroupskb/",     BPF_PROG_TYPE_CGROUP_SKB,       BPF_ATTACH_TYPE_UNSPEC},
-        {"cgroupsock/",    BPF_PROG_TYPE_CGROUP_SOCK,      BPF_ATTACH_TYPE_UNSPEC},
-        {"connect4/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_CONNECT},
-        {"connect6/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_CONNECT},
-        {"egress/",        BPF_PROG_TYPE_CGROUP_SKB,       BPF_CGROUP_INET_EGRESS},
-        {"getsockopt/",    BPF_PROG_TYPE_CGROUP_SOCKOPT,   BPF_CGROUP_GETSOCKOPT},
-        {"ingress/",       BPF_PROG_TYPE_CGROUP_SKB,       BPF_CGROUP_INET_INGRESS},
-        {"lwt_in/",        BPF_PROG_TYPE_LWT_IN,           BPF_ATTACH_TYPE_UNSPEC},
-        {"lwt_out/",       BPF_PROG_TYPE_LWT_OUT,          BPF_ATTACH_TYPE_UNSPEC},
-        {"lwt_seg6local/", BPF_PROG_TYPE_LWT_SEG6LOCAL,    BPF_ATTACH_TYPE_UNSPEC},
-        {"lwt_xmit/",      BPF_PROG_TYPE_LWT_XMIT,         BPF_ATTACH_TYPE_UNSPEC},
-        {"postbind4/",     BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET4_POST_BIND},
-        {"postbind6/",     BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET6_POST_BIND},
-        {"recvmsg4/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_RECVMSG},
-        {"recvmsg6/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_RECVMSG},
-        {"schedact/",      BPF_PROG_TYPE_SCHED_ACT,        BPF_ATTACH_TYPE_UNSPEC},
-        {"schedcls/",      BPF_PROG_TYPE_SCHED_CLS,        BPF_ATTACH_TYPE_UNSPEC},
-        {"sendmsg4/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_SENDMSG},
-        {"sendmsg6/",      BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_SENDMSG},
-        {"setsockopt/",    BPF_PROG_TYPE_CGROUP_SOCKOPT,   BPF_CGROUP_SETSOCKOPT},
-        {"skfilter/",      BPF_PROG_TYPE_SOCKET_FILTER,    BPF_ATTACH_TYPE_UNSPEC},
-        {"sockops/",       BPF_PROG_TYPE_SOCK_OPS,         BPF_CGROUP_SOCK_OPS},
-        {"sysctl",         BPF_PROG_TYPE_CGROUP_SYSCTL,    BPF_CGROUP_SYSCTL},
-        {"xdp/",           BPF_PROG_TYPE_XDP,              BPF_ATTACH_TYPE_UNSPEC},
+        {"bind4/",             BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_BIND},
+        {"bind6/",             BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_BIND},
+        {"cgroupskb/",         BPF_PROG_TYPE_CGROUP_SKB,       BPF_ATTACH_TYPE_UNSPEC},
+        {"cgroupsock/",        BPF_PROG_TYPE_CGROUP_SOCK,      BPF_ATTACH_TYPE_UNSPEC},
+        {"cgroupsockcreate/",  BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET_SOCK_CREATE},
+        {"cgroupsockrelease/", BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET_SOCK_RELEASE},
+        {"connect4/",          BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET4_CONNECT},
+        {"connect6/",          BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_INET6_CONNECT},
+        {"egress/",            BPF_PROG_TYPE_CGROUP_SKB,       BPF_CGROUP_INET_EGRESS},
+        {"getsockopt/",        BPF_PROG_TYPE_CGROUP_SOCKOPT,   BPF_CGROUP_GETSOCKOPT},
+        {"ingress/",           BPF_PROG_TYPE_CGROUP_SKB,       BPF_CGROUP_INET_INGRESS},
+        {"lwt_in/",            BPF_PROG_TYPE_LWT_IN,           BPF_ATTACH_TYPE_UNSPEC},
+        {"lwt_out/",           BPF_PROG_TYPE_LWT_OUT,          BPF_ATTACH_TYPE_UNSPEC},
+        {"lwt_seg6local/",     BPF_PROG_TYPE_LWT_SEG6LOCAL,    BPF_ATTACH_TYPE_UNSPEC},
+        {"lwt_xmit/",          BPF_PROG_TYPE_LWT_XMIT,         BPF_ATTACH_TYPE_UNSPEC},
+        {"postbind4/",         BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET4_POST_BIND},
+        {"postbind6/",         BPF_PROG_TYPE_CGROUP_SOCK,      BPF_CGROUP_INET6_POST_BIND},
+        {"recvmsg4/",          BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_RECVMSG},
+        {"recvmsg6/",          BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_RECVMSG},
+        {"schedact/",          BPF_PROG_TYPE_SCHED_ACT,        BPF_ATTACH_TYPE_UNSPEC},
+        {"schedcls/",          BPF_PROG_TYPE_SCHED_CLS,        BPF_ATTACH_TYPE_UNSPEC},
+        {"sendmsg4/",          BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP4_SENDMSG},
+        {"sendmsg6/",          BPF_PROG_TYPE_CGROUP_SOCK_ADDR, BPF_CGROUP_UDP6_SENDMSG},
+        {"setsockopt/",        BPF_PROG_TYPE_CGROUP_SOCKOPT,   BPF_CGROUP_SETSOCKOPT},
+        {"skfilter/",          BPF_PROG_TYPE_SOCKET_FILTER,    BPF_ATTACH_TYPE_UNSPEC},
+        {"sockops/",           BPF_PROG_TYPE_SOCK_OPS,         BPF_CGROUP_SOCK_OPS},
+        {"sysctl",             BPF_PROG_TYPE_CGROUP_SYSCTL,    BPF_CGROUP_SYSCTL},
+        {"xdp/",               BPF_PROG_TYPE_XDP,              BPF_ATTACH_TYPE_UNSPEC},
 };
 
 typedef struct {
@@ -413,9 +402,6 @@ static int readProgDefs(ifstream& elfFile, vector<struct bpf_prog_def>& pd,
                         size_t sizeOfBpfProgDef) {
     vector<char> pdData;
     int ret = readSectionByName("progs", elfFile, pdData);
-    // Older file formats do not require a 'progs' section at all.
-    // (We should probably figure out whether this is behaviour which is safe to remove now.)
-    if (ret == -2) return 0;
     if (ret) return ret;
 
     if (pdData.size() % sizeOfBpfProgDef) {
@@ -528,7 +514,7 @@ static int readCodeSections(ifstream& elfFile, vector<codeSection>& cs, size_t s
 
         ret = readSectionByIdx(elfFile, i, cs_temp.data);
         if (ret) return ret;
-        ALOGD("Loaded code section %d (%s)", i, name.c_str());
+        ALOGV("Loaded code section %d (%s)", i, name.c_str());
 
         vector<string> csSymNames;
         ret = getSectionSymNames(elfFile, oldName, csSymNames, STT_FUNC);
@@ -548,13 +534,13 @@ static int readCodeSections(ifstream& elfFile, vector<codeSection>& cs, size_t s
             if (name == (".rel" + oldName)) {
                 ret = readSectionByIdx(elfFile, i + 1, cs_temp.rel_data);
                 if (ret) return ret;
-                ALOGD("Loaded relo section %d (%s)", i, name.c_str());
+                ALOGV("Loaded relo section %d (%s)", i, name.c_str());
             }
         }
 
         if (cs_temp.data.size() > 0) {
             cs.push_back(std::move(cs_temp));
-            ALOGD("Adding section %d to cs list", i);
+            ALOGV("Adding section %d to cs list", i);
         }
     }
     return 0;
@@ -574,6 +560,14 @@ static int getSymNameByIdx(ifstream& elfFile, int index, string& name) {
 
 static bool mapMatchesExpectations(const unique_fd& fd, const string& mapName,
                                    const struct bpf_map_def& mapDef, const enum bpf_map_type type) {
+    // bpfGetFd... family of functions require at minimum a 4.14 kernel,
+    // so on 4.9-T kernels just pretend the map matches our expectations.
+    // Additionally we'll get almost equivalent test coverage on newer devices/kernels.
+    // This is because the primary failure mode we're trying to detect here
+    // is either a source code misconfiguration (which is likely kernel independent)
+    // or a newly introduced kernel feature/bug (which is unlikely to get backported to 4.9).
+    if (!isAtLeastKernelVersion(4, 14, 0)) return true;
+
     // Assuming fd is a valid Bpf Map file descriptor then
     // all the following should always succeed on a 4.14+ kernel.
     // If they somehow do fail, they'll return -1 (and set errno),
@@ -621,7 +615,8 @@ static bool mapMatchesExpectations(const unique_fd& fd, const string& mapName,
 }
 
 static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>& mapFds,
-                      const char* prefix, const size_t sizeOfBpfMapDef) {
+                      const char* prefix, const size_t sizeOfBpfMapDef,
+                      const unsigned int bpfloader_ver) {
     int ret;
     vector<char> mdData;
     vector<struct bpf_map_def> md;
@@ -663,14 +658,14 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
     for (int i = 0; i < (int)mapNames.size(); i++) {
         if (md[i].zero != 0) abort();
 
-        if (BPFLOADER_VERSION < md[i].bpfloader_min_ver) {
+        if (bpfloader_ver < md[i].bpfloader_min_ver) {
             ALOGI("skipping map %s which requires bpfloader min ver 0x%05x", mapNames[i].c_str(),
                   md[i].bpfloader_min_ver);
             mapFds.push_back(unique_fd());
             continue;
         }
 
-        if (BPFLOADER_VERSION >= md[i].bpfloader_max_ver) {
+        if (bpfloader_ver >= md[i].bpfloader_max_ver) {
             ALOGI("skipping map %s which requires bpfloader max ver 0x%05x", mapNames[i].c_str(),
                   md[i].bpfloader_max_ver);
             mapFds.push_back(unique_fd());
@@ -711,6 +706,16 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
         }
 
         enum bpf_map_type type = md[i].type;
+        if (type == BPF_MAP_TYPE_DEVMAP && !isAtLeastKernelVersion(4, 14, 0)) {
+            // On Linux Kernels older than 4.14 this map type doesn't exist, but it can kind
+            // of be approximated: ARRAY has the same userspace api, though it is not usable
+            // by the same ebpf programs.  However, that's okay because the bpf_redirect_map()
+            // helper doesn't exist on 4.9-T anyway (so the bpf program would fail to load,
+            // and thus needs to be tagged as 4.14+ either way), so there's nothing useful you
+            // could do with a DEVMAP anyway (that isn't already provided by an ARRAY)...
+            // Hence using an ARRAY instead of a DEVMAP simply makes life easier for userspace.
+            type = BPF_MAP_TYPE_ARRAY;
+        }
         if (type == BPF_MAP_TYPE_DEVMAP_HASH && !isAtLeastKernelVersion(5, 4, 0)) {
             // On Linux Kernels older than 5.4 this map type doesn't exist, but it can kind
             // of be approximated: HASH has the same userspace visible api.
@@ -733,15 +738,15 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
         domain selinux_context = getDomainFromSelinuxContext(md[i].selinux_context);
         if (specified(selinux_context)) {
             ALOGI("map %s selinux_context [%-32s] -> %d -> '%s' (%s)", mapNames[i].c_str(),
-                  md[i].selinux_context, selinux_context, lookupSelinuxContext(selinux_context),
-                  lookupPinSubdir(selinux_context));
+                  md[i].selinux_context, static_cast<int>(selinux_context),
+                  lookupSelinuxContext(selinux_context), lookupPinSubdir(selinux_context));
         }
 
         domain pin_subdir = getDomainFromPinSubdir(md[i].pin_subdir);
         if (unrecognized(pin_subdir)) return -ENOTDIR;
         if (specified(pin_subdir)) {
             ALOGI("map %s pin_subdir [%-32s] -> %d -> '%s'", mapNames[i].c_str(), md[i].pin_subdir,
-                  pin_subdir, lookupPinSubdir(pin_subdir));
+                  static_cast<int>(pin_subdir), lookupPinSubdir(pin_subdir));
         }
 
         // Format of pin location is /sys/fs/bpf/<pin_subdir|prefix>map_<objName>_<mapName>
@@ -766,7 +771,8 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
               .max_entries = max_entries,
               .map_flags = md[i].map_flags,
             };
-            strlcpy(req.map_name, mapNames[i].c_str(), sizeof(req.map_name));
+            if (isAtLeastKernelVersion(4, 15, 0))
+                strlcpy(req.map_name, mapNames[i].c_str(), sizeof(req.map_name));
             fd.reset(bpf(BPF_MAP_CREATE, req));
             saved_errno = errno;
             ALOGD("bpf_create_map name %s, ret: %d", mapNames[i].c_str(), fd.get());
@@ -865,7 +871,7 @@ static void applyRelo(void* insnsPtr, Elf64_Addr offset, int fd) {
 
     // Occasionally might be useful for relocation debugging, but pretty spammy
     if (0) {
-        ALOGD("applying relo to instruction at byte offset: %llu, "
+        ALOGV("applying relo to instruction at byte offset: %llu, "
               "insn offset %d, insn %llx",
               (unsigned long long)offset, insnIndex, *(unsigned long long*)insn);
     }
@@ -910,7 +916,7 @@ static void applyMapRelo(ifstream& elfFile, vector<unique_fd> &mapFds, vector<co
 }
 
 static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const string& license,
-                            const char* prefix) {
+                            const char* prefix, const unsigned int bpfloader_ver) {
     unsigned kvers = kernelVersion();
 
     if (!kvers) {
@@ -946,8 +952,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
 
         ALOGD("cs[%d].name:%s requires bpfloader version [0x%05x,0x%05x)", i, name.c_str(),
               bpfMinVer, bpfMaxVer);
-        if (BPFLOADER_VERSION < bpfMinVer) continue;
-        if (BPFLOADER_VERSION >= bpfMaxVer) continue;
+        if (bpfloader_ver < bpfMinVer) continue;
+        if (bpfloader_ver >= bpfMaxVer) continue;
 
         if ((cs[i].prog_def->ignore_on_eng && isEng()) ||
             (cs[i].prog_def->ignore_on_user && isUser()) ||
@@ -970,13 +976,14 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
 
         if (specified(selinux_context)) {
             ALOGI("prog %s selinux_context [%-32s] -> %d -> '%s' (%s)", name.c_str(),
-                  cs[i].prog_def->selinux_context, selinux_context,
+                  cs[i].prog_def->selinux_context, static_cast<int>(selinux_context),
                   lookupSelinuxContext(selinux_context), lookupPinSubdir(selinux_context));
         }
 
         if (specified(pin_subdir)) {
             ALOGI("prog %s pin_subdir [%-32s] -> %d -> '%s'", name.c_str(),
-                  cs[i].prog_def->pin_subdir, pin_subdir, lookupPinSubdir(pin_subdir));
+                  cs[i].prog_def->pin_subdir, static_cast<int>(pin_subdir),
+                  lookupPinSubdir(pin_subdir));
         }
 
         // strip any potential $foo suffix
@@ -1008,7 +1015,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
               .log_size = static_cast<__u32>(log_buf.size()),
               .expected_attach_type = cs[i].expected_attach_type,
             };
-            strlcpy(req.prog_name, cs[i].name.c_str(), sizeof(req.prog_name));
+            if (isAtLeastKernelVersion(4, 15, 0))
+                strlcpy(req.prog_name, cs[i].name.c_str(), sizeof(req.prog_name));
             fd.reset(bpf(BPF_PROG_LOAD, req));
 
             ALOGD("BPF_PROG_LOAD call for %s (%s) returned fd: %d (%s)", elfPath,
@@ -1082,7 +1090,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
     return 0;
 }
 
-int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
+int loadProg(const char* const elfPath, bool* const isCritical, const unsigned int bpfloader_ver,
+             const Location& location) {
     vector<char> license;
     vector<char> critical;
     vector<codeSection> cs;
@@ -1121,27 +1130,27 @@ int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
             readSectionUint("size_of_bpf_prog_def", elfFile, DEFAULT_SIZEOF_BPF_PROG_DEF);
 
     // inclusive lower bound check
-    if (BPFLOADER_VERSION < bpfLoaderMinVer) {
+    if (bpfloader_ver < bpfLoaderMinVer) {
         ALOGI("BpfLoader version 0x%05x ignoring ELF object %s with min ver 0x%05x",
-              BPFLOADER_VERSION, elfPath, bpfLoaderMinVer);
+              bpfloader_ver, elfPath, bpfLoaderMinVer);
         return 0;
     }
 
     // exclusive upper bound check
-    if (BPFLOADER_VERSION >= bpfLoaderMaxVer) {
+    if (bpfloader_ver >= bpfLoaderMaxVer) {
         ALOGI("BpfLoader version 0x%05x ignoring ELF object %s with max ver 0x%05x",
-              BPFLOADER_VERSION, elfPath, bpfLoaderMaxVer);
+              bpfloader_ver, elfPath, bpfLoaderMaxVer);
         return 0;
     }
 
-    if (BPFLOADER_VERSION < bpfLoaderMinRequiredVer) {
+    if (bpfloader_ver < bpfLoaderMinRequiredVer) {
         ALOGI("BpfLoader version 0x%05x failing due to ELF object %s with required min ver 0x%05x",
-              BPFLOADER_VERSION, elfPath, bpfLoaderMinRequiredVer);
+              bpfloader_ver, elfPath, bpfLoaderMinRequiredVer);
         return -1;
     }
 
     ALOGI("BpfLoader version 0x%05x processing ELF object %s with ver [0x%05x,0x%05x)",
-          BPFLOADER_VERSION, elfPath, bpfLoaderMinVer, bpfLoaderMaxVer);
+          bpfloader_ver, elfPath, bpfLoaderMinVer, bpfLoaderMaxVer);
 
     if (sizeOfBpfMapDef < DEFAULT_SIZEOF_BPF_MAP_DEF) {
         ALOGE("sizeof(bpf_map_def) of %zu is too small (< %d)", sizeOfBpfMapDef,
@@ -1164,18 +1173,18 @@ int loadProg(const char* elfPath, bool* isCritical, const Location& location) {
     /* Just for future debugging */
     if (0) dumpAllCs(cs);
 
-    ret = createMaps(elfPath, elfFile, mapFds, location.prefix, sizeOfBpfMapDef);
+    ret = createMaps(elfPath, elfFile, mapFds, location.prefix, sizeOfBpfMapDef, bpfloader_ver);
     if (ret) {
         ALOGE("Failed to create maps: (ret=%d) in %s", ret, elfPath);
         return ret;
     }
 
     for (int i = 0; i < (int)mapFds.size(); i++)
-        ALOGD("map_fd found at %d is %d in %s", i, mapFds[i].get(), elfPath);
+        ALOGV("map_fd found at %d is %d in %s", i, mapFds[i].get(), elfPath);
 
     applyMapRelo(elfFile, mapFds, cs);
 
-    ret = loadCodeSections(elfPath, cs, string(license.data()), location.prefix);
+    ret = loadCodeSections(elfPath, cs, string(license.data()), location.prefix, bpfloader_ver);
     if (ret) ALOGE("Failed to load programs, loadCodeSections ret=%d", ret);
 
     return ret;

@@ -303,18 +303,6 @@ class EthernetManagerTest {
         fun expectOnAvailable(timeout: Long = TIMEOUT_MS): String {
             return available.get(timeout, TimeUnit.MILLISECONDS)
         }
-
-        fun expectOnUnavailable() {
-            // Assert that the future fails with the IllegalStateException from the
-            // completeExceptionally() call inside onUnavailable.
-            assertFailsWith(IllegalStateException::class) {
-                try {
-                    available.get(TIMEOUT_MS, TimeUnit.MILLISECONDS)
-                } catch (e: ExecutionException) {
-                    throw e.cause!!
-                }
-            }
-        }
     }
 
     private class EthernetOutcomeReceiver :
@@ -348,7 +336,9 @@ class EthernetManagerTest {
         }
     }
 
-    private fun isEthernetSupported() = em != null
+    private fun isEthernetSupported() : Boolean {
+        return context.getSystemService(EthernetManager::class.java) != null
+    }
 
     @Before
     fun setUp() {
@@ -896,6 +886,24 @@ class EthernetManagerTest {
         // Interface does not exist, enable/disableInterface() should both return an error.
         enableInterface(iface).expectError()
         disableInterface(iface).expectError()
+    }
+
+    @Test
+    fun testEnableDisableInterface_callbacks() {
+        val iface = createInterface()
+        val listener = EthernetStateListener()
+        addInterfaceStateListener(listener)
+        // Uses eventuallyExpect to account for interfaces that could already exist on device
+        listener.eventuallyExpect(iface, STATE_LINK_UP, ROLE_CLIENT)
+
+        disableInterface(iface).expectResult(iface.name)
+        listener.eventuallyExpect(iface, STATE_LINK_DOWN, ROLE_CLIENT)
+
+        enableInterface(iface).expectResult(iface.name)
+        listener.expectCallback(iface, STATE_LINK_UP, ROLE_CLIENT)
+
+        disableInterface(iface).expectResult(iface.name)
+        listener.expectCallback(iface, STATE_LINK_DOWN, ROLE_CLIENT)
     }
 
     @Test

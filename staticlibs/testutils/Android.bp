@@ -40,7 +40,9 @@ java_library {
         "net-utils-device-common-async",
         "net-utils-device-common-netlink",
         "net-utils-device-common-struct",
+        "net-utils-device-common-struct-base",
         "net-utils-device-common-wear",
+        "net-utils-framework-connectivity",
         "modules-utils-build_system",
     ],
     lint: {
@@ -85,8 +87,8 @@ java_library {
 java_test_host {
     name: "net-tests-utils-host-common",
     srcs: [
-        "host/**/*.java",
-        "host/**/*.kt",
+        "host/java/**/*.java",
+        "host/java/**/*.kt",
     ],
     libs: ["tradefed"],
     test_suites: [
@@ -98,6 +100,16 @@ java_test_host {
         "mcts-networking",
         "mts-tethering",
         "mcts-tethering",
+        "mcts-wifi",
+        "mcts-dnsresolver",
     ],
     data: [":ConnectivityTestPreparer"],
+}
+
+python_library_host {
+    name: "net-tests-utils-host-python-common",
+    srcs: [
+        "host/python/*.py",
+    ],
+    pkg_path: "net_tests_utils",
 }

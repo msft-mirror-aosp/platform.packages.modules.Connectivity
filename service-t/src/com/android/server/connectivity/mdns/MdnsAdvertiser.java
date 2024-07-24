@@ -41,6 +41,7 @@ import android.util.SparseArray;
 import com.android.connectivity.resources.R;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.DnsUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
@@ -241,13 +242,10 @@ public class MdnsAdvertiser {
         }
 
         @Override
-        public void onDestroyed(@NonNull MdnsInterfaceSocket socket) {
-            for (int i = mAdvertiserRequests.size() - 1; i >= 0; i--) {
-                if (mAdvertiserRequests.valueAt(i).onAdvertiserDestroyed(socket)) {
-                    mAdvertiserRequests.removeAt(i);
-                }
-            }
-            mAllAdvertisers.remove(socket);
+        public void onAllServicesRemoved(@NonNull MdnsInterfaceSocket socket) {
+            if (DBG) { mSharedLog.i("onAllServicesRemoved: " + socket); }
+            // Try destroying the advertiser if all services has been removed
+            destroyAdvertiser(socket, false /* interfaceDestroyed */);
         }
     };
 
@@ -275,7 +273,7 @@ public class MdnsAdvertiser {
             return true;
         }
         // Check if it conflicts with the default hostname.
-        return MdnsUtils.equalsIgnoreDnsCase(newInfo.getHostname(), mDeviceHostName[0]);
+        return DnsUtils.equalsIgnoreDnsCase(newInfo.getHostname(), mDeviceHostName[0]);
     }
 
     private void updateRegistrationUntilNoConflict(
@@ -318,6 +316,30 @@ public class MdnsAdvertiser {
     }
 
     /**
+     * Destroys the advertiser for the interface indicated by {@code socket}.
+     *
+     * {@code interfaceDestroyed} should be set to {@code true} if this method is called because
+     * the associated interface has been destroyed.
+     */
+    private void destroyAdvertiser(MdnsInterfaceSocket socket, boolean interfaceDestroyed) {
+        InterfaceAdvertiserRequest advertiserRequest;
+
+        MdnsInterfaceAdvertiser advertiser = mAllAdvertisers.remove(socket);
+        if (advertiser != null) {
+            advertiser.destroyNow();
+            if (DBG) { mSharedLog.i("MdnsInterfaceAdvertiser is destroyed: " + advertiser); }
+        }
+
+        for (int i = mAdvertiserRequests.size() - 1; i >= 0; i--) {
+            advertiserRequest = mAdvertiserRequests.valueAt(i);
+            if (advertiserRequest.onAdvertiserDestroyed(socket, interfaceDestroyed)) {
+                if (DBG) { mSharedLog.i("AdvertiserRequest is removed: " + advertiserRequest); }
+                mAdvertiserRequests.removeAt(i);
+            }
+        }
+    }
+
+    /**
      * A request for a {@link MdnsInterfaceAdvertiser}.
      *
      * This class tracks services to be advertised on all sockets provided via a registered
@@ -336,13 +358,22 @@ public class MdnsAdvertiser {
         }
 
         /**
-         * Called when an advertiser was destroyed, after all services were unregistered and it sent
-         * exit announcements, or the interface is gone.
+         * Called when the interface advertiser associated with {@code socket} has been destroyed.
          *
-         * @return true if this {@link InterfaceAdvertiserRequest} should now be deleted.
+         * {@code interfaceDestroyed} should be set to {@code true} if this method is called because
+         * the associated interface has been destroyed.
+         *
+         * @return true if the {@link InterfaceAdvertiserRequest} should now be deleted
          */
-        boolean onAdvertiserDestroyed(@NonNull MdnsInterfaceSocket socket) {
+        boolean onAdvertiserDestroyed(
+                @NonNull MdnsInterfaceSocket socket, boolean interfaceDestroyed) {
             final MdnsInterfaceAdvertiser removedAdvertiser = mAdvertisers.remove(socket);
+            if (removedAdvertiser != null
+                    && !interfaceDestroyed && mPendingRegistrations.size() > 0) {
+                mSharedLog.wtf(
+                        "unexpected onAdvertiserDestroyed() when there are pending registrations");
+            }
+
             if (mMdnsFeatureFlags.mIsMdnsOffloadFeatureEnabled && removedAdvertiser != null) {
                 final String interfaceName = removedAdvertiser.getSocketInterfaceName();
                 // If the interface is destroyed, stop all hardware offloading on that
@@ -406,8 +437,8 @@ public class MdnsAdvertiser {
                     continue;
                 }
                 final NsdServiceInfo other = mPendingRegistrations.valueAt(i).getServiceInfo();
-                if (MdnsUtils.equalsIgnoreDnsCase(info.getServiceName(), other.getServiceName())
-                        && MdnsUtils.equalsIgnoreDnsCase(info.getServiceType(),
+                if (DnsUtils.equalsIgnoreDnsCase(info.getServiceName(), other.getServiceName())
+                        && DnsUtils.equalsIgnoreDnsCase(info.getServiceType(),
                         other.getServiceType())) {
                     return mPendingRegistrations.keyAt(i);
                 }
@@ -418,10 +449,11 @@ public class MdnsAdvertiser {
         /**
          * Get the ID of a conflicting registration due to host, or -1 if none.
          *
-         * <p>It's valid that multiple registrations from the same user are using the same hostname.
-         *
          * <p>If there's already another registration with the same hostname requested by another
-         * user, this is considered a conflict.
+         * UID, this is a conflict.
+         *
+         * <p>If there're two registrations both containing address records using the same hostname,
+         * this is a conflict.
          */
         int getConflictingRegistrationDueToHost(@NonNull NsdServiceInfo info, int clientUid) {
             if (TextUtils.isEmpty(info.getHostname())) {
@@ -430,10 +462,17 @@ public class MdnsAdvertiser {
             for (int i = 0; i < mPendingRegistrations.size(); i++) {
                 final Registration otherRegistration = mPendingRegistrations.valueAt(i);
                 final NsdServiceInfo otherInfo = otherRegistration.getServiceInfo();
+                final int otherServiceId = mPendingRegistrations.keyAt(i);
                 if (clientUid != otherRegistration.mClientUid
-                        && MdnsUtils.equalsIgnoreDnsCase(
+                        && DnsUtils.equalsIgnoreDnsCase(
                                 info.getHostname(), otherInfo.getHostname())) {
-                    return mPendingRegistrations.keyAt(i);
+                    return otherServiceId;
+                }
+                if (!info.getHostAddresses().isEmpty()
+                        && !otherInfo.getHostAddresses().isEmpty()
+                        && DnsUtils.equalsIgnoreDnsCase(
+                                info.getHostname(), otherInfo.getHostname())) {
+                    return otherServiceId;
                 }
             }
             return -1;
@@ -528,7 +567,7 @@ public class MdnsAdvertiser {
         public void onInterfaceDestroyed(@NonNull SocketKey socketKey,
                 @NonNull MdnsInterfaceSocket socket) {
             final MdnsInterfaceAdvertiser advertiser = mAdvertisers.get(socket);
-            if (advertiser != null) advertiser.destroyNow();
+            if (advertiser != null) destroyAdvertiser(socket, true /* interfaceDestroyed */);
         }
 
         @Override
@@ -811,7 +850,7 @@ public class MdnsAdvertiser {
                 sharedLog.wtf("Invalid priority in config_nsdOffloadServicesPriority: " + entry);
                 continue;
             }
-            priorities.put(MdnsUtils.toDnsLowerCase(priorityAndType[1]), priority);
+            priorities.put(DnsUtils.toDnsUpperCase(priorityAndType[1]), priority);
         }
         return priorities;
     }
@@ -957,7 +996,7 @@ public class MdnsAdvertiser {
             @NonNull Registration registration, byte[] rawOffloadPacket) {
         final NsdServiceInfo nsdServiceInfo = registration.getServiceInfo();
         final Integer mapPriority = mServiceTypeToOffloadPriority.get(
-                MdnsUtils.toDnsLowerCase(nsdServiceInfo.getServiceType()));
+                DnsUtils.toDnsUpperCase(nsdServiceInfo.getServiceType()));
         // Higher values of priority are less prioritized
         final int priority = mapPriority == null ? Integer.MAX_VALUE : mapPriority;
         final OffloadServiceInfo offloadServiceInfo = new OffloadServiceInfo(

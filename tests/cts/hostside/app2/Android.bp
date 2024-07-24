@@ -35,5 +35,5 @@ android_test_helper_app {
         "general-tests",
         "sts",
     ],
-    certificate: ":cts-net-app",
+    sdk_version: "test_current",
 }

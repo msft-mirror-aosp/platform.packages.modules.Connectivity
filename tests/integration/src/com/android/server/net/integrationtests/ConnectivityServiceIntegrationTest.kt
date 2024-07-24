@@ -27,6 +27,7 @@ import android.content.res.Resources
 import android.net.ConnectivityManager
 import android.net.IDnsResolver
 import android.net.INetd
+import android.net.INetd.PERMISSION_INTERNET
 import android.net.LinkProperties
 import android.net.NetworkCapabilities.NET_CAPABILITY_CAPTIVE_PORTAL
 import android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET
@@ -66,6 +67,8 @@ import com.android.testutils.DeviceInfoUtils
 import com.android.testutils.RecorderCallback.CallbackEntry.LinkPropertiesChanged
 import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.tryTest
+import java.util.function.BiConsumer
+import java.util.function.Consumer
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -87,8 +90,6 @@ import org.mockito.Mockito.eq
 import org.mockito.Mockito.mock
 import org.mockito.MockitoAnnotations
 import org.mockito.Spy
-import java.util.function.Consumer
-import java.util.function.BiConsumer
 
 const val SERVICE_BIND_TIMEOUT_MS = 5_000L
 const val TEST_TIMEOUT_MS = 10_000L
@@ -225,6 +226,10 @@ class ConnectivityServiceIntegrationTest {
         override fun getSystemProperties() = mock(MockableSystemProperties::class.java)
         override fun makeNetIdManager() = TestNetIdManager()
         override fun getBpfNetMaps(context: Context?, netd: INetd?) = mock(BpfNetMaps::class.java)
+                .also {
+                    doReturn(PERMISSION_INTERNET).`when`(it).getNetPermForUid(anyInt())
+                }
+        override fun isChangeEnabled(changeId: Long, uid: Int) = true
 
         override fun makeMultinetworkPolicyTracker(
             c: Context,
@@ -242,18 +247,19 @@ class ConnectivityServiceIntegrationTest {
             super.makeHandlerThread(tag).also { handlerThreads.add(it) }
 
         override fun makeCarrierPrivilegeAuthenticator(
-            context: Context,
-            tm: TelephonyManager,
-            requestRestrictedWifiEnabled: Boolean,
-            listener: BiConsumer<Int, Int>
+                context: Context,
+                tm: TelephonyManager,
+                requestRestrictedWifiEnabled: Boolean,
+                listener: BiConsumer<Int, Int>,
+                handler: Handler
         ): CarrierPrivilegeAuthenticator {
             return CarrierPrivilegeAuthenticator(context,
-                object : CarrierPrivilegeAuthenticator.Dependencies() {
-                    override fun makeHandlerThread(): HandlerThread =
-                        super.makeHandlerThread().also { handlerThreads.add(it) }
-                },
-                tm, TelephonyManagerShimImpl.newInstance(tm),
-                requestRestrictedWifiEnabled, listener)
+                    object : CarrierPrivilegeAuthenticator.Dependencies() {
+                        override fun makeHandlerThread(): HandlerThread =
+                                super.makeHandlerThread().also { handlerThreads.add(it) }
+                    },
+                    tm, TelephonyManagerShimImpl.newInstance(tm),
+                    requestRestrictedWifiEnabled, listener, handler)
         }
 
         override fun makeSatelliteAccessController(

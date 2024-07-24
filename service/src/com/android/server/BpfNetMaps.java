@@ -23,17 +23,17 @@ import static android.net.BpfNetMapsConstants.DATA_SAVER_DISABLED;
 import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED;
 import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED_KEY;
 import static android.net.BpfNetMapsConstants.DATA_SAVER_ENABLED_MAP_PATH;
-import static android.net.BpfNetMapsConstants.HAPPY_BOX_MATCH;
 import static android.net.BpfNetMapsConstants.IIF_MATCH;
 import static android.net.BpfNetMapsConstants.INGRESS_DISCARD_MAP_PATH;
 import static android.net.BpfNetMapsConstants.LOCKDOWN_VPN_MATCH;
-import static android.net.BpfNetMapsConstants.PENALTY_BOX_MATCH;
 import static android.net.BpfNetMapsConstants.UID_OWNER_MAP_PATH;
 import static android.net.BpfNetMapsConstants.UID_PERMISSION_MAP_PATH;
 import static android.net.BpfNetMapsConstants.UID_RULES_CONFIGURATION_KEY;
 import static android.net.BpfNetMapsUtils.getMatchByFirewallChain;
 import static android.net.BpfNetMapsUtils.isFirewallAllowList;
 import static android.net.BpfNetMapsUtils.matchToString;
+import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_MASK;
+import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.FIREWALL_RULE_ALLOW;
 import static android.net.ConnectivityManager.FIREWALL_RULE_DENY;
 import static android.net.INetd.PERMISSION_INTERNET;
@@ -49,12 +49,13 @@ import static com.android.server.ConnectivityStatsLog.NETWORK_BPF_MAP_INFO;
 
 import android.app.StatsManager;
 import android.content.Context;
-import android.net.BpfNetMapsReader;
+import android.net.BpfNetMapsUtils;
 import android.net.INetd;
 import android.net.UidOwnerValue;
 import android.os.Build;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
+import android.os.UserHandle;
 import android.system.ErrnoException;
 import android.system.Os;
 import android.util.ArraySet;
@@ -71,6 +72,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfDump;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.IBpfMap;
+import com.android.net.module.util.SingleWriterBpfMap;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.Struct.S32;
 import com.android.net.module.util.Struct.U32;
@@ -187,7 +189,7 @@ public class BpfNetMaps {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static IBpfMap<S32, U32> getConfigurationMap() {
         try {
-            return new BpfMap<>(
+            return SingleWriterBpfMap.getSingleton(
                     CONFIGURATION_MAP_PATH, S32.class, U32.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open netd configuration map", e);
@@ -197,7 +199,7 @@ public class BpfNetMaps {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static IBpfMap<S32, UidOwnerValue> getUidOwnerMap() {
         try {
-            return new BpfMap<>(
+            return SingleWriterBpfMap.getSingleton(
                     UID_OWNER_MAP_PATH, S32.class, UidOwnerValue.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open uid owner map", e);
@@ -207,7 +209,7 @@ public class BpfNetMaps {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static IBpfMap<S32, U8> getUidPermissionMap() {
         try {
-            return new BpfMap<>(
+            return SingleWriterBpfMap.getSingleton(
                     UID_PERMISSION_MAP_PATH, S32.class, U8.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open uid permission map", e);
@@ -217,6 +219,7 @@ public class BpfNetMaps {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static IBpfMap<CookieTagMapKey, CookieTagMapValue> getCookieTagMap() {
         try {
+            // Cannot use SingleWriterBpfMap because it's written by ClatCoordinator as well.
             return new BpfMap<>(COOKIE_TAG_MAP_PATH,
                     CookieTagMapKey.class, CookieTagMapValue.class);
         } catch (ErrnoException e) {
@@ -227,7 +230,7 @@ public class BpfNetMaps {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static IBpfMap<S32, U8> getDataSaverEnabledMap() {
         try {
-            return new BpfMap<>(
+            return SingleWriterBpfMap.getSingleton(
                     DATA_SAVER_ENABLED_MAP_PATH, S32.class, U8.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open data saver enabled map", e);
@@ -237,7 +240,7 @@ public class BpfNetMaps {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private static IBpfMap<IngressDiscardKey, IngressDiscardValue> getIngressDiscardMap() {
         try {
-            return new BpfMap<>(INGRESS_DISCARD_MAP_PATH,
+            return SingleWriterBpfMap.getSingleton(INGRESS_DISCARD_MAP_PATH,
                     IngressDiscardKey.class, IngressDiscardValue.class);
         } catch (ErrnoException e) {
             throw new IllegalStateException("Cannot open ingress discard map", e);
@@ -446,62 +449,6 @@ public class BpfNetMaps {
     }
 
     /**
-     * Add naughty app bandwidth rule for specific app
-     *
-     * @param uid uid of target app
-     * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *                                  cause of the failure.
-     */
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    public void addNaughtyApp(final int uid) {
-        throwIfPreT("addNaughtyApp is not available on pre-T devices");
-
-        addRule(uid, PENALTY_BOX_MATCH, "addNaughtyApp");
-    }
-
-    /**
-     * Remove naughty app bandwidth rule for specific app
-     *
-     * @param uid uid of target app
-     * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *                                  cause of the failure.
-     */
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    public void removeNaughtyApp(final int uid) {
-        throwIfPreT("removeNaughtyApp is not available on pre-T devices");
-
-        removeRule(uid, PENALTY_BOX_MATCH, "removeNaughtyApp");
-    }
-
-    /**
-     * Add nice app bandwidth rule for specific app
-     *
-     * @param uid uid of target app
-     * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *                                  cause of the failure.
-     */
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    public void addNiceApp(final int uid) {
-        throwIfPreT("addNiceApp is not available on pre-T devices");
-
-        addRule(uid, HAPPY_BOX_MATCH, "addNiceApp");
-    }
-
-    /**
-     * Remove nice app bandwidth rule for specific app
-     *
-     * @param uid uid of target app
-     * @throws ServiceSpecificException in case of failure, with an error code indicating the
-     *                                  cause of the failure.
-     */
-    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
-    public void removeNiceApp(final int uid) {
-        throwIfPreT("removeNiceApp is not available on pre-T devices");
-
-        removeRule(uid, HAPPY_BOX_MATCH, "removeNiceApp");
-    }
-
-    /**
      * Set target firewall child chain
      *
      * @param childChain target chain to enable
@@ -535,14 +482,11 @@ public class BpfNetMaps {
      * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
-     *
-     * @deprecated Use {@link BpfNetMapsReader#isChainEnabled} instead.
      */
-    // TODO: Migrate the callers to use {@link BpfNetMapsReader#isChainEnabled} instead.
     @Deprecated
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public boolean isChainEnabled(final int childChain) {
-        return BpfNetMapsReader.isChainEnabled(sConfigurationMap, childChain);
+        return BpfNetMapsUtils.isChainEnabled(sConfigurationMap, childChain);
     }
 
     private Set<Integer> asSet(final int[] uids) {
@@ -635,14 +579,13 @@ public class BpfNetMaps {
      * @throws UnsupportedOperationException if called on pre-T devices.
      * @throws ServiceSpecificException in case of failure, with an error code indicating the
      *                                  cause of the failure.
-     *
-     * @deprecated use {@link BpfNetMapsReader#getUidRule} instead.
      */
-    // TODO: Migrate the callers to use {@link BpfNetMapsReader#getUidRule} instead.
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public int getUidRule(final int childChain, final int uid) {
-        return BpfNetMapsReader.getUidRule(sUidOwnerMap, childChain, uid);
+        return BpfNetMapsUtils.getUidRule(sUidOwnerMap, childChain, uid);
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private Set<Integer> getUidsMatchEnabled(final int childChain) throws ErrnoException {
         final long match = getMatchByFirewallChain(childChain);
         Set<Integer> uids = new ArraySet<>();
@@ -671,6 +614,7 @@ public class BpfNetMaps {
      * @param childChain target chain
      * @return Set of uids
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public Set<Integer> getUidsWithAllowRuleOnAllowListChain(final int childChain)
             throws ErrnoException {
         if (!isFirewallAllowList(childChain)) {
@@ -692,6 +636,7 @@ public class BpfNetMaps {
      * @param childChain target chain
      * @return Set of uids
      */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public Set<Integer> getUidsWithDenyRuleOnDenyListChain(final int childChain)
             throws ErrnoException {
         if (isFirewallAllowList(childChain)) {
@@ -865,6 +810,28 @@ public class BpfNetMaps {
     }
 
     /**
+     * Get granted permissions for specified uid. If uid is not in the map, this method returns
+     * {@link android.net.INetd.PERMISSION_INTERNET} since this is a default permission.
+     * See {@link #setNetPermForUids}
+     *
+     * @param uid target uid
+     * @return    granted permissions.
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public int getNetPermForUid(final int uid) {
+        final int appId = UserHandle.getAppId(uid);
+        try {
+            // Key of uid permission map is appId
+            // TODO: Rename map name
+            final U8 permissions = sUidPermissionMap.getValue(new S32(appId));
+            return permissions != null ? permissions.val : PERMISSION_INTERNET;
+        } catch (ErrnoException e) {
+            Log.wtf(TAG, "Failed to get permission for uid: " + uid);
+            return PERMISSION_INTERNET;
+        }
+    }
+
+    /**
      * Set Data Saver enabled or disabled
      *
      * @param enable     whether Data Saver is enabled or disabled.
@@ -922,6 +889,49 @@ public class BpfNetMaps {
         } catch (ErrnoException e) {
             Log.e(TAG, "Failed to remove ingress discard rule for " + address + ", " + e);
         }
+    }
+
+    /**
+     * Get blocked reasons for specified uid
+     *
+     * @param uid Target Uid
+     * @return Reasons of network access blocking for an UID
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public int getUidNetworkingBlockedReasons(final int uid) {
+        return BpfNetMapsUtils.getUidNetworkingBlockedReasons(uid,
+                sConfigurationMap, sUidOwnerMap, sDataSaverEnabledMap);
+    }
+
+    /**
+     * Return whether the network access of specified uid is blocked on metered networks
+     *
+     * @param uid The target uid.
+     * @return True if the network access is blocked on metered networks. Otherwise, false
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public boolean isUidRestrictedOnMeteredNetworks(final int uid) {
+        final int blockedReasons = getUidNetworkingBlockedReasons(uid);
+        return (blockedReasons & BLOCKED_METERED_REASON_MASK) != BLOCKED_REASON_NONE;
+    }
+
+    /*
+     * Return whether the network is blocked by firewall chains for the given uid.
+     *
+     * Note that {@link #getDataSaverEnabled()} has a latency before V.
+     *
+     * @param uid The target uid.
+     * @param isNetworkMetered Whether the target network is metered.
+     *
+     * @return True if the network is blocked. Otherwise, false.
+     * @throws ServiceSpecificException if the read fails.
+     *
+     * @hide
+     */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    public boolean isUidNetworkingBlocked(final int uid, boolean isNetworkMetered) {
+        return BpfNetMapsUtils.isUidNetworkingBlocked(uid, isNetworkMetered,
+                sConfigurationMap, sUidOwnerMap, sDataSaverEnabledMap);
     }
 
     /** Register callback for statsd to pull atom. */
@@ -986,6 +996,7 @@ public class BpfNetMaps {
         return sj.toString();
     }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private void dumpOwnerMatchConfig(final IndentingPrintWriter pw) {
         try {
             final long match = sConfigurationMap.getValue(UID_RULES_CONFIGURATION_KEY).val;

@@ -46,6 +46,7 @@ java_defaults {
     ],
     jarjar_rules: "jarjar-rules-shared.txt",
     static_libs: [
+        "ApfGeneratorLib",
         "bouncycastle-unbundled",
         "FrameworksNetCommonTests",
         "core-tests-support",
@@ -110,25 +111,6 @@ java_defaults {
     min_sdk_version: "30",
 }
 
-// Networking CTS tests that target the latest released SDK. These tests can be installed on release
-// devices at any point in the Android release cycle and are useful for qualifying mainline modules
-// on release devices.
-android_test {
-    name: "CtsNetTestCasesLatestSdk",
-    defaults: [
-        "ConnectivityTestsLatestSdkDefaults",
-        "CtsNetTestCasesDefaults",
-        "CtsNetTestCasesApiStableDefaults",
-    ],
-    test_suites: [
-        "general-tests",
-        "mts-dnsresolver",
-        "mts-networking",
-        "mts-tethering",
-        "mts-wifi",
-    ],
-}
-
 java_defaults {
     name: "CtsNetTestCasesMaxTargetSdkDefaults",
     defaults: [
@@ -179,4 +161,5 @@ android_test_helper_app {
         "cts",
         "general-tests",
     ],
+    sdk_version: "test_current",
 }

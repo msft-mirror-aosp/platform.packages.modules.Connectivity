@@ -17,6 +17,7 @@
 package com.android.server
 
 import android.app.AlarmManager
+import android.app.AppOpsManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -26,6 +27,7 @@ import android.content.pm.UserInfo
 import android.content.res.Resources
 import android.net.ConnectivityManager
 import android.net.INetd
+import android.net.INetd.PERMISSION_INTERNET
 import android.net.InetAddresses
 import android.net.LinkProperties
 import android.net.LocalNetworkConfig
@@ -42,6 +44,7 @@ import android.net.NetworkPolicyManager
 import android.net.NetworkProvider
 import android.net.NetworkScore
 import android.net.PacProxyManager
+import android.net.connectivity.ConnectivityCompatChanges.ENABLE_MATCH_LOCAL_NETWORK
 import android.net.networkstack.NetworkStackClientBase
 import android.os.BatteryStatsManager
 import android.os.Bundle
@@ -51,9 +54,9 @@ import android.os.Process
 import android.os.UserHandle
 import android.os.UserManager
 import android.permission.PermissionManager.PermissionResult
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import android.testing.TestableContext
-import android.util.ArraySet
 import androidx.test.platform.app.InstrumentationRegistry
 import com.android.internal.app.IBatteryStats
 import com.android.internal.util.test.BroadcastInterceptingContext
@@ -75,14 +78,19 @@ import com.android.testutils.waitForIdle
 import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import java.util.function.Consumer
 import java.util.function.BiConsumer
+import java.util.function.Consumer
+import kotlin.annotation.AnnotationRetention.RUNTIME
+import kotlin.annotation.AnnotationTarget.FUNCTION
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.fail
 import org.junit.After
 import org.junit.Before
+import org.junit.Rule
+import org.junit.rules.TestName
 import org.mockito.AdditionalAnswers.delegatesTo
+import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.Mockito.doAnswer
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
@@ -103,6 +111,8 @@ internal const val VERSION_U = 4
 internal const val VERSION_V = 5
 internal const val VERSION_MAX = VERSION_V
 
+internal const val CALLING_UID_UNMOCKED = Process.INVALID_UID
+
 private fun NetworkCapabilities.getLegacyType() =
         when (transportTypes.getOrElse(0) { TRANSPORT_WIFI }) {
             TRANSPORT_BLUETOOTH -> ConnectivityManager.TYPE_BLUETOOTH
@@ -122,14 +132,19 @@ private fun NetworkCapabilities.getLegacyType() =
 // TODO (b/272685721) : make ConnectivityServiceTest smaller and faster by moving the setup
 // parts into this class and moving the individual tests to multiple separate classes.
 open class CSTest {
+    @get:Rule
+    val testNameRule = TestName()
+
     companion object {
         val CSTestExecutor = Executors.newSingleThreadExecutor()
     }
 
     init {
         if (!SdkLevel.isAtLeastS()) {
-            throw UnsupportedApiLevelException("CSTest subclasses must be annotated to only " +
-                    "run on S+, e.g. @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)")
+            throw UnsupportedApiLevelException(
+                "CSTest subclasses must be annotated to only " +
+                    "run on S+, e.g. @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.R)"
+            )
         }
     }
 
@@ -144,13 +159,15 @@ open class CSTest {
         it[ConnectivityFlags.NO_REMATCH_ALL_REQUESTS_ON_REGISTER] = true
         it[ConnectivityFlags.REQUEST_RESTRICTED_WIFI] = true
         it[ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION] = true
-        it[ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION] = true
         it[ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS] = true
-        it[ConnectivityService.LOG_BPF_RC] = true
         it[ConnectivityService.ALLOW_SATALLITE_NETWORK_FALLBACK] = true
+        it[ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING] = true
+        it[ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN] = true
+        it[ConnectivityFlags.DELAY_DESTROY_SOCKETS] = true
+        it[ConnectivityFlags.USE_DECLARED_METHODS_FOR_CALLBACKS] = true
+        it[ConnectivityFlags.QUEUE_CALLBACKS_FOR_FROZEN_APPS] = true
     }
-    fun enableFeature(f: String) = enabledFeatures.set(f, true)
-    fun disableFeature(f: String) = enabledFeatures.set(f, false)
+    fun setFeatureEnabled(flag: String, enabled: Boolean) = enabledFeatures.set(flag, enabled)
 
     // When adding new members, consider if it's not better to build the object in CSTestHelpers
     // to keep this file clean of implementation details. Generally, CSTestHelpers should only
@@ -158,7 +175,11 @@ open class CSTest {
     val contentResolver = makeMockContentResolver(context)
 
     val PRIMARY_USER = 0
-    val PRIMARY_USER_INFO = UserInfo(PRIMARY_USER, "" /* name */, UserInfo.FLAG_PRIMARY)
+    val PRIMARY_USER_INFO = UserInfo(
+            PRIMARY_USER,
+            "", // name
+            UserInfo.FLAG_PRIMARY
+    )
     val PRIMARY_USER_HANDLE = UserHandle(PRIMARY_USER)
     val userManager = makeMockUserManager(PRIMARY_USER_INFO, PRIMARY_USER_HANDLE)
     val activityManager = makeActivityManager()
@@ -170,19 +191,28 @@ open class CSTest {
     val connResources = makeMockConnResources(sysResources, packageManager)
 
     val netd = mock<INetd>()
-    val bpfNetMaps = mock<BpfNetMaps>()
+    val bpfNetMaps = mock<BpfNetMaps>().also {
+        doReturn(PERMISSION_INTERNET).`when`(it).getNetPermForUid(anyInt())
+    }
     val clatCoordinator = mock<ClatCoordinator>()
     val networkRequestStateStatsMetrics = mock<NetworkRequestStateStatsMetrics>()
-    val proxyTracker = ProxyTracker(context, mock<Handler>(), 16 /* EVENT_PROXY_HAS_CHANGED */)
+    val proxyTracker = ProxyTracker(
+            context,
+            mock<Handler>(),
+            16 // EVENT_PROXY_HAS_CHANGED
+    )
     val systemConfigManager = makeMockSystemConfigManager()
     val batteryStats = mock<IBatteryStats>()
     val batteryManager = BatteryStatsManager(batteryStats)
+    val appOpsManager = mock<AppOpsManager>()
     val telephonyManager = mock<TelephonyManager>().also {
         doReturn(true).`when`(it).isDataCapable()
     }
+    val subscriptionManager = mock<SubscriptionManager>()
 
     val multicastRoutingCoordinatorService = mock<MulticastRoutingCoordinatorService>()
     val satelliteAccessController = mock<SatelliteAccessController>()
+    val destroySocketsWrapper = mock<DestroySocketsWrapper>()
 
     val deps = CSDeps()
 
@@ -193,8 +223,32 @@ open class CSTest {
     lateinit var cm: ConnectivityManager
     lateinit var csHandler: Handler
 
+    // Tests can use this annotation to set flag values before constructing ConnectivityService
+    // e.g. @FeatureFlags([Flag(flagName1, true/false), Flag(flagName2, true/false)])
+    @Retention(RUNTIME)
+    @Target(FUNCTION)
+    annotation class FeatureFlags(val flags: Array<Flag>)
+
+    @Retention(RUNTIME)
+    @Target(FUNCTION)
+    annotation class Flag(val name: String, val enabled: Boolean)
+
     @Before
     fun setUp() {
+        // Set feature flags before constructing ConnectivityService
+        val testMethodName = testNameRule.methodName
+        try {
+            val testMethod = this::class.java.getMethod(testMethodName)
+            val featureFlags = testMethod.getAnnotation(FeatureFlags::class.java)
+            if (featureFlags != null) {
+                for (flag in featureFlags.flags) {
+                    setFeatureEnabled(flag.name, flag.enabled)
+                }
+            }
+        } catch (ignored: NoSuchMethodException) {
+            // This is expected for parameterized tests
+        }
+
         alarmHandlerThread = HandlerThread("TestAlarmManager").also { it.start() }
         alarmManager = makeMockAlarmManager(alarmHandlerThread)
         service = makeConnectivityService(context, netd, deps).also { it.systemReadyInternal() }
@@ -212,6 +266,11 @@ open class CSTest {
         alarmHandlerThread.join()
     }
 
+    // Class to be mocked and used to verify destroy sockets methods call
+    open inner class DestroySocketsWrapper {
+        open fun destroyLiveTcpSocketsByOwnerUids(ownerUids: Set<Int>) {}
+    }
+
     inner class CSDeps : ConnectivityService.Dependencies() {
         override fun getResources(ctx: Context) = connResources
         override fun getBpfNetMaps(context: Context, netd: INetd) = this@CSTest.bpfNetMaps
@@ -227,7 +286,8 @@ open class CSTest {
                 context: Context,
                 tm: TelephonyManager,
                 requestRestrictedWifiEnabled: Boolean,
-                listener: BiConsumer<Int, Int>
+                listener: BiConsumer<Int, Int>,
+                handler: Handler
         ) = if (SdkLevel.isAtLeastT()) mock<CarrierPrivilegeAuthenticator>() else null
 
         var satelliteNetworkFallbackUidUpdate: Consumer<Set<Int>>? = null
@@ -249,8 +309,12 @@ open class CSTest {
                 AutomaticOnOffKeepaliveTracker(c, h, AOOKTDeps(c))
 
         override fun makeMultinetworkPolicyTracker(c: Context, h: Handler, r: Runnable) =
-                MultinetworkPolicyTracker(c, h, r,
-                        MultinetworkPolicyTrackerTestDependencies(connResources.get()))
+                MultinetworkPolicyTracker(
+                        c,
+                        h,
+                        r,
+                        MultinetworkPolicyTrackerTestDependencies(connResources.get())
+                )
 
         override fun makeNetworkRequestStateStatsMetrics(c: Context) =
                 this@CSTest.networkRequestStateStatsMetrics
@@ -264,7 +328,7 @@ open class CSTest {
                 enabledFeatures[name] ?: fail("Unmocked feature $name, see CSTest.enabledFeatures")
 
         // Mocked change IDs
-        private val enabledChangeIds = ArraySet<Long>()
+        private val enabledChangeIds = arrayListOf(ENABLE_MATCH_LOCAL_NETWORK)
         fun setChangeIdEnabled(enabled: Boolean, changeId: Long) {
             // enabledChangeIds is read on the handler thread and maybe the test thread, so
             // make sure both threads see it before continuing.
@@ -299,6 +363,24 @@ open class CSTest {
         override fun isAtLeastT() = if (isSdkUnmocked) super.isAtLeastT() else sdkLevel >= VERSION_T
         override fun isAtLeastU() = if (isSdkUnmocked) super.isAtLeastU() else sdkLevel >= VERSION_U
         override fun isAtLeastV() = if (isSdkUnmocked) super.isAtLeastV() else sdkLevel >= VERSION_V
+
+        private var callingUid = CALLING_UID_UNMOCKED
+
+        fun unmockCallingUid() {
+            setCallingUid(CALLING_UID_UNMOCKED)
+        }
+
+        fun setCallingUid(callingUid: Int) {
+            visibleOnHandlerThread(csHandler) { this.callingUid = callingUid }
+        }
+
+        override fun getCallingUid() =
+                if (callingUid == CALLING_UID_UNMOCKED) super.getCallingUid() else callingUid
+
+        override fun destroyLiveTcpSocketsByOwnerUids(ownerUids: Set<Int>) {
+            // Call mocked destroyLiveTcpSocketsByOwnerUids so that test can verify this method call
+            destroySocketsWrapper.destroyLiveTcpSocketsByOwnerUids(ownerUids)
+        }
     }
 
     inner class CSContext(base: Context) : BroadcastInterceptingContext(base) {
@@ -322,8 +404,12 @@ open class CSTest {
         override fun enforceCallingOrSelfPermission(permission: String, message: String?) {
             // If the permission result does not set in the mMockedPermissions, it will be
             // considered as PERMISSION_GRANTED as existing design to prevent breaking other tests.
-            val granted = checkMockedPermission(permission, Process.myPid(), Process.myUid(),
-                PERMISSION_GRANTED)
+            val granted = checkMockedPermission(
+                permission,
+                Process.myPid(),
+                Process.myUid(),
+                PERMISSION_GRANTED
+            )
             if (!granted.equals(PERMISSION_GRANTED)) {
                 throw SecurityException("[Test] permission denied: " + permission)
             }
@@ -334,8 +420,12 @@ open class CSTest {
         override fun checkCallingOrSelfPermission(permission: String) =
             checkMockedPermission(permission, Process.myPid(), Process.myUid(), PERMISSION_GRANTED)
 
-        private fun checkMockedPermission(permission: String, pid: Int, uid: Int, default: Int):
-                Int {
+        private fun checkMockedPermission(
+                permission: String,
+                pid: Int,
+                uid: Int,
+                default: Int
+        ): Int {
             val processSpecificKey = "$permission,$pid,$uid"
             return mMockedPermissions[processSpecificKey]
                     ?: mMockedPermissions[permission] ?: default
@@ -397,16 +487,17 @@ open class CSTest {
             Context.ACTIVITY_SERVICE -> activityManager
             Context.SYSTEM_CONFIG_SERVICE -> systemConfigManager
             Context.TELEPHONY_SERVICE -> telephonyManager
+            Context.TELEPHONY_SUBSCRIPTION_SERVICE -> subscriptionManager
             Context.BATTERY_STATS_SERVICE -> batteryManager
             Context.STATS_MANAGER -> null // Stats manager is final and can't be mocked
+            Context.APP_OPS_SERVICE -> appOpsManager
             else -> super.getSystemService(serviceName)
         }
 
         internal val orderedBroadcastAsUserHistory = ArrayTrackRecord<Intent>().newReadHead()
 
         fun expectNoDataActivityBroadcast(timeoutMs: Int) {
-            assertNull(orderedBroadcastAsUserHistory.poll(
-                    timeoutMs.toLong()) { intent -> true })
+            assertNull(orderedBroadcastAsUserHistory.poll(timeoutMs.toLong()))
         }
 
         override fun sendOrderedBroadcastAsUser(

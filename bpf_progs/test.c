@@ -18,16 +18,16 @@
 #include <linux/in.h>
 #include <linux/ip.h>
 
-#ifdef BTF
+#ifdef MAINLINE
 // BTF is incompatible with bpfloaders < v0.10, hence for S (v0.2) we must
 // ship a different file than for later versions, but we need bpfloader v0.25+
 // for obj@ver.o support
-#define BPFLOADER_MIN_VER BPFLOADER_OBJ_AT_VER_VERSION
-#else /* BTF */
+#define BPFLOADER_MIN_VER BPFLOADER_MAINLINE_T_VERSION
+#else /* MAINLINE */
 // The resulting .o needs to load on the Android S bpfloader
 #define BPFLOADER_MIN_VER BPFLOADER_S_VERSION
-#define BPFLOADER_MAX_VER BPFLOADER_OBJ_AT_VER_VERSION
-#endif /* BTF */
+#define BPFLOADER_MAX_VER BPFLOADER_T_VERSION
+#endif /* MAINLINE */
 
 // Warning: values other than AID_ROOT don't work for map uid on BpfLoader < v0.21
 #define TETHERING_UID AID_ROOT
@@ -44,6 +44,10 @@
 
 // Used only by TetheringPrivilegedTests, not by production code.
 DEFINE_BPF_MAP_GRW(tether_downstream6_map, HASH, TetherDownstream6Key, Tether6Value, 16,
+                   TETHERING_GID)
+DEFINE_BPF_MAP_GRW(tether2_downstream6_map, HASH, TetherDownstream6Key, Tether6Value, 16,
+                   TETHERING_GID)
+DEFINE_BPF_MAP_GRW(tether3_downstream6_map, HASH, TetherDownstream6Key, Tether6Value, 16,
                    TETHERING_GID)
 // Used only by BpfBitmapTest, not by production code.
 DEFINE_BPF_MAP_GRW(bitmap, ARRAY, int, uint64_t, 2, TETHERING_GID)

@@ -53,6 +53,7 @@ import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_DATA_SAVER;
 import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_MASK;
 import static android.net.ConnectivityManager.BLOCKED_METERED_REASON_USER_RESTRICTED;
 import static android.net.ConnectivityManager.BLOCKED_REASON_BATTERY_SAVER;
+import static android.net.ConnectivityManager.BLOCKED_REASON_DOZE;
 import static android.net.ConnectivityManager.BLOCKED_REASON_NONE;
 import static android.net.ConnectivityManager.CONNECTIVITY_ACTION;
 import static android.net.ConnectivityManager.EXTRA_DEVICE_TYPE;
@@ -63,6 +64,9 @@ import static android.net.ConnectivityManager.EXTRA_REALTIME_NS;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_DOZABLE;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_LOW_POWER_STANDBY;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_ALLOW;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_ADMIN;
+import static android.net.ConnectivityManager.FIREWALL_CHAIN_METERED_DENY_USER;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_1;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_2;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_OEM_DENY_3;
@@ -84,6 +88,7 @@ import static android.net.ConnectivityManager.TYPE_WIFI;
 import static android.net.ConnectivitySettingsManager.PRIVATE_DNS_MODE_OFF;
 import static android.net.ConnectivitySettingsManager.PRIVATE_DNS_MODE_OPPORTUNISTIC;
 import static android.net.ConnectivitySettingsManager.PRIVATE_DNS_MODE_PROVIDER_HOSTNAME;
+import static android.net.INetd.PERMISSION_INTERNET;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_DNS;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_FALLBACK;
 import static android.net.INetworkMonitor.NETWORK_VALIDATION_PROBE_HTTP;
@@ -148,6 +153,7 @@ import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_UNINITIALIZED;
 import static android.net.Proxy.PROXY_CHANGE_ACTION;
 import static android.net.RouteInfo.RTN_UNREACHABLE;
+import static android.net.connectivity.ConnectivityCompatChanges.NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION;
 import static android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener.PREFIX_OPERATION_ADDED;
 import static android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener.PREFIX_OPERATION_REMOVED;
 import static android.net.resolv.aidl.IDnsResolverUnsolicitedEventListener.VALIDATION_RESULT_FAILURE;
@@ -158,11 +164,9 @@ import static android.telephony.DataConnectionRealTimeInfo.DC_POWER_STATE_HIGH;
 import static android.telephony.DataConnectionRealTimeInfo.DC_POWER_STATE_LOW;
 
 import static com.android.server.ConnectivityService.ALLOW_SATALLITE_NETWORK_FALLBACK;
-import static com.android.server.ConnectivityService.DELAY_DESTROY_FROZEN_SOCKETS_VERSION;
 import static com.android.net.module.util.DeviceConfigUtils.TETHERING_MODULE_NAME;
 import static com.android.server.ConnectivityService.ALLOW_SYSUI_CONNECTIVITY_REPORTS;
 import static com.android.server.ConnectivityService.KEY_DESTROY_FROZEN_SOCKETS_VERSION;
-import static com.android.server.ConnectivityService.LOG_BPF_RC;
 import static com.android.server.ConnectivityService.MAX_NETWORK_REQUESTS_PER_SYSTEM_UID;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_MOBILE_DATA_PREFERERRED;
 import static com.android.server.ConnectivityService.PREFERENCE_ORDER_OEM;
@@ -173,6 +177,9 @@ import static com.android.server.ConnectivityService.makeNflogPrefix;
 import static com.android.server.ConnectivityServiceTestUtils.transportToLegacyType;
 import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackRegister;
 import static com.android.server.NetworkAgentWrapper.CallbackType.OnQosCallbackUnregister;
+import static com.android.server.connectivity.ConnectivityFlags.BACKGROUND_FIREWALL_CHAIN;
+import static com.android.server.connectivity.ConnectivityFlags.DELAY_DESTROY_SOCKETS;
+import static com.android.server.connectivity.ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING;
 import static com.android.testutils.Cleanup.testAndCleanup;
 import static com.android.testutils.ConcurrentUtils.await;
 import static com.android.testutils.ConcurrentUtils.durationOf;
@@ -368,7 +375,6 @@ import android.os.SystemConfigManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.Settings;
-import android.security.Credentials;
 import android.system.Os;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
@@ -389,10 +395,10 @@ import com.android.connectivity.resources.R;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.app.IBatteryStats;
 import com.android.internal.net.VpnConfig;
-import com.android.internal.net.VpnProfile;
 import com.android.internal.util.WakeupMessage;
 import com.android.internal.util.test.BroadcastInterceptingContext;
 import com.android.internal.util.test.FakeSettingsProvider;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.ArrayTrackRecord;
 import com.android.net.module.util.BaseNetdUnsolicitedEventListener;
 import com.android.net.module.util.CollectionUtils;
@@ -424,7 +430,6 @@ import com.android.server.connectivity.QosCallbackTracker;
 import com.android.server.connectivity.SatelliteAccessController;
 import com.android.server.connectivity.TcpKeepaliveController;
 import com.android.server.connectivity.UidRangeUtils;
-import com.android.server.connectivity.VpnProfileStore;
 import com.android.server.net.NetworkPinner;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRunner;
@@ -458,13 +463,13 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.lang.reflect.Method;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -631,7 +636,6 @@ public class ConnectivityServiceTest {
     @Mock TelephonyManager mTelephonyManager;
     @Mock EthernetManager mEthernetManager;
     @Mock NetworkPolicyManager mNetworkPolicyManager;
-    @Mock VpnProfileStore mVpnProfileStore;
     @Mock SystemConfigManager mSystemConfigManager;
     @Mock DevicePolicyManager mDevicePolicyManager;
     @Mock Resources mResources;
@@ -802,8 +806,10 @@ public class ConnectivityServiceTest {
             // This relies on all contexts for a given user returning the same UM mock
             final DevicePolicyManager dpmMock = createContextAsUser(userHandle, 0 /* flags */)
                     .getSystemService(DevicePolicyManager.class);
-            doReturn(value).when(dpmMock).getDeviceOwner();
-            doReturn(value).when(mDevicePolicyManager).getDeviceOwner();
+            ComponentName componentName = value == null
+                    ? null : new ComponentName(value, "deviceOwnerClass");
+            doReturn(componentName).when(dpmMock).getDeviceOwnerComponentOnAnyUser();
+            doReturn(componentName).when(mDevicePolicyManager).getDeviceOwnerComponentOnAnyUser();
         }
 
         @Override
@@ -1667,23 +1673,11 @@ public class ConnectivityServiceTest {
             waitForIdle();
         }
 
-        public void startLegacyVpnPrivileged(VpnProfile profile) {
-            switch (profile.type) {
-                case VpnProfile.TYPE_IKEV2_IPSEC_RSA:
-                case VpnProfile.TYPE_IKEV2_IPSEC_USER_PASS:
-                case VpnProfile.TYPE_IKEV2_IPSEC_PSK:
-                case VpnProfile.TYPE_IKEV2_FROM_IKE_TUN_CONN_PARAMS:
-                    startPlatformVpn();
-                    break;
-                case VpnProfile.TYPE_L2TP_IPSEC_PSK:
-                case VpnProfile.TYPE_L2TP_IPSEC_RSA:
-                case VpnProfile.TYPE_IPSEC_XAUTH_PSK:
-                case VpnProfile.TYPE_IPSEC_XAUTH_RSA:
-                case VpnProfile.TYPE_IPSEC_HYBRID_RSA:
-                    startLegacyVpn();
-                    break;
-                default:
-                    fail("Unknown VPN profile type");
+        public void startLegacyVpnPrivileged(boolean isIkev2Vpn) {
+            if (isIkev2Vpn) {
+                startPlatformVpn();
+            } else {
+                startLegacyVpn();
             }
         }
 
@@ -1736,6 +1730,8 @@ public class ConnectivityServiceTest {
     private void mockUidNetworkingBlocked() {
         doAnswer(i -> isUidBlocked(mBlockedReasons, i.getArgument(1))
         ).when(mNetworkPolicyManager).isUidNetworkingBlocked(anyInt(), anyBoolean());
+        doAnswer(i -> isUidBlocked(mBlockedReasons, i.getArgument(1))
+        ).when(mBpfNetMaps).isUidNetworkingBlocked(anyInt(), anyBoolean());
     }
 
     private boolean isUidBlocked(int blockedReasons, boolean meteredNetwork) {
@@ -1751,7 +1747,15 @@ public class ConnectivityServiceTest {
 
     private void setBlockedReasonChanged(int blockedReasons) {
         mBlockedReasons = blockedReasons;
-        mPolicyCallback.onUidBlockedReasonChanged(Process.myUid(), blockedReasons);
+        if (mDeps.isAtLeastV()) {
+            visibleOnHandlerThread(mCsHandlerThread.getThreadHandler(),
+                    () -> mService.handleBlockedReasonsChanged(
+                            List.of(new Pair<>(Process.myUid(), blockedReasons))
+
+                    ));
+        } else {
+            mPolicyCallback.onUidBlockedReasonChanged(Process.myUid(), blockedReasons);
+        }
     }
 
     private Nat464Xlat getNat464Xlat(NetworkAgentWrapper mna) {
@@ -1932,11 +1936,16 @@ public class ConnectivityServiceTest {
         mService.mLingerDelayMs = TEST_LINGER_DELAY_MS;
         mService.mNascentDelayMs = TEST_NASCENT_DELAY_MS;
 
-        final ArgumentCaptor<NetworkPolicyCallback> policyCallbackCaptor =
-                ArgumentCaptor.forClass(NetworkPolicyCallback.class);
-        verify(mNetworkPolicyManager).registerNetworkPolicyCallback(any(),
-                policyCallbackCaptor.capture());
-        mPolicyCallback = policyCallbackCaptor.getValue();
+        if (mDeps.isAtLeastV()) {
+            verify(mNetworkPolicyManager, never()).registerNetworkPolicyCallback(any(), any());
+            mPolicyCallback = null;
+        } else {
+            final ArgumentCaptor<NetworkPolicyCallback> policyCallbackCaptor =
+                    ArgumentCaptor.forClass(NetworkPolicyCallback.class);
+            verify(mNetworkPolicyManager).registerNetworkPolicyCallback(any(),
+                    policyCallbackCaptor.capture());
+            mPolicyCallback = policyCallbackCaptor.getValue();
+        }
 
         // Create local CM before sending system ready so that we can answer
         // getSystemService() correctly.
@@ -1952,6 +1961,10 @@ public class ConnectivityServiceTest {
         setCaptivePortalMode(ConnectivitySettingsManager.CAPTIVE_PORTAL_MODE_PROMPT);
         setAlwaysOnNetworks(false);
         setPrivateDnsSettings(PRIVATE_DNS_MODE_OFF, "ignored.example.com");
+
+        mDeps.setChangeIdEnabled(
+                true, NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION, Process.myUid());
+        doReturn(PERMISSION_INTERNET).when(mBpfNetMaps).getNetPermForUid(anyInt());
         // Note : Please do not add any new instrumentation here. If you need new instrumentation,
         // please add it in CSTest and use subclasses of CSTest instead of adding more
         // tools in ConnectivityServiceTest.
@@ -2055,12 +2068,16 @@ public class ConnectivityServiceTest {
             };
         }
 
+        private BiConsumer<Integer, Integer> mCarrierPrivilegesLostListener;
+
         @Override
         public CarrierPrivilegeAuthenticator makeCarrierPrivilegeAuthenticator(
                 @NonNull final Context context,
                 @NonNull final TelephonyManager tm,
                 final boolean requestRestrictedWifiEnabled,
-                BiConsumer<Integer, Integer> listener) {
+                BiConsumer<Integer, Integer> listener,
+                @NonNull final Handler handler) {
+            mCarrierPrivilegesLostListener = listener;
             return mDeps.isAtLeastT() ? mCarrierPrivilegeAuthenticator : null;
         }
 
@@ -2161,12 +2178,10 @@ public class ConnectivityServiceTest {
             switch (name) {
                 case ConnectivityFlags.NO_REMATCH_ALL_REQUESTS_ON_REGISTER:
                 case ConnectivityFlags.CARRIER_SERVICE_CHANGED_USE_CALLBACK:
-                    return true;
                 case ConnectivityFlags.REQUEST_RESTRICTED_WIFI:
-                    return true;
+                case ConnectivityFlags.USE_DECLARED_METHODS_FOR_CALLBACKS:
+                case ConnectivityFlags.QUEUE_CALLBACKS_FOR_FROZEN_APPS:
                 case KEY_DESTROY_FROZEN_SOCKETS_VERSION:
-                    return true;
-                case DELAY_DESTROY_FROZEN_SOCKETS_VERSION:
                     return true;
                 default:
                     return super.isFeatureEnabled(context, name);
@@ -2178,9 +2193,13 @@ public class ConnectivityServiceTest {
             switch (name) {
                 case ALLOW_SYSUI_CONNECTIVITY_REPORTS:
                     return true;
-                case LOG_BPF_RC:
-                    return true;
                 case ALLOW_SATALLITE_NETWORK_FALLBACK:
+                    return true;
+                case INGRESS_TO_VPN_ADDRESS_FILTERING:
+                    return true;
+                case BACKGROUND_FIREWALL_CHAIN:
+                    return true;
+                case DELAY_DESTROY_SOCKETS:
                     return true;
                 default:
                     return super.isFeatureNotChickenedOut(context, name);
@@ -2853,7 +2872,7 @@ public class ConnectivityServiceTest {
         };
         final NetworkRequest request = mService.listenForNetwork(caps, messenger, binder,
                 NetworkCallback.FLAG_NONE, mContext.getOpPackageName(),
-                mContext.getAttributionTag());
+                mContext.getAttributionTag(), ~0 /* declaredMethodsFlag */);
         mService.releaseNetworkRequest(request);
         deathRecipient.get().binderDied();
         // Wait for the release message to be processed.
@@ -5389,7 +5408,7 @@ public class ConnectivityServiceTest {
             mService.requestNetwork(Process.INVALID_UID, networkCapabilities,
                     NetworkRequest.Type.REQUEST.ordinal(), null, 0, null,
                     ConnectivityManager.TYPE_WIFI, NetworkCallback.FLAG_NONE,
-                    mContext.getPackageName(), getAttributionTag());
+                    mContext.getPackageName(), getAttributionTag(), ~0 /* declaredMethodsFlag */);
         });
 
         final NetworkRequest.Builder builder =
@@ -7522,13 +7541,13 @@ public class ConnectivityServiceTest {
     @Test
     public void testNetworkCallbackMaximum() throws Exception {
         final int MAX_REQUESTS = 100;
-        final int CALLBACKS = 87;
+        final int CALLBACKS = 88;
         final int DIFF_INTENTS = 10;
         final int SAME_INTENTS = 10;
         final int SYSTEM_ONLY_MAX_REQUESTS = 250;
-        // Assert 1 (Default request filed before testing) + CALLBACKS + DIFF_INTENTS +
-        // 1 (same intent) = MAX_REQUESTS - 1, since the capacity is MAX_REQUEST - 1.
-        assertEquals(MAX_REQUESTS - 1, 1 + CALLBACKS + DIFF_INTENTS + 1);
+        // CALLBACKS + DIFF_INTENTS + 1 (same intent)
+        // = MAX_REQUESTS - 1, since the capacity is MAX_REQUEST - 1.
+        assertEquals(MAX_REQUESTS - 1, CALLBACKS + DIFF_INTENTS + 1);
 
         NetworkRequest networkRequest = new NetworkRequest.Builder().build();
         ArrayList<Object> registered = new ArrayList<>();
@@ -9862,6 +9881,28 @@ public class ConnectivityServiceTest {
         assertNetworkInfo(TYPE_MOBILE, DetailedState.CONNECTED);
         assertExtraInfoFromCmPresent(mCellAgent);
 
+        // Remove PERMISSION_INTERNET and disable NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION
+        doReturn(INetd.PERMISSION_NONE).when(mBpfNetMaps).getNetPermForUid(Process.myUid());
+        mDeps.setChangeIdEnabled(false,
+                NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION, Process.myUid());
+
+        setBlockedReasonChanged(BLOCKED_REASON_DOZE);
+        if (mDeps.isAtLeastV()) {
+            // On V+, network access from app that does not have INTERNET permission is considered
+            // not blocked if NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION is disabled.
+            // So blocked status does not change from BLOCKED_REASON_NONE
+            cellNetworkCallback.assertNoCallback();
+            detailedCallback.assertNoCallback();
+        } else {
+            // On U-, onBlockedStatusChanged callback is called with blocked reasons CS receives
+            // from NPMS callback regardless of permission app has.
+            // Note that this cannot actually happen because on U-, NPMS will never notify any
+            // blocked reasons for apps that don't have the INTERNET permission.
+            cellNetworkCallback.expect(BLOCKED_STATUS, mCellAgent, cb -> cb.getBlocked());
+            detailedCallback.expect(BLOCKED_STATUS_INT, mCellAgent,
+                    cb -> cb.getReason() == BLOCKED_REASON_DOZE);
+        }
+
         mCm.unregisterNetworkCallback(cellNetworkCallback);
     }
 
@@ -10213,24 +10254,6 @@ public class ConnectivityServiceTest {
         doAsUid(Process.SYSTEM_UID, () -> mCm.unregisterNetworkCallback(perUidCb));
     }
 
-    private VpnProfile setupLockdownVpn(int profileType) {
-        final String profileName = "testVpnProfile";
-        final byte[] profileTag = profileName.getBytes(StandardCharsets.UTF_8);
-        doReturn(profileTag).when(mVpnProfileStore).get(Credentials.LOCKDOWN_VPN);
-
-        final VpnProfile profile = new VpnProfile(profileName);
-        profile.name = "My VPN";
-        profile.server = "192.0.2.1";
-        profile.dnsServers = "8.8.8.8";
-        profile.ipsecIdentifier = "My ipsecIdentifier";
-        profile.ipsecSecret = "My PSK";
-        profile.type = profileType;
-        final byte[] encodedProfile = profile.encode();
-        doReturn(encodedProfile).when(mVpnProfileStore).get(Credentials.VPN + profileName);
-
-        return profile;
-    }
-
     private void establishLegacyLockdownVpn(Network underlying) throws Exception {
         // The legacy lockdown VPN only supports userId 0, and must have an underlying network.
         assertNotNull(underlying);
@@ -10242,7 +10265,7 @@ public class ConnectivityServiceTest {
         mMockVpn.connect(true);
     }
 
-    private void doTestLockdownVpn(VpnProfile profile, boolean expectSetVpnDefaultForUids)
+    private void doTestLockdownVpn(boolean isIkev2Vpn)
             throws Exception {
         mServiceContext.setPermission(
                 Manifest.permission.CONTROL_VPN, PERMISSION_GRANTED);
@@ -10280,8 +10303,8 @@ public class ConnectivityServiceTest {
         b.expectBroadcast();
         // Simulate LockdownVpnTracker attempting to start the VPN since it received the
         // systemDefault callback.
-        mMockVpn.startLegacyVpnPrivileged(profile);
-        if (expectSetVpnDefaultForUids) {
+        mMockVpn.startLegacyVpnPrivileged(isIkev2Vpn);
+        if (isIkev2Vpn) {
             // setVpnDefaultForUids() releases the original network request and creates a VPN
             // request so LOST callback is received.
             defaultCallback.expect(LOST, mCellAgent);
@@ -10305,7 +10328,7 @@ public class ConnectivityServiceTest {
         final NetworkCapabilities vpnNc = mCm.getNetworkCapabilities(mMockVpn.getNetwork());
         b2.expectBroadcast();
         b3.expectBroadcast();
-        if (expectSetVpnDefaultForUids) {
+        if (isIkev2Vpn) {
             // Due to the VPN default request, getActiveNetworkInfo() gets the VPN network as the
             // network satisfier which has TYPE_VPN.
             assertActiveNetworkInfo(TYPE_VPN, DetailedState.CONNECTED);
@@ -10351,14 +10374,15 @@ public class ConnectivityServiceTest {
         // callback with different network.
         final ExpectedBroadcast b6 = expectConnectivityAction(TYPE_VPN, DetailedState.DISCONNECTED);
         mMockVpn.stopVpnRunnerPrivileged();
-        mMockVpn.startLegacyVpnPrivileged(profile);
+
+        mMockVpn.startLegacyVpnPrivileged(isIkev2Vpn);
         // VPN network is disconnected (to restart)
         callback.expect(LOST, mMockVpn);
         defaultCallback.expect(LOST, mMockVpn);
         // The network preference is cleared when VPN is disconnected so it receives callbacks for
         // the system-wide default.
         defaultCallback.expectAvailableCallbacksUnvalidatedAndBlocked(mWiFiAgent);
-        if (expectSetVpnDefaultForUids) {
+        if (isIkev2Vpn) {
             // setVpnDefaultForUids() releases the original network request and creates a VPN
             // request so LOST callback is received.
             defaultCallback.expect(LOST, mWiFiAgent);
@@ -10367,7 +10391,7 @@ public class ConnectivityServiceTest {
         b6.expectBroadcast();
 
         // While the VPN is reconnecting on the new network, everything is blocked.
-        if (expectSetVpnDefaultForUids) {
+        if (isIkev2Vpn) {
             // Due to the VPN default request, getActiveNetworkInfo() gets the mNoServiceNetwork
             // as the network satisfier.
             assertNull(mCm.getActiveNetworkInfo());
@@ -10388,7 +10412,7 @@ public class ConnectivityServiceTest {
         systemDefaultCallback.assertNoCallback();
         b7.expectBroadcast();
         b8.expectBroadcast();
-        if (expectSetVpnDefaultForUids) {
+        if (isIkev2Vpn) {
             // Due to the VPN default request, getActiveNetworkInfo() gets the VPN network as the
             // network satisfier which has TYPE_VPN.
             assertActiveNetworkInfo(TYPE_VPN, DetailedState.CONNECTED);
@@ -10414,7 +10438,7 @@ public class ConnectivityServiceTest {
         defaultCallback.assertNoCallback();
         systemDefaultCallback.assertNoCallback();
 
-        if (expectSetVpnDefaultForUids) {
+        if (isIkev2Vpn) {
             // Due to the VPN default request, getActiveNetworkInfo() gets the VPN network as the
             // network satisfier which has TYPE_VPN.
             assertActiveNetworkInfo(TYPE_VPN, DetailedState.CONNECTED);
@@ -10455,14 +10479,12 @@ public class ConnectivityServiceTest {
 
     @Test
     public void testLockdownVpn_LegacyVpnRunner() throws Exception {
-        final VpnProfile profile = setupLockdownVpn(VpnProfile.TYPE_IPSEC_XAUTH_PSK);
-        doTestLockdownVpn(profile, false /* expectSetVpnDefaultForUids */);
+        doTestLockdownVpn(false /* isIkev2Vpn */);
     }
 
     @Test
     public void testLockdownVpn_Ikev2VpnRunner() throws Exception {
-        final VpnProfile profile = setupLockdownVpn(VpnProfile.TYPE_IKEV2_IPSEC_PSK);
-        doTestLockdownVpn(profile, true /* expectSetVpnDefaultForUids */);
+        doTestLockdownVpn(true /* isIkev2Vpn */);
     }
 
     @Test @IgnoreUpTo(Build.VERSION_CODES.S_V2)
@@ -10518,24 +10540,33 @@ public class ConnectivityServiceTest {
         doTestSetUidFirewallRule(FIREWALL_CHAIN_POWERSAVE, FIREWALL_RULE_DENY);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_RESTRICTED, FIREWALL_RULE_DENY);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_LOW_POWER_STANDBY, FIREWALL_RULE_DENY);
-        doTestSetUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, FIREWALL_RULE_DENY);
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            doTestSetUidFirewallRule(FIREWALL_CHAIN_BACKGROUND, FIREWALL_RULE_DENY);
+        }
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_1, FIREWALL_RULE_ALLOW);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_2, FIREWALL_RULE_ALLOW);
         doTestSetUidFirewallRule(FIREWALL_CHAIN_OEM_DENY_3, FIREWALL_RULE_ALLOW);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_ALLOW, FIREWALL_RULE_DENY);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_USER, FIREWALL_RULE_ALLOW);
+        doTestSetUidFirewallRule(FIREWALL_CHAIN_METERED_DENY_ADMIN, FIREWALL_RULE_ALLOW);
     }
 
     @Test @IgnoreUpTo(SC_V2)
     public void testSetFirewallChainEnabled() throws Exception {
-        final List<Integer> firewallChains = Arrays.asList(
+        final List<Integer> firewallChains = new ArrayList<>(Arrays.asList(
                 FIREWALL_CHAIN_DOZABLE,
                 FIREWALL_CHAIN_STANDBY,
                 FIREWALL_CHAIN_POWERSAVE,
                 FIREWALL_CHAIN_RESTRICTED,
                 FIREWALL_CHAIN_LOW_POWER_STANDBY,
-                FIREWALL_CHAIN_BACKGROUND,
                 FIREWALL_CHAIN_OEM_DENY_1,
                 FIREWALL_CHAIN_OEM_DENY_2,
-                FIREWALL_CHAIN_OEM_DENY_3);
+                FIREWALL_CHAIN_OEM_DENY_3));
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            firewallChains.add(FIREWALL_CHAIN_BACKGROUND);
+        }
         for (final int chain: firewallChains) {
             mCm.setFirewallChainEnabled(chain, true /* enabled */);
             verify(mBpfNetMaps).setChildChain(chain, true /* enable */);
@@ -10582,7 +10613,10 @@ public class ConnectivityServiceTest {
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_POWERSAVE, allowlist);
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_RESTRICTED, allowlist);
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_LOW_POWER_STANDBY, allowlist);
-        doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_BACKGROUND, allowlist);
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_BACKGROUND, allowlist);
+        }
 
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_STANDBY, denylist);
         doTestSetFirewallChainEnabledCloseSocket(FIREWALL_CHAIN_OEM_DENY_1, denylist);
@@ -10604,7 +10638,10 @@ public class ConnectivityServiceTest {
         doTestReplaceFirewallChain(FIREWALL_CHAIN_POWERSAVE);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_RESTRICTED);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_LOW_POWER_STANDBY);
-        doTestReplaceFirewallChain(FIREWALL_CHAIN_BACKGROUND);
+        if (SdkLevel.isAtLeastV()) {
+            // FIREWALL_CHAIN_BACKGROUND is only available on V+.
+            doTestReplaceFirewallChain(FIREWALL_CHAIN_BACKGROUND);
+        }
         doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_1);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_2);
         doTestReplaceFirewallChain(FIREWALL_CHAIN_OEM_DENY_3);
@@ -13619,7 +13656,8 @@ public class ConnectivityServiceTest {
                     IllegalArgumentException.class,
                     () -> mService.requestNetwork(Process.INVALID_UID, nc, reqTypeInt, null, 0,
                             null, ConnectivityManager.TYPE_NONE, NetworkCallback.FLAG_NONE,
-                            mContext.getPackageName(), getAttributionTag())
+                            mContext.getPackageName(), getAttributionTag(),
+                            ~0 /* declaredMethodsFlag */)
             );
         }
     }
@@ -17341,21 +17379,7 @@ public class ConnectivityServiceTest {
     }
 
     @Test
-    public void testSubIdsClearedWithoutNetworkFactoryPermission() throws Exception {
-        mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_DENIED);
-        final NetworkCapabilities nc = new NetworkCapabilities();
-        nc.setSubscriptionIds(Collections.singleton(Process.myUid()));
-
-        final NetworkCapabilities result =
-                mService.networkCapabilitiesRestrictedForCallerPermissions(
-                        nc, Process.myPid(), Process.myUid());
-        assertTrue(result.getSubscriptionIds().isEmpty());
-    }
-
-    @Test
-    public void testSubIdsExistWithNetworkFactoryPermission() throws Exception {
-        mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_GRANTED);
-
+    public void testSubIdsExist() throws Exception {
         final Set<Integer> subIds = Collections.singleton(Process.myUid());
         final NetworkCapabilities nc = new NetworkCapabilities();
         nc.setSubscriptionIds(subIds);
@@ -17381,8 +17405,7 @@ public class ConnectivityServiceTest {
     }
 
     @Test
-    public void testNetworkRequestWithSubIdsWithNetworkFactoryPermission() throws Exception {
-        mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_GRANTED);
+    public void testNetworkRequestWithSubIds() throws Exception {
         final PendingIntent pendingIntent = PendingIntent.getBroadcast(
                 mContext, 0 /* requestCode */, new Intent("a"), FLAG_IMMUTABLE);
         final NetworkCallback networkCallback1 = new NetworkCallback();
@@ -17395,21 +17418,6 @@ public class ConnectivityServiceTest {
         mCm.unregisterNetworkCallback(networkCallback1);
         mCm.releaseNetworkRequest(pendingIntent);
         mCm.unregisterNetworkCallback(networkCallback2);
-    }
-
-    @Test
-    public void testNetworkRequestWithSubIdsWithoutNetworkFactoryPermission() throws Exception {
-        mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_DENIED);
-        final PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                mContext, 0 /* requestCode */, new Intent("a"), FLAG_IMMUTABLE);
-
-        final Class<SecurityException> expected = SecurityException.class;
-        assertThrows(
-                expected, () -> mCm.requestNetwork(getRequestWithSubIds(), new NetworkCallback()));
-        assertThrows(expected, () -> mCm.requestNetwork(getRequestWithSubIds(), pendingIntent));
-        assertThrows(
-                expected,
-                () -> mCm.registerNetworkCallback(getRequestWithSubIds(), new NetworkCallback()));
     }
 
     @Test
@@ -17479,7 +17487,10 @@ public class ConnectivityServiceTest {
                 .isCarrierServiceUidForNetworkCapabilities(eq(Process.myUid()), any());
         doReturn(TEST_SUBSCRIPTION_ID).when(mCarrierPrivilegeAuthenticator)
                 .getSubIdFromNetworkCapabilities(any());
-        mService.onCarrierPrivilegesLost(lostPrivilegeUid, lostPrivilegeSubId);
+
+        visibleOnHandlerThread(mCsHandlerThread.getThreadHandler(), () -> {
+            mDeps.mCarrierPrivilegesLostListener.accept(lostPrivilegeUid, lostPrivilegeSubId);
+        });
         waitForIdle();
 
         if (expectCapChanged) {
@@ -17493,11 +17504,12 @@ public class ConnectivityServiceTest {
         }
 
         mWiFiAgent.disconnect();
-        waitForIdle();
 
         if (expectUnavailable) {
+            testFactory.expectRequestRemove();
             testFactory.assertRequestCountEquals(0);
         } else {
+            testFactory.expectRequestAdd();
             testFactory.assertRequestCountEquals(1);
         }
 
@@ -17547,6 +17559,47 @@ public class ConnectivityServiceTest {
                 false /* expectUnavailable */,
                 true /* expectCapChanged */);
     }
+
+    @Test
+    public void testAllowedUidsExistWithoutNetworkFactoryPermission() throws Exception {
+        // Make sure NETWORK_FACTORY permission is not granted.
+        mServiceContext.setPermission(NETWORK_FACTORY, PERMISSION_DENIED);
+        mServiceContext.setPermission(MANAGE_TEST_NETWORKS, PERMISSION_GRANTED);
+        final TestNetworkCallback cb = new TestNetworkCallback();
+        mCm.requestNetwork(new NetworkRequest.Builder()
+                        .clearCapabilities()
+                        .addTransportType(TRANSPORT_TEST)
+                        .addTransportType(TRANSPORT_CELLULAR)
+                        .build(),
+                cb);
+
+        final ArraySet<Integer> uids = new ArraySet<>();
+        uids.add(200);
+        final NetworkCapabilities nc = new NetworkCapabilities.Builder()
+                .addTransportType(TRANSPORT_TEST)
+                .removeCapability(NET_CAPABILITY_NOT_RESTRICTED)
+                .setAllowedUids(uids)
+                .setOwnerUid(Process.myUid())
+                .setAdministratorUids(new int[] {Process.myUid()})
+                .build();
+        final TestNetworkAgentWrapper agent = new TestNetworkAgentWrapper(TRANSPORT_TEST,
+                new LinkProperties(), nc);
+        agent.connect(true);
+        cb.expectAvailableThenValidatedCallbacks(agent);
+
+        uids.add(300);
+        uids.add(400);
+        nc.setAllowedUids(uids);
+        agent.setNetworkCapabilities(nc, true /* sendToConnectivityService */);
+        if (mDeps.isAtLeastT()) {
+            // AllowedUids is not cleared even without the NETWORK_FACTORY permission
+            // because the caller is the owner of the network.
+            cb.expectCaps(agent, c -> c.getAllowedUids().equals(uids));
+        } else {
+            cb.assertNoCallback();
+        }
+    }
+
     @Test
     public void testAllowedUids() throws Exception {
         final int preferenceOrder =
@@ -19189,6 +19242,25 @@ public class ConnectivityServiceTest {
         verifyClatdStop(null /* inOrder */, MOBILE_IFNAME);
     }
 
-    // Note : adding tests is ConnectivityServiceTest is deprecated, as it is too big for
+    private static final int EXPECTED_TEST_METHOD_COUNT = 332;
+
+    @Test
+    public void testTestMethodCount() {
+        final Class<?> testClass = this.getClass();
+
+        int actualTestMethodCount = 0;
+        for (final Method method : testClass.getDeclaredMethods()) {
+            if (method.isAnnotationPresent(Test.class)) {
+                actualTestMethodCount++;
+            }
+        }
+
+        assertEquals("Adding tests in ConnectivityServiceTest is deprecated, "
+                + "as it is too big for maintenance. Please consider adding new tests "
+                + "in subclasses of CSTest instead.",
+                EXPECTED_TEST_METHOD_COUNT, actualTestMethodCount);
+    }
+
+    // Note : adding tests in ConnectivityServiceTest is deprecated, as it is too big for
     // maintenance. Please consider adding new tests in subclasses of CSTest instead.
 }

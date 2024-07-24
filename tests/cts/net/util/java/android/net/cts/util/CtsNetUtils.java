@@ -93,7 +93,7 @@ public final class CtsNetUtils {
     private static final int SOCKET_TIMEOUT_MS = 10_000;
     private static final int PRIVATE_DNS_PROBE_MS = 1_000;
 
-    private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 10_000;
+    private static final int PRIVATE_DNS_SETTING_TIMEOUT_MS = 30_000;
     private static final int CONNECTIVITY_CHANGE_TIMEOUT_SECS = 30;
 
     private static final String PRIVATE_DNS_MODE_OPPORTUNISTIC = "opportunistic";
@@ -408,38 +408,8 @@ public final class CtsNetUtils {
         return network;
     }
 
-    public Network connectToCell() throws InterruptedException {
-        if (cellConnectAttempted()) {
-            mCm.unregisterNetworkCallback(mCellNetworkCallback);
-        }
-        NetworkRequest cellRequest = new NetworkRequest.Builder()
-                .addTransportType(TRANSPORT_CELLULAR)
-                .addCapability(NET_CAPABILITY_INTERNET)
-                .build();
-        mCellNetworkCallback = new TestNetworkCallback();
-        mCm.requestNetwork(cellRequest, mCellNetworkCallback);
-        final Network cellNetwork = mCellNetworkCallback.waitForAvailable();
-        assertNotNull("Cell network not available. " +
-                "Please ensure the device has working mobile data.", cellNetwork);
-        return cellNetwork;
-    }
-
-    public void disconnectFromCell() {
-        if (!cellConnectAttempted()) {
-            throw new IllegalStateException("Cell connection not attempted");
-        }
-        mCm.unregisterNetworkCallback(mCellNetworkCallback);
-        mCellNetworkCallback = null;
-    }
-
     public boolean cellConnectAttempted() {
         return mCellNetworkCallback != null;
-    }
-
-    public void tearDown() {
-        if (cellConnectAttempted()) {
-            disconnectFromCell();
-        }
     }
 
     private NetworkRequest makeWifiNetworkRequest() {

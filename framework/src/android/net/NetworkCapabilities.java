@@ -36,9 +36,11 @@ import android.os.Parcelable;
 import android.os.Process;
 import android.text.TextUtils;
 import android.util.ArraySet;
+import android.util.Log;
 import android.util.Range;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BitUtils;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.NetworkCapabilitiesUtils;
@@ -134,6 +136,8 @@ public final class NetworkCapabilities implements Parcelable {
                 "com.android.net.flags.request_restricted_wifi";
         static final String SUPPORT_TRANSPORT_SATELLITE =
                 "com.android.net.flags.support_transport_satellite";
+        static final String NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED =
+                "com.android.net.flags.net_capability_not_bandwidth_constrained";
     }
 
     /**
@@ -458,6 +462,7 @@ public final class NetworkCapabilities implements Parcelable {
             NET_CAPABILITY_PRIORITIZE_LATENCY,
             NET_CAPABILITY_PRIORITIZE_BANDWIDTH,
             NET_CAPABILITY_LOCAL_NETWORK,
+            NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED,
     })
     public @interface NetCapability { }
 
@@ -740,7 +745,26 @@ public final class NetworkCapabilities implements Parcelable {
     @FlaggedApi(Flags.FLAG_NET_CAPABILITY_LOCAL_NETWORK)
     public static final int NET_CAPABILITY_LOCAL_NETWORK = 36;
 
-    private static final int MAX_NET_CAPABILITY = NET_CAPABILITY_LOCAL_NETWORK;
+    /**
+     * Indicates that this is not a bandwidth-constrained network.
+     *
+     * Starting from {@link Build.VERSION_CODES.VANILLA_ICE_CREAM}, this capability is by default
+     * set in {@link NetworkRequest}s and true for most networks.
+     *
+     * If a network lacks this capability, it is bandwidth-constrained. Bandwidth constrained
+     * networks cannot support high-bandwidth data transfers and applications that request and use
+     * them must ensure that they limit bandwidth usage to below the values returned by
+     * {@link #getLinkDownstreamBandwidthKbps()} and {@link #getLinkUpstreamBandwidthKbps()} and
+     * limit the frequency of their network usage. If applications perform high-bandwidth data
+     * transfers on constrained networks or perform network access too frequently, the system may
+     * block the app's access to the network. The system may take other measures to reduce network
+     * usage on constrained networks, such as disabling network access to apps that are not in the
+     * foreground.
+     */
+    @FlaggedApi(Flags.NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED)
+    public static final int NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED = 37;
+
+    private static final int MAX_NET_CAPABILITY = NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED;
 
     // Set all bits up to the MAX_NET_CAPABILITY-th bit
     private static final long ALL_VALID_CAPABILITIES = (2L << MAX_NET_CAPABILITY) - 1;
@@ -749,22 +773,22 @@ public final class NetworkCapabilities implements Parcelable {
      * Network capabilities that are expected to be mutable, i.e., can change while a particular
      * network is connected.
      */
-    private static final long MUTABLE_CAPABILITIES = BitUtils.packBitList(
+    private static final long MUTABLE_CAPABILITIES =
             // TRUSTED can change when user explicitly connects to an untrusted network in Settings.
             // http://b/18206275
-            NET_CAPABILITY_TRUSTED,
-            NET_CAPABILITY_VALIDATED,
-            NET_CAPABILITY_CAPTIVE_PORTAL,
-            NET_CAPABILITY_NOT_ROAMING,
-            NET_CAPABILITY_FOREGROUND,
-            NET_CAPABILITY_NOT_CONGESTED,
-            NET_CAPABILITY_NOT_SUSPENDED,
-            NET_CAPABILITY_PARTIAL_CONNECTIVITY,
-            NET_CAPABILITY_TEMPORARILY_NOT_METERED,
-            NET_CAPABILITY_NOT_VCN_MANAGED,
+            (1L << NET_CAPABILITY_TRUSTED) |
+            (1L << NET_CAPABILITY_VALIDATED) |
+            (1L << NET_CAPABILITY_CAPTIVE_PORTAL) |
+            (1L << NET_CAPABILITY_NOT_ROAMING) |
+            (1L << NET_CAPABILITY_FOREGROUND) |
+            (1L << NET_CAPABILITY_NOT_CONGESTED) |
+            (1L << NET_CAPABILITY_NOT_SUSPENDED) |
+            (1L << NET_CAPABILITY_PARTIAL_CONNECTIVITY) |
+            (1L << NET_CAPABILITY_TEMPORARILY_NOT_METERED) |
+            (1L << NET_CAPABILITY_NOT_VCN_MANAGED) |
             // The value of NET_CAPABILITY_HEAD_UNIT is 32, which cannot use int to do bit shift,
             // otherwise there will be an overflow. Use long to do bit shift instead.
-            NET_CAPABILITY_HEAD_UNIT);
+            (1L << NET_CAPABILITY_HEAD_UNIT);
 
     /**
      * Network capabilities that are not allowed in NetworkRequests. This exists because the
@@ -784,10 +808,17 @@ public final class NetworkCapabilities implements Parcelable {
     /**
      * Capabilities that are set by default when the object is constructed.
      */
-    private static final long DEFAULT_CAPABILITIES = BitUtils.packBitList(
-            NET_CAPABILITY_NOT_RESTRICTED,
-            NET_CAPABILITY_TRUSTED,
-            NET_CAPABILITY_NOT_VPN);
+    private static final long DEFAULT_CAPABILITIES;
+    static {
+        long defaultCapabilities =
+                (1L << NET_CAPABILITY_NOT_RESTRICTED)
+                | (1L << NET_CAPABILITY_TRUSTED)
+                | (1L << NET_CAPABILITY_NOT_VPN);
+        if (SdkLevel.isAtLeastV()) {
+            defaultCapabilities |= (1L << NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED);
+        }
+        DEFAULT_CAPABILITIES = defaultCapabilities;
+    }
 
     /**
      * Capabilities that are managed by ConnectivityService.
@@ -795,11 +826,10 @@ public final class NetworkCapabilities implements Parcelable {
      */
     @VisibleForTesting
     public static final long CONNECTIVITY_MANAGED_CAPABILITIES =
-            BitUtils.packBitList(
-                    NET_CAPABILITY_VALIDATED,
-                    NET_CAPABILITY_CAPTIVE_PORTAL,
-                    NET_CAPABILITY_FOREGROUND,
-                    NET_CAPABILITY_PARTIAL_CONNECTIVITY);
+            (1L << NET_CAPABILITY_VALIDATED) |
+            (1L << NET_CAPABILITY_CAPTIVE_PORTAL) |
+            (1L << NET_CAPABILITY_FOREGROUND) |
+            (1L << NET_CAPABILITY_PARTIAL_CONNECTIVITY);
 
     /**
      * Capabilities that are allowed for all test networks. This list must be set so that it is safe
@@ -808,15 +838,16 @@ public final class NetworkCapabilities implements Parcelable {
      * IMS, SUPL, etc.
      */
     private static final long TEST_NETWORKS_ALLOWED_CAPABILITIES =
-            BitUtils.packBitList(
-            NET_CAPABILITY_NOT_METERED,
-            NET_CAPABILITY_TEMPORARILY_NOT_METERED,
-            NET_CAPABILITY_NOT_RESTRICTED,
-            NET_CAPABILITY_NOT_VPN,
-            NET_CAPABILITY_NOT_ROAMING,
-            NET_CAPABILITY_NOT_CONGESTED,
-            NET_CAPABILITY_NOT_SUSPENDED,
-            NET_CAPABILITY_NOT_VCN_MANAGED);
+            (1L << NET_CAPABILITY_NOT_METERED) |
+            (1L << NET_CAPABILITY_TEMPORARILY_NOT_METERED) |
+            (1L << NET_CAPABILITY_NOT_RESTRICTED) |
+            (1L << NET_CAPABILITY_NOT_VPN) |
+            (1L << NET_CAPABILITY_NOT_ROAMING) |
+            (1L << NET_CAPABILITY_NOT_CONGESTED) |
+            (1L << NET_CAPABILITY_NOT_SUSPENDED) |
+            (1L << NET_CAPABILITY_NOT_VCN_MANAGED) |
+            (1L << NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED);
+
 
     /**
      * Extra allowed capabilities for test networks that do not have TRANSPORT_CELLULAR. Test
@@ -824,7 +855,9 @@ public final class NetworkCapabilities implements Parcelable {
      * the risk of being used by running apps.
      */
     private static final long TEST_NETWORKS_EXTRA_ALLOWED_CAPABILITIES_ON_NON_CELL =
-            BitUtils.packBitList(NET_CAPABILITY_CBS, NET_CAPABILITY_DUN, NET_CAPABILITY_RCS);
+            (1L << NET_CAPABILITY_CBS) |
+            (1L << NET_CAPABILITY_DUN) |
+            (1L << NET_CAPABILITY_RCS);
 
     /**
      * Adds the given capability to this {@code NetworkCapability} instance.
@@ -843,7 +876,10 @@ public final class NetworkCapabilities implements Parcelable {
         // If the given capability was previously added to the list of forbidden capabilities
         // then the capability will also be removed from the list of forbidden capabilities.
         // TODO: Add forbidden capabilities to the public API
-        checkValidCapability(capability);
+        if (!isValidCapability(capability)) {
+            Log.e(TAG, "addCapability is called with invalid capability: " + capability);
+            return this;
+        }
         mNetworkCapabilities |= 1L << capability;
         // remove from forbidden capability list
         mForbiddenNetworkCapabilities &= ~(1L << capability);
@@ -864,7 +900,10 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     public void addForbiddenCapability(@NetCapability int capability) {
-        checkValidCapability(capability);
+        if (!isValidCapability(capability)) {
+            Log.e(TAG, "addForbiddenCapability is called with invalid capability: " + capability);
+            return;
+        }
         mForbiddenNetworkCapabilities |= 1L << capability;
         mNetworkCapabilities &= ~(1L << capability);  // remove from requested capabilities
     }
@@ -878,7 +917,10 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     public @NonNull NetworkCapabilities removeCapability(@NetCapability int capability) {
-        checkValidCapability(capability);
+        if (!isValidCapability(capability)) {
+            Log.e(TAG, "removeCapability is called with invalid capability: " + capability);
+            return this;
+        }
         final long mask = ~(1L << capability);
         mNetworkCapabilities &= mask;
         return this;
@@ -893,7 +935,11 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     public @NonNull NetworkCapabilities removeForbiddenCapability(@NetCapability int capability) {
-        checkValidCapability(capability);
+        if (!isValidCapability(capability)) {
+            Log.e(TAG,
+                    "removeForbiddenCapability is called with invalid capability: " + capability);
+            return this;
+        }
         mForbiddenNetworkCapabilities &= ~(1L << capability);
         return this;
     }
@@ -1174,7 +1220,7 @@ public final class NetworkCapabilities implements Parcelable {
      * @hide
      */
     public void maybeMarkCapabilitiesRestricted() {
-        if (NetworkCapabilitiesUtils.inferRestrictedCapability(this)) {
+        if (NetworkCapabilitiesUtils.inferRestrictedCapability(mNetworkCapabilities)) {
             removeCapability(NET_CAPABILITY_NOT_RESTRICTED);
         }
     }
@@ -1368,12 +1414,11 @@ public final class NetworkCapabilities implements Parcelable {
      * Allowed transports on an unrestricted test network (in addition to TRANSPORT_TEST).
      */
     private static final long UNRESTRICTED_TEST_NETWORKS_ALLOWED_TRANSPORTS =
-            BitUtils.packBitList(
-                    TRANSPORT_TEST,
-                    // Test eth networks are created with EthernetManager#setIncludeTestInterfaces
-                    TRANSPORT_ETHERNET,
-                    // Test VPN networks can be created but their UID ranges must be empty.
-                    TRANSPORT_VPN);
+            (1L << TRANSPORT_TEST) |
+            // Test eth networks are created with EthernetManager#setIncludeTestInterfaces
+            (1L << TRANSPORT_ETHERNET) |
+            // Test VPN networks can be created but their UID ranges must be empty.
+            (1L << TRANSPORT_VPN);
 
     /**
      * Adds the given transport type to this {@code NetworkCapability} instance.
@@ -1775,8 +1820,7 @@ public final class NetworkCapabilities implements Parcelable {
                 // use the same specifier, TelephonyNetworkSpecifier.
                 && mTransportTypes != (1L << TRANSPORT_TEST)
                 && Long.bitCount(mTransportTypes & ~(1L << TRANSPORT_TEST)) != 1
-                && (mTransportTypes & ~(1L << TRANSPORT_TEST))
-                != (1 << TRANSPORT_CELLULAR | 1 << TRANSPORT_SATELLITE)) {
+                && !specifierAcceptableForMultipleTransports(mTransportTypes)) {
             throw new IllegalStateException("Must have a single non-test transport specified to "
                     + "use setNetworkSpecifier");
         }
@@ -1784,6 +1828,12 @@ public final class NetworkCapabilities implements Parcelable {
         mNetworkSpecifier = networkSpecifier;
 
         return this;
+    }
+
+    private boolean specifierAcceptableForMultipleTransports(long transportTypes) {
+        return (transportTypes & ~(1L << TRANSPORT_TEST))
+                // Cellular and satellite use the same NetworkSpecifier.
+                == (1 << TRANSPORT_CELLULAR | 1 << TRANSPORT_SATELLITE);
     }
 
     /**
@@ -2585,6 +2635,7 @@ public final class NetworkCapabilities implements Parcelable {
             case NET_CAPABILITY_PRIORITIZE_LATENCY:          return "PRIORITIZE_LATENCY";
             case NET_CAPABILITY_PRIORITIZE_BANDWIDTH:        return "PRIORITIZE_BANDWIDTH";
             case NET_CAPABILITY_LOCAL_NETWORK:        return "LOCAL_NETWORK";
+            case NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED:    return "NOT_BANDWIDTH_CONSTRAINED";
             default:                                  return Integer.toString(capability);
         }
     }
@@ -2626,12 +2677,6 @@ public final class NetworkCapabilities implements Parcelable {
 
     private static boolean isValidCapability(@NetworkCapabilities.NetCapability int capability) {
         return capability >= 0 && capability <= MAX_NET_CAPABILITY;
-    }
-
-    private static void checkValidCapability(@NetworkCapabilities.NetCapability int capability) {
-        if (!isValidCapability(capability)) {
-            throw new IllegalArgumentException("NetworkCapability " + capability + " out of range");
-        }
     }
 
     private static boolean isValidEnterpriseId(

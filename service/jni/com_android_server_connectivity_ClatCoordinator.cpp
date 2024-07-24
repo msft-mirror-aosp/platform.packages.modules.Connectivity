@@ -80,7 +80,8 @@ static void verifyPerms(const char * const path,
       case VERIFY_BIN: return;
       case VERIFY_PROG:   fd = bpf::retrieveProgram(path); break;
       case VERIFY_MAP_RO: fd = bpf::mapRetrieveRO(path); break;
-      case VERIFY_MAP_RW: fd = bpf::mapRetrieveRW(path); break;
+      // lockless: we're just checking access rights and will immediately close the fd
+      case VERIFY_MAP_RW: fd = bpf::mapRetrieveLocklessRW(path); break;
     }
 
     if (fd < 0) ALOGF("bpf_obj_get '%s' failed, errno=%d", path, errno);
@@ -113,7 +114,8 @@ static void verifyClatPerms() {
     if (!modules::sdklevel::IsAtLeastT()) return;
 
     V("/sys/fs/bpf", S_IFDIR|S_ISVTX|0777, ROOT, ROOT, "fs_bpf", DIR);
-    V("/sys/fs/bpf/net_shared", S_IFDIR|S_ISVTX|0777, ROOT, ROOT, "fs_bpf_net_shared", DIR);
+
+    V("/sys/fs/bpf/net_shared", S_IFDIR|01777, ROOT, ROOT, "fs_bpf_net_shared", DIR);
 
     // pre-U we do not have selinux privs to getattr on bpf maps/progs
     // so while the below *should* be as listed, we have no way to actually verify

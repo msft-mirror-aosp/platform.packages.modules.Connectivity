@@ -17,12 +17,15 @@
 package android.net.thread;
 
 import android.net.thread.ActiveOperationalDataset;
+import android.net.thread.ChannelMaxPower;
 import android.net.thread.IActiveOperationalDatasetReceiver;
-import android.net.thread.IOperationalDatasetCallback;
+import android.net.thread.IConfigurationReceiver;
 import android.net.thread.IOperationReceiver;
+import android.net.thread.IOperationalDatasetCallback;
 import android.net.thread.IScheduleMigrationReceiver;
 import android.net.thread.IStateCallback;
 import android.net.thread.PendingOperationalDataset;
+import android.net.thread.ThreadConfiguration;
 
 /**
 * Interface for communicating with ThreadNetworkControllerService.
@@ -39,9 +42,13 @@ interface IThreadNetworkController {
     void leave(in IOperationReceiver receiver);
 
     void setTestNetworkAsUpstream(in String testNetworkInterfaceName, in IOperationReceiver receiver);
+    void setChannelMaxPowers(in ChannelMaxPower[] channelMaxPowers, in IOperationReceiver receiver);
 
     int getThreadVersion();
     void createRandomizedDataset(String networkName, IActiveOperationalDatasetReceiver receiver);
 
     void setEnabled(boolean enabled, in IOperationReceiver receiver);
+    void setConfiguration(in ThreadConfiguration config, in IOperationReceiver receiver);
+    void registerConfigurationCallback(in IConfigurationReceiver receiver);
+    void unregisterConfigurationCallback(in IConfigurationReceiver receiver);
 }

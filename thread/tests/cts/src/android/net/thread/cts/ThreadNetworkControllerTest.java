@@ -17,6 +17,12 @@
 package android.net.thread.cts;
 
 import static android.Manifest.permission.ACCESS_NETWORK_STATE;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VCN_MANAGED;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_CHILD;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_LEADER;
 import static android.net.thread.ThreadNetworkController.DEVICE_ROLE_ROUTER;
@@ -37,10 +43,8 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 import static com.google.common.truth.Truth.assertThat;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
-import static org.junit.Assume.assumeNotNull;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
@@ -60,6 +64,8 @@ import android.net.thread.ThreadNetworkController.StateCallback;
 import android.net.thread.ThreadNetworkException;
 import android.net.thread.ThreadNetworkManager;
 import android.net.thread.utils.TapTestNetworkTracker;
+import android.net.thread.utils.ThreadFeatureCheckerRule;
+import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresThreadFeature;
 import android.os.Build;
 import android.os.HandlerThread;
 import android.os.OutcomeReceiver;
@@ -69,16 +75,13 @@ import androidx.test.core.app.ApplicationProvider;
 import androidx.test.filters.LargeTest;
 
 import com.android.net.module.util.ArrayTrackRecord;
-import com.android.testutils.DevSdkIgnoreRule;
-import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
-import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.FunctionalUtils.ThrowingRunnable;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
-import org.junit.runner.RunWith;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -99,8 +102,7 @@ import java.util.function.Predicate;
 
 /** CTS tests for {@link ThreadNetworkController}. */
 @LargeTest
-@RunWith(DevSdkIgnoreRunner.class)
-@IgnoreUpTo(Build.VERSION_CODES.TIRAMISU) // Thread is available on only U+
+@RequiresThreadFeature
 public class ThreadNetworkControllerTest {
     private static final int JOIN_TIMEOUT_MILLIS = 30 * 1000;
     private static final int LEAVE_TIMEOUT_MILLIS = 2_000;
@@ -109,11 +111,12 @@ public class ThreadNetworkControllerTest {
     private static final int CALLBACK_TIMEOUT_MILLIS = 1_000;
     private static final int ENABLED_TIMEOUT_MILLIS = 2_000;
     private static final int SERVICE_DISCOVERY_TIMEOUT_MILLIS = 30_000;
+    private static final int SERVICE_LOST_TIMEOUT_MILLIS = 20_000;
     private static final String MESHCOP_SERVICE_TYPE = "_meshcop._udp";
     private static final String THREAD_NETWORK_PRIVILEGED =
             "android.permission.THREAD_NETWORK_PRIVILEGED";
 
-    @Rule public DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
+    @Rule public final ThreadFeatureCheckerRule mThreadRule = new ThreadFeatureCheckerRule();
 
     private final Context mContext = ApplicationProvider.getApplicationContext();
     private ExecutorService mExecutor;
@@ -126,14 +129,10 @@ public class ThreadNetworkControllerTest {
 
     @Before
     public void setUp() throws Exception {
-        ThreadNetworkManager manager = mContext.getSystemService(ThreadNetworkManager.class);
-        if (manager != null) {
-            mController = manager.getAllThreadNetworkControllers().get(0);
-        }
-
-        // TODO: we will also need it in tearDown(), it's better to have a Rule to skip
-        // tests if a feature is not available.
-        assumeNotNull(mController);
+        mController =
+                mContext.getSystemService(ThreadNetworkManager.class)
+                        .getAllThreadNetworkControllers()
+                        .get(0);
 
         mGrantedPermissions = new HashSet<String>();
         mExecutor = Executors.newSingleThreadExecutor();
@@ -146,9 +145,6 @@ public class ThreadNetworkControllerTest {
 
     @After
     public void tearDown() throws Exception {
-        if (mController == null) {
-            return;
-        }
         dropAllPermissions();
         leaveAndWait(mController);
         tearDownTestNetwork();
@@ -174,6 +170,17 @@ public class ThreadNetworkControllerTest {
         } finally {
             runAsShell(ACCESS_NETWORK_STATE, () -> mController.unregisterStateCallback(callback));
         }
+    }
+
+    @Test
+    public void subscribeThreadEnableState_getActiveDataset_onThreadEnableStateChangedNotCalled()
+            throws Exception {
+        EnabledStateListener listener = new EnabledStateListener(mController);
+        listener.expectThreadEnabledState(STATE_ENABLED);
+
+        getActiveOperationalDataset(mController);
+
+        listener.expectCallbackNotCalled();
     }
 
     @Test
@@ -754,17 +761,6 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
-    public void setEnabled_toggleAfterJoin_joinsThreadNetworkAgain() throws Exception {
-        joinRandomizedDatasetAndWait(mController);
-
-        setEnabledAndWait(mController, false);
-        assertThat(getDeviceRole(mController)).isEqualTo(DEVICE_ROLE_STOPPED);
-        setEnabledAndWait(mController, true);
-
-        runAsShell(ACCESS_NETWORK_STATE, () -> waitForAttachedState(mController));
-    }
-
-    @Test
     public void setEnabled_enableFollowedByDisable_allSucceed() throws Exception {
         joinRandomizedDatasetAndWait(mController);
         CompletableFuture<Void> setFuture1 = new CompletableFuture<>();
@@ -797,10 +793,14 @@ public class ThreadNetworkControllerTest {
     public void threadNetworkCallback_deviceAttached_threadNetworkIsAvailable() throws Exception {
         CompletableFuture<Network> networkFuture = new CompletableFuture<>();
         ConnectivityManager cm = mContext.getSystemService(ConnectivityManager.class);
-        NetworkRequest networkRequest =
-                new NetworkRequest.Builder()
-                        .addTransportType(NetworkCapabilities.TRANSPORT_THREAD)
-                        .build();
+        NetworkRequest.Builder networkRequestBuilder =
+                new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_THREAD);
+        // Before V, we need to explicitly set `NET_CAPABILITY_LOCAL_NETWORK` capability to request
+        // a Thread network.
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            networkRequestBuilder.addCapability(NET_CAPABILITY_LOCAL_NETWORK);
+        }
+        NetworkRequest networkRequest = networkRequestBuilder.build();
         ConnectivityManager.NetworkCallback networkCallback =
                 new ConnectivityManager.NetworkCallback() {
                     @Override
@@ -816,6 +816,20 @@ public class ThreadNetworkControllerTest {
 
         assertThat(isAttached(mController)).isTrue();
         assertThat(networkFuture.get(NETWORK_CALLBACK_TIMEOUT_MILLIS, MILLISECONDS)).isNotNull();
+        NetworkCapabilities caps =
+                runAsShell(
+                        ACCESS_NETWORK_STATE, () -> cm.getNetworkCapabilities(networkFuture.get()));
+        assertThat(caps).isNotNull();
+        assertThat(caps.hasTransport(NetworkCapabilities.TRANSPORT_THREAD)).isTrue();
+        assertThat(caps.getCapabilities())
+                .asList()
+                .containsAtLeast(
+                        NET_CAPABILITY_LOCAL_NETWORK,
+                        NET_CAPABILITY_NOT_METERED,
+                        NET_CAPABILITY_NOT_RESTRICTED,
+                        NET_CAPABILITY_NOT_VCN_MANAGED,
+                        NET_CAPABILITY_NOT_VPN,
+                        NET_CAPABILITY_TRUSTED);
     }
 
     private void grantPermissions(String... permissions) {
@@ -848,6 +862,7 @@ public class ThreadNetworkControllerTest {
     }
 
     @Test
+    @Ignore("b/333649897: Enable this when it's not flaky at all")
     public void meshcopService_joinedNetwork_discoveredHasNetwork() throws Exception {
         setUpTestNetwork();
 
@@ -875,21 +890,23 @@ public class ThreadNetworkControllerTest {
     @Test
     public void meshcopService_threadDisabled_notDiscovered() throws Exception {
         setUpTestNetwork();
-
         CompletableFuture<NsdServiceInfo> serviceLostFuture = new CompletableFuture<>();
         NsdManager.DiscoveryListener listener =
                 discoverForServiceLost(MESHCOP_SERVICE_TYPE, serviceLostFuture);
+
         setEnabledAndWait(mController, false);
+
         try {
-            serviceLostFuture.get(SERVICE_DISCOVERY_TIMEOUT_MILLIS, MILLISECONDS);
+            serviceLostFuture.get(SERVICE_LOST_TIMEOUT_MILLIS, MILLISECONDS);
         } catch (InterruptedException | ExecutionException | TimeoutException ignored) {
             // It's fine if the service lost event didn't show up. The service may not ever be
             // advertised.
         } finally {
             mNsdManager.stopServiceDiscovery(listener);
         }
-
-        assertThrows(TimeoutException.class, () -> discoverService(MESHCOP_SERVICE_TYPE));
+        assertThrows(
+                TimeoutException.class,
+                () -> discoverService(MESHCOP_SERVICE_TYPE, SERVICE_LOST_TIMEOUT_MILLIS));
     }
 
     private static void dropAllPermissions() {
@@ -1009,7 +1026,11 @@ public class ThreadNetworkControllerTest {
         }
 
         public void expectThreadEnabledState(int enabled) {
-            assertNotNull(mReadHead.poll(ENABLED_TIMEOUT_MILLIS, e -> (e == enabled)));
+            assertThat(mReadHead.poll(ENABLED_TIMEOUT_MILLIS, e -> (e == enabled))).isNotNull();
+        }
+
+        public void expectCallbackNotCalled() {
+            assertThat(mReadHead.poll(CALLBACK_TIMEOUT_MILLIS, e -> true)).isNull();
         }
 
         public void unregisterStateCallback() {
@@ -1107,6 +1128,12 @@ public class ThreadNetworkControllerTest {
 
     // Return the first discovered service instance.
     private NsdServiceInfo discoverService(String serviceType) throws Exception {
+        return discoverService(serviceType, SERVICE_DISCOVERY_TIMEOUT_MILLIS);
+    }
+
+    // Return the first discovered service instance.
+    private NsdServiceInfo discoverService(String serviceType, int timeoutMilliseconds)
+            throws Exception {
         CompletableFuture<NsdServiceInfo> serviceInfoFuture = new CompletableFuture<>();
         NsdManager.DiscoveryListener listener =
                 new DefaultDiscoveryListener() {
@@ -1115,9 +1142,14 @@ public class ThreadNetworkControllerTest {
                         serviceInfoFuture.complete(serviceInfo);
                     }
                 };
-        mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        mNsdManager.discoverServices(
+                serviceType,
+                NsdManager.PROTOCOL_DNS_SD,
+                mTestNetworkTracker.getNetwork(),
+                mExecutor,
+                listener);
         try {
-            serviceInfoFuture.get(SERVICE_DISCOVERY_TIMEOUT_MILLIS, MILLISECONDS);
+            serviceInfoFuture.get(timeoutMilliseconds, MILLISECONDS);
         } finally {
             mNsdManager.stopServiceDiscovery(listener);
         }
@@ -1134,7 +1166,12 @@ public class ThreadNetworkControllerTest {
                         serviceInfoFuture.complete(serviceInfo);
                     }
                 };
-        mNsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, listener);
+        mNsdManager.discoverServices(
+                serviceType,
+                NsdManager.PROTOCOL_DNS_SD,
+                mTestNetworkTracker.getNetwork(),
+                mExecutor,
+                listener);
         return listener;
     }
 

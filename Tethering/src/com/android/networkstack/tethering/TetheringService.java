@@ -30,6 +30,7 @@ import static android.net.dhcp.IDhcpServer.STATUS_UNKNOWN_ERROR;
 
 import android.app.Service;
 import android.bluetooth.BluetoothAdapter;
+import android.bluetooth.BluetoothManager;
 import android.content.Context;
 import android.content.Intent;
 import android.net.IIntResultListener;
@@ -37,6 +38,7 @@ import android.net.INetworkStackConnector;
 import android.net.ITetheringConnector;
 import android.net.ITetheringEventCallback;
 import android.net.NetworkStack;
+import android.net.TetheringManager.TetheringRequest;
 import android.net.TetheringRequestParcel;
 import android.net.dhcp.DhcpServerCallbacks;
 import android.net.dhcp.DhcpServingParamsParcel;
@@ -136,8 +138,8 @@ public class TetheringService extends Service {
                     listener)) {
                 return;
             }
-
-            mTethering.startTethering(request, callerPkg, listener);
+            // TODO(b/216524590): Add UID/packageName of caller to TetheringRequest here
+            mTethering.startTethering(new TetheringRequest(request), callerPkg, listener);
         }
 
         @Override
@@ -162,6 +164,8 @@ public class TetheringService extends Service {
         @Override
         public void registerTetheringEventCallback(ITetheringEventCallback callback,
                 String callerPkg) {
+            // Silently ignore call if the callback is null. This can only happen via reflection.
+            if (callback == null) return;
             try {
                 if (!hasTetherAccessPermission()) {
                     callback.onCallbackStopped(TETHER_ERROR_NO_ACCESS_TETHERING_PERMISSION);
@@ -174,6 +178,8 @@ public class TetheringService extends Service {
         @Override
         public void unregisterTetheringEventCallback(ITetheringEventCallback callback,
                 String callerPkg) {
+            // Silently ignore call if the callback is null. This can only happen via reflection.
+            if (callback == null) return;
             try {
                 if (!hasTetherAccessPermission()) {
                     callback.onCallbackStopped(TETHER_ERROR_NO_ACCESS_TETHERING_PERMISSION);
@@ -377,7 +383,11 @@ public class TetheringService extends Service {
 
             @Override
             public BluetoothAdapter getBluetoothAdapter() {
-                return BluetoothAdapter.getDefaultAdapter();
+                final BluetoothManager btManager = getSystemService(BluetoothManager.class);
+                if (btManager == null) {
+                    return null;
+                }
+                return btManager.getAdapter();
             }
         };
     }

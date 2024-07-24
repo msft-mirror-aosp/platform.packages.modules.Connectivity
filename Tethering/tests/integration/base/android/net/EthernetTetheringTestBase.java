@@ -16,7 +16,6 @@
 
 package android.net;
 
-import static android.Manifest.permission.CONNECTIVITY_USE_RESTRICTED_NETWORKS;
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 import static android.Manifest.permission.TETHER_PRIVILEGED;
@@ -42,7 +41,6 @@ import static com.android.testutils.TestPermissionUtil.runAsShell;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeFalse;
@@ -65,7 +63,6 @@ import android.util.Log;
 import androidx.annotation.NonNull;
 import androidx.test.platform.app.InstrumentationRegistry;
 
-import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.Struct;
 import com.android.net.module.util.structs.Ipv6Header;
 import com.android.testutils.HandlerUtils;
@@ -74,7 +71,6 @@ import com.android.testutils.TestNetworkTracker;
 
 import org.junit.After;
 import org.junit.Before;
-import org.junit.BeforeClass;
 
 import java.io.FileDescriptor;
 import java.net.Inet4Address;
@@ -83,8 +79,10 @@ import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -104,7 +102,7 @@ public abstract class EthernetTetheringTestBase {
     // Used to check if any tethering interface is available. Choose 200ms to be request timeout
     // because the average interface requested time on cuttlefish@acloud is around 10ms.
     // See TetheredInterfaceRequester.getInterface, isInterfaceForTetheringAvailable.
-    private static final int AVAILABLE_TETHER_IFACE_REQUEST_TIMEOUT_MS = 200;
+    private static final int SHORT_TIMEOUT_MS = 1000;
     private static final int TETHER_REACHABILITY_ATTEMPTS = 20;
     protected static final long WAIT_RA_TIMEOUT_MS = 2000;
 
@@ -142,16 +140,18 @@ public abstract class EthernetTetheringTestBase {
 
     private static final Context sContext =
             InstrumentationRegistry.getInstrumentation().getContext();
-    private static final EthernetManager sEm = sContext.getSystemService(EthernetManager.class);
+    protected static final EthernetManager sEm = sContext.getSystemService(EthernetManager.class);
     private static final TetheringManager sTm = sContext.getSystemService(TetheringManager.class);
     private static final PackageManager sPackageManager = sContext.getPackageManager();
     private static final CtsNetUtils sCtsNetUtils = new CtsNetUtils(sContext);
+    private static final List<String> sCallbackErrors =
+            Collections.synchronizedList(new ArrayList<>());
 
     // Late initialization in setUp()
     private boolean mRunTests;
     private HandlerThread mHandlerThread;
     private Handler mHandler;
-    private TetheredInterfaceRequester mTetheredInterfaceRequester;
+    protected TetheredInterfaceRequester mTetheredInterfaceRequester;
 
     // Late initialization in initTetheringTester().
     private TapPacketReader mUpstreamReader;
@@ -164,33 +164,6 @@ public abstract class EthernetTetheringTestBase {
         return sContext;
     }
 
-    @BeforeClass
-    public static void setUpOnce() throws Exception {
-        // The first test case may experience tethering restart with IP conflict handling.
-        // Tethering would cache the last upstreams so that the next enabled tethering avoids
-        // picking up the address that is in conflict with the upstreams. To protect subsequent
-        // tests, turn tethering on and off before running them.
-        MyTetheringEventCallback callback = null;
-        TestNetworkInterface testIface = null;
-        try {
-            // If the physical ethernet interface is available, do nothing.
-            if (isInterfaceForTetheringAvailable()) return;
-
-            testIface = createTestInterface();
-            setIncludeTestInterfaces(true);
-
-            callback = enableEthernetTethering(testIface.getInterfaceName(), null);
-            callback.awaitUpstreamChanged(true /* throwTimeoutException */);
-        } catch (TimeoutException e) {
-            Log.d(TAG, "WARNNING " + e);
-        } finally {
-            maybeCloseTestInterface(testIface);
-            maybeUnregisterTetheringEventCallback(callback);
-
-            setIncludeTestInterfaces(false);
-        }
-    }
-
     @Before
     public void setUp() throws Exception {
         mHandlerThread = new HandlerThread(getClass().getSimpleName());
@@ -201,6 +174,7 @@ public abstract class EthernetTetheringTestBase {
         assumeTrue(mRunTests);
 
         mTetheredInterfaceRequester = new TetheredInterfaceRequester();
+        sCallbackErrors.clear();
     }
 
     private boolean isEthernetTetheringSupported() throws Exception {
@@ -268,47 +242,37 @@ public abstract class EthernetTetheringTestBase {
         maybeUnregisterTetheringEventCallback(mTetheringEventCallback);
         mTetheringEventCallback = null;
 
-        runAsShell(NETWORK_SETTINGS, () -> mTetheredInterfaceRequester.release());
         setIncludeTestInterfaces(false);
     }
 
     @After
     public void tearDown() throws Exception {
+        if (mTetheredInterfaceRequester != null) {
+            mTetheredInterfaceRequester.release();
+        }
         try {
             if (mRunTests) cleanUp();
         } finally {
             mHandlerThread.quitSafely();
             mHandlerThread.join();
         }
+
+        if (sCallbackErrors.size() > 0) {
+            fail("Some callbacks had errors: " + sCallbackErrors);
+        }
     }
 
-    protected static boolean isInterfaceForTetheringAvailable() throws Exception {
-        // Before T, all ethernet interfaces could be used for server mode. Instead of
-        // waiting timeout, just checking whether the system currently has any
-        // ethernet interface is more reliable.
-        if (!SdkLevel.isAtLeastT()) {
-            return runAsShell(CONNECTIVITY_USE_RESTRICTED_NETWORKS, () -> sEm.isAvailable());
-        }
-
+    protected boolean isInterfaceForTetheringAvailable() throws Exception {
         // If previous test case doesn't release tethering interface successfully, the other tests
         // after that test may be skipped as unexcepted.
         // TODO: figure out a better way to check default tethering interface existenion.
-        final TetheredInterfaceRequester requester = new TetheredInterfaceRequester();
-        try {
-            // Use short timeout (200ms) for requesting an existing interface, if any, because
-            // it should reurn faster than requesting a new tethering interface. Using default
-            // timeout (5000ms, TIMEOUT_MS) may make that total testing time is over 1 minute
-            // test module timeout on internal testing.
-            // TODO: if this becomes flaky, consider using default timeout (5000ms) and moving
-            // this check into #setUpOnce.
-            return requester.getInterface(AVAILABLE_TETHER_IFACE_REQUEST_TIMEOUT_MS) != null;
-        } catch (TimeoutException e) {
-            return false;
-        } finally {
-            runAsShell(NETWORK_SETTINGS, () -> {
-                requester.release();
-            });
-        }
+        // Use short timeout (200ms) for requesting an existing interface, if any, because
+        // it should reurn faster than requesting a new tethering interface. Using default
+        // timeout (5000ms, TIMEOUT_MS) may make that total testing time is over 1 minute
+        // test module timeout on internal testing.
+        // TODO: if this becomes flaky, consider using default timeout (5000ms) and moving
+        // this check into #setUpOnce.
+        return mTetheredInterfaceRequester.isPhysicalInterfaceAvailable(SHORT_TIMEOUT_MS);
     }
 
     protected static void setIncludeTestInterfaces(boolean include) {
@@ -321,14 +285,6 @@ public abstract class EthernetTetheringTestBase {
         runAsShell(NETWORK_SETTINGS, () -> {
             sTm.setPreferTestNetworks(prefer);
         });
-    }
-
-    protected String getTetheredInterface() throws Exception {
-        return mTetheredInterfaceRequester.getInterface();
-    }
-
-    protected CompletableFuture<String> requestTetheredInterface() throws Exception {
-        return mTetheredInterfaceRequester.requestInterface();
     }
 
     protected static void waitForRouterAdvertisement(TapPacketReader reader, String iface,
@@ -391,7 +347,7 @@ public abstract class EthernetTetheringTestBase {
         }
         @Override
         public void onTetheredInterfacesChanged(List<String> interfaces) {
-            fail("Should only call callback that takes a Set<TetheringInterface>");
+            addCallbackError("Should only call callback that takes a Set<TetheringInterface>");
         }
 
         @Override
@@ -412,7 +368,7 @@ public abstract class EthernetTetheringTestBase {
 
         @Override
         public void onLocalOnlyInterfacesChanged(List<String> interfaces) {
-            fail("Should only call callback that takes a Set<TetheringInterface>");
+            addCallbackError("Should only call callback that takes a Set<TetheringInterface>");
         }
 
         @Override
@@ -481,7 +437,7 @@ public abstract class EthernetTetheringTestBase {
             // Ignore stale callbacks registered by previous test cases.
             if (mUnregistered) return;
 
-            fail("TetheringEventCallback got error:" + error + " on iface " + ifName);
+            addCallbackError("TetheringEventCallback got error:" + error + " on iface " + ifName);
         }
 
         @Override
@@ -536,6 +492,11 @@ public abstract class EthernetTetheringTestBase {
         }
     }
 
+    private static void addCallbackError(String error) {
+        Log.e(TAG, error);
+        sCallbackErrors.add(error);
+    }
+
     protected static MyTetheringEventCallback enableEthernetTethering(String iface,
             TetheringRequest request, Network expectedUpstream) throws Exception {
         // Enable ethernet tethering with null expectedUpstream means the test accept any upstream
@@ -562,7 +523,7 @@ public abstract class EthernetTetheringTestBase {
 
             @Override
             public void onTetheringFailed(int resultCode) {
-                fail("Unexpectedly got onTetheringFailed");
+                addCallbackError("Unexpectedly got onTetheringFailed");
             }
         };
         Log.d(TAG, "Starting Ethernet tethering");
@@ -619,6 +580,11 @@ public abstract class EthernetTetheringTestBase {
         private TetheredInterfaceRequest mRequest;
         private final CompletableFuture<String> mFuture = new CompletableFuture<>();
 
+        TetheredInterfaceRequester() {
+            mRequest = runAsShell(NETWORK_SETTINGS, () ->
+                    sEm.requestTetheredInterface(c -> c.run() /* executor */, this));
+        }
+
         @Override
         public void onAvailable(String iface) {
             Log.d(TAG, "Ethernet interface available: " + iface);
@@ -630,28 +596,21 @@ public abstract class EthernetTetheringTestBase {
             mFuture.completeExceptionally(new IllegalStateException("onUnavailable received"));
         }
 
-        public CompletableFuture<String> requestInterface() {
-            assertNull("BUG: more than one tethered interface request", mRequest);
-            Log.d(TAG, "Requesting tethered interface");
-            mRequest = runAsShell(NETWORK_SETTINGS, () ->
-                    sEm.requestTetheredInterface(c -> c.run() /* executor */, this));
-            return mFuture;
-        }
-
-        public String getInterface(int timeout) throws Exception {
-            return requestInterface().get(timeout, TimeUnit.MILLISECONDS);
+        public boolean isPhysicalInterfaceAvailable(int timeout) {
+            try {
+                final String iface = mFuture.get(timeout, TimeUnit.MILLISECONDS);
+                return !iface.startsWith("testtap");
+            } catch (Exception e) {
+                return false;
+            }
         }
 
         public String getInterface() throws Exception {
-            return getInterface(TIMEOUT_MS);
+            return mFuture.get(TIMEOUT_MS, TimeUnit.MILLISECONDS);
         }
 
         public void release() {
-            if (mRequest != null) {
-                mFuture.obtrudeException(new IllegalStateException("Request already released"));
-                mRequest.release();
-                mRequest = null;
-            }
+            runAsShell(NETWORK_SETTINGS, () -> mRequest.release());
         }
     }
 
@@ -672,7 +631,10 @@ public abstract class EthernetTetheringTestBase {
         lp.setLinkAddresses(addresses);
         lp.setDnsServers(dnses);
 
-        return runAsShell(MANAGE_TEST_NETWORKS, () -> initTestNetwork(sContext, lp, TIMEOUT_MS));
+        // TODO: initTestNetwork can take up to 15 seconds on a workstation. Investigate when and
+        // why this is the case. It is unclear whether a 30 second timeout is enough when running
+        // these tests in the much slower test infra.
+        return runAsShell(MANAGE_TEST_NETWORKS, () -> initTestNetwork(sContext, lp, 30_000));
     }
 
     protected void sendDownloadPacketUdp(@NonNull final InetAddress srcIp,
