@@ -38,6 +38,7 @@ android_test {
         "cts",
         "general-tests",
         "mts-tethering",
+        "mcts-tethering",
     ],
     certificate: "platform",
     platform_apis: true,

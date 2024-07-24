@@ -124,6 +124,7 @@ android_test {
         "cts",
         "general-tests",
         "mts-networking",
+        "mcts-networking",
     ],
 }
 
