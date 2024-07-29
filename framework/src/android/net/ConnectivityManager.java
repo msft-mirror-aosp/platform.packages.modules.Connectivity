@@ -4489,6 +4489,7 @@ public class ConnectivityManager {
     public static final int CALLBACK_BLK_CHANGED                = 11;
     /** @hide */
     public static final int CALLBACK_LOCAL_NETWORK_INFO_CHANGED = 12;
+    // When adding new IDs, note CallbackQueue assumes callback IDs are at most 16 bits.
 
 
     /** @hide */
@@ -6737,21 +6738,11 @@ public class ConnectivityManager {
         }
     }
 
-    private static final Object sRoutingCoordinatorManagerLock = new Object();
-    @GuardedBy("sRoutingCoordinatorManagerLock")
-    private static RoutingCoordinatorManager sRoutingCoordinatorManager = null;
     /** @hide */
     @RequiresApi(Build.VERSION_CODES.S)
-    public RoutingCoordinatorManager getRoutingCoordinatorManager() {
+    public IBinder getRoutingCoordinatorService() {
         try {
-            synchronized (sRoutingCoordinatorManagerLock) {
-                if (null == sRoutingCoordinatorManager) {
-                    sRoutingCoordinatorManager = new RoutingCoordinatorManager(mContext,
-                            IRoutingCoordinator.Stub.asInterface(
-                                    mService.getRoutingCoordinatorService()));
-                }
-                return sRoutingCoordinatorManager;
-            }
+            return mService.getRoutingCoordinatorService();
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
