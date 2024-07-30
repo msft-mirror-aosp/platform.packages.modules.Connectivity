@@ -39,12 +39,13 @@ java_library {
         "device/com/android/net/module/util/DeviceConfigUtils.java",
         "device/com/android/net/module/util/DomainUtils.java",
         "device/com/android/net/module/util/FdEventsReader.java",
+        "device/com/android/net/module/util/FeatureVersions.java",
+        "device/com/android/net/module/util/HandlerUtils.java",
         "device/com/android/net/module/util/NetworkMonitorUtils.java",
         "device/com/android/net/module/util/PacketReader.java",
         "device/com/android/net/module/util/SharedLog.java",
         "device/com/android/net/module/util/SocketUtils.java",
-        "device/com/android/net/module/util/FeatureVersions.java",
-        "device/com/android/net/module/util/HandlerUtils.java",
+        "device/com/android/net/module/util/SyncStateMachine.java",
         // This library is used by system modules, for which the system health impact of Kotlin
         // has not yet been evaluated. Annotations may need jarjar'ing.
         // "src_devicecommon/**/*.kt",
@@ -57,17 +58,13 @@ java_library {
         "//apex_available:platform",
     ],
     visibility: [
-        "//frameworks/base/packages/Tethering",
         "//packages/modules/Connectivity:__subpackages__",
         "//packages/modules/Connectivity/framework:__subpackages__",
-        "//frameworks/opt/net/ike",
-        "//frameworks/opt/net/wifi/service",
-        "//packages/modules/Wifi/service",
-        "//frameworks/opt/net/telephony",
         "//packages/modules/NetworkStack:__subpackages__",
         "//packages/modules/CaptivePortalLogin",
     ],
     static_libs: [
+        "modules-utils-statemachine",
         "net-utils-framework-common",
     ],
     libs: [
@@ -280,7 +277,7 @@ java_library {
         "//apex_available:platform",
     ],
     lint: {
-        baseline_filename: "lint-baseline.xml",
+        strict_updatability_linting: true,
         error_checks: ["NewApi"],
     },
 }
@@ -343,12 +340,10 @@ java_library {
     ],
     sdk_version: "module_current",
     min_sdk_version: "30",
-    static_libs: [
-        "modules-utils-build_system",
-    ],
     libs: [
         "framework-annotations-lib",
         "framework-connectivity",
+        "modules-utils-build_system",
     ],
     // TODO: remove "apex_available:platform".
     apex_available: [
@@ -443,6 +438,7 @@ java_library {
         "device/com/android/net/module/util/SharedLog.java",
         "framework/com/android/net/module/util/ByteUtils.java",
         "framework/com/android/net/module/util/CollectionUtils.java",
+        "framework/com/android/net/module/util/DnsUtils.java",
         "framework/com/android/net/module/util/HexDump.java",
         "framework/com/android/net/module/util/LinkPropertiesUtils.java",
     ],
@@ -452,6 +448,128 @@ java_library {
         "androidx.annotation_annotation",
     ],
     visibility: ["//packages/modules/Connectivity/service-t"],
+}
+
+java_library {
+    name: "net-utils-framework-connectivity",
+    srcs: [
+        ":net-utils-framework-connectivity-srcs",
+    ],
+    sdk_version: "module_current",
+    min_sdk_version: "30",
+    apex_available: [
+        "com.android.tethering",
+        "//apex_available:platform",
+    ],
+    visibility: [
+        "//packages/modules/Connectivity:__subpackages__",
+        "//packages/modules/NetworkStack:__subpackages__",
+    ],
+    libs: [
+        "androidx.annotation_annotation",
+        "framework-annotations-lib",
+        "framework-configinfrastructure",
+        "framework-connectivity.stubs.module_lib",
+    ],
+    lint: {
+        strict_updatability_linting: true,
+        error_checks: ["NewApi"],
+    },
+}
+
+java_defaults {
+    name: "net-utils-non-bootclasspath-defaults",
+    sdk_version: "module_current",
+    min_sdk_version: "30",
+    libs: [
+        "androidx.annotation_annotation",
+        "framework-annotations-lib",
+        "framework-configinfrastructure",
+        "framework-connectivity",
+        "framework-connectivity.stubs.module_lib",
+        "framework-connectivity-t.stubs.module_lib",
+        "framework-location.stubs.module_lib",
+        "framework-tethering",
+        "unsupportedappusage",
+    ],
+    static_libs: [
+        "modules-utils-build_system",
+        "modules-utils-statemachine",
+        "net-utils-non-bootclasspath-aidl-java",
+        "netd-client",
+    ],
+    apex_available: [
+        "com.android.tethering",
+        "//apex_available:platform",
+    ],
+    visibility: [
+        "//packages/modules/Connectivity:__subpackages__",
+    ],
+    defaults_visibility: [
+        "//visibility:private",
+    ],
+    lint: {
+        strict_updatability_linting: true,
+        error_checks: ["NewApi"],
+    },
+}
+
+java_library {
+    name: "net-utils-service-connectivity",
+    srcs: [
+        ":net-utils-all-srcs",
+    ],
+    exclude_srcs: [
+        ":net-utils-framework-connectivity-srcs",
+    ],
+    libs: [
+        "net-utils-framework-connectivity",
+    ],
+    defaults: ["net-utils-non-bootclasspath-defaults"],
+    jarjar_rules: "jarjar-rules-shared.txt",
+}
+
+java_library {
+    name: "net-utils-tethering",
+    srcs: [
+        ":net-utils-all-srcs",
+        ":framework-connectivity-shared-srcs",
+    ],
+    defaults: ["net-utils-non-bootclasspath-defaults"],
+    jarjar_rules: "jarjar-rules-shared.txt",
+}
+
+aidl_interface {
+    name: "net-utils-non-bootclasspath-aidl",
+    srcs: [
+        ":net-utils-aidl-srcs",
+    ],
+    unstable: true,
+    backend: {
+        java: {
+            enabled: true,
+            min_sdk_version: "30",
+            apex_available: [
+                "com.android.tethering",
+                "com.android.wifi",
+            ],
+        },
+        cpp: {
+            enabled: false,
+        },
+        ndk: {
+            enabled: false,
+        },
+        rust: {
+            enabled: false,
+        },
+    },
+    include_dirs: [
+        "packages/modules/Connectivity/framework/aidl-export",
+    ],
+    visibility: [
+        "//system/tools/aidl/build",
+    ],
 }
 
 // Use a filegroup and not a library for telephony sources, as framework-annotations cannot be
@@ -471,8 +589,7 @@ filegroup {
     ],
 }
 
-// Use a filegroup and not a library for wifi sources, as this needs corresponding jar-jar
-// rules on the wifi side.
+// Filegroup to build lib used by Wifi framework
 // Any class here *must* have a corresponding jarjar rule in the wifi build rules.
 filegroup {
     name: "net-utils-framework-wifi-common-srcs",
@@ -484,24 +601,78 @@ filegroup {
         "framework/com/android/net/module/util/NetUtils.java",
     ],
     path: "framework",
+    visibility: ["//visibility:private"],
+}
+
+// Use a file group containing classes necessary for framework-connectivity. The file group should
+// be as small as possible because because the classes end up in the bootclasspath and R8 is not
+// used to remove unused classes.
+filegroup {
+    name: "net-utils-framework-connectivity-srcs",
+    srcs: [
+        "device/com/android/net/module/util/BpfBitmap.java",
+        "device/com/android/net/module/util/BpfDump.java",
+        "device/com/android/net/module/util/BpfMap.java",
+        "device/com/android/net/module/util/BpfUtils.java",
+        "device/com/android/net/module/util/IBpfMap.java",
+        "device/com/android/net/module/util/JniUtil.java",
+        "device/com/android/net/module/util/SingleWriterBpfMap.java",
+        "device/com/android/net/module/util/Struct.java",
+        "device/com/android/net/module/util/TcUtils.java",
+        "framework/com/android/net/module/util/HexDump.java",
+    ],
+    visibility: ["//visibility:private"],
+}
+
+filegroup {
+    name: "net-utils-all-srcs",
+    srcs: [
+        "device/**/*.java",
+        ":net-utils-framework-common-srcs",
+    ],
+    visibility: ["//visibility:private"],
+}
+
+filegroup {
+    name: "net-utils-aidl-srcs",
+    srcs: [
+        "device/**/*.aidl",
+    ],
+    path: "device",
+    visibility: ["//visibility:private"],
+}
+
+java_library {
+    name: "net-utils-service-wifi",
+    srcs: [
+        ":net-utils-all-srcs",
+    ],
+    exclude_srcs: [":net-utils-framework-wifi-common-srcs"],
+    libs: [
+        "net-utils-framework-wifi",
+    ],
+    defaults: ["net-utils-non-bootclasspath-defaults"],
+
     visibility: [
-        "//frameworks/base",
+        "//packages/modules/Wifi/service",
+    ],
+    apex_available: [
+        "com.android.wifi",
     ],
 }
 
-// Use a filegroup and not a library for wifi sources, as this needs corresponding jar-jar
-// rules on the wifi side.
-// Any class here *must* have a corresponding jarjar rule in the wifi build rules.
-filegroup {
-    name: "net-utils-wifi-service-common-srcs",
-    srcs: [
-        "device/android/net/NetworkFactory.java",
-        "device/android/net/NetworkFactoryImpl.java",
-        "device/android/net/NetworkFactoryLegacyImpl.java",
-        "device/android/net/NetworkFactoryShim.java",
+java_library {
+    name: "net-utils-framework-wifi",
+    sdk_version: "module_current",
+    min_sdk_version: "30",
+    srcs: [":net-utils-framework-wifi-common-srcs"],
+    libs: [
+        "framework-annotations-lib",
+        "framework-connectivity.stubs.module_lib",
+        "unsupportedappusage",
     ],
     visibility: [
-        "//frameworks/opt/net/wifi/service",
-        "//packages/modules/Wifi/service",
+        "//packages/modules/Wifi/framework",
     ],
+    apex_available: ["com.android.wifi"],
 }
