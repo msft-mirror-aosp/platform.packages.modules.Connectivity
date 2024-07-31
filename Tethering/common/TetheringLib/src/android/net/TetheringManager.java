@@ -198,6 +198,10 @@ public class TetheringManager {
 
     /**
      * VIRTUAL tethering type.
+     *
+     * This tethering type is for providing external network to virtual machines
+     * running on top of Android devices, which are created and managed by
+     * AVF(Android Virtualization Framework).
      * @hide
      */
     @FlaggedApi(Flags.TETHERING_REQUEST_VIRTUAL)
@@ -1379,6 +1383,9 @@ public class TetheringManager {
     @RequiresPermission(Manifest.permission.ACCESS_NETWORK_STATE)
     public void registerTetheringEventCallback(@NonNull Executor executor,
             @NonNull TetheringEventCallback callback) {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(callback);
+
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "registerTetheringEventCallback caller:" + callerPkg);
 
@@ -1533,6 +1540,8 @@ public class TetheringManager {
             Manifest.permission.ACCESS_NETWORK_STATE
     })
     public void unregisterTetheringEventCallback(@NonNull final TetheringEventCallback callback) {
+        Objects.requireNonNull(callback);
+
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "unregisterTetheringEventCallback caller:" + callerPkg);
 
