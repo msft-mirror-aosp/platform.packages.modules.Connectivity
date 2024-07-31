@@ -111,7 +111,6 @@ import android.os.Looper;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserManager;
-import android.provider.Settings;
 import android.util.Log;
 import android.util.SparseArray;
 
@@ -139,6 +138,7 @@ import java.security.SecureRandom;
 import java.time.Clock;
 import java.time.DateTimeException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -210,7 +210,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private final ThreadPersistentSettings mPersistentSettings;
     private final UserManager mUserManager;
     private boolean mUserRestricted;
-    private boolean mAirplaneModeOn;
     private boolean mForceStopOtDaemonEnabled;
 
     private BorderRouterConfigurationParcel mBorderRouterConfig;
@@ -344,8 +343,8 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         final String modelName = resources.getString(R.string.config_thread_model_name);
         final String vendorName = resources.getString(R.string.config_thread_vendor_name);
         final String vendorOui = resources.getString(R.string.config_thread_vendor_oui);
-        final boolean managedByGoogle =
-                resources.getBoolean(R.bool.config_thread_managed_by_google_home);
+        final String[] vendorSpecificTxts =
+                resources.getStringArray(R.array.config_thread_mdns_vendor_specific_txts);
 
         if (!modelName.isEmpty()) {
             if (modelName.getBytes(UTF_8).length > MAX_MODEL_NAME_UTF8_BYTES) {
@@ -375,19 +374,44 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         meshcopTxts.modelName = modelName;
         meshcopTxts.vendorName = vendorName;
         meshcopTxts.vendorOui = HexEncoding.decode(vendorOui.replace("-", "").replace(":", ""));
-        meshcopTxts.nonStandardTxtEntries = List.of(makeManagedByGoogleTxtAttr(managedByGoogle));
+        meshcopTxts.nonStandardTxtEntries = makeVendorSpecificTxtAttrs(vendorSpecificTxts);
 
         return meshcopTxts;
     }
 
     /**
-     * Creates a DNS-SD TXT entry for indicating whether Thread on this device is managed by Google.
+     * Parses vendor-specific TXT entries from "=" separated strings into list of {@link
+     * DnsTxtAttribute}.
      *
-     * @return TXT entry "vgh=1" if {@code managedByGoogle} is {@code true}; otherwise, "vgh=0"
+     * @throws IllegalArgumentsException if invalid TXT entries are found in {@code vendorTxts}
      */
-    private static DnsTxtAttribute makeManagedByGoogleTxtAttr(boolean managedByGoogle) {
-        final byte[] value = (managedByGoogle ? "1" : "0").getBytes(UTF_8);
-        return new DnsTxtAttribute("vgh", value);
+    @VisibleForTesting
+    static List<DnsTxtAttribute> makeVendorSpecificTxtAttrs(String[] vendorTxts) {
+        List<DnsTxtAttribute> txts = new ArrayList<>();
+        for (String txt : vendorTxts) {
+            String[] kv = txt.split("=", 2 /* limit */); // Split with only the first '='
+            if (kv.length < 1) {
+                throw new IllegalArgumentException(
+                        "Invalid vendor-specific TXT is found in resources: " + txt);
+            }
+
+            if (kv[0].length() < 2) {
+                throw new IllegalArgumentException(
+                        "Invalid vendor-specific TXT key \""
+                                + kv[0]
+                                + "\": it must contain at least 2 characters");
+            }
+
+            if (!kv[0].startsWith("v")) {
+                throw new IllegalArgumentException(
+                        "Invalid vendor-specific TXT key \""
+                                + kv[0]
+                                + "\": it doesn't start with \"v\"");
+            }
+
+            txts.add(new DnsTxtAttribute(kv[0], (kv.length >= 2 ? kv[1] : "").getBytes(UTF_8)));
+        }
+        return txts;
     }
 
     private void onOtDaemonDied() {
@@ -420,8 +444,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                     requestThreadNetwork();
                     mUserRestricted = isThreadUserRestricted();
                     registerUserRestrictionsReceiver();
-                    mAirplaneModeOn = isAirplaneModeOn();
-                    registerAirplaneModeReceiver();
                     maybeInitializeOtDaemon();
                 });
     }
@@ -503,15 +525,6 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             // the otDaemon set enabled state operation succeeded or not, so that it can recover
             // to the desired value after reboot.
             mPersistentSettings.put(ThreadPersistentSettings.THREAD_ENABLED.key, isEnabled);
-
-            // Remember whether the user wanted to keep Thread enabled in airplane mode. If once
-            // the user disabled Thread again in airplane mode, the persistent settings state is
-            // reset (so that Thread will be auto-disabled again when airplane mode is turned on).
-            // This behavior is consistent with Wi-Fi and bluetooth.
-            if (mAirplaneModeOn) {
-                mPersistentSettings.put(
-                        ThreadPersistentSettings.THREAD_ENABLED_IN_AIRPLANE_MODE.key, isEnabled);
-            }
         }
 
         try {
@@ -598,10 +611,12 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 new BroadcastReceiver() {
                     @Override
                     public void onReceive(Context context, Intent intent) {
-                        mHandler.post(() -> onUserRestrictionsChanged(isThreadUserRestricted()));
+                        onUserRestrictionsChanged(isThreadUserRestricted());
                     }
                 },
-                new IntentFilter(UserManager.ACTION_USER_RESTRICTIONS_CHANGED));
+                new IntentFilter(UserManager.ACTION_USER_RESTRICTIONS_CHANGED),
+                null /* broadcastPermission */,
+                mHandler);
     }
 
     private void onUserRestrictionsChanged(boolean newUserRestrictedState) {
@@ -648,72 +663,13 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         return mUserManager.hasUserRestriction(DISALLOW_THREAD_NETWORK);
     }
 
-    private void registerAirplaneModeReceiver() {
-        mContext.registerReceiver(
-                new BroadcastReceiver() {
-                    @Override
-                    public void onReceive(Context context, Intent intent) {
-                        mHandler.post(() -> onAirplaneModeChanged(isAirplaneModeOn()));
-                    }
-                },
-                new IntentFilter(Intent.ACTION_AIRPLANE_MODE_CHANGED));
-    }
-
-    private void onAirplaneModeChanged(boolean newAirplaneModeOn) {
-        checkOnHandlerThread();
-        if (mAirplaneModeOn == newAirplaneModeOn) {
-            return;
-        }
-        Log.i(TAG, "Airplane mode changed: " + mAirplaneModeOn + " -> " + newAirplaneModeOn);
-        mAirplaneModeOn = newAirplaneModeOn;
-
-        final boolean shouldEnableThread = shouldEnableThread();
-        final IOperationReceiver receiver =
-                new IOperationReceiver.Stub() {
-                    @Override
-                    public void onSuccess() {
-                        Log.d(
-                                TAG,
-                                (shouldEnableThread ? "Enabled" : "Disabled")
-                                        + " Thread due to airplane mode change");
-                    }
-
-                    @Override
-                    public void onError(int errorCode, String errorMessage) {
-                        Log.e(
-                                TAG,
-                                "Failed to "
-                                        + (shouldEnableThread ? "enable" : "disable")
-                                        + " Thread for airplane mode change");
-                    }
-                };
-        // Do not save the user restriction state to persistent settings so that the user
-        // configuration won't be overwritten
-        setEnabledInternal(
-                shouldEnableThread, false /* persist */, new OperationReceiverWrapper(receiver));
-    }
-
-    /** Returns {@code true} if Airplane mode has been turned on. */
-    private boolean isAirplaneModeOn() {
-        return Settings.Global.getInt(
-                        mContext.getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0)
-                == 1;
-    }
-
     /**
      * Returns {@code true} if Thread should be enabled based on current settings, runtime user
-     * restriction and airplane mode state.
+     * restriction state.
      */
     private boolean shouldEnableThread() {
-        final boolean enabledInAirplaneMode =
-                mPersistentSettings.get(ThreadPersistentSettings.THREAD_ENABLED_IN_AIRPLANE_MODE);
-
         return !mForceStopOtDaemonEnabled
                 && !mUserRestricted
-                // FIXME(b/340744397): Note that here we need to call `isAirplaneModeOn()` to get
-                // the latest state of airplane mode but can't use `mIsAirplaneMode`. This is for
-                // avoiding the race conditions described in b/340744397
-                && (!isAirplaneModeOn() || enabledInAirplaneMode)
                 && mPersistentSettings.get(ThreadPersistentSettings.THREAD_ENABLED);
     }
 
