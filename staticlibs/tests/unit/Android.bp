@@ -27,6 +27,7 @@ android_library {
         "net-utils-device-common-ip",
         "net-utils-device-common-struct-base",
         "net-utils-device-common-wear",
+        "net-utils-service-connectivity",
     ],
     libs: [
         "android.test.runner",
@@ -76,7 +77,14 @@ python_test_host {
     test_suites: [
         "general-tests",
     ],
+    // MoblyBinaryHostTest doesn't support unit_test.
     test_options: {
-        unit_test: true,
+        unit_test: false,
+    },
+    // Needed for applying VirtualEnv.
+    version: {
+        py3: {
+            embedded_launcher: false,
+        },
     },
 }
