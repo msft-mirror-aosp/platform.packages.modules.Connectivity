@@ -108,6 +108,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.ParcelFileDescriptor;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.UserManager;
@@ -119,7 +120,7 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.ServiceManagerWrapper;
 import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.thread.openthread.BackboneRouterState;
-import com.android.server.thread.openthread.BorderRouterConfigurationParcel;
+import com.android.server.thread.openthread.BorderRouterConfiguration;
 import com.android.server.thread.openthread.DnsTxtAttribute;
 import com.android.server.thread.openthread.IChannelMasksReceiver;
 import com.android.server.thread.openthread.IOtDaemon;
@@ -212,7 +213,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private boolean mUserRestricted;
     private boolean mForceStopOtDaemonEnabled;
 
-    private BorderRouterConfigurationParcel mBorderRouterConfig;
+    private BorderRouterConfiguration mBorderRouterConfig;
 
     @VisibleForTesting
     ThreadNetworkControllerService(
@@ -237,7 +238,11 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         mInfraIfController = infraIfController;
         mUpstreamNetworkRequest = newUpstreamNetworkRequest();
         mNetworkToInterface = new HashMap<Network, String>();
-        mBorderRouterConfig = new BorderRouterConfigurationParcel();
+        mBorderRouterConfig =
+                new BorderRouterConfiguration.Builder()
+                        .setIsBorderRoutingEnabled(true)
+                        .setInfraInterfaceName(null)
+                        .build();
         mPersistentSettings = persistentSettings;
         mNsdPublisher = nsdPublisher;
         mUserManager = userManager;
@@ -1227,38 +1232,54 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
     }
 
-    private void enableBorderRouting(String infraIfName) {
-        if (mBorderRouterConfig.isBorderRoutingEnabled
-                && infraIfName.equals(mBorderRouterConfig.infraInterfaceName)) {
+    private void configureBorderRouter(BorderRouterConfiguration borderRouterConfig) {
+        if (mBorderRouterConfig.equals(borderRouterConfig)) {
             return;
         }
-        Log.i(TAG, "Enable border routing on AIL: " + infraIfName);
+        Log.i(
+                TAG,
+                "Configuring Border Router: " + mBorderRouterConfig + " -> " + borderRouterConfig);
+        mBorderRouterConfig = borderRouterConfig;
+        ParcelFileDescriptor infraIcmp6Socket = null;
+        if (mBorderRouterConfig.infraInterfaceName != null) {
+            try {
+                infraIcmp6Socket =
+                        mInfraIfController.createIcmp6Socket(
+                                mBorderRouterConfig.infraInterfaceName);
+            } catch (IOException e) {
+                Log.i(TAG, "Failed to create ICMPv6 socket on infra network interface", e);
+            }
+        }
         try {
-            mBorderRouterConfig.infraInterfaceName = infraIfName;
-            mBorderRouterConfig.infraInterfaceIcmp6Socket =
-                    mInfraIfController.createIcmp6Socket(infraIfName);
-            mBorderRouterConfig.isBorderRoutingEnabled = true;
-
             getOtDaemon()
                     .configureBorderRouter(
-                            mBorderRouterConfig, new ConfigureBorderRouterStatusReceiver());
-        } catch (RemoteException | IOException | ThreadNetworkException e) {
-            Log.w(TAG, "Failed to enable border routing", e);
+                            mBorderRouterConfig,
+                            infraIcmp6Socket,
+                            new ConfigureBorderRouterStatusReceiver());
+        } catch (RemoteException | ThreadNetworkException e) {
+            Log.w(TAG, "Failed to configure border router " + mBorderRouterConfig, e);
         }
+    }
+
+    private void enableBorderRouting(String infraIfName) {
+        BorderRouterConfiguration borderRouterConfig =
+                newBorderRouterConfigBuilder(mBorderRouterConfig)
+                        .setIsBorderRoutingEnabled(true)
+                        .setInfraInterfaceName(infraIfName)
+                        .build();
+        Log.i(TAG, "Enable border routing on AIL: " + infraIfName);
+        configureBorderRouter(borderRouterConfig);
     }
 
     private void disableBorderRouting() {
         mUpstreamNetwork = null;
-        mBorderRouterConfig.infraInterfaceName = null;
-        mBorderRouterConfig.infraInterfaceIcmp6Socket = null;
-        mBorderRouterConfig.isBorderRoutingEnabled = false;
-        try {
-            getOtDaemon()
-                    .configureBorderRouter(
-                            mBorderRouterConfig, new ConfigureBorderRouterStatusReceiver());
-        } catch (RemoteException | ThreadNetworkException e) {
-            Log.w(TAG, "Failed to disable border routing", e);
-        }
+        BorderRouterConfiguration borderRouterConfig =
+                newBorderRouterConfigBuilder(mBorderRouterConfig)
+                        .setIsBorderRoutingEnabled(false)
+                        .setInfraInterfaceName(null)
+                        .build();
+        Log.i(TAG, "Disabling border routing");
+        configureBorderRouter(borderRouterConfig);
     }
 
     private void handleThreadInterfaceStateChanged(boolean isUp) {
@@ -1357,6 +1378,13 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             builder.addListeningAddress(address);
         }
         return builder.build();
+    }
+
+    private static BorderRouterConfiguration.Builder newBorderRouterConfigBuilder(
+            BorderRouterConfiguration brConfig) {
+        return new BorderRouterConfiguration.Builder()
+                .setIsBorderRoutingEnabled(brConfig.isBorderRoutingEnabled)
+                .setInfraInterfaceName(brConfig.infraInterfaceName);
     }
 
     private static final class CallbackMetadata {
