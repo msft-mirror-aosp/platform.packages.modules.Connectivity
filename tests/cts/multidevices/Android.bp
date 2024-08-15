@@ -14,14 +14,20 @@
 
 package {
     default_applicable_licenses: ["Android-Apache-2.0"],
+    default_team: "trendy_team_fwk_core_networking",
 }
 
 python_test_host {
     name: "CtsConnectivityMultiDevicesTestCases",
-    main: "connectivity_multi_devices_test.py",
-    srcs: ["connectivity_multi_devices_test.py"],
+    main: "run_tests.py",
+    srcs: [
+        "apfv4_test.py",
+        "connectivity_multi_devices_test.py",
+        "run_tests.py",
+    ],
     libs: [
         "mobly",
+        "net-tests-utils-host-python-common",
     ],
     test_suites: [
         "cts",

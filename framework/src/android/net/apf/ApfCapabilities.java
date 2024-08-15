@@ -106,18 +106,20 @@ public final class ApfCapabilities implements Parcelable {
 
     @Override
     public int hashCode() {
+        // hashCode it is not implemented in R. Therefore it would be dangerous for
+        // NetworkStack to depend on it.
         return Objects.hash(apfVersionSupported, maximumApfProgramSize, apfPacketFormat);
     }
 
     /**
      * Determines whether the APF interpreter advertises support for the data buffer access opcodes
      * LDDW (LoaD Data Word) and STDW (STore Data Word). Full LDDW (LoaD Data Word) and
-     * STDW (STore Data Word) support is present from APFv4 on.
+     * STDW (STore Data Word) support is present from APFv3 on.
      *
      * @return {@code true} if the IWifiStaIface#readApfPacketFilterData is supported.
      */
     public boolean hasDataAccess() {
-        return apfVersionSupported >= 4;
+        return apfVersionSupported > 2;
     }
 
     /**

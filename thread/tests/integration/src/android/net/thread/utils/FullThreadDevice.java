@@ -20,10 +20,14 @@ import static android.net.thread.utils.IntegrationTestUtils.waitFor;
 
 import static com.google.common.io.BaseEncoding.base16;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
+
 import android.net.InetAddresses;
 import android.net.IpPrefix;
 import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ActiveOperationalDataset;
+import android.os.Handler;
+import android.os.HandlerThread;
 
 import com.google.errorprone.annotations.FormatMethod;
 
@@ -39,6 +43,8 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -60,10 +66,13 @@ public final class FullThreadDevice {
     private static final float PING_TIMEOUT_0_1_SECOND = 0.1f;
     // 1 second timeout should be used when response is expected.
     private static final float PING_TIMEOUT_1_SECOND = 1f;
+    private static final int READ_LINE_TIMEOUT_SECONDS = 5;
 
     private final Process mProcess;
     private final BufferedReader mReader;
     private final BufferedWriter mWriter;
+    private final HandlerThread mReaderHandlerThread;
+    private final Handler mReaderHandler;
 
     private ActiveOperationalDataset mActiveOperationalDataset;
 
@@ -87,11 +96,15 @@ public final class FullThreadDevice {
         }
         mReader = new BufferedReader(new InputStreamReader(mProcess.getInputStream()));
         mWriter = new BufferedWriter(new OutputStreamWriter(mProcess.getOutputStream()));
+        mReaderHandlerThread = new HandlerThread("FullThreadDeviceReader");
+        mReaderHandlerThread.start();
+        mReaderHandler = new Handler(mReaderHandlerThread.getLooper());
         mActiveOperationalDataset = null;
     }
 
     public void destroy() {
         mProcess.destroy();
+        mReaderHandlerThread.quit();
     }
 
     /**
@@ -213,7 +226,7 @@ public final class FullThreadDevice {
     public String udpReceive() throws IOException {
         Pattern pattern =
                 Pattern.compile("> (\\d+) bytes from ([\\da-f:]+) (\\d+) ([\\x00-\\x7F]+)");
-        Matcher matcher = pattern.matcher(mReader.readLine());
+        Matcher matcher = pattern.matcher(readLine());
         matcher.matches();
 
         return matcher.group(4);
@@ -269,6 +282,7 @@ public final class FullThreadDevice {
         for (String subtype : subtypes) {
             fullServiceType.append(",").append(subtype);
         }
+        waitForSrpServer();
         executeCommand(
                 "srp client service add %s %s %d %d %d %s",
                 serviceName,
@@ -403,7 +417,7 @@ public final class FullThreadDevice {
         executeCommand("ipmaddr add " + address.getHostAddress());
     }
 
-    public void ping(Inet6Address address, Inet6Address source) {
+    public void ping(InetAddress address, Inet6Address source) {
         ping(
                 address,
                 source,
@@ -414,7 +428,7 @@ public final class FullThreadDevice {
                 PING_TIMEOUT_0_1_SECOND);
     }
 
-    public void ping(Inet6Address address) {
+    public void ping(InetAddress address) {
         ping(
                 address,
                 null,
@@ -426,7 +440,7 @@ public final class FullThreadDevice {
     }
 
     /** Returns the number of ping reply packets received. */
-    public int ping(Inet6Address address, int count) {
+    public int ping(InetAddress address, int count) {
         List<String> output =
                 ping(
                         address,
@@ -440,7 +454,7 @@ public final class FullThreadDevice {
     }
 
     private List<String> ping(
-            Inet6Address address,
+            InetAddress address,
             Inet6Address source,
             int size,
             int count,
@@ -479,6 +493,22 @@ public final class FullThreadDevice {
         return -1;
     }
 
+    /** Waits for an SRP server to be present in Network Data */
+    private void waitForSrpServer() throws TimeoutException {
+        // CLI output:
+        // > srp client server
+        // [fd64:db12:25f4:7e0b:1bfc:6344:25ac:2dd7]:53538
+        // Done
+        waitFor(
+                () -> {
+                    final String serverAddr = executeCommand("srp client server").get(0);
+                    final int lastColonIndex = serverAddr.lastIndexOf(':');
+                    final int port = Integer.parseInt(serverAddr.substring(lastColonIndex + 1));
+                    return port > 0;
+                },
+                SERVICE_DISCOVERY_TIMEOUT);
+    }
+
     @FormatMethod
     private List<String> executeCommand(String commandFormat, Object... args) {
         return executeCommand(String.format(commandFormat, args));
@@ -500,10 +530,27 @@ public final class FullThreadDevice {
         }
     }
 
+    private String readLine() throws IOException {
+        final CompletableFuture<String> future = new CompletableFuture<>();
+        mReaderHandler.post(
+                () -> {
+                    try {
+                        future.complete(mReader.readLine());
+                    } catch (IOException e) {
+                        future.completeExceptionally(e);
+                    }
+                });
+        try {
+            return future.get(READ_LINE_TIMEOUT_SECONDS, SECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            throw new IOException("Failed to read a line from ot-cli-ftd");
+        }
+    }
+
     private List<String> readUntilDone() throws IOException {
         ArrayList<String> result = new ArrayList<>();
         String line;
-        while ((line = mReader.readLine()) != null) {
+        while ((line = readLine()) != null) {
             if (line.equals("Done")) {
                 break;
             }

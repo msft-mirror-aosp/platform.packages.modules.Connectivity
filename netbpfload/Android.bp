@@ -48,10 +48,7 @@ cc_binary {
         "libbase",
         "liblog",
     ],
-    srcs: [
-        "loader.cpp",
-        "NetBpfLoad.cpp",
-    ],
+    srcs: ["NetBpfLoad.cpp"],
     apex_available: [
         "com.android.tethering",
         "//apex_available:platform",
@@ -70,8 +67,8 @@ cc_binary {
 // For details of versioned rc files see:
 // https://android.googlesource.com/platform/system/core/+/HEAD/init/README.md#versioned-rc-files-within-apexs
 prebuilt_etc {
-    name: "netbpfload.mainline.rc",
-    src: "netbpfload.mainline.rc",
+    name: "netbpfload.33rc",
+    src: "netbpfload.33rc",
     filename: "netbpfload.33rc",
     installable: false,
 }
