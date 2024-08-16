@@ -184,7 +184,7 @@ DEFINE_BPF_MAP_RO_NETD(data_saver_enabled_map, ARRAY, uint32_t, bool,
     static __always_inline inline void update_##the_stats_map(const struct __sk_buff* const skb, \
                                                               const TypeOfKey* const key,        \
                                                               const struct egress_bool egress,   \
-                                                              const struct kver_uint kver) {     \
+                                                     __unused const struct kver_uint kver) {     \
         StatsValue* value = bpf_##the_stats_map##_lookup_elem(key);                              \
         if (!value) {                                                                            \
             StatsValue newValue = {};                                                            \
@@ -524,22 +524,12 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb,
     return match;
 }
 
-// This program is optional, and enables tracing on Android U+, 5.8+ on user builds.
-DEFINE_BPF_PROG_EXT("cgroupskb/ingress/stats$trace_user", AID_ROOT, AID_SYSTEM,
-                    bpf_cgroup_ingress_trace_user, KVER_5_8, KVER_INF,
-                    BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, OPTIONAL,
-                    "fs_bpf_netd_readonly", "",
-                    IGNORE_ON_ENG, LOAD_ON_USER, IGNORE_ON_USERDEBUG)
-(struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, INGRESS, TRACE_ON, KVER_5_8);
-}
-
-// This program is required, and enables tracing on Android U+, 5.8+, userdebug/eng.
+// Tracing on Android U+ 5.8+
 DEFINE_BPF_PROG_EXT("cgroupskb/ingress/stats$trace", AID_ROOT, AID_SYSTEM,
                     bpf_cgroup_ingress_trace, KVER_5_8, KVER_INF,
                     BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, MANDATORY,
                     "fs_bpf_netd_readonly", "",
-                    LOAD_ON_ENG, IGNORE_ON_USER, LOAD_ON_USERDEBUG)
+                    LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, INGRESS, TRACE_ON, KVER_5_8);
 }
@@ -556,22 +546,12 @@ DEFINE_NETD_BPF_PROG_KVER_RANGE("cgroupskb/ingress/stats$4_14", AID_ROOT, AID_SY
     return bpf_traffic_account(skb, INGRESS, TRACE_OFF, KVER_NONE);
 }
 
-// This program is optional, and enables tracing on Android U+, 5.8+ on user builds.
-DEFINE_BPF_PROG_EXT("cgroupskb/egress/stats$trace_user", AID_ROOT, AID_SYSTEM,
-                    bpf_cgroup_egress_trace_user, KVER_5_8, KVER_INF,
-                    BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, OPTIONAL,
-                    "fs_bpf_netd_readonly", "",
-                    IGNORE_ON_ENG, LOAD_ON_USER, IGNORE_ON_USERDEBUG)
-(struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, EGRESS, TRACE_ON, KVER_5_8);
-}
-
-// This program is required, and enables tracing on Android U+, 5.8+, userdebug/eng.
+// Tracing on Android U+ 5.8+
 DEFINE_BPF_PROG_EXT("cgroupskb/egress/stats$trace", AID_ROOT, AID_SYSTEM,
                     bpf_cgroup_egress_trace, KVER_5_8, KVER_INF,
                     BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, MANDATORY,
                     "fs_bpf_netd_readonly", "",
-                    LOAD_ON_ENG, IGNORE_ON_USER, LOAD_ON_USERDEBUG)
+                    LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, EGRESS, TRACE_ON, KVER_5_8);
 }
@@ -676,7 +656,7 @@ static __always_inline inline uint8_t get_app_permissions() {
 
 DEFINE_NETD_BPF_PROG_KVER("cgroupsock/inet_create", AID_ROOT, AID_ROOT, inet_socket_create,
                           KVER_4_14)
-(struct bpf_sock* sk) {
+(__unused struct bpf_sock* sk) {
     // A return value of 1 means allow, everything else means deny.
     return (get_app_permissions() & BPF_PERMISSION_INTERNET) ? 1 : 0;
 }
@@ -690,7 +670,7 @@ DEFINE_NETD_V_BPF_PROG_KVER("cgroupsockrelease/inet_release", AID_ROOT, AID_ROOT
     return 1;
 }
 
-static __always_inline inline int check_localhost(struct bpf_sock_addr *ctx) {
+static __always_inline inline int check_localhost(__unused struct bpf_sock_addr *ctx) {
     // See include/uapi/linux/bpf.h:
     //
     // struct bpf_sock_addr {
