@@ -16,6 +16,12 @@
 
 package com.android.server.thread;
 
+import static android.Manifest.permission.NETWORK_SETTINGS;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_VPN;
+import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
+import static android.net.NetworkCapabilities.TRANSPORT_THREAD;
+import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.thread.ActiveOperationalDataset.CHANNEL_PAGE_24_GHZ;
 import static android.net.thread.ThreadNetworkController.STATE_DISABLED;
 import static android.net.thread.ThreadNetworkController.STATE_ENABLED;
@@ -38,6 +44,8 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
@@ -57,6 +65,7 @@ import android.content.res.Resources;
 import android.net.ConnectivityManager;
 import android.net.NetworkAgent;
 import android.net.NetworkProvider;
+import android.net.NetworkRequest;
 import android.net.thread.ActiveOperationalDataset;
 import android.net.thread.IActiveOperationalDatasetReceiver;
 import android.net.thread.IOperationReceiver;
@@ -181,6 +190,9 @@ public final class ThreadNetworkControllerServiceTest {
                 .when(mContext)
                 .enforceCallingOrSelfPermission(
                         eq(PERMISSION_THREAD_NETWORK_PRIVILEGED), anyString());
+        doNothing()
+                .when(mContext)
+                .enforceCallingOrSelfPermission(eq(NETWORK_SETTINGS), anyString());
 
         mTestLooper = new TestLooper();
         final Handler handler = new Handler(mTestLooper.getLooper());
@@ -716,12 +728,12 @@ public final class ThreadNetworkControllerServiceTest {
         ThreadConfiguration config1 =
                 new ThreadConfiguration.Builder()
                         .setNat64Enabled(false)
-                        .setDhcp6PdEnabled(false)
+                        .setDhcpv6PdEnabled(false)
                         .build();
         ThreadConfiguration config2 =
                 new ThreadConfiguration.Builder()
                         .setNat64Enabled(true)
-                        .setDhcp6PdEnabled(true)
+                        .setDhcpv6PdEnabled(true)
                         .build();
         ThreadConfiguration config3 =
                 new ThreadConfiguration.Builder(config2).build(); // Same as config2
@@ -736,5 +748,57 @@ public final class ThreadNetworkControllerServiceTest {
         inOrder.verify(mockReceiver1).onSuccess();
         inOrder.verify(mockReceiver2).onSuccess();
         inOrder.verify(mockReceiver3).onSuccess();
+    }
+
+    @Test
+    public void initialize_upstreamNetworkRequestHasCertainTransportTypesAndCapabilities() {
+        mService.initialize();
+        mTestLooper.dispatchAll();
+
+        ArgumentCaptor<NetworkRequest> networkRequestCaptor =
+                ArgumentCaptor.forClass(NetworkRequest.class);
+        verify(mMockConnectivityManager, atLeastOnce())
+                .registerNetworkCallback(
+                        networkRequestCaptor.capture(),
+                        any(ConnectivityManager.NetworkCallback.class),
+                        any(Handler.class));
+        List<NetworkRequest> upstreamNetworkRequests =
+                networkRequestCaptor.getAllValues().stream()
+                        .filter(nr -> !nr.hasTransport(TRANSPORT_THREAD))
+                        .toList();
+        assertThat(upstreamNetworkRequests.size()).isEqualTo(1);
+        NetworkRequest upstreamNetworkRequest = upstreamNetworkRequests.get(0);
+        assertThat(upstreamNetworkRequest.hasTransport(TRANSPORT_WIFI)).isTrue();
+        assertThat(upstreamNetworkRequest.hasTransport(TRANSPORT_ETHERNET)).isTrue();
+        assertThat(upstreamNetworkRequest.hasCapability(NET_CAPABILITY_NOT_VPN)).isTrue();
+        assertThat(upstreamNetworkRequest.hasCapability(NET_CAPABILITY_INTERNET)).isTrue();
+    }
+
+    @Test
+    public void setTestNetworkAsUpstream_upstreamNetworkRequestAlwaysDisallowsVpn() {
+        mService.initialize();
+        mTestLooper.dispatchAll();
+        clearInvocations(mMockConnectivityManager);
+
+        final IOperationReceiver mockReceiver1 = mock(IOperationReceiver.class);
+        final IOperationReceiver mockReceiver2 = mock(IOperationReceiver.class);
+        mService.setTestNetworkAsUpstream("test-network", mockReceiver1);
+        mService.setTestNetworkAsUpstream(null, mockReceiver2);
+        mTestLooper.dispatchAll();
+
+        ArgumentCaptor<NetworkRequest> networkRequestCaptor =
+                ArgumentCaptor.forClass(NetworkRequest.class);
+        verify(mMockConnectivityManager, times(2))
+                .registerNetworkCallback(
+                        networkRequestCaptor.capture(),
+                        any(ConnectivityManager.NetworkCallback.class),
+                        any(Handler.class));
+        assertThat(networkRequestCaptor.getAllValues().size()).isEqualTo(2);
+        NetworkRequest networkRequest1 = networkRequestCaptor.getAllValues().get(0);
+        NetworkRequest networkRequest2 = networkRequestCaptor.getAllValues().get(1);
+        assertThat(networkRequest1.getNetworkSpecifier()).isNotNull();
+        assertThat(networkRequest1.hasCapability(NET_CAPABILITY_NOT_VPN)).isTrue();
+        assertThat(networkRequest2.getNetworkSpecifier()).isNull();
+        assertThat(networkRequest2.hasCapability(NET_CAPABILITY_NOT_VPN)).isTrue();
     }
 }
