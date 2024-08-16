@@ -16,13 +16,17 @@
 package android.net.thread.utils;
 
 import static android.net.NetworkCapabilities.NET_CAPABILITY_LOCAL_NETWORK;
+import static android.system.OsConstants.IPPROTO_ICMP;
 import static android.system.OsConstants.IPPROTO_ICMPV6;
 
 import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ND_OPTION_PIO;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ROUTER_ADVERTISEMENT;
 
+import static com.google.common.io.BaseEncoding.base16;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+
+import static org.junit.Assert.assertNotNull;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -36,6 +40,7 @@ import android.net.NetworkRequest;
 import android.net.TestNetworkInterface;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
+import android.net.thread.ActiveOperationalDataset;
 import android.net.thread.ThreadNetworkController;
 import android.os.Build;
 import android.os.Handler;
@@ -45,7 +50,9 @@ import androidx.annotation.NonNull;
 import androidx.test.core.app.ApplicationProvider;
 
 import com.android.net.module.util.Struct;
+import com.android.net.module.util.structs.Icmpv4Header;
 import com.android.net.module.util.structs.Icmpv6Header;
+import com.android.net.module.util.structs.Ipv4Header;
 import com.android.net.module.util.structs.Ipv6Header;
 import com.android.net.module.util.structs.PrefixInformationOption;
 import com.android.net.module.util.structs.RaHeader;
@@ -58,6 +65,7 @@ import java.io.FileDescriptor;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.Inet4Address;
 import java.net.Inet6Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -83,6 +91,17 @@ public final class IntegrationTestUtils {
     public static final Duration LEAVE_TIMEOUT = Duration.ofSeconds(2);
     public static final Duration CALLBACK_TIMEOUT = Duration.ofSeconds(1);
     public static final Duration SERVICE_DISCOVERY_TIMEOUT = Duration.ofSeconds(20);
+
+    // A valid Thread Active Operational Dataset generated from OpenThread CLI "dataset init new".
+    private static final byte[] DEFAULT_DATASET_TLVS =
+            base16().decode(
+                            "0E080000000000010000000300001335060004001FFFE002"
+                                    + "08ACC214689BC40BDF0708FD64DB1225F47E0B0510F26B31"
+                                    + "53760F519A63BAFDDFFC80D2AF030F4F70656E5468726561"
+                                    + "642D643961300102D9A00410A245479C836D551B9CA557F7"
+                                    + "B9D351B40C0402A0FFF8");
+    public static final ActiveOperationalDataset DEFAULT_DATASET =
+            ActiveOperationalDataset.fromThreadTlvs(DEFAULT_DATASET_TLVS);
 
     private IntegrationTestUtils() {}
 
@@ -177,16 +196,36 @@ public final class IntegrationTestUtils {
         return null;
     }
 
-    /** Returns {@code true} if {@code packet} is an ICMPv6 packet of given {@code type}. */
-    public static boolean isExpectedIcmpv6Packet(byte[] packet, int type) {
-        if (packet == null) {
+    /** Returns {@code true} if {@code packet} is an ICMPv4 packet of given {@code type}. */
+    public static boolean isExpectedIcmpv4Packet(byte[] packet, int type) {
+        ByteBuffer buf = makeByteBuffer(packet);
+        Ipv4Header header = extractIpv4Header(buf);
+        if (header == null) {
             return false;
         }
-        ByteBuffer buf = ByteBuffer.wrap(packet);
+        if (header.protocol != (byte) IPPROTO_ICMP) {
+            return false;
+        }
         try {
-            if (Struct.parse(Ipv6Header.class, buf).nextHeader != (byte) IPPROTO_ICMPV6) {
-                return false;
-            }
+            return Struct.parse(Icmpv4Header.class, buf).type == (short) type;
+        } catch (IllegalArgumentException ignored) {
+            // It's fine that the passed in packet is malformed because it's could be sent
+            // by anybody.
+        }
+        return false;
+    }
+
+    /** Returns {@code true} if {@code packet} is an ICMPv6 packet of given {@code type}. */
+    public static boolean isExpectedIcmpv6Packet(byte[] packet, int type) {
+        ByteBuffer buf = makeByteBuffer(packet);
+        Ipv6Header header = extractIpv6Header(buf);
+        if (header == null) {
+            return false;
+        }
+        if (header.nextHeader != (byte) IPPROTO_ICMPV6) {
+            return false;
+        }
+        try {
             return Struct.parse(Icmpv6Header.class, buf).type == (short) type;
         } catch (IllegalArgumentException ignored) {
             // It's fine that the passed in packet is malformed because it's could be sent
@@ -195,32 +234,66 @@ public final class IntegrationTestUtils {
         return false;
     }
 
-    public static boolean isFromIpv6Source(byte[] packet, Inet6Address src) {
-        if (packet == null) {
-            return false;
-        }
-        ByteBuffer buf = ByteBuffer.wrap(packet);
-        try {
-            return Struct.parse(Ipv6Header.class, buf).srcIp.equals(src);
-        } catch (IllegalArgumentException ignored) {
-            // It's fine that the passed in packet is malformed because it's could be sent
-            // by anybody.
+    public static boolean isFrom(byte[] packet, InetAddress src) {
+        if (src instanceof Inet4Address) {
+            return isFromIpv4Source(packet, (Inet4Address) src);
+        } else if (src instanceof Inet6Address) {
+            return isFromIpv6Source(packet, (Inet6Address) src);
         }
         return false;
     }
 
-    public static boolean isToIpv6Destination(byte[] packet, Inet6Address dest) {
-        if (packet == null) {
-            return false;
+    public static boolean isTo(byte[] packet, InetAddress dest) {
+        if (dest instanceof Inet4Address) {
+            return isToIpv4Destination(packet, (Inet4Address) dest);
+        } else if (dest instanceof Inet6Address) {
+            return isToIpv6Destination(packet, (Inet6Address) dest);
         }
-        ByteBuffer buf = ByteBuffer.wrap(packet);
+        return false;
+    }
+
+    private static boolean isFromIpv4Source(byte[] packet, Inet4Address src) {
+        Ipv4Header header = extractIpv4Header(makeByteBuffer(packet));
+        return header != null && header.srcIp.equals(src);
+    }
+
+    private static boolean isFromIpv6Source(byte[] packet, Inet6Address src) {
+        Ipv6Header header = extractIpv6Header(makeByteBuffer(packet));
+        return header != null && header.srcIp.equals(src);
+    }
+
+    private static boolean isToIpv4Destination(byte[] packet, Inet4Address dest) {
+        Ipv4Header header = extractIpv4Header(makeByteBuffer(packet));
+        return header != null && header.dstIp.equals(dest);
+    }
+
+    private static boolean isToIpv6Destination(byte[] packet, Inet6Address dest) {
+        Ipv6Header header = extractIpv6Header(makeByteBuffer(packet));
+        return header != null && header.dstIp.equals(dest);
+    }
+
+    private static ByteBuffer makeByteBuffer(byte[] packet) {
+        return packet == null ? null : ByteBuffer.wrap(packet);
+    }
+
+    private static Ipv4Header extractIpv4Header(ByteBuffer buf) {
         try {
-            return Struct.parse(Ipv6Header.class, buf).dstIp.equals(dest);
+            return Struct.parse(Ipv4Header.class, buf);
         } catch (IllegalArgumentException ignored) {
             // It's fine that the passed in packet is malformed because it's could be sent
             // by anybody.
         }
-        return false;
+        return null;
+    }
+
+    private static Ipv6Header extractIpv6Header(ByteBuffer buf) {
+        try {
+            return Struct.parse(Ipv6Header.class, buf);
+        } catch (IllegalArgumentException ignored) {
+            // It's fine that the passed in packet is malformed because it's could be sent
+            // by anybody.
+        }
+        return null;
     }
 
     /** Returns the Prefix Information Options (PIO) extracted from an ICMPv6 RA message. */
@@ -411,6 +484,22 @@ public final class IntegrationTestUtils {
                 };
         cm.registerNetworkCallback(networkRequest, networkCallback);
         return networkFuture.get(timeout.toSeconds(), SECONDS);
+    }
+
+    /**
+     * Let the FTD join the specified Thread network and wait for border routing to be available.
+     *
+     * @return the OMR address
+     */
+    public static Inet6Address joinNetworkAndWaitForOmr(
+            FullThreadDevice ftd, ActiveOperationalDataset dataset) throws Exception {
+        ftd.factoryReset();
+        ftd.joinNetwork(dataset);
+        ftd.waitForStateAnyOf(List.of("router", "child"), JOIN_TIMEOUT);
+        waitFor(() -> ftd.getOmrAddress() != null, Duration.ofSeconds(60));
+        Inet6Address ftdOmr = ftd.getOmrAddress();
+        assertNotNull(ftdOmr);
+        return ftdOmr;
     }
 
     private static class DefaultDiscoveryListener implements NsdManager.DiscoveryListener {

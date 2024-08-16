@@ -7,7 +7,7 @@
 #include "bpf_map_def.h"
 
 /******************************************************************************
- * WARNING: CHANGES TO THIS FILE OUTSIDE OF AOSP/MASTER ARE LIKELY TO BREAK   *
+ * WARNING: CHANGES TO THIS FILE OUTSIDE OF AOSP/MAIN ARE LIKELY TO BREAK     *
  * DEVICE COMPATIBILITY WITH MAINLINE MODULES SHIPPING EBPF CODE.             *
  *                                                                            *
  * THIS WILL LIKELY RESULT IN BRICKED DEVICES AT SOME ARBITRARY FUTURE TIME   *
@@ -39,11 +39,12 @@
 // Android U / 14 (api level 34) - various new program types added
 #define BPFLOADER_U_VERSION 38u
 
-// Android V / 15 (api level 35) - platform only
+// Android U QPR2 / 14 (api level 34) - platform only
 // (note: the platform bpfloader in V isn't really versioned at all,
 //  as there is no need as it can only load objects compiled at the
 //  same time as itself and the rest of the platform)
-#define BPFLOADER_PLATFORM_VERSION 41u
+#define BPFLOADER_U_QPR2_VERSION 41u
+#define BPFLOADER_PLATFORM_VERSION BPFLOADER_U_QPR2_VERSION
 
 // Android Mainline - this bpfloader should eventually go back to T (or even S)
 // Note: this value (and the following +1u's) are hardcoded in NetBpfLoad.cpp
@@ -55,8 +56,11 @@
 // Android Mainline BpfLoader when running on Android U
 #define BPFLOADER_MAINLINE_U_VERSION (BPFLOADER_MAINLINE_T_VERSION + 1u)
 
+// Android Mainline BpfLoader when running on Android U QPR3
+#define BPFLOADER_MAINLINE_U_QPR3_VERSION (BPFLOADER_MAINLINE_U_VERSION + 1u)
+
 // Android Mainline BpfLoader when running on Android V
-#define BPFLOADER_MAINLINE_V_VERSION (BPFLOADER_MAINLINE_U_VERSION + 1u)
+#define BPFLOADER_MAINLINE_V_VERSION (BPFLOADER_MAINLINE_U_QPR3_VERSION + 1u)
 
 /* For mainline module use, you can #define BPFLOADER_{MIN/MAX}_VER
  * before #include "bpf_helpers.h" to change which bpfloaders will
@@ -67,11 +71,11 @@
  * In which case it's just best to use the default.
  */
 #ifndef BPFLOADER_MIN_VER
-#define BPFLOADER_MIN_VER BPFLOADER_PLATFORM_VERSION
+#define BPFLOADER_MIN_VER BPFLOADER_PLATFORM_VERSION  // inclusive, ie. >=
 #endif
 
 #ifndef BPFLOADER_MAX_VER
-#define BPFLOADER_MAX_VER DEFAULT_BPFLOADER_MAX_VER
+#define BPFLOADER_MAX_VER 0x10000u  // exclusive, ie. < v1.0
 #endif
 
 /* place things in different elf sections */
@@ -133,6 +137,7 @@ struct kver_uint { unsigned int kver; };
 #define KVER_5_4  KVER(5, 4, 0)
 #define KVER_5_8  KVER(5, 8, 0)
 #define KVER_5_9  KVER(5, 9, 0)
+#define KVER_5_10 KVER(5, 10, 0)
 #define KVER_5_15 KVER(5, 15, 0)
 #define KVER_6_1  KVER(6, 1, 0)
 #define KVER_6_6  KVER(6, 6, 0)
@@ -409,19 +414,10 @@ static long (*bpf_get_current_comm)(void* buf, uint32_t buf_size) = (void*) BPF_
     SECTION(SECTION_NAME)                                                                \
     int the_prog
 
-#ifndef DEFAULT_BPF_PROG_SELINUX_CONTEXT
-#define DEFAULT_BPF_PROG_SELINUX_CONTEXT ""
-#endif
-
-#ifndef DEFAULT_BPF_PROG_PIN_SUBDIR
-#define DEFAULT_BPF_PROG_PIN_SUBDIR ""
-#endif
-
 #define DEFINE_BPF_PROG_KVER_RANGE_OPT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv, \
                                        opt)                                                        \
     DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv,                \
-                        BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, opt,                                 \
-                        DEFAULT_BPF_PROG_SELINUX_CONTEXT, DEFAULT_BPF_PROG_PIN_SUBDIR,             \
+                        BPFLOADER_MIN_VER, BPFLOADER_MAX_VER, opt, "", "",                         \
                         LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 
 // Programs (here used in the sense of functions/sections) marked optional are allowed to fail

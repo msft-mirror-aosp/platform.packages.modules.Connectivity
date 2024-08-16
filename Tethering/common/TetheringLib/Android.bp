@@ -58,6 +58,7 @@ java_sdk_library {
     permitted_packages: ["android.net"],
     lint: {
         strict_updatability_linting: true,
+        baseline_filename: "lint-baseline.xml",
     },
     aconfig_declarations: [
         "com.android.net.flags-aconfig",
@@ -97,6 +98,9 @@ java_defaults {
         ":framework-tethering-srcs",
     ],
     libs: ["framework-connectivity.stubs.module_lib"],
+    static_libs: [
+        "com.android.net.flags-aconfig-java",
+    ],
     aidl: {
         include_dirs: [
             "packages/modules/Connectivity/framework/aidl-export",
