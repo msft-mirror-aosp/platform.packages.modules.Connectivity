@@ -22,6 +22,10 @@ import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_LOWPAN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI_AWARE;
+import static android.net.NetworkTemplate.MATCH_BLUETOOTH;
+import static android.net.NetworkTemplate.MATCH_ETHERNET;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.TetheringManager.TETHERING_BLUETOOTH;
 import static android.net.TetheringManager.TETHERING_ETHERNET;
 import static android.net.TetheringManager.TETHERING_NCM;
@@ -46,11 +50,15 @@ import static android.net.TetheringManager.TETHER_ERROR_UNKNOWN_TYPE;
 import static android.net.TetheringManager.TETHER_ERROR_UNSUPPORTED;
 import static android.net.TetheringManager.TETHER_ERROR_UNTETHER_IFACE_ERROR;
 
-import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.spy;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.verify;
 
+import android.content.Context;
 import android.net.NetworkCapabilities;
+import android.net.NetworkTemplate;
+import android.os.Build;
 import android.stats.connectivity.DownstreamType;
 import android.stats.connectivity.ErrorCode;
 import android.stats.connectivity.UpstreamType;
@@ -60,21 +68,32 @@ import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
 
 import com.android.networkstack.tethering.UpstreamNetworkState;
+import com.android.networkstack.tethering.metrics.TetheringMetrics.Dependencies;
+import com.android.testutils.DevSdkIgnoreRule;
+import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
 @RunWith(AndroidJUnit4.class)
 @SmallTest
 public final class TetheringMetricsTest {
+    @Rule public final DevSdkIgnoreRule mIgnoreRule = new DevSdkIgnoreRule();
+
     private static final String TEST_CALLER_PKG = "com.test.caller.pkg";
     private static final String SETTINGS_PKG = "com.android.settings";
     private static final String SYSTEMUI_PKG = "com.android.systemui";
     private static final String GMS_PKG = "com.google.android.gms";
     private static final long TEST_START_TIME = 1670395936033L;
     private static final long SECOND_IN_MILLIS = 1_000L;
+    private static final int MATCH_NONE = -1;
+
+    @Mock private Context mContext;
+    @Mock private Dependencies mDeps;
 
     private TetheringMetrics mTetheringMetrics;
     private final NetworkTetheringReported.Builder mStatsBuilder =
@@ -82,22 +101,14 @@ public final class TetheringMetricsTest {
 
     private long mElapsedRealtime;
 
-    private class MockTetheringMetrics extends TetheringMetrics {
-        @Override
-        public void write(final NetworkTetheringReported reported) {}
-        @Override
-        public long timeNow() {
-            return currentTimeMillis();
-        }
-    }
-
     private long currentTimeMillis() {
         return TEST_START_TIME + mElapsedRealtime;
     }
 
     private void incrementCurrentTime(final long duration) {
         mElapsedRealtime += duration;
-        mTetheringMetrics.timeNow();
+        final long currentTimeMillis = currentTimeMillis();
+        doReturn(currentTimeMillis).when(mDeps).timeNow();
     }
 
     private long getElapsedRealtime() {
@@ -106,12 +117,14 @@ public final class TetheringMetricsTest {
 
     private void clearElapsedRealtime() {
         mElapsedRealtime = 0;
+        doReturn(TEST_START_TIME).when(mDeps).timeNow();
     }
 
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
-        mTetheringMetrics = spy(new MockTetheringMetrics());
+        doReturn(TEST_START_TIME).when(mDeps).timeNow();
+        mTetheringMetrics = new TetheringMetrics(mContext, mDeps);
         mElapsedRealtime = 0L;
     }
 
@@ -126,7 +139,7 @@ public final class TetheringMetricsTest {
                 .setUpstreamEvents(upstreamEvents)
                 .setDurationMillis(duration)
                 .build();
-        verify(mTetheringMetrics).write(expectedReport);
+        verify(mDeps).write(expectedReport);
     }
 
     private void updateErrorAndSendReport(final int downstream, final int error) {
@@ -162,6 +175,7 @@ public final class TetheringMetricsTest {
 
     private void runDownstreamTypesTest(final int type, final DownstreamType expectedResult)
             throws Exception {
+        mTetheringMetrics = new TetheringMetrics(mContext, mDeps);
         mTetheringMetrics.createBuilder(type, TEST_CALLER_PKG);
         final long duration = 2 * SECOND_IN_MILLIS;
         incrementCurrentTime(duration);
@@ -172,9 +186,7 @@ public final class TetheringMetricsTest {
 
         verifyReport(expectedResult, ErrorCode.EC_NO_ERROR, UserType.USER_UNKNOWN,
                 upstreamEvents, getElapsedRealtime());
-        reset(mTetheringMetrics);
         clearElapsedRealtime();
-        mTetheringMetrics.cleanup();
     }
 
     @Test
@@ -189,6 +201,7 @@ public final class TetheringMetricsTest {
 
     private void runErrorCodesTest(final int errorCode, final ErrorCode expectedResult)
             throws Exception {
+        mTetheringMetrics = new TetheringMetrics(mContext, mDeps);
         mTetheringMetrics.createBuilder(TETHERING_WIFI, TEST_CALLER_PKG);
         mTetheringMetrics.maybeUpdateUpstreamType(buildUpstreamState(TRANSPORT_WIFI));
         final long duration = 2 * SECOND_IN_MILLIS;
@@ -199,9 +212,7 @@ public final class TetheringMetricsTest {
         addUpstreamEvent(upstreamEvents, UpstreamType.UT_WIFI, duration, 0L, 0L);
         verifyReport(DownstreamType.DS_TETHERING_WIFI, expectedResult, UserType.USER_UNKNOWN,
                     upstreamEvents, getElapsedRealtime());
-        reset(mTetheringMetrics);
         clearElapsedRealtime();
-        mTetheringMetrics.cleanup();
     }
 
     @Test
@@ -231,6 +242,7 @@ public final class TetheringMetricsTest {
 
     private void runUserTypesTest(final String callerPkg, final UserType expectedResult)
             throws Exception {
+        mTetheringMetrics = new TetheringMetrics(mContext, mDeps);
         mTetheringMetrics.createBuilder(TETHERING_WIFI, callerPkg);
         final long duration = 1 * SECOND_IN_MILLIS;
         incrementCurrentTime(duration);
@@ -241,9 +253,7 @@ public final class TetheringMetricsTest {
         addUpstreamEvent(upstreamEvents, UpstreamType.UT_NO_NETWORK, duration, 0L, 0L);
         verifyReport(DownstreamType.DS_TETHERING_WIFI, ErrorCode.EC_NO_ERROR, expectedResult,
                     upstreamEvents, getElapsedRealtime());
-        reset(mTetheringMetrics);
         clearElapsedRealtime();
-        mTetheringMetrics.cleanup();
     }
 
     @Test
@@ -256,6 +266,7 @@ public final class TetheringMetricsTest {
 
     private void runUpstreamTypesTest(final UpstreamNetworkState ns,
             final UpstreamType expectedResult) throws Exception {
+        mTetheringMetrics = new TetheringMetrics(mContext, mDeps);
         mTetheringMetrics.createBuilder(TETHERING_WIFI, TEST_CALLER_PKG);
         mTetheringMetrics.maybeUpdateUpstreamType(ns);
         final long duration = 2 * SECOND_IN_MILLIS;
@@ -266,9 +277,7 @@ public final class TetheringMetricsTest {
         addUpstreamEvent(upstreamEvents, expectedResult, duration, 0L, 0L);
         verifyReport(DownstreamType.DS_TETHERING_WIFI, ErrorCode.EC_NO_ERROR,
                 UserType.USER_UNKNOWN, upstreamEvents, getElapsedRealtime());
-        reset(mTetheringMetrics);
         clearElapsedRealtime();
-        mTetheringMetrics.cleanup();
     }
 
     @Test
@@ -378,5 +387,45 @@ public final class TetheringMetricsTest {
         verifyReport(DownstreamType.DS_TETHERING_WIFI, ErrorCode.EC_NO_ERROR,
                 UserType.USER_SETTINGS, upstreamEvents,
                 currentTimeMillis() - wifiTetheringStartTime);
+    }
+
+    private void runUsageSupportedForUpstreamTypeTest(final UpstreamType upstreamType,
+            final boolean isSupported) {
+        final boolean result = TetheringMetrics.isUsageSupportedForUpstreamType(upstreamType);
+        assertEquals(isSupported, result);
+    }
+
+    @Test
+    public void testUsageSupportedForUpstreamTypeTest() {
+        runUsageSupportedForUpstreamTypeTest(UpstreamType.UT_CELLULAR, true /* isSupported */);
+        runUsageSupportedForUpstreamTypeTest(UpstreamType.UT_WIFI, true /* isSupported */);
+        runUsageSupportedForUpstreamTypeTest(UpstreamType.UT_BLUETOOTH, true /* isSupported */);
+        runUsageSupportedForUpstreamTypeTest(UpstreamType.UT_ETHERNET, true /* isSupported */);
+        runUsageSupportedForUpstreamTypeTest(UpstreamType.UT_WIFI_AWARE, false /* isSupported */);
+        runUsageSupportedForUpstreamTypeTest(UpstreamType.UT_LOWPAN, false /* isSupported */);
+        runUsageSupportedForUpstreamTypeTest(UpstreamType.UT_UNKNOWN, false /* isSupported */);
+    }
+
+    private void runBuildNetworkTemplateForUpstreamType(final UpstreamType upstreamType,
+            final int matchRule)  {
+        final NetworkTemplate template =
+                TetheringMetrics.buildNetworkTemplateForUpstreamType(upstreamType);
+        if (matchRule == MATCH_NONE) {
+            assertNull(template);
+        } else {
+            assertEquals(matchRule, template.getMatchRule());
+        }
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.S_V2)
+    public void testBuildNetworkTemplateForUpstreamType() {
+        runBuildNetworkTemplateForUpstreamType(UpstreamType.UT_CELLULAR, MATCH_MOBILE);
+        runBuildNetworkTemplateForUpstreamType(UpstreamType.UT_WIFI, MATCH_WIFI);
+        runBuildNetworkTemplateForUpstreamType(UpstreamType.UT_BLUETOOTH, MATCH_BLUETOOTH);
+        runBuildNetworkTemplateForUpstreamType(UpstreamType.UT_ETHERNET, MATCH_ETHERNET);
+        runBuildNetworkTemplateForUpstreamType(UpstreamType.UT_WIFI_AWARE, MATCH_NONE);
+        runBuildNetworkTemplateForUpstreamType(UpstreamType.UT_LOWPAN, MATCH_NONE);
+        runBuildNetworkTemplateForUpstreamType(UpstreamType.UT_UNKNOWN, MATCH_NONE);
     }
 }

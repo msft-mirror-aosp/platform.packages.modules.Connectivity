@@ -195,7 +195,6 @@ import android.util.Range;
 
 import androidx.test.filters.RequiresDevice;
 import androidx.test.platform.app.InstrumentationRegistry;
-import androidx.test.runner.AndroidJUnit4;
 
 import com.android.compatibility.common.util.DynamicConfigDeviceSide;
 import com.android.internal.util.ArrayUtils;
@@ -207,10 +206,12 @@ import com.android.networkstack.apishim.NetworkInformationShimImpl;
 import com.android.networkstack.apishim.common.ConnectivityManagerShim;
 import com.android.testutils.AutoReleaseNetworkCallbackRule;
 import com.android.testutils.CompatUtil;
+import com.android.testutils.ConnectUtil;
 import com.android.testutils.ConnectivityModuleTest;
 import com.android.testutils.DevSdkIgnoreRule;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreAfter;
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
+import com.android.testutils.DevSdkIgnoreRunner;
 import com.android.testutils.DeviceConfigRule;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
@@ -274,7 +275,8 @@ import fi.iki.elonen.NanoHTTPD.Method;
 import fi.iki.elonen.NanoHTTPD.Response.IStatus;
 import fi.iki.elonen.NanoHTTPD.Response.Status;
 
-@RunWith(AndroidJUnit4.class)
+@RunWith(DevSdkIgnoreRunner.class)
+@DevSdkIgnoreRunner.RestoreDefaultNetwork
 public class ConnectivityManagerTest {
     @Rule(order = 1)
     public final DevSdkIgnoreRule ignoreRule = new DevSdkIgnoreRule();
@@ -2941,18 +2943,8 @@ public class ConnectivityManagerTest {
         // This may also apply to wifi in principle, but in practice methods that mock validation
         // URL all disconnect wifi forcefully anyway, so don't wait for wifi to validate.
         if (mPackageManager.hasSystemFeature(FEATURE_TELEPHONY)) {
-            ensureValidatedNetwork(makeCellNetworkRequest());
+            new ConnectUtil(mContext).ensureCellularValidated();
         }
-    }
-
-    private void ensureValidatedNetwork(NetworkRequest request) {
-        final TestableNetworkCallback cb = new TestableNetworkCallback();
-        mCm.registerNetworkCallback(request, cb);
-        cb.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
-                NETWORK_CALLBACK_TIMEOUT_MS,
-                entry -> ((CallbackEntry.CapabilitiesChanged) entry).getCaps()
-                        .hasCapability(NET_CAPABILITY_VALIDATED));
-        mCm.unregisterNetworkCallback(cb);
     }
 
     @AppModeFull(reason = "WRITE_DEVICE_CONFIG permission can't be granted to instant apps")
