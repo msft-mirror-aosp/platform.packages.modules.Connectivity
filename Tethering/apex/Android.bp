@@ -112,7 +112,7 @@ apex {
     ],
     prebuilts: [
         "current_sdkinfo",
-        "netbpfload.mainline.rc",
+        "netbpfload.33rc",
         "netbpfload.35rc",
         "ot-daemon.init.34rc",
     ],
@@ -215,6 +215,7 @@ bootclasspath_fragment {
             "android.net.nsd",
             "android.net.thread",
             "android.net.wear",
+            "android.net.http.internal",
         ],
     },
 }

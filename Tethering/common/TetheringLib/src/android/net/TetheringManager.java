@@ -38,6 +38,7 @@ import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.net.flags.Flags;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -62,14 +63,6 @@ import java.util.function.Supplier;
  */
 @SystemApi
 public class TetheringManager {
-    // TODO : remove this class when udc-mainline-prod is abandoned and android.net.flags.Flags is
-    // available here
-    /** @hide */
-    public static class Flags {
-        static final String TETHERING_REQUEST_WITH_SOFT_AP_CONFIG =
-                "com.android.net.flags.tethering_request_with_soft_ap_config";
-    }
-
     private static final String TAG = TetheringManager.class.getSimpleName();
     private static final int DEFAULT_TIMEOUT_MS = 60_000;
     private static final long CONNECTOR_POLL_INTERVAL_MILLIS = 200L;
@@ -195,10 +188,22 @@ public class TetheringManager {
     public static final int TETHERING_WIGIG = 6;
 
     /**
+     * VIRTUAL tethering type.
+     *
+     * This tethering type is for providing external network to virtual machines
+     * running on top of Android devices, which are created and managed by
+     * AVF(Android Virtualization Framework).
+     * @hide
+     */
+    @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_VIRTUAL)
+    @SystemApi
+    public static final int TETHERING_VIRTUAL = 7;
+
+    /**
      * The int value of last tethering type.
      * @hide
      */
-    public static final int MAX_TETHERING_TYPE = TETHERING_WIGIG;
+    public static final int MAX_TETHERING_TYPE = TETHERING_VIRTUAL;
 
     /** @hide */
     @Retention(RetentionPolicy.SOURCE)
@@ -688,7 +693,11 @@ public class TetheringManager {
         /** A configuration set for TetheringRequest. */
         private final TetheringRequestParcel mRequestParcel;
 
-        private TetheringRequest(@NonNull final TetheringRequestParcel request) {
+        /**
+         * @hide
+         */
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        public TetheringRequest(@NonNull final TetheringRequestParcel request) {
             mRequestParcel = request;
         }
 
@@ -696,7 +705,7 @@ public class TetheringManager {
             mRequestParcel = in.readParcelable(TetheringRequestParcel.class.getClassLoader());
         }
 
-        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
         @NonNull
         public static final Creator<TetheringRequest> CREATOR = new Creator<>() {
             @Override
@@ -710,13 +719,13 @@ public class TetheringManager {
             }
         };
 
-        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
         @Override
         public int describeContents() {
             return 0;
         }
 
-        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
         @Override
         public void writeToParcel(@NonNull Parcel dest, int flags) {
             dest.writeParcelable(mRequestParcel, flags);
@@ -890,6 +899,28 @@ public class TetheringManager {
                     + ", exemptFromEntitlementCheck= "
                     + mRequestParcel.exemptFromEntitlementCheck + ", showProvisioningUi= "
                     + mRequestParcel.showProvisioningUi + " ]";
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) return true;
+            if (!(obj instanceof TetheringRequest otherRequest)) return false;
+            TetheringRequestParcel parcel = getParcel();
+            TetheringRequestParcel otherParcel = otherRequest.getParcel();
+            return parcel.tetheringType == otherParcel.tetheringType
+                    && Objects.equals(parcel.localIPv4Address, otherParcel.localIPv4Address)
+                    && Objects.equals(parcel.staticClientAddress, otherParcel.staticClientAddress)
+                    && parcel.exemptFromEntitlementCheck == otherParcel.exemptFromEntitlementCheck
+                    && parcel.showProvisioningUi == otherParcel.showProvisioningUi
+                    && parcel.connectivityScope == otherParcel.connectivityScope;
+        }
+
+        @Override
+        public int hashCode() {
+            TetheringRequestParcel parcel = getParcel();
+            return Objects.hash(parcel.tetheringType, parcel.localIPv4Address,
+                    parcel.staticClientAddress, parcel.exemptFromEntitlementCheck,
+                    parcel.showProvisioningUi, parcel.connectivityScope);
         }
     }
 
@@ -1343,6 +1374,9 @@ public class TetheringManager {
     @RequiresPermission(Manifest.permission.ACCESS_NETWORK_STATE)
     public void registerTetheringEventCallback(@NonNull Executor executor,
             @NonNull TetheringEventCallback callback) {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(callback);
+
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "registerTetheringEventCallback caller:" + callerPkg);
 
@@ -1497,6 +1531,8 @@ public class TetheringManager {
             Manifest.permission.ACCESS_NETWORK_STATE
     })
     public void unregisterTetheringEventCallback(@NonNull final TetheringEventCallback callback) {
+        Objects.requireNonNull(callback);
+
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "unregisterTetheringEventCallback caller:" + callerPkg);
 

@@ -17,7 +17,9 @@ package android.net.thread.utils;
 
 import static android.net.thread.utils.IntegrationTestUtils.SERVICE_DISCOVERY_TIMEOUT;
 import static android.net.thread.utils.IntegrationTestUtils.waitFor;
+
 import static com.google.common.io.BaseEncoding.base16;
+
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 import android.net.InetAddresses;
@@ -26,7 +28,9 @@ import android.net.nsd.NsdServiceInfo;
 import android.net.thread.ActiveOperationalDataset;
 import android.os.Handler;
 import android.os.HandlerThread;
+
 import com.google.errorprone.annotations.FormatMethod;
+
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.IOException;
@@ -278,6 +282,7 @@ public final class FullThreadDevice {
         for (String subtype : subtypes) {
             fullServiceType.append(",").append(subtype);
         }
+        waitForSrpServer();
         executeCommand(
                 "srp client service add %s %s %d %d %d %s",
                 serviceName,
@@ -412,7 +417,7 @@ public final class FullThreadDevice {
         executeCommand("ipmaddr add " + address.getHostAddress());
     }
 
-    public void ping(Inet6Address address, Inet6Address source) {
+    public void ping(InetAddress address, Inet6Address source) {
         ping(
                 address,
                 source,
@@ -423,7 +428,7 @@ public final class FullThreadDevice {
                 PING_TIMEOUT_0_1_SECOND);
     }
 
-    public void ping(Inet6Address address) {
+    public void ping(InetAddress address) {
         ping(
                 address,
                 null,
@@ -435,7 +440,7 @@ public final class FullThreadDevice {
     }
 
     /** Returns the number of ping reply packets received. */
-    public int ping(Inet6Address address, int count) {
+    public int ping(InetAddress address, int count) {
         List<String> output =
                 ping(
                         address,
@@ -449,7 +454,7 @@ public final class FullThreadDevice {
     }
 
     private List<String> ping(
-            Inet6Address address,
+            InetAddress address,
             Inet6Address source,
             int size,
             int count,
@@ -486,6 +491,22 @@ public final class FullThreadDevice {
         }
         // No match found
         return -1;
+    }
+
+    /** Waits for an SRP server to be present in Network Data */
+    private void waitForSrpServer() throws TimeoutException {
+        // CLI output:
+        // > srp client server
+        // [fd64:db12:25f4:7e0b:1bfc:6344:25ac:2dd7]:53538
+        // Done
+        waitFor(
+                () -> {
+                    final String serverAddr = executeCommand("srp client server").get(0);
+                    final int lastColonIndex = serverAddr.lastIndexOf(':');
+                    final int port = Integer.parseInt(serverAddr.substring(lastColonIndex + 1));
+                    return port > 0;
+                },
+                SERVICE_DISCOVERY_TIMEOUT);
     }
 
     @FormatMethod

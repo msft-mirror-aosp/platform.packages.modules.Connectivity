@@ -54,8 +54,12 @@ java_library {
     ],
     static_libs: [
         "modules-utils-preconditions",
+        "com.android.nearby.flags-aconfig-java",
     ],
     visibility: [
         "//packages/modules/Connectivity/nearby/tests:__subpackages__",
     ],
+    lint: {
+        baseline_filename: "lint-baseline.xml",
+    },
 }
