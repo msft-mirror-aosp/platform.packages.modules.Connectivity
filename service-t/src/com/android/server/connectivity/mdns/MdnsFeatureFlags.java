@@ -67,6 +67,22 @@ public class MdnsFeatureFlags {
      */
     public static final String NSD_QUERY_WITH_KNOWN_ANSWER = "nsd_query_with_known_answer";
 
+    /**
+     * A feature flag to control whether the cached services removal should be enabled.
+     * The removal will be triggered if the retention time has elapsed after all listeners have been
+     * unregistered from the service type client or the interface has been destroyed.
+     */
+    public static final String NSD_CACHED_SERVICES_REMOVAL = "nsd_cached_services_removal";
+
+    /**
+     * A feature flag to control the retention time for cached services.
+     *
+     * <p> Making the retention time configurable allows for testing and future adjustments.
+     */
+    public static final String NSD_CACHED_SERVICES_RETENTION_TIME =
+            "nsd_cached_services_retention_time";
+    public static final int DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS = 10000;
+
     // Flag for offload feature
     public final boolean mIsMdnsOffloadFeatureEnabled;
 
@@ -91,6 +107,12 @@ public class MdnsFeatureFlags {
     // Flag for query with known-answer
     public final boolean mIsQueryWithKnownAnswerEnabled;
 
+    // Flag for cached services removal
+    public final boolean mIsCachedServicesRemovalEnabled;
+
+    // Retention Time for cached services
+    public final long mCachedServicesRetentionTime;
+
     @Nullable
     private final FlagOverrideProvider mOverrideProvider;
 
@@ -107,7 +129,7 @@ public class MdnsFeatureFlags {
         /**
          * Get the int value of the flag for testing purposes.
          */
-        int getIntValueForTest(@NonNull String flag);
+        int getIntValueForTest(@NonNull String flag, int defaultValue);
     }
 
     /**
@@ -120,13 +142,14 @@ public class MdnsFeatureFlags {
     /**
      * Get the int value of the flag for testing purposes.
      *
-     * @return the test int value, or -1 if it is unset or the OverrideProvider doesn't exist.
+     * @return the test int value, or given default value if it is unset or the OverrideProvider
+     * doesn't exist.
      */
-    private int getIntValueForTest(@NonNull String flag) {
+    private int getIntValueForTest(@NonNull String flag, int defaultValue) {
         if (mOverrideProvider == null) {
-            return -1;
+            return defaultValue;
         }
-        return mOverrideProvider.getIntValueForTest(flag);
+        return mOverrideProvider.getIntValueForTest(flag, defaultValue);
     }
 
     /**
@@ -160,6 +183,23 @@ public class MdnsFeatureFlags {
     }
 
     /**
+     * Indicates whether {@link #NSD_CACHED_SERVICES_REMOVAL} is enabled, including for testing.
+     */
+    public boolean isCachedServicesRemovalEnabled() {
+        return mIsCachedServicesRemovalEnabled
+                || isForceEnabledForTest(NSD_CACHED_SERVICES_REMOVAL);
+    }
+
+    /**
+     * Get the value which is set to {@link #NSD_CACHED_SERVICES_RETENTION_TIME}, including for
+     * testing.
+     */
+    public long getCachedServicesRetentionTime() {
+        return getIntValueForTest(
+                NSD_CACHED_SERVICES_RETENTION_TIME, (int) mCachedServicesRetentionTime);
+    }
+
+    /**
      * The constructor for {@link MdnsFeatureFlags}.
      */
     public MdnsFeatureFlags(boolean isOffloadFeatureEnabled,
@@ -170,6 +210,8 @@ public class MdnsFeatureFlags {
             boolean isUnicastReplyEnabled,
             boolean isAggressiveQueryModeEnabled,
             boolean isQueryWithKnownAnswerEnabled,
+            boolean isCachedServicesRemovalEnabled,
+            long cachedServicesRetentionTime,
             @Nullable FlagOverrideProvider overrideProvider) {
         mIsMdnsOffloadFeatureEnabled = isOffloadFeatureEnabled;
         mIncludeInetAddressRecordsInProbing = includeInetAddressRecordsInProbing;
@@ -179,6 +221,8 @@ public class MdnsFeatureFlags {
         mIsUnicastReplyEnabled = isUnicastReplyEnabled;
         mIsAggressiveQueryModeEnabled = isAggressiveQueryModeEnabled;
         mIsQueryWithKnownAnswerEnabled = isQueryWithKnownAnswerEnabled;
+        mIsCachedServicesRemovalEnabled = isCachedServicesRemovalEnabled;
+        mCachedServicesRetentionTime = cachedServicesRetentionTime;
         mOverrideProvider = overrideProvider;
     }
 
@@ -199,6 +243,8 @@ public class MdnsFeatureFlags {
         private boolean mIsUnicastReplyEnabled;
         private boolean mIsAggressiveQueryModeEnabled;
         private boolean mIsQueryWithKnownAnswerEnabled;
+        private boolean mIsCachedServicesRemovalEnabled;
+        private long mCachedServicesRetentionTime;
         private FlagOverrideProvider mOverrideProvider;
 
         /**
@@ -213,6 +259,8 @@ public class MdnsFeatureFlags {
             mIsUnicastReplyEnabled = true; // Default enabled.
             mIsAggressiveQueryModeEnabled = false;
             mIsQueryWithKnownAnswerEnabled = false;
+            mIsCachedServicesRemovalEnabled = false;
+            mCachedServicesRetentionTime = DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS;
             mOverrideProvider = null;
         }
 
@@ -309,6 +357,26 @@ public class MdnsFeatureFlags {
         }
 
         /**
+         * Set whether the cached services removal is enabled.
+         *
+         * @see #NSD_CACHED_SERVICES_REMOVAL
+         */
+        public Builder setIsCachedServicesRemovalEnabled(boolean isCachedServicesRemovalEnabled) {
+            mIsCachedServicesRemovalEnabled = isCachedServicesRemovalEnabled;
+            return this;
+        }
+
+        /**
+         * Set cached services retention time.
+         *
+         * @see #NSD_CACHED_SERVICES_RETENTION_TIME
+         */
+        public Builder setCachedServicesRetentionTime(long cachedServicesRetentionTime) {
+            mCachedServicesRetentionTime = cachedServicesRetentionTime;
+            return this;
+        }
+
+        /**
          * Builds a {@link MdnsFeatureFlags} with the arguments supplied to this builder.
          */
         public MdnsFeatureFlags build() {
@@ -320,6 +388,8 @@ public class MdnsFeatureFlags {
                     mIsUnicastReplyEnabled,
                     mIsAggressiveQueryModeEnabled,
                     mIsQueryWithKnownAnswerEnabled,
+                    mIsCachedServicesRemovalEnabled,
+                    mCachedServicesRetentionTime,
                     mOverrideProvider);
         }
     }
