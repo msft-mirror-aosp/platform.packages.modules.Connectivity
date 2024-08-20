@@ -22,6 +22,12 @@ import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_LOWPAN;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI;
 import static android.net.NetworkCapabilities.TRANSPORT_WIFI_AWARE;
+import static android.net.NetworkStats.DEFAULT_NETWORK_YES;
+import static android.net.NetworkStats.METERED_YES;
+import static android.net.NetworkTemplate.MATCH_BLUETOOTH;
+import static android.net.NetworkTemplate.MATCH_ETHERNET;
+import static android.net.NetworkTemplate.MATCH_MOBILE;
+import static android.net.NetworkTemplate.MATCH_WIFI;
 import static android.net.TetheringManager.TETHERING_BLUETOOTH;
 import static android.net.TetheringManager.TETHERING_ETHERNET;
 import static android.net.TetheringManager.TETHERING_NCM;
@@ -48,6 +54,7 @@ import static android.net.TetheringManager.TETHER_ERROR_UNTETHER_IFACE_ERROR;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.net.NetworkCapabilities;
+import android.net.NetworkTemplate;
 import android.stats.connectivity.DownstreamType;
 import android.stats.connectivity.ErrorCode;
 import android.stats.connectivity.UpstreamType;
@@ -58,6 +65,8 @@ import android.util.SparseArray;
 import androidx.annotation.NonNull;
 import androidx.annotation.VisibleForTesting;
 
+import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.DeviceConfigUtils;
 import com.android.networkstack.tethering.UpstreamNetworkState;
 
 import java.util.ArrayList;
@@ -79,6 +88,11 @@ public class TetheringMetrics {
     private static final String SETTINGS_PKG_NAME = "com.android.settings";
     private static final String SYSTEMUI_PKG_NAME = "com.android.systemui";
     private static final String GMS_PKG_NAME = "com.google.android.gms";
+    /**
+     * A feature flag to control whether upstream data usage metrics should be enabled.
+     */
+    private static final String TETHER_UPSTREAM_DATA_USAGE_METRICS =
+            "tether_upstream_data_usage_metrics";
     private final SparseArray<NetworkTetheringReported.Builder> mBuilderMap = new SparseArray<>();
     private final SparseArray<Long> mDownstreamStartTime = new SparseArray<Long>();
     private final ArrayList<RecordUpstreamEvent> mUpstreamEventList = new ArrayList<>();
@@ -112,6 +126,16 @@ public class TetheringMetrics {
         public long timeNow() {
             return System.currentTimeMillis();
         }
+
+        /**
+         * Indicates whether {@link #TETHER_UPSTREAM_DATA_USAGE_METRICS} is enabled.
+         */
+        public boolean isUpstreamDataUsageMetricsEnabled(Context context) {
+            // Getting data usage requires building a NetworkTemplate. However, the
+            // NetworkTemplate#Builder API was introduced in Android T.
+            return SdkLevel.isAtLeastT() && DeviceConfigUtils.isTetheringFeatureNotChickenedOut(
+                    context, TETHER_UPSTREAM_DATA_USAGE_METRICS);
+        }
     }
 
     /**
@@ -128,16 +152,36 @@ public class TetheringMetrics {
         mDependencies = dependencies;
     }
 
+    private static class DataUsage {
+        final long mTxBytes;
+        final long mRxBytes;
+
+        DataUsage(long txBytes, long rxBytes) {
+            mTxBytes = txBytes;
+            mRxBytes = rxBytes;
+        }
+
+        public long getTxBytes() {
+            return mTxBytes;
+        }
+
+        public long getRxBytes() {
+            return mRxBytes;
+        }
+    }
+
     private static class RecordUpstreamEvent {
-        public final long mStartTime;
-        public final long mStopTime;
-        public final UpstreamType mUpstreamType;
+        final long mStartTime;
+        final long mStopTime;
+        final UpstreamType mUpstreamType;
+        final DataUsage mDataUsage;
 
         RecordUpstreamEvent(final long startTime, final long stopTime,
-                final UpstreamType upstream) {
+                final UpstreamType upstream, final DataUsage dataUsage) {
             mStartTime = startTime;
             mStopTime = stopTime;
             mUpstreamType = upstream;
+            mDataUsage = dataUsage;
         }
     }
 
@@ -175,6 +219,15 @@ public class TetheringMetrics {
         statsBuilder.setErrorCode(errorCodeToEnum(errCode));
     }
 
+    private DataUsage calculateDataUsage(@Nullable UpstreamType upstream) {
+        if (upstream != null && mDependencies.isUpstreamDataUsageMetricsEnabled(mContext)
+                && isUsageSupportedForUpstreamType(upstream)) {
+            // TODO: Implement data usage calculation for the upstream type.
+            return new DataUsage(0L, 0L);
+        }
+        return new DataUsage(0L, 0L);
+    }
+
     /**
      * Update the list of upstream types and their duration whenever the current upstream type
      * changes.
@@ -186,8 +239,9 @@ public class TetheringMetrics {
 
         final long newTime = mDependencies.timeNow();
         if (mCurrentUpstream != null) {
+            final DataUsage dataUsage = calculateDataUsage(upstream);
             mUpstreamEventList.add(new RecordUpstreamEvent(mCurrentUpStreamStartTime, newTime,
-                    mCurrentUpstream));
+                    mCurrentUpstream, dataUsage));
         }
         mCurrentUpstream = upstream;
         mCurrentUpStreamStartTime = newTime;
@@ -238,13 +292,14 @@ public class TetheringMetrics {
             final long startTime = Math.max(downstreamStartTime, event.mStartTime);
             // Handle completed upstream events.
             addUpstreamEvent(upstreamEventsBuilder, startTime, event.mStopTime,
-                    event.mUpstreamType, 0L /* txBytes */, 0L /* rxBytes */);
+                    event.mUpstreamType, event.mDataUsage.mTxBytes, event.mDataUsage.mRxBytes);
         }
         final long startTime = Math.max(downstreamStartTime, mCurrentUpStreamStartTime);
         final long stopTime = mDependencies.timeNow();
         // Handle the last upstream event.
+        final DataUsage dataUsage = calculateDataUsage(mCurrentUpstream);
         addUpstreamEvent(upstreamEventsBuilder, startTime, stopTime, mCurrentUpstream,
-                0L /* txBytes */, 0L /* rxBytes */);
+                dataUsage.mTxBytes, dataUsage.mRxBytes);
         statsBuilder.setUpstreamEvents(upstreamEventsBuilder);
         statsBuilder.setDurationMillis(stopTime - downstreamStartTime);
     }
@@ -418,5 +473,47 @@ public class TetheringMetrics {
                 break;
         }
         return false;
+    }
+
+    /**
+     * Build NetworkTemplate for the given upstream type.
+     *
+     * <p> NetworkTemplate.Builder API was introduced in Android T.
+     *
+     * @param type the upstream type
+     * @return A NetworkTemplate object with a corresponding match rule or null if tethering
+     * metrics' data usage cannot be collected for a given upstream type.
+     */
+    @Nullable
+    public static NetworkTemplate buildNetworkTemplateForUpstreamType(@NonNull UpstreamType type) {
+        if (!isUsageSupportedForUpstreamType(type)) return null;
+
+        switch (type) {
+            case UT_CELLULAR:
+                // TODO: Handle the DUN connection, which is not a default network.
+                return new NetworkTemplate.Builder(MATCH_MOBILE)
+                        .setMeteredness(METERED_YES)
+                        .setDefaultNetworkStatus(DEFAULT_NETWORK_YES)
+                        .build();
+            case UT_WIFI:
+                return new NetworkTemplate.Builder(MATCH_WIFI)
+                        .setMeteredness(METERED_YES)
+                        .setDefaultNetworkStatus(DEFAULT_NETWORK_YES)
+                        .build();
+            case UT_BLUETOOTH:
+                return new NetworkTemplate.Builder(MATCH_BLUETOOTH)
+                        .setMeteredness(METERED_YES)
+                        .setDefaultNetworkStatus(DEFAULT_NETWORK_YES)
+                        .build();
+            case UT_ETHERNET:
+                return new NetworkTemplate.Builder(MATCH_ETHERNET)
+                        .setMeteredness(METERED_YES)
+                        .setDefaultNetworkStatus(DEFAULT_NETWORK_YES)
+                        .build();
+            default:
+                Log.e(TAG, "Unsupported UpstreamType: " + type.name());
+                break;
+        }
+        return null;
     }
 }

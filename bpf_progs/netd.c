@@ -17,19 +17,6 @@
 // The resulting .o needs to load on Android T+
 #define BPFLOADER_MIN_VER BPFLOADER_MAINLINE_T_VERSION
 
-#include <bpf_helpers.h>
-#include <linux/bpf.h>
-#include <linux/if.h>
-#include <linux/if_ether.h>
-#include <linux/if_packet.h>
-#include <linux/in.h>
-#include <linux/in6.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
-#include <linux/pkt_cls.h>
-#include <linux/tcp.h>
-#include <stdbool.h>
-#include <stdint.h>
 #include "bpf_net_helpers.h"
 #include "netd.h"
 
@@ -37,10 +24,6 @@
 static const int DROP = 0;
 static const int PASS = 1;
 static const int DROP_UNLESS_DNS = 2;  // internal to our program
-
-// This is used for xt_bpf program only.
-static const int BPF_NOMATCH = 0;
-static const int BPF_MATCH = 1;
 
 // Used for 'bool enable_tracing'
 static const bool TRACE_ON = true;
@@ -524,22 +507,12 @@ static __always_inline inline int bpf_traffic_account(struct __sk_buff* skb,
     return match;
 }
 
-// This program is optional, and enables tracing on Android U+, 5.8+ on user builds.
-DEFINE_BPF_PROG_EXT("cgroupskb/ingress/stats$trace_user", AID_ROOT, AID_SYSTEM,
-                    bpf_cgroup_ingress_trace_user, KVER_5_8, KVER_INF,
-                    BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, OPTIONAL,
-                    "fs_bpf_netd_readonly", "",
-                    IGNORE_ON_ENG, LOAD_ON_USER, IGNORE_ON_USERDEBUG)
-(struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, INGRESS, TRACE_ON, KVER_5_8);
-}
-
-// This program is required, and enables tracing on Android U+, 5.8+, userdebug/eng.
+// Tracing on Android U+ 5.8+
 DEFINE_BPF_PROG_EXT("cgroupskb/ingress/stats$trace", AID_ROOT, AID_SYSTEM,
                     bpf_cgroup_ingress_trace, KVER_5_8, KVER_INF,
                     BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, MANDATORY,
                     "fs_bpf_netd_readonly", "",
-                    LOAD_ON_ENG, IGNORE_ON_USER, LOAD_ON_USERDEBUG)
+                    LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, INGRESS, TRACE_ON, KVER_5_8);
 }
@@ -556,22 +529,12 @@ DEFINE_NETD_BPF_PROG_KVER_RANGE("cgroupskb/ingress/stats$4_14", AID_ROOT, AID_SY
     return bpf_traffic_account(skb, INGRESS, TRACE_OFF, KVER_NONE);
 }
 
-// This program is optional, and enables tracing on Android U+, 5.8+ on user builds.
-DEFINE_BPF_PROG_EXT("cgroupskb/egress/stats$trace_user", AID_ROOT, AID_SYSTEM,
-                    bpf_cgroup_egress_trace_user, KVER_5_8, KVER_INF,
-                    BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, OPTIONAL,
-                    "fs_bpf_netd_readonly", "",
-                    IGNORE_ON_ENG, LOAD_ON_USER, IGNORE_ON_USERDEBUG)
-(struct __sk_buff* skb) {
-    return bpf_traffic_account(skb, EGRESS, TRACE_ON, KVER_5_8);
-}
-
-// This program is required, and enables tracing on Android U+, 5.8+, userdebug/eng.
+// Tracing on Android U+ 5.8+
 DEFINE_BPF_PROG_EXT("cgroupskb/egress/stats$trace", AID_ROOT, AID_SYSTEM,
                     bpf_cgroup_egress_trace, KVER_5_8, KVER_INF,
                     BPFLOADER_MAINLINE_U_VERSION, BPFLOADER_MAX_VER, MANDATORY,
                     "fs_bpf_netd_readonly", "",
-                    LOAD_ON_ENG, IGNORE_ON_USER, LOAD_ON_USERDEBUG)
+                    LOAD_ON_ENG, LOAD_ON_USER, LOAD_ON_USERDEBUG)
 (struct __sk_buff* skb) {
     return bpf_traffic_account(skb, EGRESS, TRACE_ON, KVER_5_8);
 }
@@ -599,12 +562,12 @@ DEFINE_XTBPF_PROG("skfilter/egress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_egres
     if (sock_uid == AID_SYSTEM) {
         uint64_t cookie = bpf_get_socket_cookie(skb);
         UidTagValue* utag = bpf_cookie_tag_map_lookup_elem(&cookie);
-        if (utag && utag->uid == AID_CLAT) return BPF_NOMATCH;
+        if (utag && utag->uid == AID_CLAT) return XTBPF_NOMATCH;
     }
 
     uint32_t key = skb->ifindex;
     update_iface_stats_map(skb, &key, EGRESS, KVER_NONE);
-    return BPF_MATCH;
+    return XTBPF_MATCH;
 }
 
 // WARNING: Android T's non-updatable netd depends on the name of this program.
@@ -617,7 +580,7 @@ DEFINE_XTBPF_PROG("skfilter/ingress/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_ingr
 
     uint32_t key = skb->ifindex;
     update_iface_stats_map(skb, &key, INGRESS, KVER_NONE);
-    return BPF_MATCH;
+    return XTBPF_MATCH;
 }
 
 DEFINE_SYS_BPF_PROG("schedact/ingress/account", AID_ROOT, AID_NET_ADMIN,
@@ -635,7 +598,7 @@ DEFINE_SYS_BPF_PROG("schedact/ingress/account", AID_ROOT, AID_NET_ADMIN,
 DEFINE_XTBPF_PROG("skfilter/allowlist/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_allowlist_prog)
 (struct __sk_buff* skb) {
     uint32_t sock_uid = bpf_get_socket_uid(skb);
-    if (is_system_uid(sock_uid)) return BPF_MATCH;
+    if (is_system_uid(sock_uid)) return XTBPF_MATCH;
 
     // kernel's DEFAULT_OVERFLOWUID is 65534, this is the overflow 'nobody' uid,
     // usually this being returned means that skb->sk is NULL during RX
@@ -643,11 +606,11 @@ DEFINE_XTBPF_PROG("skfilter/allowlist/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_al
     // packets to an unconnected udp socket.
     // But it can also happen for egress from a timewait socket.
     // Let's treat such cases as 'root' which is_system_uid()
-    if (sock_uid == 65534) return BPF_MATCH;
+    if (sock_uid == 65534) return XTBPF_MATCH;
 
     UidOwnerValue* allowlistMatch = bpf_uid_owner_map_lookup_elem(&sock_uid);
-    if (allowlistMatch) return allowlistMatch->rule & HAPPY_BOX_MATCH ? BPF_MATCH : BPF_NOMATCH;
-    return BPF_NOMATCH;
+    if (allowlistMatch) return allowlistMatch->rule & HAPPY_BOX_MATCH ? XTBPF_MATCH : XTBPF_NOMATCH;
+    return XTBPF_NOMATCH;
 }
 
 // WARNING: Android T's non-updatable netd depends on the name of this program.
@@ -656,8 +619,8 @@ DEFINE_XTBPF_PROG("skfilter/denylist/xtbpf", AID_ROOT, AID_NET_ADMIN, xt_bpf_den
     uint32_t sock_uid = bpf_get_socket_uid(skb);
     UidOwnerValue* denylistMatch = bpf_uid_owner_map_lookup_elem(&sock_uid);
     uint32_t penalty_box = PENALTY_BOX_USER_MATCH | PENALTY_BOX_ADMIN_MATCH;
-    if (denylistMatch) return denylistMatch->rule & penalty_box ? BPF_MATCH : BPF_NOMATCH;
-    return BPF_NOMATCH;
+    if (denylistMatch) return denylistMatch->rule & penalty_box ? XTBPF_MATCH : XTBPF_NOMATCH;
+    return XTBPF_NOMATCH;
 }
 
 static __always_inline inline uint8_t get_app_permissions() {
@@ -677,8 +640,7 @@ static __always_inline inline uint8_t get_app_permissions() {
 DEFINE_NETD_BPF_PROG_KVER("cgroupsock/inet_create", AID_ROOT, AID_ROOT, inet_socket_create,
                           KVER_4_14)
 (__unused struct bpf_sock* sk) {
-    // A return value of 1 means allow, everything else means deny.
-    return (get_app_permissions() & BPF_PERMISSION_INTERNET) ? 1 : 0;
+    return (get_app_permissions() & BPF_PERMISSION_INTERNET) ? BPF_ALLOW : BPF_DISALLOW;
 }
 
 DEFINE_NETD_V_BPF_PROG_KVER("cgroupsockrelease/inet_release", AID_ROOT, AID_ROOT,
@@ -705,7 +667,7 @@ static __always_inline inline int check_localhost(__unused struct bpf_sock_addr 
     //   __u32 msg_src_ip6[4];	// BE, R: 1,2,4,8-byte, W: 4,8-byte
     //   __bpf_md_ptr(struct bpf_sock *, sk);
     // };
-    return 1;
+    return BPF_ALLOW;
 }
 
 DEFINE_NETD_V_BPF_PROG_KVER("connect4/inet4_connect", AID_ROOT, AID_ROOT, inet4_connect, KVER_4_14)
@@ -743,7 +705,7 @@ DEFINE_NETD_V_BPF_PROG_KVER("getsockopt/prog", AID_ROOT, AID_ROOT, getsockopt_pr
     // Tell kernel to return 'original' kernel reply (instead of the bpf modified buffer)
     // This is important if the answer is larger than PAGE_SIZE (max size this bpf hook can provide)
     ctx->optlen = 0;
-    return 1; // ALLOW
+    return BPF_ALLOW;
 }
 
 DEFINE_NETD_V_BPF_PROG_KVER("setsockopt/prog", AID_ROOT, AID_ROOT, setsockopt_prog, KVER_5_4)
@@ -751,9 +713,8 @@ DEFINE_NETD_V_BPF_PROG_KVER("setsockopt/prog", AID_ROOT, AID_ROOT, setsockopt_pr
     // Tell kernel to use/process original buffer provided by userspace.
     // This is important if it is larger than PAGE_SIZE (max size this bpf hook can handle).
     ctx->optlen = 0;
-    return 1; // ALLOW
+    return BPF_ALLOW;
 }
 
 LICENSE("Apache 2.0");
 CRITICAL("Connectivity and netd");
-DISABLE_BTF_ON_USER_BUILDS();
