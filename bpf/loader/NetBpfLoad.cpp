@@ -17,7 +17,6 @@
 #define LOG_TAG "NetBpfLoad"
 
 #include <arpa/inet.h>
-#include <cstdlib>
 #include <dirent.h>
 #include <elf.h>
 #include <errno.h>
@@ -26,8 +25,6 @@
 #include <fstream>
 #include <inttypes.h>
 #include <iostream>
-#include <linux/bpf.h>
-#include <linux/elf.h>
 #include <linux/unistd.h>
 #include <log/log.h>
 #include <net/if.h>
@@ -60,7 +57,7 @@
 
 #include "BpfSyscallWrappers.h"
 #include "bpf/BpfUtils.h"
-#include "bpf/bpf_map_def.h"
+#include "bpf_map_def.h"
 
 using android::base::EndsWith;
 using android::base::StartsWith;
@@ -372,7 +369,7 @@ unsigned int readSectionUint(const char* name, ifstream& elfFile) {
         value += static_cast<unsigned char>(theBytes[1]);
         value <<= 8;
         value += static_cast<unsigned char>(theBytes[0]);
-        ALOGI("Section %s value is %u [0x%x]", name, value, value);
+        ALOGD("Section %s value is %u [0x%x]", name, value, value);
         return value;
     }
 }
@@ -673,28 +670,28 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
         if (md[i].zero != 0) abort();
 
         if (bpfloader_ver < md[i].bpfloader_min_ver) {
-            ALOGI("skipping map %s which requires bpfloader min ver 0x%05x", mapNames[i].c_str(),
+            ALOGD("skipping map %s which requires bpfloader min ver 0x%05x", mapNames[i].c_str(),
                   md[i].bpfloader_min_ver);
             mapFds.push_back(unique_fd());
             continue;
         }
 
         if (bpfloader_ver >= md[i].bpfloader_max_ver) {
-            ALOGI("skipping map %s which requires bpfloader max ver 0x%05x", mapNames[i].c_str(),
+            ALOGD("skipping map %s which requires bpfloader max ver 0x%05x", mapNames[i].c_str(),
                   md[i].bpfloader_max_ver);
             mapFds.push_back(unique_fd());
             continue;
         }
 
         if (kvers < md[i].min_kver) {
-            ALOGI("skipping map %s which requires kernel version 0x%x >= 0x%x",
+            ALOGD("skipping map %s which requires kernel version 0x%x >= 0x%x",
                   mapNames[i].c_str(), kvers, md[i].min_kver);
             mapFds.push_back(unique_fd());
             continue;
         }
 
         if (kvers >= md[i].max_kver) {
-            ALOGI("skipping map %s which requires kernel version 0x%x < 0x%x",
+            ALOGD("skipping map %s which requires kernel version 0x%x < 0x%x",
                   mapNames[i].c_str(), kvers, md[i].max_kver);
             mapFds.push_back(unique_fd());
             continue;
@@ -702,7 +699,7 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
 
         if ((md[i].ignore_on_eng && isEng()) || (md[i].ignore_on_user && isUser()) ||
             (md[i].ignore_on_userdebug && isUserdebug())) {
-            ALOGI("skipping map %s which is ignored on %s builds", mapNames[i].c_str(),
+            ALOGD("skipping map %s which is ignored on %s builds", mapNames[i].c_str(),
                   getBuildType().c_str());
             mapFds.push_back(unique_fd());
             continue;
@@ -713,7 +710,7 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
             (isX86() && isKernel32Bit() && md[i].ignore_on_x86_32) ||
             (isX86() && isKernel64Bit() && md[i].ignore_on_x86_64) ||
             (isRiscV() && md[i].ignore_on_riscv64)) {
-            ALOGI("skipping map %s which is ignored on %s", mapNames[i].c_str(),
+            ALOGD("skipping map %s which is ignored on %s", mapNames[i].c_str(),
                   describeArch());
             mapFds.push_back(unique_fd());
             continue;
@@ -993,13 +990,13 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
 
             union bpf_attr req = {
               .prog_type = cs[i].type,
-              .kern_version = kvers,
-              .license = ptr_to_u64(license.c_str()),
-              .insns = ptr_to_u64(cs[i].data.data()),
               .insn_cnt = static_cast<__u32>(cs[i].data.size() / sizeof(struct bpf_insn)),
+              .insns = ptr_to_u64(cs[i].data.data()),
+              .license = ptr_to_u64(license.c_str()),
               .log_level = 1,
-              .log_buf = ptr_to_u64(log_buf.data()),
               .log_size = static_cast<__u32>(log_buf.size()),
+              .log_buf = ptr_to_u64(log_buf.data()),
+              .kern_version = kvers,
               .expected_attach_type = cs[i].attach_type,
             };
             if (isAtLeastKernelVersion(4, 15, 0))
@@ -1109,19 +1106,19 @@ int loadProg(const char* const elfPath, bool* const isCritical, const unsigned i
 
     // inclusive lower bound check
     if (bpfloader_ver < bpfLoaderMinVer) {
-        ALOGI("BpfLoader version 0x%05x ignoring ELF object %s with min ver 0x%05x",
+        ALOGD("BpfLoader version 0x%05x ignoring ELF object %s with min ver 0x%05x",
               bpfloader_ver, elfPath, bpfLoaderMinVer);
         return 0;
     }
 
     // exclusive upper bound check
     if (bpfloader_ver >= bpfLoaderMaxVer) {
-        ALOGI("BpfLoader version 0x%05x ignoring ELF object %s with max ver 0x%05x",
+        ALOGD("BpfLoader version 0x%05x ignoring ELF object %s with max ver 0x%05x",
               bpfloader_ver, elfPath, bpfLoaderMaxVer);
         return 0;
     }
 
-    ALOGI("BpfLoader version 0x%05x processing ELF object %s with ver [0x%05x,0x%05x)",
+    ALOGD("BpfLoader version 0x%05x processing ELF object %s with ver [0x%05x,0x%05x)",
           bpfloader_ver, elfPath, bpfLoaderMinVer, bpfLoaderMaxVer);
 
     ret = readCodeSections(elfFile, cs);
@@ -1155,33 +1152,35 @@ static bool exists(const char* const path) {
     abort();  // can only hit this if permissions (likely selinux) are screwed up
 }
 
+#define APEXROOT "/apex/com.android.tethering"
+#define BPFROOT APEXROOT "/etc/bpf"
 
 const Location locations[] = {
         // S+ Tethering mainline module (network_stack): tether offload
         {
-                .dir = "/apex/com.android.tethering/etc/bpf/",
+                .dir = BPFROOT "/",
                 .prefix = "tethering/",
         },
         // T+ Tethering mainline module (shared with netd & system server)
         // netutils_wrapper (for iptables xt_bpf) has access to programs
         {
-                .dir = "/apex/com.android.tethering/etc/bpf/netd_shared/",
+                .dir = BPFROOT "/netd_shared/",
                 .prefix = "netd_shared/",
         },
         // T+ Tethering mainline module (shared with netd & system server)
         // netutils_wrapper has no access, netd has read only access
         {
-                .dir = "/apex/com.android.tethering/etc/bpf/netd_readonly/",
+                .dir = BPFROOT "/netd_readonly/",
                 .prefix = "netd_readonly/",
         },
         // T+ Tethering mainline module (shared with system server)
         {
-                .dir = "/apex/com.android.tethering/etc/bpf/net_shared/",
+                .dir = BPFROOT "/net_shared/",
                 .prefix = "net_shared/",
         },
         // T+ Tethering mainline module (not shared, just network_stack)
         {
-                .dir = "/apex/com.android.tethering/etc/bpf/net_private/",
+                .dir = BPFROOT "/net_private/",
                 .prefix = "net_private/",
         },
 };
