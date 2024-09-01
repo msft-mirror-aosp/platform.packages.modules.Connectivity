@@ -40,7 +40,7 @@ import static android.net.thread.ThreadNetworkException.ERROR_RESPONSE_BAD_FORMA
 import static android.net.thread.ThreadNetworkException.ERROR_THREAD_DISABLED;
 import static android.net.thread.ThreadNetworkException.ERROR_TIMEOUT;
 import static android.net.thread.ThreadNetworkException.ERROR_UNSUPPORTED_CHANNEL;
-import static android.net.thread.ThreadNetworkException.ERROR_UNSUPPORTED_OPERATION;
+import static android.net.thread.ThreadNetworkException.ERROR_UNSUPPORTED_FEATURE;
 import static android.net.thread.ThreadNetworkManager.DISALLOW_THREAD_NETWORK;
 import static android.net.thread.ThreadNetworkManager.PERMISSION_THREAD_NETWORK_PRIVILEGED;
 
@@ -120,15 +120,16 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.ServiceManagerWrapper;
 import com.android.server.connectivity.ConnectivityResources;
 import com.android.server.thread.openthread.BackboneRouterState;
-import com.android.server.thread.openthread.BorderRouterConfiguration;
 import com.android.server.thread.openthread.DnsTxtAttribute;
 import com.android.server.thread.openthread.IChannelMasksReceiver;
 import com.android.server.thread.openthread.IOtDaemon;
 import com.android.server.thread.openthread.IOtDaemonCallback;
 import com.android.server.thread.openthread.IOtStatusReceiver;
+import com.android.server.thread.openthread.InfraLinkState;
 import com.android.server.thread.openthread.Ipv6AddressInfo;
 import com.android.server.thread.openthread.MeshcopTxtAttributes;
 import com.android.server.thread.openthread.OnMeshPrefixConfig;
+import com.android.server.thread.openthread.OtDaemonConfiguration;
 import com.android.server.thread.openthread.OtDaemonState;
 
 import libcore.util.HexEncoding;
@@ -213,7 +214,8 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     private boolean mUserRestricted;
     private boolean mForceStopOtDaemonEnabled;
 
-    private BorderRouterConfiguration mBorderRouterConfig;
+    private OtDaemonConfiguration mOtDaemonConfig;
+    private InfraLinkState mInfraLinkState;
 
     @VisibleForTesting
     ThreadNetworkControllerService(
@@ -238,11 +240,8 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         mInfraIfController = infraIfController;
         mUpstreamNetworkRequest = newUpstreamNetworkRequest();
         mNetworkToInterface = new HashMap<Network, String>();
-        mBorderRouterConfig =
-                new BorderRouterConfiguration.Builder()
-                        .setIsBorderRoutingEnabled(true)
-                        .setInfraInterfaceName(null)
-                        .build();
+        mOtDaemonConfig = new OtDaemonConfiguration.Builder().build();
+        mInfraLinkState = new InfraLinkState.Builder().build();
         mPersistentSettings = persistentSettings;
         mNsdPublisher = nsdPublisher;
         mUserManager = userManager;
@@ -571,6 +570,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 }
             }
         }
+        // TODO: set the configuration at ot-daemon
     }
 
     @Override
@@ -1055,7 +1055,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
             case OT_ERROR_BUSY:
                 return ERROR_BUSY;
             case OT_ERROR_NOT_IMPLEMENTED:
-                return ERROR_UNSUPPORTED_OPERATION;
+                return ERROR_UNSUPPORTED_FEATURE;
             case OT_ERROR_NO_BUFS:
                 return ERROR_RESOURCE_EXHAUSTED;
             case OT_ERROR_PARSE:
@@ -1232,54 +1232,45 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
     }
 
-    private void configureBorderRouter(BorderRouterConfiguration borderRouterConfig) {
-        if (mBorderRouterConfig.equals(borderRouterConfig)) {
+    private void setInfraLinkState(InfraLinkState infraLinkState) {
+        if (mInfraLinkState.equals(infraLinkState)) {
             return;
         }
-        Log.i(
-                TAG,
-                "Configuring Border Router: " + mBorderRouterConfig + " -> " + borderRouterConfig);
-        mBorderRouterConfig = borderRouterConfig;
+        Log.i(TAG, "Infra link state changed: " + mInfraLinkState + " -> " + infraLinkState);
+        mInfraLinkState = infraLinkState;
         ParcelFileDescriptor infraIcmp6Socket = null;
-        if (mBorderRouterConfig.infraInterfaceName != null) {
+        if (mInfraLinkState.interfaceName != null) {
             try {
                 infraIcmp6Socket =
-                        mInfraIfController.createIcmp6Socket(
-                                mBorderRouterConfig.infraInterfaceName);
+                        mInfraIfController.createIcmp6Socket(mInfraLinkState.interfaceName);
             } catch (IOException e) {
                 Log.i(TAG, "Failed to create ICMPv6 socket on infra network interface", e);
             }
         }
         try {
             getOtDaemon()
-                    .configureBorderRouter(
-                            mBorderRouterConfig,
+                    .setInfraLinkState(
+                            mInfraLinkState,
                             infraIcmp6Socket,
-                            new ConfigureBorderRouterStatusReceiver());
+                            new setInfraLinkStateStatusReceiver());
         } catch (RemoteException | ThreadNetworkException e) {
-            Log.w(TAG, "Failed to configure border router " + mBorderRouterConfig, e);
+            Log.w(TAG, "Failed to configure border router " + mOtDaemonConfig, e);
         }
     }
 
     private void enableBorderRouting(String infraIfName) {
-        BorderRouterConfiguration borderRouterConfig =
-                newBorderRouterConfigBuilder(mBorderRouterConfig)
-                        .setIsBorderRoutingEnabled(true)
-                        .setInfraInterfaceName(infraIfName)
-                        .build();
+        InfraLinkState infraLinkState =
+                newInfraLinkStateBuilder(mInfraLinkState).setInterfaceName(infraIfName).build();
         Log.i(TAG, "Enable border routing on AIL: " + infraIfName);
-        configureBorderRouter(borderRouterConfig);
+        setInfraLinkState(infraLinkState);
     }
 
     private void disableBorderRouting() {
         mUpstreamNetwork = null;
-        BorderRouterConfiguration borderRouterConfig =
-                newBorderRouterConfigBuilder(mBorderRouterConfig)
-                        .setIsBorderRoutingEnabled(false)
-                        .setInfraInterfaceName(null)
-                        .build();
+        InfraLinkState infraLinkState =
+                newInfraLinkStateBuilder(mInfraLinkState).setInterfaceName(null).build();
         Log.i(TAG, "Disabling border routing");
-        configureBorderRouter(borderRouterConfig);
+        setInfraLinkState(infraLinkState);
     }
 
     private void handleThreadInterfaceStateChanged(boolean isUp) {
@@ -1380,11 +1371,13 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         return builder.build();
     }
 
-    private static BorderRouterConfiguration.Builder newBorderRouterConfigBuilder(
-            BorderRouterConfiguration brConfig) {
-        return new BorderRouterConfiguration.Builder()
-                .setIsBorderRoutingEnabled(brConfig.isBorderRoutingEnabled)
-                .setInfraInterfaceName(brConfig.infraInterfaceName);
+    private static OtDaemonConfiguration.Builder newOtDaemonConfigBuilder(
+            OtDaemonConfiguration config) {
+        return new OtDaemonConfiguration.Builder();
+    }
+
+    private static InfraLinkState.Builder newInfraLinkStateBuilder(InfraLinkState infraLinkState) {
+        return new InfraLinkState.Builder().setInterfaceName(infraLinkState.interfaceName);
     }
 
     private static final class CallbackMetadata {
@@ -1408,8 +1401,9 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
         }
     }
 
-    private static final class ConfigureBorderRouterStatusReceiver extends IOtStatusReceiver.Stub {
-        public ConfigureBorderRouterStatusReceiver() {}
+    private static final class setOtDaemonConfigurationStatusReceiver
+            extends IOtStatusReceiver.Stub {
+        public setOtDaemonConfigurationStatusReceiver() {}
 
         @Override
         public void onSuccess() {
@@ -1418,7 +1412,21 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
 
         @Override
         public void onError(int i, String s) {
-            Log.w(TAG, String.format("Failed to configure border router: %d %s", i, s));
+            Log.w(TAG, String.format("Failed to set configurations: %d %s", i, s));
+        }
+    }
+
+    private static final class setInfraLinkStateStatusReceiver extends IOtStatusReceiver.Stub {
+        public setInfraLinkStateStatusReceiver() {}
+
+        @Override
+        public void onSuccess() {
+            Log.i(TAG, "Set the infra link state successfully");
+        }
+
+        @Override
+        public void onError(int i, String s) {
+            Log.w(TAG, String.format("Failed to set the infra link state: %d %s", i, s));
         }
     }
 
