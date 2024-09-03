@@ -450,6 +450,7 @@ java_library {
     visibility: ["//packages/modules/Connectivity/service-t"],
 }
 
+// net-utils-framework-connectivity is only for framework-connectivity.
 java_library {
     name: "net-utils-framework-connectivity",
     srcs: [
@@ -462,8 +463,7 @@ java_library {
         "//apex_available:platform",
     ],
     visibility: [
-        "//packages/modules/Connectivity:__subpackages__",
-        "//packages/modules/NetworkStack:__subpackages__",
+        "//packages/modules/Connectivity/framework",
     ],
     libs: [
         "androidx.annotation_annotation",
@@ -502,9 +502,6 @@ java_defaults {
         "com.android.tethering",
         "//apex_available:platform",
     ],
-    visibility: [
-        "//packages/modules/Connectivity:__subpackages__",
-    ],
     defaults_visibility: [
         "//visibility:private",
     ],
@@ -514,6 +511,7 @@ java_defaults {
     },
 }
 
+// net-utils-service-connectivity is only for service-connectivity.
 java_library {
     name: "net-utils-service-connectivity",
     srcs: [
@@ -527,16 +525,37 @@ java_library {
     ],
     defaults: ["net-utils-non-bootclasspath-defaults"],
     jarjar_rules: "jarjar-rules-shared.txt",
+    visibility: [
+        "//packages/modules/Connectivity/service",
+        "//packages/modules/Connectivity/staticlibs/tests/unit",
+    ],
 }
 
+// net-utils-connectivity-apks is only for NetworkStack, CaptivePortalLogin and
+// Tethering.apk
+// It includes all the static libraries in this directory, which is safe because
+// these APKs use R8 to strip out unused code, and they do not depend on
+// bootclasspath jars that may have duplicate copies of the included classes
+// with the same jarjaring.
+// Tethering.apk does depend on a bootclasspath jar (framework-tethering.jar),
+// however it does not use any of the static libraries. If it did, Tethering.apk
+// would need to use another variant that excludes classes that are already
+// included in framework-tethering.jar (similarly to how framework-connectivity
+// and service-connectivity do it). Otherwise, static libs included in
+// framework-tethering and Tethering.apk and jarjared the same way would
+// conflict.
 java_library {
-    name: "net-utils-tethering",
+    name: "net-utils-connectivity-apks",
     srcs: [
         ":net-utils-all-srcs",
         ":framework-connectivity-shared-srcs",
     ],
     defaults: ["net-utils-non-bootclasspath-defaults"],
     jarjar_rules: "jarjar-rules-shared.txt",
+    visibility: [
+        "//packages/modules/CaptivePortalLogin:__subpackages__",
+        "//packages/modules/Connectivity/Tethering",
+    ],
 }
 
 aidl_interface {
@@ -552,6 +571,7 @@ aidl_interface {
             apex_available: [
                 "com.android.tethering",
                 "com.android.wifi",
+                "//apex_available:platform",
             ],
         },
         cpp: {
