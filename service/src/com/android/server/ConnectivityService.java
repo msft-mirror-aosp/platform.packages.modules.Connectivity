@@ -4439,9 +4439,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         pw.println();
         pw.println("Multicast routing supported: " +
                 (mMulticastRoutingCoordinatorService != null));
-
-        pw.println();
         pw.println("Background firewall chain enabled: " + mBackgroundFirewallChainEnabled);
+        pw.println("IngressToVpnAddressFiltering: " + mIngressToVpnAddressFiltering);
     }
 
     private void dumpNetworks(IndentingPrintWriter pw) {
@@ -6002,7 +6001,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // TODO : The only way out of this is to diff old defaults and new defaults, and only
             // remove ranges for those requests that won't have a replacement
             final NetworkAgentInfo satisfier = nri.getSatisfier();
-            if (null != satisfier) {
+            if (null != satisfier && !satisfier.isDestroyed()) {
                 try {
                     mNetd.networkRemoveUidRangesParcel(new NativeUidRangeConfig(
                             satisfier.network.getNetId(),
@@ -14505,5 +14504,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
             features |= ConnectivityManager.FEATURE_USE_DECLARED_METHODS_FOR_CALLBACKS;
         }
         return features;
+    }
+
+    @Override
+    public boolean isConnectivityServiceFeatureEnabledForTesting(String featureFlag) {
+        switch (featureFlag) {
+            case INGRESS_TO_VPN_ADDRESS_FILTERING:
+                return mIngressToVpnAddressFiltering;
+            default:
+                throw new IllegalArgumentException("Unknown flag: " + featureFlag);
+        }
     }
 }

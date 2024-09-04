@@ -50,17 +50,20 @@
 // Note: this value (and the following +1u's) are hardcoded in NetBpfLoad.cpp
 #define BPFLOADER_MAINLINE_VERSION 42u
 
-// Android Mainline BpfLoader when running on Android T
+// Android Mainline BpfLoader when running on Android T (sdk=33)
 #define BPFLOADER_MAINLINE_T_VERSION (BPFLOADER_MAINLINE_VERSION + 1u)
 
-// Android Mainline BpfLoader when running on Android U
+// Android Mainline BpfLoader when running on Android U (sdk=34)
 #define BPFLOADER_MAINLINE_U_VERSION (BPFLOADER_MAINLINE_T_VERSION + 1u)
 
 // Android Mainline BpfLoader when running on Android U QPR3
 #define BPFLOADER_MAINLINE_U_QPR3_VERSION (BPFLOADER_MAINLINE_U_VERSION + 1u)
 
-// Android Mainline BpfLoader when running on Android V
+// Android Mainline BpfLoader when running on Android V (sdk=35)
 #define BPFLOADER_MAINLINE_V_VERSION (BPFLOADER_MAINLINE_U_QPR3_VERSION + 1u)
+
+// Android Mainline BpfLoader when running on Android W (sdk=36)
+#define BPFLOADER_MAINLINE_W_VERSION (BPFLOADER_MAINLINE_V_VERSION + 1u)
 
 /* For mainline module use, you can #define BPFLOADER_{MIN/MAX}_VER
  * before #include "bpf_helpers.h" to change which bpfloaders will
@@ -99,23 +102,19 @@
  *
  * If missing, bpfloader_{min/max}_ver default to 0/0x10000 ie. [v0.0, v1.0),
  * while size_of_bpf_{map/prog}_def default to 32/20 which are the v0.0 sizes.
- */
-#define LICENSE(NAME)                                                                           \
-    unsigned int _bpfloader_min_ver SECTION("bpfloader_min_ver") = BPFLOADER_MIN_VER;           \
-    unsigned int _bpfloader_max_ver SECTION("bpfloader_max_ver") = BPFLOADER_MAX_VER;           \
-    size_t _size_of_bpf_map_def SECTION("size_of_bpf_map_def") = sizeof(struct bpf_map_def);    \
-    size_t _size_of_bpf_prog_def SECTION("size_of_bpf_prog_def") = sizeof(struct bpf_prog_def); \
-    char _license[] SECTION("license") = (NAME)
-
-/* This macro disables loading BTF map debug information on Android <=U *and* all user builds.
  *
- * Note: Bpfloader v0.39+ honours 'btf_user_min_bpfloader_ver' on user builds,
- * and 'btf_min_bpfloader_ver' on non-user builds.
- * Older BTF capable versions unconditionally honour 'btf_min_bpfloader_ver'
+ * This macro also disables loading BTF map debug information, as versions
+ * of the platform bpfloader that support BTF require fork-exec of btfloader
+ * which causes a regression in boot time.
  */
-#define DISABLE_BTF_ON_USER_BUILDS() \
-    unsigned _btf_min_bpfloader_ver SECTION("btf_min_bpfloader_ver") = 39u; \
-    unsigned _btf_user_min_bpfloader_ver SECTION("btf_user_min_bpfloader_ver") = 0xFFFFFFFFu
+#define LICENSE(NAME)                                                                              \
+    unsigned int _bpfloader_min_ver SECTION("bpfloader_min_ver") = BPFLOADER_MIN_VER;              \
+    unsigned int _bpfloader_max_ver SECTION("bpfloader_max_ver") = BPFLOADER_MAX_VER;              \
+    size_t _size_of_bpf_map_def SECTION("size_of_bpf_map_def") = sizeof(struct bpf_map_def);       \
+    size_t _size_of_bpf_prog_def SECTION("size_of_bpf_prog_def") = sizeof(struct bpf_prog_def);    \
+    unsigned _btf_min_bpfloader_ver SECTION("btf_min_bpfloader_ver") = BPFLOADER_MAINLINE_VERSION; \
+    unsigned _btf_user_min_bpfloader_ver SECTION("btf_user_min_bpfloader_ver") = 0xFFFFFFFFu;      \
+    char _license[] SECTION("license") = (NAME)
 
 /* flag the resulting bpf .o file as critical to system functionality,
  * loading all kernel version appropriate programs in it must succeed
@@ -387,12 +386,17 @@ static int (*bpf_probe_read_user)(void* dst, int size, const void* unsafe_ptr) =
 static int (*bpf_probe_read_user_str)(void* dst, int size, const void* unsafe_ptr) = (void*) BPF_FUNC_probe_read_user_str;
 static unsigned long long (*bpf_ktime_get_ns)(void) = (void*) BPF_FUNC_ktime_get_ns;
 static unsigned long long (*bpf_ktime_get_boot_ns)(void) = (void*)BPF_FUNC_ktime_get_boot_ns;
-static int (*bpf_trace_printk)(const char* fmt, int fmt_size, ...) = (void*) BPF_FUNC_trace_printk;
 static unsigned long long (*bpf_get_current_pid_tgid)(void) = (void*) BPF_FUNC_get_current_pid_tgid;
 static unsigned long long (*bpf_get_current_uid_gid)(void) = (void*) BPF_FUNC_get_current_uid_gid;
 static unsigned long long (*bpf_get_smp_processor_id)(void) = (void*) BPF_FUNC_get_smp_processor_id;
 static long (*bpf_get_stackid)(void* ctx, void* map, uint64_t flags) = (void*) BPF_FUNC_get_stackid;
 static long (*bpf_get_current_comm)(void* buf, uint32_t buf_size) = (void*) BPF_FUNC_get_current_comm;
+
+// GPL only:
+static int (*bpf_trace_printk)(const char* fmt, int fmt_size, ...) = (void*) BPF_FUNC_trace_printk;
+#define bpf_printf(s, n...) bpf_trace_printk(s, sizeof(s), ## n)
+// Note: bpf only supports up to 3 arguments, log via: bpf_printf("msg %d %d %d", 1, 2, 3);
+// and read via the blocking: sudo cat /sys/kernel/debug/tracing/trace_pipe
 
 #define DEFINE_BPF_PROG_EXT(SECTION_NAME, prog_uid, prog_gid, the_prog, min_kv, max_kv,  \
                             min_loader, max_loader, opt, selinux, pindir, ignore_eng,    \

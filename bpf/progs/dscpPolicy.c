@@ -14,35 +14,24 @@
  * limitations under the License.
  */
 
-#include <linux/bpf.h>
-#include <linux/if_ether.h>
-#include <linux/if_packet.h>
-#include <linux/ip.h>
-#include <linux/ipv6.h>
-#include <linux/pkt_cls.h>
-#include <linux/tcp.h>
-#include <linux/types.h>
-#include <netinet/in.h>
-#include <netinet/udp.h>
-#include <stdint.h>
-#include <string.h>
-
 // The resulting .o needs to load on Android T+
 #define BPFLOADER_MIN_VER BPFLOADER_MAINLINE_T_VERSION
 
-#include "bpf_helpers.h"
+#include "bpf_net_helpers.h"
 #include "dscpPolicy.h"
 
 #define ECN_MASK 3
-#define IP4_OFFSET(field, header) ((header) + offsetof(struct iphdr, field))
 #define UPDATE_TOS(dscp, tos) ((dscp) << 2) | ((tos) & ECN_MASK)
 
-DEFINE_BPF_MAP_GRW(socket_policy_cache_map, HASH, uint64_t, RuleEntry, CACHE_MAP_SIZE, AID_SYSTEM)
+// The cache is never read nor written by userspace and is indexed by socket cookie % CACHE_MAP_SIZE
+#define CACHE_MAP_SIZE 32  // should be a power of two so we can % cheaply
+DEFINE_BPF_MAP_GRO(socket_policy_cache_map, PERCPU_ARRAY, uint32_t, RuleEntry, CACHE_MAP_SIZE,
+                   AID_SYSTEM)
 
 DEFINE_BPF_MAP_GRW(ipv4_dscp_policies_map, ARRAY, uint32_t, DscpPolicy, MAX_POLICIES, AID_SYSTEM)
 DEFINE_BPF_MAP_GRW(ipv6_dscp_policies_map, ARRAY, uint32_t, DscpPolicy, MAX_POLICIES, AID_SYSTEM)
 
-static inline __always_inline void match_policy(struct __sk_buff* skb, bool ipv4) {
+static inline __always_inline void match_policy(struct __sk_buff* skb, const bool ipv4) {
     void* data = (void*)(long)skb->data;
     const void* data_end = (void*)(long)skb->data_end;
 
@@ -56,6 +45,8 @@ static inline __always_inline void match_policy(struct __sk_buff* skb, bool ipv4
     // used for map lookup
     uint64_t cookie = bpf_get_socket_cookie(skb);
     if (!cookie) return;
+
+    uint32_t cacheid = cookie % CACHE_MAP_SIZE;
 
     __be16 sport = 0;
     uint16_t dport = 0;
@@ -119,7 +110,8 @@ static inline __always_inline void match_policy(struct __sk_buff* skb, bool ipv4
             return;
     }
 
-    RuleEntry* existing_rule = bpf_socket_policy_cache_map_lookup_elem(&cookie);
+    // this array lookup cannot actually fail
+    RuleEntry* existing_rule = bpf_socket_policy_cache_map_lookup_elem(&cacheid);
 
     if (existing_rule &&
         v6_equal(src_ip, existing_rule->src_ip) &&
@@ -131,9 +123,9 @@ static inline __always_inline void match_policy(struct __sk_buff* skb, bool ipv4
         if (existing_rule->dscp_val < 0) return;
         if (ipv4) {
             uint8_t newTos = UPDATE_TOS(existing_rule->dscp_val, tos);
-            bpf_l3_csum_replace(skb, IP4_OFFSET(check, l2_header_size), htons(tos), htons(newTos),
+            bpf_l3_csum_replace(skb, l2_header_size + IP4_OFFSET(check), htons(tos), htons(newTos),
                                 sizeof(uint16_t));
-            bpf_skb_store_bytes(skb, IP4_OFFSET(tos, l2_header_size), &newTos, sizeof(newTos), 0);
+            bpf_skb_store_bytes(skb, l2_header_size + IP4_OFFSET(tos), &newTos, sizeof(newTos), 0);
         } else {
             __be32 new_first_be32 =
                 htonl(ntohl(old_first_be32) & 0xF03FFFFF | (existing_rule->dscp_val << 22));
@@ -159,27 +151,29 @@ static inline __always_inline void match_policy(struct __sk_buff* skb, bool ipv4
             policy = bpf_ipv6_dscp_policies_map_lookup_elem(&key);
         }
 
-        // If the policy lookup failed, just continue (this should not ever happen)
-        if (!policy) continue;
+        // Lookup failure cannot happen on an array with MAX_POLICIES entries.
+        // While 'continue' would make logical sense here, 'return' should be
+        // easier for the verifier to analyze.
+        if (!policy) return;
 
         // If policy iface index does not match skb, then skip to next policy.
         if (policy->ifindex != skb->ifindex) continue;
 
         int score = 0;
 
-        if (policy->present_fields & PROTO_MASK_FLAG) {
+        if (policy->match_proto) {
             if (protocol != policy->proto) continue;
             score += 0xFFFF;
         }
-        if (policy->present_fields & SRC_IP_MASK_FLAG) {
+        if (policy->match_src_ip) {
             if (v6_not_equal(src_ip, policy->src_ip)) continue;
             score += 0xFFFF;
         }
-        if (policy->present_fields & DST_IP_MASK_FLAG) {
+        if (policy->match_dst_ip) {
             if (v6_not_equal(dst_ip, policy->dst_ip)) continue;
             score += 0xFFFF;
         }
-        if (policy->present_fields & SRC_PORT_MASK_FLAG) {
+        if (policy->match_src_port) {
             if (sport != policy->src_port) continue;
             score += 0xFFFF;
         }
@@ -204,15 +198,15 @@ static inline __always_inline void match_policy(struct __sk_buff* skb, bool ipv4
     };
 
     // Update cache with found policy.
-    bpf_socket_policy_cache_map_update_elem(&cookie, &value, BPF_ANY);
+    bpf_socket_policy_cache_map_update_elem(&cacheid, &value, BPF_ANY);
 
     if (new_dscp < 0) return;
 
     // Need to store bytes after updating map or program will not load.
     if (ipv4) {
         uint8_t new_tos = UPDATE_TOS(new_dscp, tos);
-        bpf_l3_csum_replace(skb, IP4_OFFSET(check, l2_header_size), htons(tos), htons(new_tos), 2);
-        bpf_skb_store_bytes(skb, IP4_OFFSET(tos, l2_header_size), &new_tos, sizeof(new_tos), 0);
+        bpf_l3_csum_replace(skb, l2_header_size + IP4_OFFSET(check), htons(tos), htons(new_tos), 2);
+        bpf_skb_store_bytes(skb, l2_header_size + IP4_OFFSET(tos), &new_tos, sizeof(new_tos), 0);
     } else {
         __be32 new_first_be32 = htonl(ntohl(old_first_be32) & 0xF03FFFFF | (new_dscp << 22));
         bpf_skb_store_bytes(skb, l2_header_size, &new_first_be32, sizeof(__be32),
@@ -238,4 +232,3 @@ DEFINE_BPF_PROG_KVER("schedcls/set_dscp_ether", AID_ROOT, AID_SYSTEM, schedcls_s
 
 LICENSE("Apache 2.0");
 CRITICAL("Connectivity");
-DISABLE_BTF_ON_USER_BUILDS();
