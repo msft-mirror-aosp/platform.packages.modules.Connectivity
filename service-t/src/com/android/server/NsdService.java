@@ -1938,21 +1938,8 @@ public class NsdService extends INsdManager.Stub {
                         mContext, MdnsFeatureFlags.NSD_QUERY_WITH_KNOWN_ANSWER))
                 .setAvoidAdvertisingEmptyTxtRecords(mDeps.isTetheringFeatureNotChickenedOut(
                         mContext, MdnsFeatureFlags.NSD_AVOID_ADVERTISING_EMPTY_TXT_RECORDS))
-                .setOverrideProvider(new MdnsFeatureFlags.FlagOverrideProvider() {
-                    @Override
-                    public boolean isForceEnabledForTest(@NonNull String flag) {
-                        return mDeps.isFeatureEnabled(
-                                mContext,
-                                FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag);
-                    }
-
-                    @Override
-                    public int getIntValueForTest(@NonNull String flag) {
-                        return mDeps.getDeviceConfigPropertyInt(
-                                FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag,
-                                -1 /* defaultValue */);
-                    }
-                })
+                .setOverrideProvider(flag -> mDeps.isFeatureEnabled(
+                        mContext, FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag))
                 .build();
         mMdnsSocketClient =
                 new MdnsMultinetworkSocketClient(handler.getLooper(), mMdnsSocketProvider,
@@ -2016,14 +2003,6 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isTetheringFeatureNotChickenedOut(Context context, String feature) {
             return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(context, feature);
-        }
-
-        /**
-         * @see DeviceConfigUtils#getDeviceConfigPropertyInt
-         */
-        public int getDeviceConfigPropertyInt(String feature, int defaultValue) {
-            return DeviceConfigUtils.getDeviceConfigPropertyInt(
-                    NAMESPACE_TETHERING, feature, defaultValue);
         }
 
         /**

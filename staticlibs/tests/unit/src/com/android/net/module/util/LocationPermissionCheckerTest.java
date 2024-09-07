@@ -18,6 +18,7 @@ package com.android.net.module.util;
 import static android.Manifest.permission.NETWORK_SETTINGS;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -46,6 +47,7 @@ import androidx.annotation.RequiresApi;
 
 import com.android.testutils.DevSdkIgnoreRule;
 
+import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -240,9 +242,9 @@ public class LocationPermissionCheckerTest {
         mWifiScanAllowApps = AppOpsManager.MODE_ALLOWED;
         setupTestCase();
 
-        final int result = mChecker.checkLocationPermissionInternal(
-                        TEST_PKG_NAME, TEST_FEATURE_ID, mUid, null);
-        assertEquals(LocationPermissionChecker.ERROR_LOCATION_PERMISSION_MISSING, result);
+        assertThrows(SecurityException.class,
+                () -> mChecker.checkLocationPermissionInternal(
+                        TEST_PKG_NAME, TEST_FEATURE_ID, mUid, null));
     }
 
     @Test
@@ -302,5 +304,15 @@ public class LocationPermissionCheckerTest {
                 mChecker.checkLocationPermissionInternal(
                         TEST_PKG_NAME, TEST_FEATURE_ID, mUid, null);
         assertEquals(LocationPermissionChecker.SUCCEEDED, result);
+    }
+
+
+    private static void assertThrows(Class<? extends Exception> exceptionClass, Runnable r) {
+        try {
+            r.run();
+            Assert.fail("Expected " + exceptionClass + " to be thrown.");
+        } catch (Exception exception) {
+            assertTrue(exceptionClass.isInstance(exception));
+        }
     }
 }

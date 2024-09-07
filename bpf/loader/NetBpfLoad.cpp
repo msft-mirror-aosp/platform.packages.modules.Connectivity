@@ -60,14 +60,7 @@
 #include "bpf_map_def.h"
 
 using android::base::EndsWith;
-using android::base::GetIntProperty;
-using android::base::GetProperty;
-using android::base::InitLogging;
-using android::base::KernelLogger;
-using android::base::SetProperty;
-using android::base::Split;
 using android::base::StartsWith;
-using android::base::Tokenize;
 using android::base::unique_fd;
 using std::ifstream;
 using std::ios;
@@ -97,8 +90,6 @@ enum class domain : int {
     net_shared,         // (T+) fs_bpf_net_shared    /sys/fs/bpf/net_shared
     netd_readonly,      // (T+) fs_bpf_netd_readonly /sys/fs/bpf/netd_readonly
     netd_shared,        // (T+) fs_bpf_netd_shared   /sys/fs/bpf/netd_shared
-    loader,             // (U+) fs_bpf_loader        /sys/fs/bpf/loader
-                        // on T due to lack of sepolicy/genfscon rules it behaves simply as 'fs_bpf'
 };
 
 static constexpr domain AllDomains[] = {
@@ -108,7 +99,6 @@ static constexpr domain AllDomains[] = {
     domain::net_shared,
     domain::netd_readonly,
     domain::netd_shared,
-    domain::loader,
 };
 
 static constexpr bool specified(domain d) {
@@ -122,7 +112,7 @@ struct Location {
 
 // Returns the build type string (from ro.build.type).
 const std::string& getBuildType() {
-    static std::string t = GetProperty("ro.build.type", "unknown");
+    static std::string t = android::base::GetProperty("ro.build.type", "unknown");
     return t;
 }
 
@@ -141,6 +131,9 @@ inline bool isUserdebug() {
 
 #define BPF_FS_PATH "/sys/fs/bpf/"
 
+// Size of the BPF log buffer for verifier logging
+#define BPF_LOAD_LOG_SZ 0xfffff
+
 static unsigned int page_size = static_cast<unsigned int>(getpagesize());
 
 constexpr const char* lookupSelinuxContext(const domain d) {
@@ -151,7 +144,6 @@ constexpr const char* lookupSelinuxContext(const domain d) {
         case domain::net_shared:    return "fs_bpf_net_shared";
         case domain::netd_readonly: return "fs_bpf_netd_readonly";
         case domain::netd_shared:   return "fs_bpf_netd_shared";
-        case domain::loader:        return "fs_bpf_loader";
     }
 }
 
@@ -175,7 +167,6 @@ constexpr const char* lookupPinSubdir(const domain d, const char* const unspecif
         case domain::net_shared:    return "net_shared/";
         case domain::netd_readonly: return "netd_readonly/";
         case domain::netd_shared:   return "netd_shared/";
-        case domain::loader:        return "loader/";
     }
 };
 
@@ -193,7 +184,7 @@ domain getDomainFromPinSubdir(const char s[BPF_PIN_SUBDIR_CHAR_ARRAY_SIZE]) {
 
 static string pathToObjName(const string& path) {
     // extract everything after the final slash, ie. this is the filename 'foo@1.o' or 'bar.o'
-    string filename = Split(path, "/").back();
+    string filename = android::base::Split(path, "/").back();
     // strip off everything from the final period onwards (strip '.o' suffix), ie. 'foo@1' or 'bar'
     string name = filename.substr(0, filename.find_last_of('.'));
     // strip any potential @1 suffix, this will leave us with just 'foo' or 'bar'
@@ -1003,7 +994,7 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
                   (!fd.ok() ? std::strerror(errno) : "no error"));
             reuse = true;
         } else {
-            static char log_buf[1 << 20];  // 1 MiB logging buffer
+            vector<char> log_buf(BPF_LOAD_LOG_SZ, 0);
 
             union bpf_attr req = {
               .prog_type = cs[i].type,
@@ -1011,8 +1002,8 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
               .insns = ptr_to_u64(cs[i].data.data()),
               .license = ptr_to_u64(license.c_str()),
               .log_level = 1,
-              .log_size = sizeof(log_buf),
-              .log_buf = ptr_to_u64(log_buf),
+              .log_size = static_cast<__u32>(log_buf.size()),
+              .log_buf = ptr_to_u64(log_buf.data()),
               .kern_version = kvers,
               .expected_attach_type = cs[i].attach_type,
             };
@@ -1020,23 +1011,12 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
                 strlcpy(req.prog_name, cs[i].name.c_str(), sizeof(req.prog_name));
             fd.reset(bpf(BPF_PROG_LOAD, req));
 
-            // Kernel should have NULL terminated the log buffer, but force it anyway for safety
-            log_buf[sizeof(log_buf) - 1] = 0;
-
-            // Strip out final newline if present
-            int log_chars = strlen(log_buf);
-            if (log_chars && log_buf[log_chars - 1] == '\n') log_buf[--log_chars] = 0;
-
-            bool log_oneline = !strchr(log_buf, '\n');
-
-            ALOGD("BPF_PROG_LOAD call for %s (%s) returned '%s' fd: %d (%s)", elfPath,
-                  cs[i].name.c_str(), log_oneline ? log_buf : "{multiline}",
-                  fd.get(), (!fd.ok() ? std::strerror(errno) : "ok"));
+            ALOGD("BPF_PROG_LOAD call for %s (%s) returned fd: %d (%s)", elfPath,
+                  cs[i].name.c_str(), fd.get(), (!fd.ok() ? std::strerror(errno) : "no error"));
 
             if (!fd.ok()) {
-                // kernel NULL terminates log_buf, so this checks for non-empty string
-                if (log_buf[0]) {
-                    vector<string> lines = Split(log_buf, "\n");
+                if (log_buf.size()) {
+                    vector<string> lines = android::base::Split(log_buf.data(), "\n");
 
                     ALOGW("BPF_PROG_LOAD - BEGIN log_buf contents:");
                     for (const auto& line : lines) ALOGW("%s", line.c_str());
@@ -1152,6 +1132,12 @@ int loadProg(const char* const elfPath, bool* const isCritical, const unsigned i
     ALOGD("BpfLoader version 0x%05x processing ELF object %s with ver [0x%05x,0x%05x)",
           bpfloader_ver, elfPath, bpfLoaderMinVer, bpfLoaderMaxVer);
 
+    ret = readCodeSections(elfFile, cs);
+    if (ret) {
+        ALOGE("Couldn't read all code sections in %s", elfPath);
+        return ret;
+    }
+
     ret = createMaps(elfPath, elfFile, mapFds, prefix, bpfloader_ver);
     if (ret) {
         ALOGE("Failed to create maps: (ret=%d) in %s", ret, elfPath);
@@ -1160,13 +1146,6 @@ int loadProg(const char* const elfPath, bool* const isCritical, const unsigned i
 
     for (int i = 0; i < (int)mapFds.size(); i++)
         ALOGV("map_fd found at %d is %d in %s", i, mapFds[i].get(), elfPath);
-
-    ret = readCodeSections(elfFile, cs);
-    if (ret == -ENOENT) return 0;  // no programs defined in this .o
-    if (ret) {
-        ALOGE("Couldn't read all code sections in %s", elfPath);
-        return ret;
-    }
 
     applyMapRelo(elfFile, mapFds, cs);
 
@@ -1268,7 +1247,7 @@ static int createSysFsBpfSubDir(const char* const prefix) {
 // to include a newline to match 'echo "value" > /proc/sys/...foo' behaviour,
 // which is usually how kernel devs test the actual sysctl interfaces.
 static int writeProcSysFile(const char *filename, const char *value) {
-    unique_fd fd(open(filename, O_WRONLY | O_CLOEXEC));
+    base::unique_fd fd(open(filename, O_WRONLY | O_CLOEXEC));
     if (fd < 0) {
         const int err = errno;
         ALOGE("open('%s', O_WRONLY | O_CLOEXEC) -> %s", filename, strerror(err));
@@ -1345,7 +1324,7 @@ static int logTetheringApexVersion(void) {
 }
 
 static bool hasGSM() {
-    static string ph = GetProperty("gsm.current.phone-type", "");
+    static string ph = base::GetProperty("gsm.current.phone-type", "");
     static bool gsm = (ph != "");
     static bool logged = false;
     if (!logged) {
@@ -1358,7 +1337,7 @@ static bool hasGSM() {
 static bool isTV() {
     if (hasGSM()) return false;  // TVs don't do GSM
 
-    static string key = GetProperty("ro.oem.key1", "");
+    static string key = base::GetProperty("ro.oem.key1", "");
     static bool tv = StartsWith(key, "ATV00");
     static bool logged = false;
     if (!logged) {
@@ -1369,10 +1348,10 @@ static bool isTV() {
 }
 
 static bool isWear() {
-    static string wearSdkStr = GetProperty("ro.cw_build.wear_sdk.version", "");
-    static int wearSdkInt = GetIntProperty("ro.cw_build.wear_sdk.version", 0);
-    static string buildChars = GetProperty("ro.build.characteristics", "");
-    static vector<string> v = Tokenize(buildChars, ",");
+    static string wearSdkStr = base::GetProperty("ro.cw_build.wear_sdk.version", "");
+    static int wearSdkInt = base::GetIntProperty("ro.cw_build.wear_sdk.version", 0);
+    static string buildChars = base::GetProperty("ro.build.characteristics", "");
+    static vector<string> v = base::Tokenize(buildChars, ",");
     static bool watch = (std::find(v.begin(), v.end(), "watch") != v.end());
     static bool wear = (wearSdkInt > 0) || watch;
     static bool logged = false;
@@ -1389,7 +1368,7 @@ static int doLoad(char** argv, char * const envp[]) {
 
     // Any released device will have codename REL instead of a 'real' codename.
     // For safety: default to 'REL' so we default to unreleased=false on failure.
-    const bool unreleased = (GetProperty("ro.build.version.codename", "REL") != "REL");
+    const bool unreleased = (base::GetProperty("ro.build.version.codename", "REL") != "REL");
 
     // goog/main device_api_level is bumped *way* before aosp/main api level
     // (the latter only gets bumped during the push of goog/main to aosp/main)
@@ -1419,8 +1398,6 @@ static int doLoad(char** argv, char * const envp[]) {
     const bool isAtLeastU = (effective_api_level >= __ANDROID_API_U__);
     const bool isAtLeastV = (effective_api_level >= __ANDROID_API_V__);
     const bool isAtLeastW = (effective_api_level >  __ANDROID_API_V__);  // TODO: switch to W
-
-    const int first_api_level = GetIntProperty("ro.board.first_api_level", effective_api_level);
 
     // last in U QPR2 beta1
     const bool has_platform_bpfloader_rc = exists("/system/etc/init/bpfloader.rc");
@@ -1547,24 +1524,9 @@ static int doLoad(char** argv, char * const envp[]) {
      * and 32-bit userspace on 64-bit kernel bpf ringbuffer compatibility is broken.
      */
     if (isUserspace32bit() && isAtLeastKernelVersion(6, 2, 0)) {
-        // Stuff won't work reliably, but...
-        if (isTV()) {
-            // exempt TVs... they don't really need functional advanced networking
-            ALOGW("[TV] 32-bit userspace unsupported on 6.2+ kernels.");
-        } else if (isWear() && isArm()) {
-            // exempt Arm Wear devices (arm32 ABI is far less problematic than x86-32)
-            ALOGW("[Arm Wear] 32-bit userspace unsupported on 6.2+ kernels.");
-        } else if (first_api_level <= __ANDROID_API_T__ && isArm()) {
-            // also exempt Arm devices upgrading with major kernel rev from T-
-            // might possibly be better for them to run with a newer kernel...
-            ALOGW("[Arm KernelUpRev] 32-bit userspace unsupported on 6.2+ kernels.");
-        } else if (isArm()) {
-            ALOGE("[Arm] 64-bit userspace required on 6.2+ kernels (%d).", first_api_level);
-            return 1;
-        } else { // x86 since RiscV cannot be 32-bit
-            ALOGE("[x86] 64-bit userspace required on 6.2+ kernels.");
-            return 1;
-        }
+        ALOGE("64-bit userspace required on 6.2+ kernels.");
+        // Stuff won't work reliably, but exempt TVs & Arm Wear devices
+        if (!isTV() && !(isWear() && isArm())) return 1;
     }
 
     // Note: 6.6 is highest version supported by Android V (sdk=35), so this is for sdk=36+
@@ -1641,7 +1603,7 @@ static int doLoad(char** argv, char * const envp[]) {
 
     int key = 1;
     int value = 123;
-    unique_fd map(
+    base::unique_fd map(
             createMap(BPF_MAP_TYPE_ARRAY, sizeof(key), sizeof(value), 2, 0));
     if (writeToMapEntry(map, &key, &value, BPF_ANY)) {
         ALOGE("Critical kernel bug - failure to write into index 1 of 2 element bpf map array.");
@@ -1673,11 +1635,11 @@ static int doLoad(char** argv, char * const envp[]) {
 }  // namespace android
 
 int main(int argc, char** argv, char * const envp[]) {
-    InitLogging(argv, &KernelLogger);
+    android::base::InitLogging(argv, &android::base::KernelLogger);
 
     if (argc == 2 && !strcmp(argv[1], "done")) {
         // we're being re-exec'ed from platform bpfloader to 'finalize' things
-        if (!SetProperty("bpf.progs_loaded", "1")) {
+        if (!android::base::SetProperty("bpf.progs_loaded", "1")) {
             ALOGE("Failed to set bpf.progs_loaded property to 1.");
             return 125;
         }

@@ -58,7 +58,6 @@ android_test {
     ],
     srcs: [
         "src/**/*.java",
-        "src/**/*.kt",
     ],
     compile_multilib: "both",
 }
