@@ -407,6 +407,7 @@ import java.util.Set;
 import java.util.SortedSet;
 import java.util.StringJoiner;
 import java.util.TreeSet;
+import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
@@ -8932,9 +8933,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
     @NonNull
     final NetworkRequestInfo mDefaultRequest;
     // Collection of NetworkRequestInfo's used for default networks.
+    // This set is read and iterated on multiple threads.
+    // Using CopyOnWriteArraySet since number of default network request is small (system default
+    // network request + per-app default network requests) and updated infrequently but read
+    // frequently.
     @VisibleForTesting
     @NonNull
-    final ArraySet<NetworkRequestInfo> mDefaultNetworkRequests = new ArraySet<>();
+    final CopyOnWriteArraySet<NetworkRequestInfo> mDefaultNetworkRequests =
+            new CopyOnWriteArraySet<>();
+
 
     private boolean isPerAppDefaultRequest(@NonNull final NetworkRequestInfo nri) {
         return (mDefaultNetworkRequests.contains(nri) && mDefaultRequest != nri);
@@ -14504,5 +14511,15 @@ public class ConnectivityService extends IConnectivityManager.Stub
             features |= ConnectivityManager.FEATURE_USE_DECLARED_METHODS_FOR_CALLBACKS;
         }
         return features;
+    }
+
+    @Override
+    public boolean isConnectivityServiceFeatureEnabledForTesting(String featureFlag) {
+        switch (featureFlag) {
+            case INGRESS_TO_VPN_ADDRESS_FILTERING:
+                return mIngressToVpnAddressFiltering;
+            default:
+                throw new IllegalArgumentException("Unknown flag: " + featureFlag);
+        }
     }
 }
