@@ -374,6 +374,11 @@ public class Tethering {
                     }
 
                     @NonNull
+                    public Context getContext() {
+                        return mContext;
+                    }
+
+                    @NonNull
                     public INetd getNetd() {
                         return mNetd;
                     }
@@ -2082,6 +2087,7 @@ public class Tethering {
                     chooseUpstreamType(true);
                     mTryCell = false;
                 }
+                mTetheringMetrics.initUpstreamUsageBaseline();
             }
 
             @Override

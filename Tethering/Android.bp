@@ -54,6 +54,7 @@ java_defaults {
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
         ":services-tethering-shared-srcs",
+        ":statslog-connectivity-java-gen",
         ":statslog-tethering-java-gen",
     ],
     static_libs: [
@@ -69,7 +70,7 @@ java_defaults {
         "android.hardware.tetheroffload.control-V1.0-java",
         "android.hardware.tetheroffload.control-V1.1-java",
         "android.hidl.manager-V1.2-java",
-        "net-utils-tethering",
+        "net-utils-connectivity-apks",
         "netd-client",
         "tetheringstatsprotos",
     ],
