@@ -16,6 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
+import static com.android.internal.annotations.VisibleForTesting.Visibility;
+
 import android.Manifest.permission;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -30,6 +32,7 @@ import android.util.Pair;
 import androidx.annotation.GuardedBy;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.DnsUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.mdns.util.MdnsUtils;
 
@@ -66,8 +69,8 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
 
         public void put(@NonNull String serviceType, @NonNull SocketKey socketKey,
                 @NonNull MdnsServiceTypeClient client) {
-            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
-            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsLowerServiceType,
+            final String dnsUpperServiceType = DnsUtils.toDnsUpperCase(serviceType);
+            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsUpperServiceType,
                     socketKey);
             clients.put(perSocketServiceType, client);
         }
@@ -75,18 +78,18 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         @Nullable
         public MdnsServiceTypeClient get(
                 @NonNull String serviceType, @NonNull SocketKey socketKey) {
-            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
-            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsLowerServiceType,
+            final String dnsUpperServiceType = DnsUtils.toDnsUpperCase(serviceType);
+            final Pair<String, SocketKey> perSocketServiceType = new Pair<>(dnsUpperServiceType,
                     socketKey);
             return clients.getOrDefault(perSocketServiceType, null);
         }
 
         public List<MdnsServiceTypeClient> getByServiceType(@NonNull String serviceType) {
-            final String dnsLowerServiceType = MdnsUtils.toDnsLowerCase(serviceType);
+            final String dnsUpperServiceType = DnsUtils.toDnsUpperCase(serviceType);
             final List<MdnsServiceTypeClient> list = new ArrayList<>();
             for (int i = 0; i < clients.size(); i++) {
                 final Pair<String, SocketKey> perSocketServiceType = clients.keyAt(i);
-                if (dnsLowerServiceType.equals(perSocketServiceType.first)) {
+                if (dnsUpperServiceType.equals(perSocketServiceType.first)) {
                     list.add(clients.valueAt(i));
                 }
             }
@@ -133,13 +136,20 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         this.discoveryExecutor = new DiscoveryExecutor(socketClient.getLooper());
     }
 
-    private static class DiscoveryExecutor implements Executor {
+    /**
+     * A utility class to generate a handler, optionally with a looper, and to run functions on the
+     * newly created handler.
+     */
+    @VisibleForTesting(visibility = Visibility.PRIVATE)
+    static class DiscoveryExecutor implements Executor {
         private final HandlerThread handlerThread;
 
         @GuardedBy("pendingTasks")
         @Nullable private Handler handler;
+        // Store pending tasks and associated delay time. Each Pair represents a pending task
+        // (first) and its delay time (second).
         @GuardedBy("pendingTasks")
-        @NonNull private final ArrayList<Runnable> pendingTasks = new ArrayList<>();
+        @NonNull private final ArrayList<Pair<Runnable, Long>> pendingTasks = new ArrayList<>();
 
         DiscoveryExecutor(@Nullable Looper defaultLooper) {
             if (defaultLooper != null) {
@@ -153,8 +163,8 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
                     protected void onLooperPrepared() {
                         synchronized (pendingTasks) {
                             handler = new Handler(getLooper());
-                            for (Runnable pendingTask : pendingTasks) {
-                                handler.post(pendingTask);
+                            for (Pair<Runnable, Long> pendingTask : pendingTasks) {
+                                handler.postDelayed(pendingTask.first, pendingTask.second);
                             }
                             pendingTasks.clear();
                         }
@@ -176,16 +186,20 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
 
         @Override
         public void execute(Runnable function) {
+            executeDelayed(function, 0L /* delayMillis */);
+        }
+
+        public void executeDelayed(Runnable function, long delayMillis) {
             final Handler handler;
             synchronized (pendingTasks) {
                 if (this.handler == null) {
-                    pendingTasks.add(function);
+                    pendingTasks.add(Pair.create(function, delayMillis));
                     return;
                 } else {
                     handler = this.handler;
                 }
             }
-            handler.post(function);
+            handler.postDelayed(function, delayMillis);
         }
 
         void shutDown() {
@@ -389,11 +403,17 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
      */
     public void dump(PrintWriter pw) {
         discoveryExecutor.checkAndRunOnHandlerThread(() -> {
-            pw.println();
+            pw.println("Clients:");
             // Dump ServiceTypeClients
             for (MdnsServiceTypeClient serviceTypeClient
                     : perSocketServiceTypeClients.getAllMdnsServiceTypeClient()) {
                 serviceTypeClient.dump(pw);
+            }
+            pw.println();
+            // Dump ServiceCache
+            pw.println("Cached services:");
+            if (serviceCache != null) {
+                serviceCache.dump(pw, "  ");
             }
         });
     }

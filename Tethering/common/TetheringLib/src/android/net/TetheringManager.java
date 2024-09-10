@@ -26,6 +26,8 @@ import android.annotation.RequiresPermission;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
 import android.content.Context;
+import android.net.wifi.SoftApConfiguration;
+import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.os.ConditionVariable;
 import android.os.IBinder;
@@ -38,6 +40,7 @@ import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.internal.annotations.GuardedBy;
+import com.android.net.flags.Flags;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -62,16 +65,6 @@ import java.util.function.Supplier;
  */
 @SystemApi
 public class TetheringManager {
-    // TODO : remove this class when udc-mainline-prod is abandoned and android.net.flags.Flags is
-    // available here
-    /** @hide */
-    public static class Flags {
-        static final String TETHERING_REQUEST_WITH_SOFT_AP_CONFIG =
-                "com.android.net.flags.tethering_request_with_soft_ap_config";
-        static final String TETHERING_REQUEST_VIRTUAL =
-                "com.android.net.flags.tethering_request_virtual";
-    }
-
     private static final String TAG = TetheringManager.class.getSimpleName();
     private static final int DEFAULT_TIMEOUT_MS = 60_000;
     private static final long CONNECTOR_POLL_INTERVAL_MILLIS = 200L;
@@ -198,9 +191,13 @@ public class TetheringManager {
 
     /**
      * VIRTUAL tethering type.
+     *
+     * This tethering type is for providing external network to virtual machines
+     * running on top of Android devices, which are created and managed by
+     * AVF(Android Virtualization Framework).
      * @hide
      */
-    @FlaggedApi(Flags.TETHERING_REQUEST_VIRTUAL)
+    @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_VIRTUAL)
     @SystemApi
     public static final int TETHERING_VIRTUAL = 7;
 
@@ -701,7 +698,7 @@ public class TetheringManager {
         /**
          * @hide
          */
-        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
         public TetheringRequest(@NonNull final TetheringRequestParcel request) {
             mRequestParcel = request;
         }
@@ -710,7 +707,7 @@ public class TetheringManager {
             mRequestParcel = in.readParcelable(TetheringRequestParcel.class.getClassLoader());
         }
 
-        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
         @NonNull
         public static final Creator<TetheringRequest> CREATOR = new Creator<>() {
             @Override
@@ -724,13 +721,13 @@ public class TetheringManager {
             }
         };
 
-        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
         @Override
         public int describeContents() {
             return 0;
         }
 
-        @FlaggedApi(Flags.TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
         @Override
         public void writeToParcel(@NonNull Parcel dest, int flags) {
             dest.writeParcelable(mRequestParcel, flags);
@@ -749,6 +746,7 @@ public class TetheringManager {
                 mBuilderParcel.exemptFromEntitlementCheck = false;
                 mBuilderParcel.showProvisioningUi = true;
                 mBuilderParcel.connectivityScope = getDefaultConnectivityScope(type);
+                mBuilderParcel.softApConfig = null;
             }
 
             /**
@@ -805,6 +803,30 @@ public class TetheringManager {
                 }
 
                 mBuilderParcel.connectivityScope = scope;
+                return this;
+            }
+
+            /**
+             * Set the desired SoftApConfiguration for {@link #TETHERING_WIFI}. If this is null or
+             * not set, then the persistent tethering SoftApConfiguration from
+             * {@link WifiManager#getSoftApConfiguration()} will be used.
+             * </p>
+             * If TETHERING_WIFI is already enabled and a new request is made with a different
+             * SoftApConfiguration, the request will be accepted if the device can support an
+             * additional tethering Wi-Fi AP interface. Otherwise, the request will be rejected.
+             *
+             * @param softApConfig SoftApConfiguration to use.
+             * @throws IllegalArgumentException if the tethering type isn't TETHERING_WIFI.
+             */
+            @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+            @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED)
+            @NonNull
+            public Builder setSoftApConfiguration(@Nullable SoftApConfiguration softApConfig) {
+                if (mBuilderParcel.tetheringType != TETHERING_WIFI) {
+                    throw new IllegalArgumentException(
+                            "SoftApConfiguration can only be set for TETHERING_WIFI");
+                }
+                mBuilderParcel.softApConfig = softApConfig;
                 return this;
             }
 
@@ -889,6 +911,15 @@ public class TetheringManager {
         }
 
         /**
+         * Get the desired SoftApConfiguration of the request, if one was specified.
+         */
+        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @Nullable
+        public SoftApConfiguration getSoftApConfiguration() {
+            return mRequestParcel.softApConfig;
+        }
+
+        /**
          * Get a TetheringRequestParcel from the configuration
          * @hide
          */
@@ -901,9 +932,10 @@ public class TetheringManager {
             return "TetheringRequest [ type= " + mRequestParcel.tetheringType
                     + ", localIPv4Address= " + mRequestParcel.localIPv4Address
                     + ", staticClientAddress= " + mRequestParcel.staticClientAddress
-                    + ", exemptFromEntitlementCheck= "
-                    + mRequestParcel.exemptFromEntitlementCheck + ", showProvisioningUi= "
-                    + mRequestParcel.showProvisioningUi + " ]";
+                    + ", exemptFromEntitlementCheck= " + mRequestParcel.exemptFromEntitlementCheck
+                    + ", showProvisioningUi= " + mRequestParcel.showProvisioningUi
+                    + ", softApConfig= " + mRequestParcel.softApConfig
+                    + " ]";
         }
 
         @Override
@@ -917,7 +949,8 @@ public class TetheringManager {
                     && Objects.equals(parcel.staticClientAddress, otherParcel.staticClientAddress)
                     && parcel.exemptFromEntitlementCheck == otherParcel.exemptFromEntitlementCheck
                     && parcel.showProvisioningUi == otherParcel.showProvisioningUi
-                    && parcel.connectivityScope == otherParcel.connectivityScope;
+                    && parcel.connectivityScope == otherParcel.connectivityScope
+                    && Objects.equals(parcel.softApConfig, otherParcel.softApConfig);
         }
 
         @Override
@@ -925,7 +958,7 @@ public class TetheringManager {
             TetheringRequestParcel parcel = getParcel();
             return Objects.hash(parcel.tetheringType, parcel.localIPv4Address,
                     parcel.staticClientAddress, parcel.exemptFromEntitlementCheck,
-                    parcel.showProvisioningUi, parcel.connectivityScope);
+                    parcel.showProvisioningUi, parcel.connectivityScope, parcel.softApConfig);
         }
     }
 
@@ -1379,6 +1412,9 @@ public class TetheringManager {
     @RequiresPermission(Manifest.permission.ACCESS_NETWORK_STATE)
     public void registerTetheringEventCallback(@NonNull Executor executor,
             @NonNull TetheringEventCallback callback) {
+        Objects.requireNonNull(executor);
+        Objects.requireNonNull(callback);
+
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "registerTetheringEventCallback caller:" + callerPkg);
 
@@ -1533,6 +1569,8 @@ public class TetheringManager {
             Manifest.permission.ACCESS_NETWORK_STATE
     })
     public void unregisterTetheringEventCallback(@NonNull final TetheringEventCallback callback) {
+        Objects.requireNonNull(callback);
+
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "unregisterTetheringEventCallback caller:" + callerPkg);
 

@@ -13,23 +13,29 @@
 #  limitations under the License.
 
 from unittest.mock import MagicMock, patch
+from absl.testing import parameterized
 from mobly import asserts
 from mobly import base_test
 from mobly import config_parser
 from mobly.controllers.android_device_lib.adb import AdbError
 from net_tests_utils.host.python.apf_utils import (
+    ApfCapabilities,
     PatternNotFoundException,
     UnsupportedOperationException,
+    get_apf_capabilities,
     get_apf_counter,
     get_apf_counters_from_dumpsys,
     get_hardware_address,
-    send_broadcast_empty_ethercat_packet,
+    is_send_raw_packet_downstream_supported,
     send_raw_packet_downstream,
 )
 from net_tests_utils.host.python.assert_utils import UnexpectedBehaviorError
 
+TEST_IFACE_NAME = "eth0"
+TEST_PACKET_IN_HEX = "AABBCCDDEEFF"
 
-class TestApfUtils(base_test.BaseTestClass):
+
+class TestApfUtils(base_test.BaseTestClass, parameterized.TestCase):
 
   def __init__(self, configs: config_parser.TestRunConfig):
     super().__init__(configs)
@@ -105,30 +111,18 @@ IpClient.wlan1
     with asserts.assert_raises(PatternNotFoundException):
       get_hardware_address(self.mock_ad, "wlan0")
 
-  @patch("net_tests_utils.host.python.apf_utils.get_hardware_address")
-  @patch("net_tests_utils.host.python.apf_utils.send_raw_packet_downstream")
-  def test_send_broadcast_empty_ethercat_packet(
-      self,
-      mock_send_raw_packet_downstream: MagicMock,
-      mock_get_hardware_address: MagicMock,
-  ) -> None:
-    mock_get_hardware_address.return_value = "12:34:56:78:90:AB"
-    send_broadcast_empty_ethercat_packet(self.mock_ad, "eth0")
-    # Assuming you'll mock the packet construction part, verify calls to send_raw_packet_downstream.
-    mock_send_raw_packet_downstream.assert_called_once()
-
   @patch("net_tests_utils.host.python.adb_utils.adb_shell")
   def test_send_raw_packet_downstream_success(
       self, mock_adb_shell: MagicMock
   ) -> None:
     mock_adb_shell.return_value = ""  # Successful command output
-    iface_name = "eth0"
-    packet_in_hex = "AABBCCDDEEFF"
-    send_raw_packet_downstream(self.mock_ad, iface_name, packet_in_hex)
+    send_raw_packet_downstream(
+        self.mock_ad, TEST_IFACE_NAME, TEST_PACKET_IN_HEX
+    )
     mock_adb_shell.assert_called_once_with(
         self.mock_ad,
         "cmd network_stack send-raw-packet-downstream"
-        f" {iface_name} {packet_in_hex}",
+        f" {TEST_IFACE_NAME} {TEST_PACKET_IN_HEX}",
     )
 
   @patch("net_tests_utils.host.python.adb_utils.adb_shell")
@@ -139,7 +133,13 @@ IpClient.wlan1
         "Any Unexpected Output"
     )
     with asserts.assert_raises(UnexpectedBehaviorError):
-      send_raw_packet_downstream(self.mock_ad, "eth0", "AABBCCDDEEFF")
+      send_raw_packet_downstream(
+          self.mock_ad, TEST_IFACE_NAME, TEST_PACKET_IN_HEX
+      )
+    asserts.assert_true(
+        is_send_raw_packet_downstream_supported(self.mock_ad),
+        "Send raw packet should be supported.",
+    )
 
   @patch("net_tests_utils.host.python.adb_utils.adb_shell")
   def test_send_raw_packet_downstream_unsupported(
@@ -149,4 +149,30 @@ IpClient.wlan1
         cmd="", stdout="Unknown command", stderr="", ret_code=3
     )
     with asserts.assert_raises(UnsupportedOperationException):
-      send_raw_packet_downstream(self.mock_ad, "eth0", "AABBCCDDEEFF")
+      send_raw_packet_downstream(
+          self.mock_ad, TEST_IFACE_NAME, TEST_PACKET_IN_HEX
+      )
+    asserts.assert_false(
+        is_send_raw_packet_downstream_supported(self.mock_ad),
+        "Send raw packet should not be supported.",
+    )
+
+  @parameterized.parameters(
+      ("2,2048,1", ApfCapabilities(2, 2048, 1)),  # Valid input
+      ("3,1024,0", ApfCapabilities(3, 1024, 0)),  # Valid input
+      ("invalid,output", ApfCapabilities(0, 0, 0)),  # Invalid input
+      ("", ApfCapabilities(0, 0, 0)),  # Empty input
+  )
+  @patch("net_tests_utils.host.python.adb_utils.adb_shell")
+  def test_get_apf_capabilities(
+      self, mock_output, expected_result, mock_adb_shell
+  ):
+    """Tests the get_apf_capabilities function with various inputs and expected results."""
+    # Configure the mock adb_shell to return the specified output
+    mock_adb_shell.return_value = mock_output
+
+    # Call the function under test
+    result = get_apf_capabilities(self.mock_ad, "wlan0")
+
+    # Assert that the result matches the expected result
+    asserts.assert_equal(result, expected_result)

@@ -93,6 +93,7 @@ import com.android.metrics.NetworkNsdReportedMetrics;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.CollectionUtils;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.DnsUtils;
 import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.InetAddressUtils;
 import com.android.net.module.util.PermissionUtils;
@@ -768,7 +769,7 @@ public class NsdService extends INsdManager.Stub {
             private Set<String> dedupSubtypeLabels(Collection<String> subtypes) {
                 final Map<String, String> subtypeMap = new LinkedHashMap<>(subtypes.size());
                 for (String subtype : subtypes) {
-                    subtypeMap.put(MdnsUtils.toDnsLowerCase(subtype), subtype);
+                    subtypeMap.put(DnsUtils.toDnsUpperCase(subtype), subtype);
                 }
                 return new ArraySet<>(subtypeMap.values());
             }
@@ -1935,8 +1936,23 @@ public class NsdService extends INsdManager.Stub {
                         mContext, MdnsFeatureFlags.NSD_AGGRESSIVE_QUERY_MODE))
                 .setIsQueryWithKnownAnswerEnabled(mDeps.isFeatureEnabled(
                         mContext, MdnsFeatureFlags.NSD_QUERY_WITH_KNOWN_ANSWER))
-                .setOverrideProvider(flag -> mDeps.isFeatureEnabled(
-                        mContext, FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag))
+                .setAvoidAdvertisingEmptyTxtRecords(mDeps.isTetheringFeatureNotChickenedOut(
+                        mContext, MdnsFeatureFlags.NSD_AVOID_ADVERTISING_EMPTY_TXT_RECORDS))
+                .setOverrideProvider(new MdnsFeatureFlags.FlagOverrideProvider() {
+                    @Override
+                    public boolean isForceEnabledForTest(@NonNull String flag) {
+                        return mDeps.isFeatureEnabled(
+                                mContext,
+                                FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag);
+                    }
+
+                    @Override
+                    public int getIntValueForTest(@NonNull String flag) {
+                        return mDeps.getDeviceConfigPropertyInt(
+                                FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag,
+                                -1 /* defaultValue */);
+                    }
+                })
                 .build();
         mMdnsSocketClient =
                 new MdnsMultinetworkSocketClient(handler.getLooper(), mMdnsSocketProvider,
@@ -2000,6 +2016,14 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isTetheringFeatureNotChickenedOut(Context context, String feature) {
             return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(context, feature);
+        }
+
+        /**
+         * @see DeviceConfigUtils#getDeviceConfigPropertyInt
+         */
+        public int getDeviceConfigPropertyInt(String feature, int defaultValue) {
+            return DeviceConfigUtils.getDeviceConfigPropertyInt(
+                    NAMESPACE_TETHERING, feature, defaultValue);
         }
 
         /**

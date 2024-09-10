@@ -12,15 +12,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+from dataclasses import dataclass
 import re
+from mobly import asserts
 from mobly.controllers import android_device
 from mobly.controllers.android_device_lib.adb import AdbError
 from net_tests_utils.host.python import adb_utils, assert_utils
-
-
-# Constants.
-ETHER_BROADCAST = "FFFFFFFFFFFF"
-ETH_P_ETHERCAT = "88A4"
 
 
 class PatternNotFoundException(Exception):
@@ -119,25 +116,17 @@ def get_hardware_address(
     )
 
 
-def send_broadcast_empty_ethercat_packet(
-    ad: android_device.AndroidDevice, iface_name: str
-) -> None:
-  """Transmits a broadcast empty EtherCat packet on the specified interface."""
-
-  # Get the interface's MAC address.
-  mac_address = get_hardware_address(ad, iface_name)
-
-  # TODO: Build packet by using scapy library.
-  # Ethernet header (14 bytes).
-  packet = ETHER_BROADCAST  # Destination MAC (broadcast)
-  packet += mac_address.replace(":", "")  # Source MAC
-  packet += ETH_P_ETHERCAT  # EtherType (EtherCAT)
-
-  # EtherCAT header (2 bytes) + 44 bytes of zero padding.
-  packet += "00" * 46
-
-  # Send the packet using a raw socket.
-  send_raw_packet_downstream(ad, iface_name, packet)
+def is_send_raw_packet_downstream_supported(
+    ad: android_device.AndroidDevice,
+) -> bool:
+  try:
+    # Invoke the shell command with empty argument and see how NetworkStack respond.
+    # If supported, an IllegalArgumentException with help page will be printed.
+    send_raw_packet_downstream(ad, "", "")
+  except assert_utils.UnexpectedBehaviorError:
+    return True
+  except UnsupportedOperationException:
+    return False
 
 
 def send_raw_packet_downstream(
@@ -190,3 +179,65 @@ def send_raw_packet_downstream(
     raise assert_utils.UnexpectedBehaviorError(
         f"Got unexpected output: {output} for command: {cmd}."
     )
+
+
+@dataclass
+class ApfCapabilities:
+  """APF program support capabilities.
+
+  See android.net.apf.ApfCapabilities.
+
+  Attributes:
+      apf_version_supported (int): Version of APF instruction set supported for
+        packet filtering. 0 indicates no support for packet filtering using APF
+        programs.
+      apf_ram_size (int): Size of APF ram.
+      apf_packet_format (int): Format of packets passed to APF filter. Should be
+        one of ARPHRD_*
+  """
+
+  apf_version_supported: int
+  apf_ram_size: int
+  apf_packet_format: int
+
+  def __init__(
+      self,
+      apf_version_supported: int,
+      apf_ram_size: int,
+      apf_packet_format: int,
+  ):
+    self.apf_version_supported = apf_version_supported
+    self.apf_ram_size = apf_ram_size
+    self.apf_packet_format = apf_packet_format
+
+  def __str__(self):
+    """Returns a user-friendly string representation of the APF capabilities."""
+    return (
+        f"APF Version: {self.apf_version_supported}\n"
+        f"Ram Size: {self.apf_ram_size} bytes\n"
+        f"Packet Format: {self.apf_packet_format}"
+    )
+
+
+def get_apf_capabilities(
+    ad: android_device.AndroidDevice, iface_name: str
+) -> ApfCapabilities:
+  output = adb_utils.adb_shell(
+      ad, f"cmd network_stack apf {iface_name} capabilities"
+  )
+  try:
+    values = [int(value_str) for value_str in output.split(",")]
+  except ValueError:
+    return ApfCapabilities(0, 0, 0)  # Conversion to integer failed
+  return ApfCapabilities(values[0], values[1], values[2])
+
+
+def assume_apf_version_support_at_least(
+    ad: android_device.AndroidDevice, iface_name: str, expected_version: int
+) -> None:
+  caps = get_apf_capabilities(ad, iface_name)
+  asserts.abort_class_if(
+      caps.apf_version_supported < expected_version,
+      f"Supported apf version {caps.apf_version_supported} < expected version"
+      f" {expected_version}",
+  )
