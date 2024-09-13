@@ -17,23 +17,25 @@
 package android.net.thread;
 
 import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
-import static android.net.thread.utils.IntegrationTestUtils.JOIN_TIMEOUT;
+import static android.net.InetAddresses.parseNumericAddress;
+import static android.net.thread.utils.IntegrationTestUtils.DEFAULT_DATASET;
 import static android.net.thread.utils.IntegrationTestUtils.getIpv6LinkAddresses;
+import static android.net.thread.utils.IntegrationTestUtils.isExpectedIcmpv4Packet;
 import static android.net.thread.utils.IntegrationTestUtils.isExpectedIcmpv6Packet;
-import static android.net.thread.utils.IntegrationTestUtils.isFromIpv6Source;
+import static android.net.thread.utils.IntegrationTestUtils.isFrom;
 import static android.net.thread.utils.IntegrationTestUtils.isInMulticastGroup;
-import static android.net.thread.utils.IntegrationTestUtils.isToIpv6Destination;
+import static android.net.thread.utils.IntegrationTestUtils.isTo;
+import static android.net.thread.utils.IntegrationTestUtils.joinNetworkAndWaitForOmr;
 import static android.net.thread.utils.IntegrationTestUtils.newPacketReader;
 import static android.net.thread.utils.IntegrationTestUtils.pollForPacket;
 import static android.net.thread.utils.IntegrationTestUtils.sendUdpMessage;
 import static android.net.thread.utils.IntegrationTestUtils.waitFor;
+import static android.system.OsConstants.ICMP_ECHO;
 
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ECHO_REPLY_TYPE;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ECHO_REQUEST_TYPE;
-import static com.android.testutils.TestNetworkTrackerKt.initTestNetwork;
 import static com.android.testutils.TestPermissionUtil.runAsShell;
 
-import static com.google.common.io.BaseEncoding.base16;
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.junit.Assert.assertEquals;
@@ -44,13 +46,11 @@ import static org.junit.Assert.assertNull;
 import static java.util.Objects.requireNonNull;
 
 import android.content.Context;
-import android.net.InetAddresses;
 import android.net.IpPrefix;
 import android.net.LinkAddress;
-import android.net.LinkProperties;
-import android.net.MacAddress;
 import android.net.thread.utils.FullThreadDevice;
 import android.net.thread.utils.InfraNetworkDevice;
+import android.net.thread.utils.IntegrationTestUtils;
 import android.net.thread.utils.OtDaemonController;
 import android.net.thread.utils.ThreadFeatureCheckerRule;
 import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresIpv6MulticastRouting;
@@ -74,7 +74,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.net.Inet4Address;
 import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -89,22 +91,14 @@ public class BorderRoutingTest {
     private static final String TAG = BorderRoutingTest.class.getSimpleName();
     private static final int NUM_FTD = 2;
     private static final Inet6Address GROUP_ADDR_SCOPE_5 =
-            (Inet6Address) InetAddresses.parseNumericAddress("ff05::1234");
+            (Inet6Address) parseNumericAddress("ff05::1234");
     private static final Inet6Address GROUP_ADDR_SCOPE_4 =
-            (Inet6Address) InetAddresses.parseNumericAddress("ff04::1234");
+            (Inet6Address) parseNumericAddress("ff04::1234");
     private static final Inet6Address GROUP_ADDR_SCOPE_3 =
-            (Inet6Address) InetAddresses.parseNumericAddress("ff03::1234");
-
-    // A valid Thread Active Operational Dataset generated from OpenThread CLI "dataset init new".
-    private static final byte[] DEFAULT_DATASET_TLVS =
-            base16().decode(
-                            "0E080000000000010000000300001335060004001FFFE002"
-                                    + "08ACC214689BC40BDF0708FD64DB1225F47E0B0510F26B31"
-                                    + "53760F519A63BAFDDFFC80D2AF030F4F70656E5468726561"
-                                    + "642D643961300102D9A00410A245479C836D551B9CA557F7"
-                                    + "B9D351B40C0402A0FFF8");
-    private static final ActiveOperationalDataset DEFAULT_DATASET =
-            ActiveOperationalDataset.fromThreadTlvs(DEFAULT_DATASET_TLVS);
+            (Inet6Address) parseNumericAddress("ff03::1234");
+    private static final Inet4Address IPV4_SERVER_ADDR =
+            (Inet4Address) parseNumericAddress("8.8.8.8");
+    private static final String NAT64_CIDR = "192.168.255.0/24";
 
     @Rule public final ThreadFeatureCheckerRule mThreadRule = new ThreadFeatureCheckerRule();
 
@@ -171,12 +165,12 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
 
         mInfraDevice.sendEchoRequest(ftd.getOmrAddress());
 
         // Infra device receives an echo reply sent by FTD.
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
+        assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
     }
 
     @Test
@@ -193,11 +187,11 @@ public class BorderRoutingTest {
 
         startInfraDeviceAndWaitForOnLinkAddr();
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
 
         mInfraDevice.sendEchoRequest(ftd.getOmrAddress());
 
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
+        assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
     }
 
     @Test
@@ -213,7 +207,7 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         Inet6Address ftdOmr = ftd.getOmrAddress();
         // Create a new infra network and let Thread prefer it
         TestNetworkTracker oldInfraNetworkTracker = mInfraNetworkTracker;
@@ -224,7 +218,7 @@ public class BorderRoutingTest {
 
             mInfraDevice.sendEchoRequest(ftd.getOmrAddress());
 
-            assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftdOmr));
+            assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftdOmr));
         } finally {
             runAsShell(MANAGE_TEST_NETWORKS, () -> oldInfraNetworkTracker.teardown());
         }
@@ -243,7 +237,7 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         Inet6Address ftdOmr = requireNonNull(ftd.getOmrAddress());
         Inet6Address ftdMlEid = requireNonNull(ftd.getMlEid());
 
@@ -285,7 +279,7 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
 
         ftd.subscribeMulticastAddress(GROUP_ADDR_SCOPE_5);
 
@@ -307,7 +301,7 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
 
         ftd.subscribeMulticastAddress(GROUP_ADDR_SCOPE_3);
 
@@ -328,12 +322,12 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         subscribeMulticastAddressAndWait(ftd, GROUP_ADDR_SCOPE_5);
 
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_5);
 
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
+        assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
     }
 
     @Test
@@ -360,12 +354,12 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         ftd.subscribeMulticastAddress(GROUP_ADDR_SCOPE_3);
 
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_3);
 
-        assertNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
+        assertNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
     }
 
     @Test
@@ -382,11 +376,11 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
 
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_4);
 
-        assertNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
+        assertNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd.getOmrAddress()));
     }
 
     @Test
@@ -407,22 +401,24 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd1 = mFtds.get(0);
-        startFtdChild(ftd1);
+        joinNetworkAndWaitForOmr(ftd1, DEFAULT_DATASET);
         subscribeMulticastAddressAndWait(ftd1, GROUP_ADDR_SCOPE_5);
 
         FullThreadDevice ftd2 = mFtds.get(1);
-        startFtdChild(ftd2);
+        joinNetworkAndWaitForOmr(ftd2, DEFAULT_DATASET);
         subscribeMulticastAddressAndWait(ftd2, GROUP_ADDR_SCOPE_4);
 
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_5);
 
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd1.getOmrAddress()));
+        assertNotNull(
+                pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd1.getOmrAddress()));
 
         // Verify ping reply from ftd1 and ftd2 separately as the order of replies can't be
         // predicted.
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_4);
 
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd2.getOmrAddress()));
+        assertNotNull(
+                pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd2.getOmrAddress()));
     }
 
     @Test
@@ -443,21 +439,23 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd1 = mFtds.get(0);
-        startFtdChild(ftd1);
+        joinNetworkAndWaitForOmr(ftd1, DEFAULT_DATASET);
         subscribeMulticastAddressAndWait(ftd1, GROUP_ADDR_SCOPE_5);
 
         FullThreadDevice ftd2 = mFtds.get(1);
-        startFtdChild(ftd2);
+        joinNetworkAndWaitForOmr(ftd2, DEFAULT_DATASET);
         subscribeMulticastAddressAndWait(ftd2, GROUP_ADDR_SCOPE_5);
 
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_5);
 
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd1.getOmrAddress()));
+        assertNotNull(
+                pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd1.getOmrAddress()));
 
         // Send the request twice as the order of replies from ftd1 and ftd2 are not guaranteed
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_5);
 
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd2.getOmrAddress()));
+        assertNotNull(
+                pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftd2.getOmrAddress()));
     }
 
     @Test
@@ -473,16 +471,18 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         Inet6Address ftdOmr = ftd.getOmrAddress();
 
         ftd.ping(GROUP_ADDR_SCOPE_5);
         ftd.ping(GROUP_ADDR_SCOPE_4);
 
         assertNotNull(
-                pollForPacketOnInfraNetwork(ICMPV6_ECHO_REQUEST_TYPE, ftdOmr, GROUP_ADDR_SCOPE_5));
+                pollForIcmpPacketOnInfraNetwork(
+                        ICMPV6_ECHO_REQUEST_TYPE, ftdOmr, GROUP_ADDR_SCOPE_5));
         assertNotNull(
-                pollForPacketOnInfraNetwork(ICMPV6_ECHO_REQUEST_TYPE, ftdOmr, GROUP_ADDR_SCOPE_4));
+                pollForIcmpPacketOnInfraNetwork(
+                        ICMPV6_ECHO_REQUEST_TYPE, ftdOmr, GROUP_ADDR_SCOPE_4));
     }
 
     @Test
@@ -499,12 +499,12 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
 
         ftd.ping(GROUP_ADDR_SCOPE_3);
 
         assertNull(
-                pollForPacketOnInfraNetwork(
+                pollForIcmpPacketOnInfraNetwork(
                         ICMPV6_ECHO_REQUEST_TYPE, ftd.getOmrAddress(), GROUP_ADDR_SCOPE_3));
     }
 
@@ -521,14 +521,15 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         Inet6Address ftdLla = ftd.getLinkLocalAddress();
         assertNotNull(ftdLla);
 
         ftd.ping(GROUP_ADDR_SCOPE_4, ftdLla);
 
         assertNull(
-                pollForPacketOnInfraNetwork(ICMPV6_ECHO_REQUEST_TYPE, ftdLla, GROUP_ADDR_SCOPE_4));
+                pollForIcmpPacketOnInfraNetwork(
+                        ICMPV6_ECHO_REQUEST_TYPE, ftdLla, GROUP_ADDR_SCOPE_4));
     }
 
     @Test
@@ -544,7 +545,7 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         List<Inet6Address> ftdMlas = ftd.getMeshLocalAddresses();
         assertFalse(ftdMlas.isEmpty());
 
@@ -552,7 +553,7 @@ public class BorderRoutingTest {
             ftd.ping(GROUP_ADDR_SCOPE_4, ftdMla);
 
             assertNull(
-                    pollForPacketOnInfraNetwork(
+                    pollForIcmpPacketOnInfraNetwork(
                             ICMPV6_ECHO_REQUEST_TYPE, ftdMla, GROUP_ADDR_SCOPE_4));
         }
     }
@@ -571,7 +572,7 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         subscribeMulticastAddressAndWait(ftd, GROUP_ADDR_SCOPE_5);
         Inet6Address ftdOmr = ftd.getOmrAddress();
 
@@ -583,7 +584,7 @@ public class BorderRoutingTest {
 
         mInfraDevice.sendEchoRequest(GROUP_ADDR_SCOPE_5);
 
-        assertNotNull(pollForPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftdOmr));
+        assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftdOmr));
     }
 
     @Test
@@ -599,7 +600,7 @@ public class BorderRoutingTest {
          */
 
         FullThreadDevice ftd = mFtds.get(0);
-        startFtdChild(ftd);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         Inet6Address ftdOmr = ftd.getOmrAddress();
 
         // Destroy infra link and re-create
@@ -611,38 +612,35 @@ public class BorderRoutingTest {
         ftd.ping(GROUP_ADDR_SCOPE_4);
 
         assertNotNull(
-                pollForPacketOnInfraNetwork(ICMPV6_ECHO_REQUEST_TYPE, ftdOmr, GROUP_ADDR_SCOPE_4));
+                pollForIcmpPacketOnInfraNetwork(
+                        ICMPV6_ECHO_REQUEST_TYPE, ftdOmr, GROUP_ADDR_SCOPE_4));
+    }
+
+    @Test
+    public void nat64_threadDevicePingIpv4InfraDevice_outboundPacketIsForwarded() throws Exception {
+        FullThreadDevice ftd = mFtds.get(0);
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
+        // TODO: enable NAT64 via ThreadNetworkController API instead of ot-ctl
+        mOtCtl.setNat64Cidr(NAT64_CIDR);
+        mOtCtl.setNat64Enabled(true);
+        waitFor(() -> mOtCtl.hasNat64PrefixInNetdata(), Duration.ofSeconds(10));
+
+        ftd.ping(IPV4_SERVER_ADDR);
+
+        assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMP_ECHO, null, IPV4_SERVER_ADDR));
     }
 
     private void setUpInfraNetwork() throws Exception {
-        mInfraNetworkTracker =
-                runAsShell(
-                        MANAGE_TEST_NETWORKS,
-                        () ->
-                                initTestNetwork(
-                                        mContext, new LinkProperties(), 5000 /* timeoutMs */));
-        mController.setTestNetworkAsUpstreamAndWait(
-                mInfraNetworkTracker.getTestIface().getInterfaceName());
+        mInfraNetworkTracker = IntegrationTestUtils.setUpInfraNetwork(mContext, mController);
     }
 
     private void tearDownInfraNetwork() {
-        runAsShell(MANAGE_TEST_NETWORKS, () -> mInfraNetworkTracker.teardown());
+        IntegrationTestUtils.tearDownInfraNetwork(mInfraNetworkTracker);
     }
 
-    private void startFtdChild(FullThreadDevice ftd) throws Exception {
-        ftd.factoryReset();
-        ftd.joinNetwork(DEFAULT_DATASET);
-        ftd.waitForStateAnyOf(List.of("router", "child"), JOIN_TIMEOUT);
-        waitFor(() -> ftd.getOmrAddress() != null, Duration.ofSeconds(60));
-        Inet6Address ftdOmr = ftd.getOmrAddress();
-        assertNotNull(ftdOmr);
-    }
-
-    private void startInfraDeviceAndWaitForOnLinkAddr() throws Exception {
+    private void startInfraDeviceAndWaitForOnLinkAddr() {
         mInfraDevice =
-                new InfraNetworkDevice(MacAddress.fromString("1:2:3:4:5:6"), mInfraNetworkReader);
-        mInfraDevice.runSlaac(Duration.ofSeconds(60));
-        assertNotNull(mInfraDevice.ipv6Addr);
+                IntegrationTestUtils.startInfraDeviceAndWaitForOnLinkAddr(mInfraNetworkReader);
     }
 
     private void assertInfraLinkMemberOfGroup(Inet6Address address) throws Exception {
@@ -668,20 +666,28 @@ public class BorderRoutingTest {
         assertInfraLinkMemberOfGroup(address);
     }
 
-    private byte[] pollForPacketOnInfraNetwork(int type, Inet6Address srcAddress) {
-        return pollForPacketOnInfraNetwork(type, srcAddress, null);
+    private byte[] pollForIcmpPacketOnInfraNetwork(int type, InetAddress srcAddress) {
+        return pollForIcmpPacketOnInfraNetwork(type, srcAddress, null /* destAddress */);
     }
 
-    private byte[] pollForPacketOnInfraNetwork(
-            int type, Inet6Address srcAddress, Inet6Address destAddress) {
-        Predicate<byte[]> filter;
-        filter =
+    private byte[] pollForIcmpPacketOnInfraNetwork(
+            int type, InetAddress srcAddress, InetAddress destAddress) {
+        if (srcAddress == null && destAddress == null) {
+            throw new IllegalArgumentException("srcAddress and destAddress cannot be both null");
+        }
+        if (srcAddress != null && destAddress != null) {
+            if ((srcAddress instanceof Inet4Address) != (destAddress instanceof Inet4Address)) {
+                throw new IllegalArgumentException(
+                        "srcAddress and destAddress must be both IPv4 or both IPv6");
+            }
+        }
+        boolean isIpv4 =
+                (srcAddress instanceof Inet4Address) || (destAddress instanceof Inet4Address);
+        final Predicate<byte[]> filter =
                 p ->
-                        (isExpectedIcmpv6Packet(p, type)
-                                && (srcAddress == null ? true : isFromIpv6Source(p, srcAddress))
-                                && (destAddress == null
-                                        ? true
-                                        : isToIpv6Destination(p, destAddress)));
+                        (isIpv4 ? isExpectedIcmpv4Packet(p, type) : isExpectedIcmpv6Packet(p, type))
+                                && (srcAddress == null || isFrom(p, srcAddress))
+                                && (destAddress == null || isTo(p, destAddress));
         return pollForPacket(mInfraNetworkReader, filter);
     }
 }
