@@ -1936,8 +1936,25 @@ public class NsdService extends INsdManager.Stub {
                         mContext, MdnsFeatureFlags.NSD_AGGRESSIVE_QUERY_MODE))
                 .setIsQueryWithKnownAnswerEnabled(mDeps.isFeatureEnabled(
                         mContext, MdnsFeatureFlags.NSD_QUERY_WITH_KNOWN_ANSWER))
-                .setOverrideProvider(flag -> mDeps.isFeatureEnabled(
-                        mContext, FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag))
+                .setIsCachedServicesRemovalEnabled(mDeps.isFeatureEnabled(
+                        mContext, MdnsFeatureFlags.NSD_CACHED_SERVICES_REMOVAL))
+                .setCachedServicesRetentionTime(mDeps.getDeviceConfigPropertyInt(
+                        MdnsFeatureFlags.NSD_CACHED_SERVICES_RETENTION_TIME,
+                        MdnsFeatureFlags.DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS))
+                .setOverrideProvider(new MdnsFeatureFlags.FlagOverrideProvider() {
+                    @Override
+                    public boolean isForceEnabledForTest(@NonNull String flag) {
+                        return mDeps.isFeatureEnabled(
+                                mContext,
+                                FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag);
+                    }
+
+                    @Override
+                    public int getIntValueForTest(@NonNull String flag, int defaultValue) {
+                        return mDeps.getDeviceConfigPropertyInt(
+                                FORCE_ENABLE_FLAG_FOR_TEST_PREFIX + flag, defaultValue);
+                    }
+                })
                 .build();
         mMdnsSocketClient =
                 new MdnsMultinetworkSocketClient(handler.getLooper(), mMdnsSocketProvider,
@@ -2001,6 +2018,14 @@ public class NsdService extends INsdManager.Stub {
          */
         public boolean isTetheringFeatureNotChickenedOut(Context context, String feature) {
             return DeviceConfigUtils.isTetheringFeatureNotChickenedOut(context, feature);
+        }
+
+        /**
+         * @see DeviceConfigUtils#getDeviceConfigPropertyInt
+         */
+        public int getDeviceConfigPropertyInt(String feature, int defaultValue) {
+            return DeviceConfigUtils.getDeviceConfigPropertyInt(
+                    NAMESPACE_TETHERING, feature, defaultValue);
         }
 
         /**
