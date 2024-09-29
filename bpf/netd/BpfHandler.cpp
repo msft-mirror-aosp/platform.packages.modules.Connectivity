@@ -114,6 +114,11 @@ static Status initPrograms(const char* cg2_path) {
                                     cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
     }
 
+    if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
+        RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_INET_RELEASE_PROG_PATH,
+                                    cg_fd, BPF_CGROUP_INET_SOCK_RELEASE));
+    }
+
     if (modules::sdklevel::IsAtLeastV()) {
         RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_CONNECT4_PROG_PATH,
                                     cg_fd, BPF_CGROUP_INET4_CONNECT));
@@ -134,19 +139,12 @@ static Status initPrograms(const char* cg2_path) {
             RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_SETSOCKOPT_PROG_PATH,
                                         cg_fd, BPF_CGROUP_SETSOCKOPT));
         }
-
-        if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
-            RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_INET_RELEASE_PROG_PATH,
-                                        cg_fd, BPF_CGROUP_INET_SOCK_RELEASE));
-        }
     }
 
     if (bpf::isAtLeastKernelVersion(4, 19, 0)) {
-        RETURN_IF_NOT_OK(attachProgramToCgroup(
-                "/sys/fs/bpf/netd_readonly/prog_block_bind4_block_port",
+        RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_BIND4_PROG_PATH,
                 cg_fd, BPF_CGROUP_INET4_BIND));
-        RETURN_IF_NOT_OK(attachProgramToCgroup(
-                "/sys/fs/bpf/netd_readonly/prog_block_bind6_block_port",
+        RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_BIND6_PROG_PATH,
                 cg_fd, BPF_CGROUP_INET6_BIND));
 
         // This should trivially pass, since we just attached up above,
@@ -156,6 +154,10 @@ static Status initPrograms(const char* cg2_path) {
         if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_CREATE) <= 0) abort();
         if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET4_BIND) <= 0) abort();
         if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET6_BIND) <= 0) abort();
+    }
+
+    if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
+        if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_RELEASE) <= 0) abort();
     }
 
     if (modules::sdklevel::IsAtLeastV()) {
@@ -169,10 +171,6 @@ static Status initPrograms(const char* cg2_path) {
         if (bpf::isAtLeastKernelVersion(5, 4, 0)) {
             if (bpf::queryProgram(cg_fd, BPF_CGROUP_GETSOCKOPT) <= 0) abort();
             if (bpf::queryProgram(cg_fd, BPF_CGROUP_SETSOCKOPT) <= 0) abort();
-        }
-
-        if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
-            if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_RELEASE) <= 0) abort();
         }
     }
 
