@@ -28,8 +28,6 @@ import static com.android.networkstack.tethering.util.PrefixUtils.asIpPrefix;
 
 import static java.util.Arrays.asList;
 
-import android.content.Context;
-import android.net.ConnectivityManager;
 import android.net.IpPrefix;
 import android.net.LinkAddress;
 import android.net.LinkProperties;
@@ -53,6 +51,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /**
  * This class coordinate IP addresses conflict problem.
@@ -65,6 +64,7 @@ import java.util.Set;
  * @hide
  */
 public class PrivateAddressCoordinator {
+    // WARNING: Keep in sync with chooseDownstreamAddress
     public static final int PREFIX_LENGTH = 24;
 
     // Upstream monitor would be stopped when tethering is down. When tethering restart, downstream
@@ -77,18 +77,22 @@ public class PrivateAddressCoordinator {
     private static final String LEGACY_WIFI_P2P_IFACE_ADDRESS = "192.168.49.1/24";
     private static final String LEGACY_BLUETOOTH_IFACE_ADDRESS = "192.168.44.1/24";
     private final List<IpPrefix> mTetheringPrefixes;
-    private final ConnectivityManager mConnectivityMgr;
-    private final TetheringConfiguration mConfig;
+    // A supplier that returns ConnectivityManager#getAllNetworks.
+    private final Supplier<Network[]> mGetAllNetworksSupplier;
+    private final boolean mIsRandomPrefixBaseEnabled;
+    private final boolean mShouldEnableWifiP2pDedicatedIp;
     // keyed by downstream type(TetheringManager.TETHERING_*).
     private final ArrayMap<AddressKey, LinkAddress> mCachedAddresses;
     private final Random mRandom;
 
-    public PrivateAddressCoordinator(Context context, TetheringConfiguration config) {
+    public PrivateAddressCoordinator(Supplier<Network[]> getAllNetworksSupplier,
+            boolean isRandomPrefixBase,
+            boolean shouldEnableWifiP2pDedicatedIp) {
         mDownstreams = new ArraySet<>();
         mUpstreamPrefixMap = new ArrayMap<>();
-        mConnectivityMgr = (ConnectivityManager) context.getSystemService(
-                Context.CONNECTIVITY_SERVICE);
-        mConfig = config;
+        mGetAllNetworksSupplier = getAllNetworksSupplier;
+        mIsRandomPrefixBaseEnabled = isRandomPrefixBase;
+        mShouldEnableWifiP2pDedicatedIp = shouldEnableWifiP2pDedicatedIp;
         mCachedAddresses = new ArrayMap<AddressKey, LinkAddress>();
         // Reserved static addresses for bluetooth and wifi p2p.
         mCachedAddresses.put(new AddressKey(TETHERING_BLUETOOTH, CONNECTIVITY_SCOPE_GLOBAL),
@@ -163,7 +167,7 @@ public class PrivateAddressCoordinator {
 
         // Remove all upstreams that are no longer valid networks
         final Set<Network> toBeRemoved = new HashSet<>(mUpstreamPrefixMap.keySet());
-        toBeRemoved.removeAll(asList(mConnectivityMgr.getAllNetworks()));
+        toBeRemoved.removeAll(asList(mGetAllNetworksSupplier.get()));
 
         mUpstreamPrefixMap.removeAll(toBeRemoved);
     }
@@ -175,7 +179,7 @@ public class PrivateAddressCoordinator {
     @Nullable
     public LinkAddress requestDownstreamAddress(final IpServer ipServer, final int scope,
             boolean useLastAddress) {
-        if (mConfig.shouldEnableWifiP2pDedicatedIp()
+        if (mShouldEnableWifiP2pDedicatedIp
                 && ipServer.interfaceType() == TETHERING_WIFI_P2P) {
             return new LinkAddress(LEGACY_WIFI_P2P_IFACE_ADDRESS);
         }
@@ -191,7 +195,7 @@ public class PrivateAddressCoordinator {
             return cachedAddress;
         }
 
-        final int prefixIndex = getStartedPrefixIndex();
+        final int prefixIndex = getRandomPrefixIndex();
         for (int i = 0; i < mTetheringPrefixes.size(); i++) {
             final IpPrefix prefixRange = mTetheringPrefixes.get(
                     (prefixIndex + i) % mTetheringPrefixes.size());
@@ -207,8 +211,8 @@ public class PrivateAddressCoordinator {
         return null;
     }
 
-    private int getStartedPrefixIndex() {
-        if (!mConfig.isRandomPrefixBaseEnabled()) return 0;
+    private int getRandomPrefixIndex() {
+        if (!mIsRandomPrefixBaseEnabled) return 0;
 
         final int random = getRandomInt() & 0xffffff;
         // This is to select the starting prefix range (/8, /12, or /16) instead of the actual
@@ -244,121 +248,60 @@ public class PrivateAddressCoordinator {
         return getInUseDownstreamPrefix(prefix);
     }
 
-    // Get the next non-conflict sub prefix. E.g: To get next sub prefix from 10.0.0.0/8, if the
-    // previously selected prefix is 10.20.42.0/24(subPrefix: 0.20.42.0) and the conflicting prefix
-    // is 10.16.0.0/20 (10.16.0.0 ~ 10.16.15.255), then the max address under subPrefix is
-    // 0.16.15.255 and the next subPrefix is 0.16.16.255/24 (0.16.15.255 + 0.0.1.0).
-    // Note: the sub address 0.0.0.255 here is fine to be any value that it will be replaced as
-    // selected random sub address later.
-    private int getNextSubPrefix(final IpPrefix conflictPrefix, final int prefixRangeMask) {
-        final int suffixMask = ~prefixLengthToV4NetmaskIntHTH(conflictPrefix.getPrefixLength());
-        // The largest offset within the prefix assignment block that still conflicts with
-        // conflictPrefix.
-        final int maxConflict =
-                (getPrefixBaseAddress(conflictPrefix) | suffixMask) & ~prefixRangeMask;
-
-        final int prefixMask = prefixLengthToV4NetmaskIntHTH(PREFIX_LENGTH);
-        // Pick a sub prefix a full prefix (1 << (32 - PREFIX_LENGTH) addresses) greater than
-        // maxConflict. This ensures that the selected prefix never overlaps with conflictPrefix.
-        // There is no need to mask the result with PREFIX_LENGTH bits because this is done by
-        // findAvailablePrefixFromRange when it constructs the prefix.
-        return maxConflict + (1 << (32 - PREFIX_LENGTH));
-    }
-
-    private LinkAddress chooseDownstreamAddress(final IpPrefix prefixRange) {
+    @VisibleForTesting
+    public LinkAddress chooseDownstreamAddress(final IpPrefix prefixRange) {
         // The netmask of the prefix assignment block (e.g., 0xfff00000 for 172.16.0.0/12).
         final int prefixRangeMask = prefixLengthToV4NetmaskIntHTH(prefixRange.getPrefixLength());
 
         // The zero address in the block (e.g., 0xac100000 for 172.16.0.0/12).
         final int baseAddress = getPrefixBaseAddress(prefixRange);
 
-        // The subnet mask corresponding to PREFIX_LENGTH.
-        final int prefixMask = prefixLengthToV4NetmaskIntHTH(PREFIX_LENGTH);
+        // Try to get an address within the given prefix that does not conflict with any other
+        // prefix in the system.
+        for (int i = 0; i < 20; ++i) {
+            final int randomSuffix = mRandom.nextInt() & ~prefixRangeMask;
+            final int randomAddress = baseAddress | randomSuffix;
 
-        // The offset within prefixRange of a randomly-selected prefix of length PREFIX_LENGTH.
-        // This may not be the prefix of the address returned by this method:
-        // - If it is already in use, the method will return an address in another prefix.
-        // - If all prefixes within prefixRange are in use, the method will return null. For
-        // example, for a /24 prefix within 172.26.0.0/12, this will be a multiple of 256 in
-        // [0, 1048576). In other words, a random 32-bit number with mask 0x000fff00.
-        //
-        // prefixRangeMask is required to ensure no wrapping. For example, consider:
-        // - prefixRange 127.0.0.0/8
-        // - randomPrefixStart 127.255.255.0
-        // - A conflicting prefix of 127.255.254.0/23
-        // In this case without prefixRangeMask, getNextSubPrefix would return 128.0.0.0, which
-        // means the "start < end" check in findAvailablePrefixFromRange would not reject the prefix
-        // because Java doesn't have unsigned integers, so 128.0.0.0 = 0x80000000 = -2147483648
-        // is less than 127.0.0.0 = 0x7f000000 = 2130706432.
-        //
-        // Additionally, it makes debug output easier to read by making the numbers smaller.
-        final int randomInt = getRandomInt();
-        final int randomPrefixStart = randomInt & ~prefixRangeMask & prefixMask;
+            // Avoid selecting x.x.x.[0, 1, 255] addresses.
+            switch (randomAddress & 0xFF) {
+                case 0:
+                case 1:
+                case 255:
+                    // Try selecting a different address
+                    continue;
+            }
 
-        // A random offset within the prefix. Used to determine the local address once the prefix
-        // is selected. It does not result in an IPv4 address ending in .0, .1, or .255
-        // For a PREFIX_LENGTH of 24, this is a number between 2 and 254.
-        final int subAddress = getSanitizedSubAddr(randomInt, ~prefixMask);
+            // Avoid selecting commonly used subnets.
+            switch (randomAddress & 0xFFFFFF00) {
+                case 0xC0A80000: // 192.168.0.0/24
+                case 0xC0A80100: // 192.168.1.0/24
+                case 0xC0A85800: // 192.168.88.0/24
+                case 0xC0A86400: // 192.168.100.0/24
+                    continue;
+            }
 
-        // Find a prefix length PREFIX_LENGTH between randomPrefixStart and the end of the block,
-        // such that the prefix does not conflict with any upstream.
-        IpPrefix downstreamPrefix = findAvailablePrefixFromRange(
-                 randomPrefixStart, (~prefixRangeMask) + 1, baseAddress, prefixRangeMask);
-        if (downstreamPrefix != null) return getLinkAddress(downstreamPrefix, subAddress);
+            // Avoid 10.0.0.0 - 10.10.255.255
+            if (randomAddress >= 0x0A000000 && randomAddress <= 0x0A0AFFFF) {
+                continue;
+            }
 
-        // If that failed, do the same, but between 0 and randomPrefixStart.
-        downstreamPrefix = findAvailablePrefixFromRange(
-                0, randomPrefixStart, baseAddress, prefixRangeMask);
-
-        return getLinkAddress(downstreamPrefix, subAddress);
-    }
-
-    private LinkAddress getLinkAddress(final IpPrefix prefix, final int subAddress) {
-        if (prefix == null) return null;
-
-        final InetAddress address = intToInet4AddressHTH(getPrefixBaseAddress(prefix) | subAddress);
-        return new LinkAddress(address, PREFIX_LENGTH);
-    }
-
-    private IpPrefix findAvailablePrefixFromRange(final int start, final int end,
-            final int baseAddress, final int prefixRangeMask) {
-        int newSubPrefix = start;
-        while (newSubPrefix < end) {
-            final InetAddress address = intToInet4AddressHTH(baseAddress | newSubPrefix);
+            final InetAddress address = intToInet4AddressHTH(randomAddress);
             final IpPrefix prefix = new IpPrefix(address, PREFIX_LENGTH);
-
-            final IpPrefix conflictPrefix = getConflictPrefix(prefix);
-
-            if (conflictPrefix == null) return prefix;
-
-            newSubPrefix = getNextSubPrefix(conflictPrefix, prefixRangeMask);
+            if (getConflictPrefix(prefix) != null) {
+                // Prefix is conflicting with another prefix used in the system, find another one.
+                continue;
+            }
+            return new LinkAddress(address, PREFIX_LENGTH);
         }
-
+        // Could not find a prefix, return null and let caller try another range.
         return null;
     }
 
     /** Get random int which could be used to generate random address. */
+    // TODO: get rid of this function and mock getRandomPrefixIndex in tests.
     @VisibleForTesting
     public int getRandomInt() {
         return mRandom.nextInt();
-    }
-
-    /** Get random subAddress and avoid selecting x.x.x.0, x.x.x.1 and x.x.x.255 address. */
-    private int getSanitizedSubAddr(final int randomInt, final int subAddrMask) {
-        final int randomSubAddr = randomInt & subAddrMask;
-        // If prefix length > 30, the selecting speace would be less than 4 which may be hard to
-        // avoid 3 consecutive address.
-        if (PREFIX_LENGTH > 30) return randomSubAddr;
-
-        // TODO: maybe it is not necessary to avoid .0, .1 and .255 address because tethering
-        // address would not be conflicted. This code only works because PREFIX_LENGTH is not longer
-        // than 24
-        final int candidate = randomSubAddr & 0xff;
-        if (candidate == 0 || candidate == 1 || candidate == 255) {
-            return (randomSubAddr & 0xfffffffc) + 2;
-        }
-
-        return randomSubAddr;
     }
 
     /** Release downstream record for IpServer. */
