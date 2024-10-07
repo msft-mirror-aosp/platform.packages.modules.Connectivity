@@ -27,16 +27,19 @@ import static android.net.netstats.provider.NetworkStatsProvider.QUOTA_UNLIMITED
 import static android.system.OsConstants.ETH_P_IP;
 import static android.system.OsConstants.ETH_P_IPV6;
 
+import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIVATE;
 import static com.android.net.module.util.NetworkStackConstants.IPV4_MIN_MTU;
 import static com.android.net.module.util.NetworkStackConstants.IPV6_ADDR_LEN;
 import static com.android.net.module.util.ip.ConntrackMonitor.ConntrackEvent;
 import static com.android.networkstack.tethering.BpfUtils.DOWNSTREAM;
 import static com.android.networkstack.tethering.BpfUtils.UPSTREAM;
 import static com.android.networkstack.tethering.TetheringConfiguration.DEFAULT_TETHER_OFFLOAD_POLL_INTERVAL_MS;
+import static com.android.networkstack.tethering.TetheringConfiguration.TETHER_ACTIVE_SESSIONS_METRICS;
 import static com.android.networkstack.tethering.UpstreamNetworkState.isVcnInterface;
 import static com.android.networkstack.tethering.util.TetheringUtils.getTetheringJniLibraryName;
 
 import android.app.usage.NetworkStatsManager;
+import android.content.Context;
 import android.net.INetd;
 import android.net.IpPrefix;
 import android.net.LinkProperties;
@@ -65,6 +68,7 @@ import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.BpfDump;
 import com.android.net.module.util.BpfMap;
 import com.android.net.module.util.CollectionUtils;
+import com.android.net.module.util.DeviceConfigUtils;
 import com.android.net.module.util.IBpfMap;
 import com.android.net.module.util.InterfaceParams;
 import com.android.net.module.util.NetworkStackConstants;
@@ -84,6 +88,7 @@ import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkUtils;
 import com.android.networkstack.tethering.apishim.common.BpfCoordinatorShim;
 import com.android.networkstack.tethering.util.TetheringUtils.ForwardedStats;
+import com.android.server.ConnectivityStatsLog;
 
 import java.io.IOException;
 import java.net.Inet4Address;
@@ -148,6 +153,13 @@ public class BpfCoordinator {
 
     @VisibleForTesting
     static final int CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS = 60_000;
+    // The interval is set to 5 minutes to strike a balance between minimizing
+    // the amount of metrics data uploaded and providing sufficient resolution
+    // to track changes in forwarding rules. This choice considers the minimum
+    // push metrics sampling interval of 5 minutes and the 3-minute timeout
+    // for forwarding rules.
+    @VisibleForTesting
+    static final int CONNTRACK_METRICS_UPDATE_INTERVAL_MS = 300_000;
     @VisibleForTesting
     static final int NF_CONNTRACK_TCP_TIMEOUT_ESTABLISHED = 432_000;
     @VisibleForTesting
@@ -314,11 +326,21 @@ public class BpfCoordinator {
         scheduleConntrackTimeoutUpdate();
     };
 
+    private final boolean mSupportActiveSessionsMetrics;
+
+    // Runnable that used by scheduling next refreshing of conntrack metrics sampling.
+    private final Runnable mScheduledConntrackMetricsSampling = () -> {
+        uploadConntrackMetricsSample();
+        scheduleConntrackMetricsSampling();
+    };
+
     // TODO: add BpfMap<TetherDownstream64Key, TetherDownstream64Value> retrieving function.
-    @VisibleForTesting
     public abstract static class Dependencies {
         /** Get handler. */
         @NonNull public abstract Handler getHandler();
+
+        /** Get context. */
+        @NonNull public abstract Context getContext();
 
         /** Get netd. */
         @NonNull public abstract INetd getNetd();
@@ -472,6 +494,19 @@ public class BpfCoordinator {
                 return null;
             }
         }
+
+        /** Send a TetheringActiveSessionsReported event. */
+        public void sendTetheringActiveSessionsReported(int lastMaxSessionCount) {
+            ConnectivityStatsLog.write(ConnectivityStatsLog.TETHERING_ACTIVE_SESSIONS_REPORTED,
+                    lastMaxSessionCount);
+        }
+
+        /**
+         * @see DeviceConfigUtils#isTetheringFeatureEnabled
+         */
+        public boolean isFeatureEnabled(Context context, String name) {
+            return DeviceConfigUtils.isTetheringFeatureEnabled(context, name);
+        }
     }
 
     @VisibleForTesting
@@ -508,31 +543,52 @@ public class BpfCoordinator {
         if (!mBpfCoordinatorShim.isInitialized()) {
             mLog.e("Bpf shim not initialized");
         }
+
+        // BPF IPv4 forwarding only supports on S+.
+        mSupportActiveSessionsMetrics = mDeps.isAtLeastS()
+                && mDeps.isFeatureEnabled(mDeps.getContext(), TETHER_ACTIVE_SESSIONS_METRICS);
     }
 
     /**
-     * Start BPF tethering offload stats and conntrack timeout polling.
+     * Start BPF tethering offload stats and conntrack polling.
      * Note that this can be only called on handler thread.
      */
-    private void startStatsAndConntrackTimeoutPolling() {
+    private void startStatsAndConntrackPolling() {
         schedulePollingStats();
         scheduleConntrackTimeoutUpdate();
+        if (mSupportActiveSessionsMetrics) {
+            scheduleConntrackMetricsSampling();
+        }
 
         mLog.i("Polling started.");
     }
 
     /**
-     * Stop BPF tethering offload stats and conntrack timeout polling.
+     * Stop BPF tethering offload stats and conntrack polling.
      * The data limit cleanup and the tether stats maps cleanup are not implemented here.
      * These cleanups rely on all IpServers calling #removeIpv6DownstreamRule. After the
      * last rule is removed from the upstream, #removeIpv6DownstreamRule does the cleanup
      * functionality.
      * Note that this can be only called on handler thread.
      */
-    private void stopStatsAndConntrackTimeoutPolling() {
+    private void stopStatsAndConntrackPolling() {
         // Stop scheduled polling conntrack timeout.
         if (mHandler.hasCallbacks(mScheduledConntrackTimeoutUpdate)) {
             mHandler.removeCallbacks(mScheduledConntrackTimeoutUpdate);
+        }
+        // Stop scheduled polling conntrack metrics sampling and
+        // clear counters in case there is any counter unsync problem
+        // previously due to possible bpf failures.
+        // Normally this won't happen because all clients are cleared before
+        // reaching here. See IpServer.BaseServingState#exit().
+        if (mSupportActiveSessionsMetrics) {
+            if (mHandler.hasCallbacks(mScheduledConntrackMetricsSampling)) {
+                mHandler.removeCallbacks(mScheduledConntrackMetricsSampling);
+            }
+            // Avoid sending metrics when tethering is about to close.
+            // This leads to a missing final sample before disconnect
+            // but avoids possibly duplicating the last metric in the upload.
+            mBpfCoordinatorShim.clearConnectionCounters();
         }
         // Stop scheduled polling stats and poll the latest stats from BPF maps.
         if (mHandler.hasCallbacks(mScheduledPollingStats)) {
@@ -867,7 +923,7 @@ public class BpfCoordinator {
 
         // Start monitoring and polling when the first IpServer is added.
         if (mServedIpServers.isEmpty()) {
-            startStatsAndConntrackTimeoutPolling();
+            startStatsAndConntrackPolling();
             startConntrackMonitoring();
             mIpNeighborMonitor.start();
             mLog.i("Neighbor monitoring started.");
@@ -890,7 +946,7 @@ public class BpfCoordinator {
 
         // Stop monitoring and polling when the last IpServer is removed.
         if (mServedIpServers.isEmpty()) {
-            stopStatsAndConntrackTimeoutPolling();
+            stopStatsAndConntrackPolling();
             stopConntrackMonitoring();
             mIpNeighborMonitor.stop();
             mLog.i("Neighbor monitoring stopped.");
@@ -1300,6 +1356,9 @@ public class BpfCoordinator {
         pw.increaseIndent();
         dumpCounters(pw);
         pw.decreaseIndent();
+
+        pw.println();
+        pw.println("mSupportActiveSessionsMetrics: " + mSupportActiveSessionsMetrics);
     }
 
     private void dumpStats(@NonNull IndentingPrintWriter pw) {
@@ -2136,9 +2195,23 @@ public class BpfCoordinator {
 
             maybeAddDevMap(upstreamIndex, tetherClient.downstreamIfindex);
             maybeSetLimit(upstreamIndex);
-            mBpfCoordinatorShim.tetherOffloadRuleAdd(UPSTREAM, upstream4Key, upstream4Value);
-            mBpfCoordinatorShim.tetherOffloadRuleAdd(DOWNSTREAM, downstream4Key, downstream4Value);
+
+            final boolean addedUpstream = mBpfCoordinatorShim.tetherOffloadRuleAdd(
+                    UPSTREAM, upstream4Key, upstream4Value);
+            final boolean addedDownstream = mBpfCoordinatorShim.tetherOffloadRuleAdd(
+                    DOWNSTREAM, downstream4Key, downstream4Value);
+            if (addedUpstream != addedDownstream) {
+                Log.wtf(TAG, "The bidirectional rules should be added concurrently ("
+                        + "upstream: " + addedUpstream
+                        + ", downstream: " + addedDownstream + ")");
+                return;
+            }
         }
+    }
+
+    @VisibleForTesting(visibility = PRIVATE)
+    public int getLastMaxConnectionAndResetToCurrent() {
+        return mBpfCoordinatorShim.getLastMaxConnectionAndResetToCurrent();
     }
 
     @VisibleForTesting
@@ -2477,6 +2550,11 @@ public class BpfCoordinator {
         });
     }
 
+    private void uploadConntrackMetricsSample() {
+        mDeps.sendTetheringActiveSessionsReported(
+                mBpfCoordinatorShim.getLastMaxConnectionAndResetToCurrent());
+    }
+
     private void schedulePollingStats() {
         if (mHandler.hasCallbacks(mScheduledPollingStats)) {
             mHandler.removeCallbacks(mScheduledPollingStats);
@@ -2492,6 +2570,15 @@ public class BpfCoordinator {
 
         mHandler.postDelayed(mScheduledConntrackTimeoutUpdate,
                 CONNTRACK_TIMEOUT_UPDATE_INTERVAL_MS);
+    }
+
+    private void scheduleConntrackMetricsSampling() {
+        if (mHandler.hasCallbacks(mScheduledConntrackMetricsSampling)) {
+            mHandler.removeCallbacks(mScheduledConntrackMetricsSampling);
+        }
+
+        mHandler.postDelayed(mScheduledConntrackMetricsSampling,
+                CONNTRACK_METRICS_UPDATE_INTERVAL_MS);
     }
 
     // Return IPv6 downstream forwarding rule map. This is used for testing only.

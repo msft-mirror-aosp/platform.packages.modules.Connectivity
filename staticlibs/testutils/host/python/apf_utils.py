@@ -83,6 +83,69 @@ def get_apf_counters_from_dumpsys(
   ad.log.debug("Getting apf counters: " + str(result))
   return result
 
+def get_ipv4_addresses(
+    ad: android_device.AndroidDevice, iface_name: str
+) -> list[str]:
+  """Retrieves the IPv4 addresses of a given interface on an Android device.
+
+  This function executes an ADB shell command (`ip -4 address show`) to get the
+  network interface information and extracts the IPv4 address from the output.
+  If devices have no IPv4 address, raise PatternNotFoundException.
+
+  Args:
+      ad: The Android device object.
+      iface_name: The name of the network interface (e.g., "wlan0").
+
+  Returns:
+      The IPv4 addresses of the interface as a list of string.
+      Return empty list if no IPv4 address.
+  """
+  # output format:
+  # 54: wlan2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc pfifo_fast state UP group default qlen 1000
+  #     inet 192.168.195.162/24 brd 192.168.195.255 scope global wlan2
+  #         valid_lft forever preferred_lft forever
+  #     inet 192.168.1.1/24 brd 192.168.1.255 scope global wlan2
+  #         valid_lft forever preferred_lft forever
+  output = adb_utils.adb_shell(ad, f"ip -4 address show {iface_name}")
+  pattern = r"inet\s+(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\/\d+"
+  matches = re.findall(pattern, output)
+
+  if matches:
+    return matches
+  else:
+    return []
+
+def get_ipv6_addresses(
+    ad: android_device.AndroidDevice, iface_name: str
+) -> list[str]:
+  """Retrieves the IPv6 addresses of a given interface on an Android device.
+
+  This function executes an ADB shell command (`ip -6 address show`) to get the
+  network interface information and extracts the IPv6 address from the output.
+  If devices have no IPv6 address, raise PatternNotFoundException.
+
+  Args:
+      ad: The Android device object.
+      iface_name: The name of the network interface (e.g., "wlan0").
+
+  Returns:
+      The IPv6 addresses of the interface as a list of string.
+      Return empty list if no IPv6 address.
+  """
+  # output format
+  # 54: wlan2: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP qlen 1000
+  #     inet6 fe80::10a3:5dff:fe52:de32/64 scope link
+  #         valid_lft forever preferred_lft forever
+  #     inet6 fe80::1233:aadb:3d32:1234/64 scope link
+  #         valid_lft forever preferred_lft forever
+  output = adb_utils.adb_shell(ad, f"ip -6 address show {iface_name}")
+  pattern = r"inet6\s+([0-9a-fA-F:]+)\/\d+"
+  matches = re.findall(pattern, output)
+
+  if matches:
+    return matches
+  else:
+    return []
 
 def get_hardware_address(
     ad: android_device.AndroidDevice, iface_name: str
@@ -236,7 +299,7 @@ def assume_apf_version_support_at_least(
     ad: android_device.AndroidDevice, iface_name: str, expected_version: int
 ) -> None:
   caps = get_apf_capabilities(ad, iface_name)
-  asserts.skip_if(
+  asserts.abort_class_if(
       caps.apf_version_supported < expected_version,
       f"Supported apf version {caps.apf_version_supported} < expected version"
       f" {expected_version}",

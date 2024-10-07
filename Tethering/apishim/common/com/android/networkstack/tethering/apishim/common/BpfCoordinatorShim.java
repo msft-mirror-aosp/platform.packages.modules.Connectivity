@@ -140,6 +140,8 @@ public abstract class BpfCoordinatorShim {
 
     /**
      * Adds a tethering IPv4 offload rule to appropriate BPF map.
+     *
+     * @return true iff the map was modified, false if the key already exists or there was an error.
      */
     public abstract boolean tetherOffloadRuleAdd(boolean downstream, @NonNull Tether4Key key,
             @NonNull Tether4Value value);
@@ -200,5 +202,11 @@ public abstract class BpfCoordinatorShim {
      * Remove interface index mapping.
      */
     public abstract boolean removeDevMap(int ifIndex);
+
+    /** Get last max connection count and reset to current count. */
+    public abstract int getLastMaxConnectionAndResetToCurrent();
+
+    /** Clear current connection count. */
+    public abstract void clearConnectionCounters();
 }
 
