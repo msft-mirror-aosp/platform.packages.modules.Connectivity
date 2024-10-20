@@ -32,6 +32,7 @@ import android.net.TestNetworkInterface
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.thread.ActiveOperationalDataset
+import android.net.thread.ThreadConfiguration
 import android.net.thread.ThreadNetworkController
 import android.os.Build
 import android.os.Handler
@@ -47,7 +48,7 @@ import com.android.net.module.util.structs.Ipv4Header
 import com.android.net.module.util.structs.Ipv6Header
 import com.android.net.module.util.structs.PrefixInformationOption
 import com.android.net.module.util.structs.RaHeader
-import com.android.testutils.TapPacketReader
+import com.android.testutils.PollPacketReader
 import com.android.testutils.TestNetworkTracker
 import com.android.testutils.initTestNetwork
 import com.android.testutils.runAsShell
@@ -108,6 +109,9 @@ object IntegrationTestUtils {
     val DEFAULT_DATASET: ActiveOperationalDataset =
         ActiveOperationalDataset.fromThreadTlvs(DEFAULT_DATASET_TLVS)
 
+    @JvmField
+    val DEFAULT_CONFIG = ThreadConfiguration.Builder().build()
+
     /**
      * Waits for the given [Supplier] to be true until given timeout.
      *
@@ -136,18 +140,18 @@ object IntegrationTestUtils {
     }
 
     /**
-     * Creates a [TapPacketReader] given the [TestNetworkInterface] and [Handler].
+     * Creates a [PollPacketReader] given the [TestNetworkInterface] and [Handler].
      *
      * @param testNetworkInterface the TUN interface of the test network
      * @param handler the handler to process the packets
-     * @return the [TapPacketReader]
+     * @return the [PollPacketReader]
      */
     @JvmStatic
     fun newPacketReader(
         testNetworkInterface: TestNetworkInterface, handler: Handler
-    ): TapPacketReader {
+    ): PollPacketReader {
         val fd = testNetworkInterface.fileDescriptor.fileDescriptor
-        val reader = TapPacketReader(handler, fd, testNetworkInterface.mtu)
+        val reader = PollPacketReader(handler, fd, testNetworkInterface.mtu)
         handler.post { reader.start() }
         handler.waitForIdle(timeoutMs = 5000)
         return reader
@@ -191,7 +195,7 @@ object IntegrationTestUtils {
     }
 
     /**
-     * Polls for a packet from a given [TapPacketReader] that satisfies the `filter`.
+     * Polls for a packet from a given [PollPacketReader] that satisfies the `filter`.
      *
      * @param packetReader a TUN packet reader
      * @param filter the filter to be applied on the packet
@@ -199,7 +203,7 @@ object IntegrationTestUtils {
      * than 3000ms to read the next packet, the method will return null
      */
     @JvmStatic
-    fun pollForPacket(packetReader: TapPacketReader, filter: Predicate<ByteArray>): ByteArray? {
+    fun pollForPacket(packetReader: PollPacketReader, filter: Predicate<ByteArray>): ByteArray? {
         var packet: ByteArray?
         while ((packetReader.poll(3000 /* timeoutMs */, filter).also { packet = it }) != null) {
             return packet
@@ -570,10 +574,10 @@ object IntegrationTestUtils {
     @JvmStatic
     @JvmOverloads
     fun startInfraDeviceAndWaitForOnLinkAddr(
-        tapPacketReader: TapPacketReader,
-        macAddress: MacAddress = MacAddress.fromString("1:2:3:4:5:6")
+            pollPacketReader: PollPacketReader,
+            macAddress: MacAddress = MacAddress.fromString("1:2:3:4:5:6")
     ): InfraNetworkDevice {
-        val infraDevice = InfraNetworkDevice(macAddress, tapPacketReader)
+        val infraDevice = InfraNetworkDevice(macAddress, pollPacketReader)
         infraDevice.runSlaac(Duration.ofSeconds(60))
         requireNotNull(infraDevice.ipv6Addr)
         return infraDevice
