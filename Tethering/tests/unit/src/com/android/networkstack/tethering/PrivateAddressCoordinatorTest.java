@@ -24,8 +24,9 @@ import static android.net.TetheringManager.TETHERING_ETHERNET;
 import static android.net.TetheringManager.TETHERING_USB;
 import static android.net.TetheringManager.TETHERING_WIFI;
 import static android.net.TetheringManager.TETHERING_WIFI_P2P;
+import static android.net.ip.IpServer.CMD_NOTIFY_PREFIX_CONFLICT;
 
-import static com.android.networkstack.tethering.PrivateAddressCoordinator.TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION;
+import static com.android.net.module.util.PrivateAddressCoordinator.TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION;
 import static com.android.networkstack.tethering.util.PrefixUtils.asIpPrefix;
 
 import static org.junit.Assert.assertEquals;
@@ -34,6 +35,9 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.reset;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
@@ -47,9 +51,13 @@ import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.ip.IpServer;
+import android.os.IBinder;
 
 import androidx.test.filters.SmallTest;
 import androidx.test.runner.AndroidJUnit4;
+
+import com.android.net.module.util.IIpv4PrefixRequest;
+import com.android.net.module.util.PrivateAddressCoordinator;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -92,12 +100,26 @@ public final class PrivateAddressCoordinatorTest {
             new IpPrefix("172.16.0.0/12"),
             new IpPrefix("10.0.0.0/8")));
 
+    private void setUpIpServer(IpServer ipServer, int interfaceType) throws Exception {
+        when(ipServer.interfaceType()).thenReturn(interfaceType);
+        final IIpv4PrefixRequest request = mock(IIpv4PrefixRequest.class);
+        when(ipServer.getIpv4PrefixRequest()).thenReturn(request);
+        when(request.asBinder()).thenReturn(mock(IBinder.class));
+        doAnswer(
+                        invocation -> {
+                            ipServer.sendMessage(CMD_NOTIFY_PREFIX_CONFLICT);
+                            return null;
+                        })
+                .when(request)
+                .onIpv4PrefixConflict(any());
+    }
+
     private void setUpIpServers() throws Exception {
-        when(mUsbIpServer.interfaceType()).thenReturn(TETHERING_USB);
-        when(mEthernetIpServer.interfaceType()).thenReturn(TETHERING_ETHERNET);
-        when(mHotspotIpServer.interfaceType()).thenReturn(TETHERING_WIFI);
-        when(mLocalHotspotIpServer.interfaceType()).thenReturn(TETHERING_WIFI);
-        when(mWifiP2pIpServer.interfaceType()).thenReturn(TETHERING_WIFI_P2P);
+        setUpIpServer(mUsbIpServer, TETHERING_USB);
+        setUpIpServer(mEthernetIpServer, TETHERING_ETHERNET);
+        setUpIpServer(mHotspotIpServer, TETHERING_WIFI);
+        setUpIpServer(mLocalHotspotIpServer, TETHERING_WIFI);
+        setUpIpServer(mWifiP2pIpServer, TETHERING_WIFI_P2P);
     }
 
     @Before
@@ -112,12 +134,25 @@ public final class PrivateAddressCoordinatorTest {
                 spy(new PrivateAddressCoordinator(mConnectivityMgr::getAllNetworks, mDeps));
     }
 
-    private LinkAddress requestDownstreamAddress(final IpServer ipServer, int scope,
-            boolean useLastAddress) {
-        final LinkAddress address = mPrivateAddressCoordinator.requestDownstreamAddress(
-                ipServer, scope, useLastAddress);
+    private LinkAddress requestStickyDownstreamAddress(final IpServer ipServer, int scope)
+            throws Exception {
+        final LinkAddress address =
+                mPrivateAddressCoordinator.requestStickyDownstreamAddress(
+                        ipServer.interfaceType(), scope, ipServer.getIpv4PrefixRequest());
         when(ipServer.getAddress()).thenReturn(address);
         return address;
+    }
+
+    private LinkAddress requestDownstreamAddress(final IpServer ipServer) throws Exception {
+        final LinkAddress address =
+                mPrivateAddressCoordinator.requestDownstreamAddress(
+                        ipServer.getIpv4PrefixRequest());
+        when(ipServer.getAddress()).thenReturn(address);
+        return address;
+    }
+
+    private void releaseDownstream(final IpServer ipServer) {
+        mPrivateAddressCoordinator.releaseDownstream(ipServer.getIpv4PrefixRequest());
     }
 
     private void updateUpstreamPrefix(UpstreamNetworkState ns) {
@@ -128,25 +163,22 @@ public final class PrivateAddressCoordinatorTest {
     @Test
     public void testRequestDownstreamAddressWithoutUsingLastAddress() throws Exception {
         final IpPrefix bluetoothPrefix = asIpPrefix(mBluetoothAddress);
-        final LinkAddress address = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, false /* useLastAddress */);
+        final LinkAddress address = requestDownstreamAddress(mHotspotIpServer);
         final IpPrefix hotspotPrefix = asIpPrefix(address);
         assertNotEquals(hotspotPrefix, bluetoothPrefix);
 
-        final LinkAddress newAddress = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, false /* useLastAddress */);
+        final LinkAddress newAddress = requestDownstreamAddress(mHotspotIpServer);
         final IpPrefix newHotspotPrefix = asIpPrefix(newAddress);
         assertNotEquals(hotspotPrefix, newHotspotPrefix);
         assertNotEquals(bluetoothPrefix, newHotspotPrefix);
 
-        final LinkAddress usbAddress = requestDownstreamAddress(mUsbIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, false /* useLastAddress */);
+        final LinkAddress usbAddress = requestDownstreamAddress(mUsbIpServer);
         final IpPrefix usbPrefix = asIpPrefix(usbAddress);
         assertNotEquals(usbPrefix, bluetoothPrefix);
         assertNotEquals(usbPrefix, newHotspotPrefix);
 
-        mPrivateAddressCoordinator.releaseDownstream(mHotspotIpServer);
-        mPrivateAddressCoordinator.releaseDownstream(mUsbIpServer);
+        releaseDownstream(mHotspotIpServer);
+        releaseDownstream(mUsbIpServer);
     }
 
     @Test
@@ -154,50 +186,47 @@ public final class PrivateAddressCoordinatorTest {
         // - Test bluetooth prefix is reserved.
         when(mPrivateAddressCoordinator.getRandomInt()).thenReturn(
                 getSubAddress(mBluetoothAddress.getAddress().getAddress()));
-        final LinkAddress hotspotAddress = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, false /* useLastAddress */);
+        final LinkAddress hotspotAddress = requestDownstreamAddress(mHotspotIpServer);
         final IpPrefix hotspotPrefix = asIpPrefix(hotspotAddress);
         assertNotEquals(asIpPrefix(mBluetoothAddress), hotspotPrefix);
-        mPrivateAddressCoordinator.releaseDownstream(mHotspotIpServer);
+        releaseDownstream(mHotspotIpServer);
 
         // - Test previous enabled hotspot prefix(cached prefix) is reserved.
         when(mPrivateAddressCoordinator.getRandomInt()).thenReturn(
                 getSubAddress(hotspotAddress.getAddress().getAddress()));
-        final LinkAddress usbAddress = requestDownstreamAddress(mUsbIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, false /* useLastAddress */);
+        final LinkAddress usbAddress = requestDownstreamAddress(mUsbIpServer);
         final IpPrefix usbPrefix = asIpPrefix(usbAddress);
         assertNotEquals(asIpPrefix(mBluetoothAddress), usbPrefix);
         assertNotEquals(hotspotPrefix, usbPrefix);
-        mPrivateAddressCoordinator.releaseDownstream(mUsbIpServer);
+        releaseDownstream(mUsbIpServer);
 
         // - Test wifi p2p prefix is reserved.
         when(mPrivateAddressCoordinator.getRandomInt()).thenReturn(
                 getSubAddress(mLegacyWifiP2pAddress.getAddress().getAddress()));
-        final LinkAddress etherAddress = requestDownstreamAddress(mEthernetIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, false /* useLastAddress */);
+        final LinkAddress etherAddress = requestDownstreamAddress(mEthernetIpServer);
         final IpPrefix etherPrefix = asIpPrefix(etherAddress);
         assertNotEquals(asIpPrefix(mLegacyWifiP2pAddress), etherPrefix);
         assertNotEquals(asIpPrefix(mBluetoothAddress), etherPrefix);
         assertNotEquals(hotspotPrefix, etherPrefix);
-        mPrivateAddressCoordinator.releaseDownstream(mEthernetIpServer);
+        releaseDownstream(mEthernetIpServer);
     }
 
     @Test
     public void testRequestLastDownstreamAddress() throws Exception {
-        final LinkAddress hotspotAddress = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, true /* useLastAddress */);
+        final LinkAddress hotspotAddress =
+                requestStickyDownstreamAddress(mHotspotIpServer, CONNECTIVITY_SCOPE_GLOBAL);
 
-        final LinkAddress usbAddress = requestDownstreamAddress(mUsbIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, true /* useLastAddress */);
+        final LinkAddress usbAddress =
+                requestStickyDownstreamAddress(mUsbIpServer, CONNECTIVITY_SCOPE_GLOBAL);
 
-        mPrivateAddressCoordinator.releaseDownstream(mHotspotIpServer);
-        mPrivateAddressCoordinator.releaseDownstream(mUsbIpServer);
+        releaseDownstream(mHotspotIpServer);
+        releaseDownstream(mUsbIpServer);
 
-        final LinkAddress newHotspotAddress = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, true /* useLastAddress */);
+        final LinkAddress newHotspotAddress =
+                requestStickyDownstreamAddress(mHotspotIpServer, CONNECTIVITY_SCOPE_GLOBAL);
         assertEquals(hotspotAddress, newHotspotAddress);
-        final LinkAddress newUsbAddress = requestDownstreamAddress(mUsbIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, true /* useLastAddress */);
+        final LinkAddress newUsbAddress =
+                requestStickyDownstreamAddress(mUsbIpServer, CONNECTIVITY_SCOPE_GLOBAL);
         assertEquals(usbAddress, newUsbAddress);
 
         final UpstreamNetworkState wifiUpstream = buildUpstreamNetworkState(mWifiNetwork,
@@ -254,10 +283,11 @@ public final class PrivateAddressCoordinatorTest {
     }
 
     private void verifyNotifyConflictAndRelease(final IpServer ipServer) throws Exception {
-        verify(ipServer).sendMessage(IpServer.CMD_NOTIFY_PREFIX_CONFLICT);
-        mPrivateAddressCoordinator.releaseDownstream(ipServer);
+        verify(ipServer).sendMessage(CMD_NOTIFY_PREFIX_CONFLICT);
+        releaseDownstream(ipServer);
+        final int interfaceType = ipServer.interfaceType();
         reset(ipServer);
-        setUpIpServers();
+        setUpIpServer(ipServer, interfaceType);
     }
 
     private int getSubAddress(final byte... ipv4Address) {
@@ -268,22 +298,22 @@ public final class PrivateAddressCoordinatorTest {
     }
 
     private void assertReseveredWifiP2pPrefix() throws Exception {
-        LinkAddress address = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, true /* useLastAddress */);
+        LinkAddress address =
+                requestStickyDownstreamAddress(mHotspotIpServer, CONNECTIVITY_SCOPE_GLOBAL);
         final IpPrefix hotspotPrefix = asIpPrefix(address);
         final IpPrefix legacyWifiP2pPrefix = asIpPrefix(mLegacyWifiP2pAddress);
         assertNotEquals(legacyWifiP2pPrefix, hotspotPrefix);
-        mPrivateAddressCoordinator.releaseDownstream(mHotspotIpServer);
+        releaseDownstream(mHotspotIpServer);
     }
 
     @Test
     public void testEnableSapAndLohsConcurrently() throws Exception {
-        final LinkAddress hotspotAddress = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, true /* useLastAddress */);
+        final LinkAddress hotspotAddress =
+                requestStickyDownstreamAddress(mHotspotIpServer, CONNECTIVITY_SCOPE_GLOBAL);
         assertNotNull(hotspotAddress);
 
-        final LinkAddress localHotspotAddress = requestDownstreamAddress(mLocalHotspotIpServer,
-                CONNECTIVITY_SCOPE_LOCAL, true /* useLastAddress */);
+        final LinkAddress localHotspotAddress =
+                requestStickyDownstreamAddress(mLocalHotspotIpServer, CONNECTIVITY_SCOPE_LOCAL);
         assertNotNull(localHotspotAddress);
 
         final IpPrefix hotspotPrefix = asIpPrefix(hotspotAddress);
@@ -322,8 +352,7 @@ public final class PrivateAddressCoordinatorTest {
         mPrivateAddressCoordinator =
                 spy(new PrivateAddressCoordinator(mConnectivityMgr::getAllNetworks, mDeps));
         when(mPrivateAddressCoordinator.getRandomInt()).thenReturn(randomIntForPrefixBase);
-        final LinkAddress address = requestDownstreamAddress(mHotspotIpServer,
-                CONNECTIVITY_SCOPE_GLOBAL, false /* useLastAddress */);
+        final LinkAddress address = requestDownstreamAddress(mHotspotIpServer);
         final IpPrefix prefixBase = new IpPrefix(expected);
         assertTrue(address + " is not part of " + prefixBase,
                 prefixBase.containsPrefix(asIpPrefix(address)));
