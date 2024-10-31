@@ -90,6 +90,7 @@ cc_library_shared {
     static_libs: [
         "libnet_utils_device_common_bpfjni",
         "libnet_utils_device_common_bpfutils",
+        "libnet_utils_device_common_timerfdjni",
     ],
     shared_libs: [
         "liblog",
@@ -161,7 +162,7 @@ java_library {
     ],
     libs: [
         "framework-annotations-lib",
-        "framework-configinfrastructure",
+        "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity-pre-jarjar",
         // The framework-connectivity-t library is only available on T+ platforms
         // so any calls to it must be protected with a check to ensure that it is
@@ -175,12 +176,12 @@ java_library {
         // TODO: figure out why just using "framework-tethering" uses the stubs, even though both
         // service-connectivity and framework-tethering are in the same APEX.
         "framework-tethering.impl",
-        "framework-wifi",
+        "framework-wifi.stubs.module_lib",
         "unsupportedappusage",
         "ServiceConnectivityResources",
-        "framework-statsd",
-        "framework-permission",
-        "framework-permission-s",
+        "framework-statsd.stubs.module_lib",
+        "framework-permission.stubs.module_lib",
+        "framework-permission-s.stubs.module_lib",
     ],
     static_libs: [
         // Do not add libs here if they are already included
@@ -264,10 +265,10 @@ java_defaults {
         "framework-connectivity.impl",
         "framework-connectivity-t.impl",
         "framework-tethering.impl",
-        "framework-wifi",
+        "framework-wifi.stubs.module_lib",
         "libprotobuf-java-nano",
-        "framework-permission",
-        "framework-permission-s",
+        "framework-permission.stubs.module_lib",
+        "framework-permission-s.stubs.module_lib",
     ],
     jarjar_rules: ":connectivity-jarjar-rules",
     apex_available: [
@@ -310,7 +311,7 @@ java_library_static {
     apex_available: ["com.android.tethering"],
 }
 
-genrule {
+java_genrule {
     name: "connectivity-jarjar-rules",
     defaults: ["jarjar-rules-combine-defaults"],
     srcs: [
