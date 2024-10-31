@@ -80,20 +80,15 @@ static const set<string> MAINLINE_FOR_S_PLUS = {
     TETHERING "prog_offload_schedcls_tether_upstream6_rawip",
 };
 
-// Provided by *current* mainline module for S+ devices with 5.10+ kernels
-static const set<string> MAINLINE_FOR_S_5_10_PLUS = {
-    TETHERING "prog_test_xdp_drop_ipv4_udp_ether",
-};
-
 // Provided by *current* mainline module for T+ devices
 static const set<string> MAINLINE_FOR_T_PLUS = {
-    SHARED "map_block_blocked_ports_map",
     SHARED "map_clatd_clat_egress4_map",
     SHARED "map_clatd_clat_ingress6_map",
     SHARED "map_dscpPolicy_ipv4_dscp_policies_map",
     SHARED "map_dscpPolicy_ipv6_dscp_policies_map",
     SHARED "map_dscpPolicy_socket_policy_cache_map",
     NETD "map_netd_app_uid_stats_map",
+    NETD "map_netd_blocked_ports_map",
     NETD "map_netd_configuration_map",
     NETD "map_netd_cookie_tag_map",
     NETD "map_netd_data_saver_enabled_map",
@@ -124,8 +119,13 @@ static const set<string> MAINLINE_FOR_T_4_14_PLUS = {
 
 // Provided by *current* mainline module for T+ devices with 5.4+ kernels
 static const set<string> MAINLINE_FOR_T_4_19_PLUS = {
-    NETD_RO "prog_block_bind4_block_port",
-    NETD_RO "prog_block_bind6_block_port",
+    NETD "prog_netd_bind4_inet4_bind",
+    NETD "prog_netd_bind6_inet6_bind",
+};
+
+// Provided by *current* mainline module for T+ devices with 5.10+ kernels
+static const set<string> MAINLINE_FOR_T_5_10_PLUS = {
+    NETD "prog_netd_cgroupsockrelease_inet_release",
 };
 
 // Provided by *current* mainline module for T+ devices with 5.15+ kernels
@@ -159,11 +159,6 @@ static const set<string> MAINLINE_FOR_V_5_4_PLUS = {
     NETD "prog_netd_setsockopt_prog",
 };
 
-// Provided by *current* mainline module for U+ devices with 5.10+ kernels
-static const set<string> MAINLINE_FOR_V_5_10_PLUS = {
-    NETD "prog_netd_cgroupsockrelease_inet_release",
-};
-
 static void addAll(set<string>& a, const set<string>& b) {
     a.insert(b.begin(), b.end());
 }
@@ -194,7 +189,6 @@ TEST_F(BpfExistenceTest, TestPrograms) {
     // S requires Linux Kernel 4.9+ and thus requires eBPF support.
     if (IsAtLeastS()) ASSERT_TRUE(isAtLeastKernelVersion(4, 9, 0));
     DO_EXPECT(IsAtLeastS(), MAINLINE_FOR_S_PLUS);
-    DO_EXPECT(IsAtLeastS() && isAtLeastKernelVersion(5, 10, 0), MAINLINE_FOR_S_5_10_PLUS);
 
     // Nothing added or removed in SCv2.
 
@@ -202,6 +196,7 @@ TEST_F(BpfExistenceTest, TestPrograms) {
     DO_EXPECT(IsAtLeastT(), MAINLINE_FOR_T_PLUS);
     DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(4, 14, 0), MAINLINE_FOR_T_4_14_PLUS);
     DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(4, 19, 0), MAINLINE_FOR_T_4_19_PLUS);
+    DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(5, 10, 0), MAINLINE_FOR_T_5_10_PLUS);
     DO_EXPECT(IsAtLeastT() && isAtLeastKernelVersion(5, 15, 0), MAINLINE_FOR_T_5_15_PLUS);
 
     // U requires Linux Kernel 4.14+, but nothing (as yet) added or removed in U.
@@ -213,7 +208,6 @@ TEST_F(BpfExistenceTest, TestPrograms) {
     if (IsAtLeastV()) ASSERT_TRUE(isAtLeastKernelVersion(4, 19, 0));
     DO_EXPECT(IsAtLeastV(), MAINLINE_FOR_V_PLUS);
     DO_EXPECT(IsAtLeastV() && isAtLeastKernelVersion(5, 4, 0), MAINLINE_FOR_V_5_4_PLUS);
-    DO_EXPECT(IsAtLeastV() && isAtLeastKernelVersion(5, 10, 0), MAINLINE_FOR_V_5_10_PLUS);
 
     for (const auto& file : mustExist) {
         EXPECT_EQ(0, access(file.c_str(), R_OK)) << file << " does not exist";

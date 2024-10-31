@@ -16,6 +16,8 @@
 
 package com.android.server.connectivity.mdns;
 
+import static com.android.internal.annotations.VisibleForTesting.Visibility;
+
 import android.Manifest.permission;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -31,8 +33,8 @@ import androidx.annotation.GuardedBy;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.net.module.util.DnsUtils;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.SharedLog;
-import com.android.server.connectivity.mdns.util.MdnsUtils;
 
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -134,13 +136,20 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         this.discoveryExecutor = new DiscoveryExecutor(socketClient.getLooper());
     }
 
-    private static class DiscoveryExecutor implements Executor {
+    /**
+     * A utility class to generate a handler, optionally with a looper, and to run functions on the
+     * newly created handler.
+     */
+    @VisibleForTesting(visibility = Visibility.PRIVATE)
+    static class DiscoveryExecutor implements Executor {
         private final HandlerThread handlerThread;
 
         @GuardedBy("pendingTasks")
         @Nullable private Handler handler;
+        // Store pending tasks and associated delay time. Each Pair represents a pending task
+        // (first) and its delay time (second).
         @GuardedBy("pendingTasks")
-        @NonNull private final ArrayList<Runnable> pendingTasks = new ArrayList<>();
+        @NonNull private final ArrayList<Pair<Runnable, Long>> pendingTasks = new ArrayList<>();
 
         DiscoveryExecutor(@Nullable Looper defaultLooper) {
             if (defaultLooper != null) {
@@ -154,8 +163,8 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
                     protected void onLooperPrepared() {
                         synchronized (pendingTasks) {
                             handler = new Handler(getLooper());
-                            for (Runnable pendingTask : pendingTasks) {
-                                handler.post(pendingTask);
+                            for (Pair<Runnable, Long> pendingTask : pendingTasks) {
+                                handler.postDelayed(pendingTask.first, pendingTask.second);
                             }
                             pendingTasks.clear();
                         }
@@ -177,16 +186,20 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
 
         @Override
         public void execute(Runnable function) {
+            executeDelayed(function, 0L /* delayMillis */);
+        }
+
+        public void executeDelayed(Runnable function, long delayMillis) {
             final Handler handler;
             synchronized (pendingTasks) {
                 if (this.handler == null) {
-                    pendingTasks.add(function);
+                    pendingTasks.add(Pair.create(function, delayMillis));
                     return;
                 } else {
                     handler = this.handler;
                 }
             }
-            handler.post(function);
+            handler.postDelayed(function, delayMillis);
         }
 
         void shutDown() {
@@ -197,8 +210,21 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
 
         void ensureRunningOnHandlerThread() {
             synchronized (pendingTasks) {
-                MdnsUtils.ensureRunningOnHandlerThread(handler);
+                HandlerUtils.ensureRunningOnHandlerThread(handler);
             }
+        }
+
+        public void runWithScissorsForDumpIfReady(@NonNull Runnable function) {
+            final Handler handler;
+            synchronized (pendingTasks) {
+                if (this.handler == null) {
+                    Log.d(TAG, "The handler is not ready. Ignore the DiscoveryManager dump");
+                    return;
+                } else {
+                    handler = this.handler;
+                }
+            }
+            HandlerUtils.runWithScissorsForDump(handler, function, 10_000);
         }
     }
 
@@ -288,6 +314,17 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
                         serviceTypeClient.notifySocketDestroyed();
                         executorProvider.shutdownExecutorService(serviceTypeClient.getExecutor());
                         perSocketServiceTypeClients.remove(serviceTypeClient);
+                        // The cached services may not be reliable after the socket is disconnected,
+                        // the service type client won't receive any updates for them. Therefore,
+                        // remove these cached services after exceeding the retention time
+                        // (currently 10s) if no service type client requires them.
+                        if (mdnsFeatureFlags.isCachedServicesRemovalEnabled()) {
+                            final MdnsServiceCache.CacheKey cacheKey =
+                                    serviceTypeClient.getCacheKey();
+                            discoveryExecutor.executeDelayed(
+                                    () -> handleRemoveCachedServices(cacheKey),
+                                    mdnsFeatureFlags.getCachedServicesRetentionTime());
+                        }
                     }
                 });
     }
@@ -324,6 +361,42 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
                 // of the service type clients.
                 executorProvider.shutdownExecutorService(serviceTypeClient.getExecutor());
                 perSocketServiceTypeClients.remove(serviceTypeClient);
+                // The cached services may not be reliable after the socket is disconnected, the
+                // service type client won't receive any updates for them. Therefore, remove these
+                // cached services after exceeding the retention time (currently 10s) if no service
+                // type client requires them.
+                // Note: This removal is only called if the requested socket is still active for
+                // other requests. If the requested socket is no longer needed after the listener
+                // is unregistered, SocketCreationCallback#onSocketDestroyed callback will remove
+                // both the service type client and cached services there.
+                //
+                // List some multiple listener cases for the cached service removal flow.
+                //
+                // Case 1 - Same service type, different network requests
+                //  - Register Listener A (service type X, requesting all networks: Y and Z)
+                //  - Create service type clients X-Y and X-Z
+                //  - Register Listener B (service type X, requesting network Y)
+                //  - Reuse service type client X-Y
+                //  - Unregister Listener A
+                //  - Socket destroyed on network Z; remove the X-Z client. Unregister the listener
+                //    from the X-Y client and keep it, as it's still being used by Listener B.
+                //  - Remove cached services associated with the X-Z client after 10 seconds.
+                //
+                // Case 2 - Different service types, same network request
+                //  - Register Listener A (service type X, requesting network Y)
+                //  - Create service type client X-Y
+                //  - Register Listener B (service type Z, requesting network Y)
+                //  - Create service type client Z-Y
+                //  - Unregister Listener A
+                //  - No socket is destroyed because network Y is still being used by Listener B.
+                //  - Unregister the listener from the X-Y client, then remove it.
+                //  - Remove cached services associated with the X-Y client after 10 seconds.
+                if (mdnsFeatureFlags.isCachedServicesRemovalEnabled()) {
+                    final MdnsServiceCache.CacheKey cacheKey = serviceTypeClient.getCacheKey();
+                    discoveryExecutor.executeDelayed(
+                            () -> handleRemoveCachedServices(cacheKey),
+                            mdnsFeatureFlags.getCachedServicesRetentionTime());
+                }
             }
         }
         if (perSocketServiceTypeClients.isEmpty()) {
@@ -368,6 +441,26 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
         }
     }
 
+    private void handleRemoveCachedServices(@NonNull MdnsServiceCache.CacheKey cacheKey) {
+        // Check if there is an active service type client that requires the cached services. If so,
+        // do not remove associated services from cache.
+        for (MdnsServiceTypeClient client : getMdnsServiceTypeClient(cacheKey.mSocketKey)) {
+            if (client.getCacheKey().equals(cacheKey)) {
+                // Found a client that has same CacheKey.
+                return;
+            }
+        }
+        sharedLog.log("Remove cached services for " + cacheKey);
+        // No client has same CacheKey. Remove associated services.
+        getServiceCache().removeServices(cacheKey);
+    }
+
+    @VisibleForTesting
+    @NonNull
+    MdnsServiceCache getServiceCache() {
+        return serviceCache;
+    }
+
     @VisibleForTesting
     MdnsServiceTypeClient createServiceTypeClient(@NonNull String serviceType,
             @NonNull SocketKey socketKey) {
@@ -389,7 +482,7 @@ public class MdnsDiscoveryManager implements MdnsSocketClientBase.Callback {
      * Dump DiscoveryManager state.
      */
     public void dump(PrintWriter pw) {
-        discoveryExecutor.checkAndRunOnHandlerThread(() -> {
+        discoveryExecutor.runWithScissorsForDumpIfReady(() -> {
             pw.println("Clients:");
             // Dump ServiceTypeClients
             for (MdnsServiceTypeClient serviceTypeClient

@@ -80,7 +80,7 @@ import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo;
 import com.android.testutils.DeviceInfoUtils;
 import com.android.testutils.DumpTestUtils;
 import com.android.testutils.NetworkStackModuleTest;
-import com.android.testutils.TapPacketReader;
+import com.android.testutils.PollPacketReader;
 
 import org.junit.After;
 import org.junit.Rule;
@@ -213,7 +213,7 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
 
         TestNetworkInterface downstreamIface = null;
         MyTetheringEventCallback tetheringEventCallback = null;
-        TapPacketReader downstreamReader = null;
+        PollPacketReader downstreamReader = null;
 
         try {
             downstreamIface = createTestInterface();
@@ -253,7 +253,7 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
 
         TestNetworkInterface downstreamIface = null;
         MyTetheringEventCallback tetheringEventCallback = null;
-        TapPacketReader downstreamReader = null;
+        PollPacketReader downstreamReader = null;
 
         try {
             downstreamIface = createTestInterface();
@@ -283,7 +283,7 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
 
         TestNetworkInterface downstreamIface = null;
         MyTetheringEventCallback tetheringEventCallback = null;
-        TapPacketReader downstreamReader = null;
+        PollPacketReader downstreamReader = null;
 
         try {
             downstreamIface = createTestInterface();
@@ -357,7 +357,7 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
 
         TestNetworkInterface downstreamIface = null;
         MyTetheringEventCallback tetheringEventCallback = null;
-        TapPacketReader downstreamReader = null;
+        PollPacketReader downstreamReader = null;
 
         try {
             downstreamIface = createTestInterface();
@@ -423,7 +423,7 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
         // client, which is not possible in this test.
     }
 
-    private void checkTetheredClientCallbacks(final TapPacketReader packetReader,
+    private void checkTetheredClientCallbacks(final PollPacketReader packetReader,
             final MyTetheringEventCallback tetheringEventCallback) throws Exception {
         // Create a fake client.
         byte[] clientMacAddr = new byte[6];
@@ -1066,24 +1066,34 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
         runUdp4Test();
     }
 
-    private ClatEgress4Value getClatEgress4Value() throws Exception {
+    private ClatEgress4Value getClatEgress4Value(int clatIfaceIndex) throws Exception {
         // Command: dumpsys connectivity clatEgress4RawBpfMap
         final String[] args = new String[] {DUMPSYS_CLAT_RAWMAP_EGRESS4_ARG};
         final HashMap<ClatEgress4Key, ClatEgress4Value> egress4Map = pollRawMapFromDump(
                 ClatEgress4Key.class, ClatEgress4Value.class, Context.CONNECTIVITY_SERVICE, args);
         assertNotNull(egress4Map);
-        assertEquals(1, egress4Map.size());
-        return egress4Map.entrySet().iterator().next().getValue();
+        for (Map.Entry<ClatEgress4Key, ClatEgress4Value> entry : egress4Map.entrySet()) {
+            ClatEgress4Key key = entry.getKey();
+            if (key.iif == clatIfaceIndex) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
-    private ClatIngress6Value getClatIngress6Value() throws Exception {
+    private ClatIngress6Value getClatIngress6Value(int ifaceIndex) throws Exception {
         // Command: dumpsys connectivity clatIngress6RawBpfMap
         final String[] args = new String[] {DUMPSYS_CLAT_RAWMAP_INGRESS6_ARG};
         final HashMap<ClatIngress6Key, ClatIngress6Value> ingress6Map = pollRawMapFromDump(
                 ClatIngress6Key.class, ClatIngress6Value.class, Context.CONNECTIVITY_SERVICE, args);
         assertNotNull(ingress6Map);
-        assertEquals(1, ingress6Map.size());
-        return ingress6Map.entrySet().iterator().next().getValue();
+        for (Map.Entry<ClatIngress6Key, ClatIngress6Value> entry : ingress6Map.entrySet()) {
+            ClatIngress6Key key = entry.getKey();
+            if (key.iif == ifaceIndex) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     /**
@@ -1115,8 +1125,13 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
         final Inet6Address clatIp6 = getClatIpv6Address(tester, tethered);
 
         // Get current values before sending packets.
-        final ClatEgress4Value oldEgress4 = getClatEgress4Value();
-        final ClatIngress6Value oldIngress6 = getClatIngress6Value();
+        final String ifaceName = getUpstreamInterfaceName();
+        final int ifaceIndex = getIndexByName(ifaceName);
+        final int clatIfaceIndex = getIndexByName("v4-" + ifaceName);
+        final ClatEgress4Value oldEgress4 = getClatEgress4Value(clatIfaceIndex);
+        final ClatIngress6Value oldIngress6 = getClatIngress6Value(ifaceIndex);
+        assertNotNull(oldEgress4);
+        assertNotNull(oldIngress6);
 
         // Send an IPv4 UDP packet in original direction.
         // IPv4 packet -- CLAT translation --> IPv6 packet
@@ -1145,8 +1160,10 @@ public class EthernetTetheringTest extends EthernetTetheringTestBase {
                 ByteBuffer.wrap(payload), l2mtu);
 
         // After sending test packets, get stats again to verify their differences.
-        final ClatEgress4Value newEgress4 = getClatEgress4Value();
-        final ClatIngress6Value newIngress6 = getClatIngress6Value();
+        final ClatEgress4Value newEgress4 = getClatEgress4Value(clatIfaceIndex);
+        final ClatIngress6Value newIngress6 = getClatIngress6Value(ifaceIndex);
+        assertNotNull(newEgress4);
+        assertNotNull(newIngress6);
 
         assertEquals(RX_UDP_PACKET_COUNT + fragPktCnt, newIngress6.packets - oldIngress6.packets);
         assertEquals(RX_UDP_PACKET_COUNT * RX_UDP_PACKET_SIZE + fragRxBytes,
