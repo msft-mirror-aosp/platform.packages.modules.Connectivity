@@ -70,7 +70,7 @@ java_library {
     libs: [
         "androidx.annotation_annotation",
         "framework-annotations-lib",
-        "framework-configinfrastructure",
+        "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity.stubs.module_lib",
     ],
     lint: {
@@ -264,7 +264,7 @@ java_library {
     ],
     libs: [
         "framework-annotations-lib",
-        "framework-connectivity",
+        "framework-connectivity.stubs.module_lib",
     ],
     static_libs: [
         "net-utils-device-common",
@@ -342,7 +342,7 @@ java_library {
     min_sdk_version: "30",
     libs: [
         "framework-annotations-lib",
-        "framework-connectivity",
+        "framework-connectivity.stubs.module_lib",
         "modules-utils-build_system",
     ],
     // TODO: remove "apex_available:platform".
@@ -435,6 +435,7 @@ java_library {
     sdk_version: "core_platform",
     srcs: [
         "device/com/android/net/module/util/FdEventsReader.java",
+        "device/com/android/net/module/util/HandlerUtils.java",
         "device/com/android/net/module/util/SharedLog.java",
         "framework/com/android/net/module/util/ByteUtils.java",
         "framework/com/android/net/module/util/CollectionUtils.java",
@@ -468,7 +469,7 @@ java_library {
     libs: [
         "androidx.annotation_annotation",
         "framework-annotations-lib",
-        "framework-configinfrastructure",
+        "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity.stubs.module_lib",
     ],
     lint: {
@@ -484,12 +485,11 @@ java_defaults {
     libs: [
         "androidx.annotation_annotation",
         "framework-annotations-lib",
-        "framework-configinfrastructure",
-        "framework-connectivity",
+        "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity.stubs.module_lib",
         "framework-connectivity-t.stubs.module_lib",
         "framework-location.stubs.module_lib",
-        "framework-tethering",
+        "framework-tethering.stubs.module_lib",
         "unsupportedappusage",
     ],
     static_libs: [
@@ -522,6 +522,8 @@ java_library {
     ],
     libs: [
         "net-utils-framework-connectivity",
+        "framework-connectivity.impl",
+        "framework-tethering.impl",
     ],
     defaults: ["net-utils-non-bootclasspath-defaults"],
     jarjar_rules: "jarjar-rules-shared.txt",
@@ -624,6 +626,31 @@ filegroup {
     visibility: ["//visibility:private"],
 }
 
+// Filegroup to build lib used by IPsec/IKE framework
+// Any class here *must* have a corresponding jarjar rule in the IPsec build rules.
+filegroup {
+    name: "net-utils-framework-ipsec-common-srcs",
+    srcs: [
+        "framework/com/android/net/module/util/HexDump.java",
+    ],
+    path: "framework",
+    visibility: ["//visibility:private"],
+}
+
+java_library {
+    name: "net-utils-framework-ipsec",
+    sdk_version: "module_current",
+    min_sdk_version: "30",
+    srcs: [":net-utils-framework-ipsec-common-srcs"],
+    libs: [
+        "androidx.annotation_annotation",
+    ],
+    visibility: [
+        "//packages/modules/IPsec",
+    ],
+    apex_available: ["com.android.ipsec"],
+}
+
 // Use a file group containing classes necessary for framework-connectivity. The file group should
 // be as small as possible because because the classes end up in the bootclasspath and R8 is not
 // used to remove unused classes.
@@ -648,6 +675,7 @@ filegroup {
     name: "net-utils-all-srcs",
     srcs: [
         "device/**/*.java",
+        ":framework-connectivity-shared-srcs",
         ":net-utils-framework-common-srcs",
     ],
     visibility: ["//visibility:private"],
