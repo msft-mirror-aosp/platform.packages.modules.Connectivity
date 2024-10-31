@@ -32,16 +32,19 @@ java_defaults {
 
 java_defaults {
     name: "TetheringExternalLibs",
+    defaults: [
+        "TetheringApiLevel",
+    ],
     // Libraries not including Tethering's own framework-tethering (different flavors of that one
     // are needed depending on the build rule)
     libs: [
         "connectivity-internal-api-util",
-        "framework-configinfrastructure",
+        "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity.stubs.module_lib",
         "framework-connectivity-t.stubs.module_lib",
         "framework-statsd.stubs.module_lib",
-        "framework-wifi",
-        "framework-bluetooth",
+        "framework-wifi.stubs.module_lib",
+        "framework-bluetooth.stubs.module_lib",
         "unsupportedappusage",
     ],
     defaults_visibility: ["//visibility:private"],
@@ -54,6 +57,7 @@ java_defaults {
         "src/**/*.java",
         ":framework-connectivity-shared-srcs",
         ":services-tethering-shared-srcs",
+        ":statslog-connectivity-java-gen",
         ":statslog-tethering-java-gen",
     ],
     static_libs: [
@@ -75,6 +79,7 @@ java_defaults {
     ],
     defaults: ["TetheringExternalLibs"],
     libs: [
+        "framework-annotations-lib",
         "framework-tethering.impl",
     ],
     manifest: "AndroidManifestBase.xml",
@@ -89,7 +94,6 @@ android_library {
     defaults: [
         "ConnectivityNextEnableDefaults",
         "TetheringAndroidLibraryDefaults",
-        "TetheringApiLevel",
         "TetheringReleaseTargetSdk",
     ],
     static_libs: [
@@ -105,7 +109,6 @@ android_library {
     name: "TetheringApiStableLib",
     defaults: [
         "TetheringAndroidLibraryDefaults",
-        "TetheringApiLevel",
         "TetheringReleaseTargetSdk",
     ],
     static_libs: [
@@ -194,7 +197,6 @@ android_app {
     name: "Tethering",
     defaults: [
         "TetheringAppDefaults",
-        "TetheringApiLevel",
     ],
     static_libs: ["TetheringApiStableLib"],
     certificate: "networkstack",
@@ -202,13 +204,13 @@ android_app {
     use_embedded_native_libs: true,
     privapp_allowlist: ":privapp_allowlist_com.android.tethering",
     apex_available: ["com.android.tethering"],
+    updatable: true,
 }
 
 android_app {
     name: "TetheringNext",
     defaults: [
         "TetheringAppDefaults",
-        "TetheringApiLevel",
         "ConnectivityNextEnableDefaults",
     ],
     static_libs: ["TetheringApiCurrentLib"],
@@ -220,6 +222,7 @@ android_app {
     lint: {
         error_checks: ["NewApi"],
     },
+    updatable: true,
 }
 
 sdk {

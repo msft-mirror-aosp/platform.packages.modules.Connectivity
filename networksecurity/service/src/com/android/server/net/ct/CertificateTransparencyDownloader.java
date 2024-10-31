@@ -15,20 +15,33 @@
  */
 package com.android.server.net.ct;
 
+import android.annotation.NonNull;
+import android.annotation.RequiresApi;
 import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.Uri;
+import android.os.Build;
 import android.util.Log;
 
 import androidx.annotation.VisibleForTesting;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.security.GeneralSecurityException;
+import java.security.InvalidKeyException;
+import java.security.KeyFactory;
+import java.security.PublicKey;
+import java.security.Signature;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
+import java.util.Optional;
 
 /** Helper class to download certificate transparency log files. */
+@RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
 class CertificateTransparencyDownloader extends BroadcastReceiver {
 
     private static final String TAG = "CertificateTransparencyDownloader";
@@ -37,6 +50,8 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
     private final DataStore mDataStore;
     private final DownloadHelper mDownloadHelper;
     private final CertificateTransparencyInstaller mInstaller;
+
+    @NonNull private Optional<PublicKey> mPublicKey = Optional.empty();
 
     @VisibleForTesting
     CertificateTransparencyDownloader(
@@ -58,14 +73,30 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
                 new CertificateTransparencyInstaller());
     }
 
-    void registerReceiver() {
+    void initialize() {
+        mInstaller.addCompatibilityVersion(Config.COMPATIBILITY_VERSION);
+
         IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
-        mContext.registerReceiver(this, intentFilter);
+        mContext.registerReceiver(this, intentFilter, Context.RECEIVER_EXPORTED);
 
         if (Config.DEBUG) {
             Log.d(TAG, "CertificateTransparencyDownloader initialized successfully");
         }
+    }
+
+    void setPublicKey(String publicKey) throws GeneralSecurityException {
+        mPublicKey =
+                Optional.of(
+                        KeyFactory.getInstance("RSA")
+                                .generatePublic(
+                                        new X509EncodedKeySpec(
+                                                Base64.getDecoder().decode(publicKey))));
+    }
+
+    @VisibleForTesting
+    void resetPublicKey() {
+        mPublicKey = Optional.empty();
     }
 
     void startMetadataDownload(String metadataUrl) {
@@ -139,14 +170,24 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             return;
         }
 
-        // TODO: 1. verify file signature, 2. validate file content.
+        boolean success = false;
+        try {
+            success = verify(contentUri, metadataUri);
+        } catch (IOException | GeneralSecurityException e) {
+            Log.e(TAG, "Could not verify new log list", e);
+        }
+        if (!success) {
+            Log.w(TAG, "Log list did not pass verification");
+            return;
+        }
+
+        // TODO: validate file content.
 
         String version = mDataStore.getProperty(Config.VERSION_PENDING);
         String contentUrl = mDataStore.getProperty(Config.CONTENT_URL_PENDING);
         String metadataUrl = mDataStore.getProperty(Config.METADATA_URL_PENDING);
-        boolean success = false;
         try (InputStream inputStream = mContext.getContentResolver().openInputStream(contentUri)) {
-            success = mInstaller.install(inputStream, version);
+            success = mInstaller.install(Config.COMPATIBILITY_VERSION, inputStream, version);
         } catch (IOException e) {
             Log.e(TAG, "Could not install new content", e);
             return;
@@ -158,6 +199,21 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             mDataStore.setProperty(Config.CONTENT_URL, contentUrl);
             mDataStore.setProperty(Config.METADATA_URL, metadataUrl);
             mDataStore.store();
+        }
+    }
+
+    private boolean verify(Uri file, Uri signature) throws IOException, GeneralSecurityException {
+        if (!mPublicKey.isPresent()) {
+            throw new InvalidKeyException("Missing public key for signature verification");
+        }
+        Signature verifier = Signature.getInstance("SHA256withRSA");
+        verifier.initVerify(mPublicKey.get());
+        ContentResolver contentResolver = mContext.getContentResolver();
+
+        try (InputStream fileStream = contentResolver.openInputStream(file);
+                InputStream signatureStream = contentResolver.openInputStream(signature)) {
+            verifier.update(fileStream.readAllBytes());
+            return verifier.verify(signatureStream.readAllBytes());
         }
     }
 

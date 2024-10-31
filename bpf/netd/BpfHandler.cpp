@@ -114,6 +114,11 @@ static Status initPrograms(const char* cg2_path) {
                                     cg_fd, BPF_CGROUP_INET_SOCK_CREATE));
     }
 
+    if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
+        RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_INET_RELEASE_PROG_PATH,
+                                    cg_fd, BPF_CGROUP_INET_SOCK_RELEASE));
+    }
+
     if (modules::sdklevel::IsAtLeastV()) {
         RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_CONNECT4_PROG_PATH,
                                     cg_fd, BPF_CGROUP_INET4_CONNECT));
@@ -134,19 +139,12 @@ static Status initPrograms(const char* cg2_path) {
             RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_SETSOCKOPT_PROG_PATH,
                                         cg_fd, BPF_CGROUP_SETSOCKOPT));
         }
-
-        if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
-            RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_INET_RELEASE_PROG_PATH,
-                                        cg_fd, BPF_CGROUP_INET_SOCK_RELEASE));
-        }
     }
 
     if (bpf::isAtLeastKernelVersion(4, 19, 0)) {
-        RETURN_IF_NOT_OK(attachProgramToCgroup(
-                "/sys/fs/bpf/netd_readonly/prog_block_bind4_block_port",
+        RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_BIND4_PROG_PATH,
                 cg_fd, BPF_CGROUP_INET4_BIND));
-        RETURN_IF_NOT_OK(attachProgramToCgroup(
-                "/sys/fs/bpf/netd_readonly/prog_block_bind6_block_port",
+        RETURN_IF_NOT_OK(attachProgramToCgroup(CGROUP_BIND6_PROG_PATH,
                 cg_fd, BPF_CGROUP_INET6_BIND));
 
         // This should trivially pass, since we just attached up above,
@@ -156,6 +154,10 @@ static Status initPrograms(const char* cg2_path) {
         if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_CREATE) <= 0) abort();
         if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET4_BIND) <= 0) abort();
         if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET6_BIND) <= 0) abort();
+    }
+
+    if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
+        if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_RELEASE) <= 0) abort();
     }
 
     if (modules::sdklevel::IsAtLeastV()) {
@@ -169,10 +171,6 @@ static Status initPrograms(const char* cg2_path) {
         if (bpf::isAtLeastKernelVersion(5, 4, 0)) {
             if (bpf::queryProgram(cg_fd, BPF_CGROUP_GETSOCKOPT) <= 0) abort();
             if (bpf::queryProgram(cg_fd, BPF_CGROUP_SETSOCKOPT) <= 0) abort();
-        }
-
-        if (bpf::isAtLeastKernelVersion(5, 10, 0)) {
-            if (bpf::queryProgram(cg_fd, BPF_CGROUP_INET_SOCK_RELEASE) <= 0) abort();
         }
     }
 
@@ -203,7 +201,7 @@ static inline void waitForNetProgsLoaded() {
     }
 }
 
-Status BpfHandler::init(const char* cg2_path) {
+static inline void waitForBpf() {
     // Note: netd *can* be restarted, so this might get called a second time after boot is complete
     // at which point we don't need to (and shouldn't) wait for (more importantly start) loading bpf
 
@@ -231,6 +229,21 @@ Status BpfHandler::init(const char* cg2_path) {
     }
 
     ALOGI("BPF programs are loaded");
+}
+
+Status BpfHandler::init(const char* cg2_path) {
+    // This wait is effectively a no-op on U QPR3+ devices (as netd starts
+    // *after* the synchronous 'exec_start bpfloader' which calls NetBpfLoad)
+    // but checking for U QPR3 is hard.
+    //
+    // Waiting should not be required on U QPR3+ devices,
+    // ...
+    //
+    // ...unless someone changed 'exec_start bpfloader' to 'start bpfloader'
+    // in the rc file.
+    //
+    // TODO: should be: if (!modules::sdklevel::IsAtLeastW())
+    if (android_get_device_api_level() <= __ANDROID_API_V__) waitForBpf();
 
     RETURN_IF_NOT_OK(initPrograms(cg2_path));
     RETURN_IF_NOT_OK(initMaps());
