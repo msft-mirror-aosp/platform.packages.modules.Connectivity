@@ -19,10 +19,15 @@ package com.android.server.thread;
 import android.annotation.Nullable;
 import android.content.Context;
 import android.net.thread.ActiveOperationalDataset;
+import android.net.thread.IConfigurationReceiver;
 import android.net.thread.IOperationReceiver;
+import android.net.thread.IOutputReceiver;
 import android.net.thread.OperationalDatasetTimestamp;
 import android.net.thread.PendingOperationalDataset;
+import android.net.thread.ThreadConfiguration;
 import android.net.thread.ThreadNetworkException;
+import android.os.Binder;
+import android.os.Process;
 import android.text.TextUtils;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -52,6 +57,8 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
     private static final Duration LEAVE_TIMEOUT = Duration.ofSeconds(2);
     private static final Duration MIGRATE_TIMEOUT = Duration.ofSeconds(2);
     private static final Duration FORCE_STOP_TIMEOUT = Duration.ofSeconds(1);
+    private static final Duration OT_CTL_COMMAND_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration CONFIG_TIMEOUT = Duration.ofSeconds(1);
     private static final String PERMISSION_THREAD_NETWORK_TESTING =
             "android.permission.THREAD_NETWORK_TESTING";
 
@@ -62,7 +69,8 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
     @Nullable private PrintWriter mOutputWriter;
     @Nullable private PrintWriter mErrorWriter;
 
-    public ThreadNetworkShellCommand(
+    @VisibleForTesting
+    ThreadNetworkShellCommand(
             Context context,
             ThreadNetworkControllerService controllerService,
             ThreadNetworkCountryCode countryCode) {
@@ -75,6 +83,10 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
     public void setPrintWriters(PrintWriter outputWriter, PrintWriter errorWriter) {
         mOutputWriter = outputWriter;
         mErrorWriter = errorWriter;
+    }
+
+    private static boolean isRootProcess() {
+        return Binder.getCallingUid() == Process.ROOT_UID;
     }
 
     private PrintWriter getOutputWriter() {
@@ -107,6 +119,10 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
         pw.println("    Gets country code as a two-letter string");
         pw.println("  force-country-code enabled <two-letter code> | disabled ");
         pw.println("    Sets country code to <two-letter code> or left for normal value");
+        pw.println("  ot-ctl <subcommand>");
+        pw.println("    Runs ot-ctl command");
+        pw.println("  config [name] [value]");
+        pw.println("    Gets the config or sets the value for a config entry");
     }
 
     @Override
@@ -121,6 +137,8 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
                 return setThreadEnabled(true);
             case "disable":
                 return setThreadEnabled(false);
+            case "config":
+                return handleConfigCommand();
             case "join":
                 return join();
             case "leave":
@@ -133,6 +151,8 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
                 return forceCountryCode();
             case "get-country-code":
                 return getCountryCode();
+            case "ot-ctl":
+                return handleOtCtlCommand();
             default:
                 return handleDefaultCommands(cmd);
         }
@@ -248,6 +268,113 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
         return 0;
     }
 
+    private int handleConfigCommand() {
+        ensureTestingPermission();
+
+        // Get config
+        if (peekNextArg() == null) {
+            try {
+                final ThreadConfiguration config = getConfig();
+                getOutputWriter().println("Thread configuration = " + config);
+            } catch (AssertionError e) {
+                getErrorWriter().println("Failed: " + e.getMessage());
+                return -1;
+            }
+            return 0;
+        }
+
+        // Set config
+        final String name = getNextArg();
+        final String value = getNextArg();
+        try {
+            setConfig(name, value);
+        } catch (AssertionError | IllegalArgumentException e) {
+            getErrorWriter().println(e.getMessage());
+            return -1;
+        }
+        return 0;
+    }
+
+    private ThreadConfiguration getConfig() throws AssertionError {
+        final CompletableFuture<ThreadConfiguration> future = new CompletableFuture<>();
+        mControllerService.registerConfigurationCallback(
+                new IConfigurationReceiver.Stub() {
+                    @Override
+                    public void onConfigurationChanged(ThreadConfiguration config) {
+                        future.complete(config);
+                    }
+                });
+        try {
+            return future.get(CONFIG_TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+        } catch (InterruptedException | ExecutionException | TimeoutException e) {
+            throw new AssertionError("Failed to get config within timeout", e);
+        }
+    }
+
+    private void setConfig(String name, String value)
+            throws IllegalArgumentException, AssertionError {
+        if (name == null || value == null) {
+            throw new IllegalArgumentException(
+                    "Invalid config name = " + name + ", value=" + value);
+        }
+        final ThreadConfiguration oldConfig = getConfig();
+        final ThreadConfiguration.Builder newConfigBuilder =
+                new ThreadConfiguration.Builder(oldConfig);
+        switch (name) {
+            case "br" -> newConfigBuilder.setBorderRouterEnabled(argEnabledOrDisabled(value));
+            case "nat64" -> newConfigBuilder.setNat64Enabled(argEnabledOrDisabled(value));
+            case "pd" -> newConfigBuilder.setDhcpv6PdEnabled(argEnabledOrDisabled(value));
+            default -> throw new IllegalArgumentException("Invalid config name: " + name);
+        }
+        CompletableFuture<Void> future = new CompletableFuture();
+        mControllerService.setConfiguration(newConfigBuilder.build(), newOperationReceiver(future));
+        waitForFuture(future, CONFIG_TIMEOUT, mErrorWriter);
+    }
+
+    private static final class OutputReceiver extends IOutputReceiver.Stub {
+        private final CompletableFuture<Void> future;
+        private final PrintWriter outputWriter;
+
+        public OutputReceiver(CompletableFuture<Void> future, PrintWriter outputWriter) {
+            this.future = future;
+            this.outputWriter = outputWriter;
+        }
+
+        @Override
+        public void onOutput(String output) {
+            outputWriter.print(output);
+            outputWriter.flush();
+        }
+
+        @Override
+        public void onComplete() {
+            future.complete(null);
+        }
+
+        @Override
+        public void onError(int errorCode, String errorMessage) {
+            future.completeExceptionally(new ThreadNetworkException(errorCode, errorMessage));
+        }
+    }
+
+    private int handleOtCtlCommand() {
+        ensureTestingPermission();
+
+        if (!isRootProcess()) {
+            getErrorWriter().println("No access to ot-ctl command");
+            return -1;
+        }
+
+        final String subCommand = String.join(" ", peekRemainingArgs());
+
+        CompletableFuture<Void> completeFuture = new CompletableFuture<>();
+        mControllerService.runOtCtlCommand(
+                subCommand,
+                false /* isInteractive */,
+                new OutputReceiver(completeFuture, getOutputWriter()));
+        return waitForFuture(completeFuture, OT_CTL_COMMAND_TIMEOUT, getErrorWriter());
+    }
+
     private static IOperationReceiver newOperationReceiver(CompletableFuture<Void> future) {
         return new IOperationReceiver.Stub() {
             @Override
@@ -300,6 +427,10 @@ public final class ThreadNetworkShellCommand extends BasicShellCommandHandler {
                             + arg
                             + "'");
         }
+    }
+
+    private static boolean argEnabledOrDisabled(String arg) {
+        return argTrueOrFalse(arg, "enabled", "disabled");
     }
 
     private boolean getNextArgRequiredTrueOrFalse(String trueString, String falseString) {
