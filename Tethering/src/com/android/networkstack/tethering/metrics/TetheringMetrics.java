@@ -75,6 +75,7 @@ import androidx.annotation.VisibleForTesting;
 
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.DeviceConfigUtils;
+import com.android.net.module.util.HandlerUtils;
 import com.android.networkstack.tethering.UpstreamNetworkState;
 
 import java.util.ArrayList;
@@ -433,7 +434,6 @@ public class TetheringMetrics {
      * @param reported a NetworkTetheringReported object containing statistics to write
      */
     private void write(@NonNull final NetworkTetheringReported reported) {
-        final byte[] upstreamEvents = reported.getUpstreamEvents().toByteArray();
         mDependencies.write(reported);
         if (DBG) {
             Log.d(
@@ -447,7 +447,7 @@ public class TetheringMetrics {
                     + ", userType: "
                     + reported.getUserType().getNumber()
                     + ", upstreamTypes: "
-                    + Arrays.toString(upstreamEvents)
+                    + Arrays.toString(reported.getUpstreamEvents().toByteArray())
                     + ", durationMillis: "
                     + reported.getDurationMillis());
         }
@@ -479,10 +479,7 @@ public class TetheringMetrics {
     @VisibleForTesting
     @NonNull
     DataUsage getLastReportedUsageFromUpstreamType(@NonNull UpstreamType type) {
-        if (mHandler.getLooper().getThread() != Thread.currentThread()) {
-            throw new IllegalStateException(
-                    "Not running on Handler thread: " + Thread.currentThread().getName());
-        }
+        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
         return mLastReportedUpstreamUsage.getOrDefault(type, EMPTY);
     }
 

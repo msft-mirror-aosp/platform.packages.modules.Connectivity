@@ -182,6 +182,7 @@ public class ThreadNetworkControllerTest {
     @After
     public void tearDown() throws Exception {
         dropAllPermissions();
+        setEnabledAndWait(mController, true);
         leaveAndWait(mController);
         tearDownTestNetwork();
         setConfigurationAndWait(mController, DEFAULT_CONFIG);
@@ -921,6 +922,27 @@ public class ThreadNetworkControllerTest {
 
     @Test
     @RequiresFlagsEnabled({Flags.FLAG_EPSKC_ENABLED})
+    public void activateEphemeralKeyMode_notBorderRouter_failsWithFailedPrecondition()
+            throws Exception {
+        setConfigurationAndWait(
+                mController,
+                new ThreadConfiguration.Builder().setBorderRouterEnabled(false).build());
+        grantPermissions(THREAD_NETWORK_PRIVILEGED);
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
+        mController.activateEphemeralKeyMode(
+                Duration.ofSeconds(1), mExecutor, newOutcomeReceiver(future));
+
+        var thrown =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> future.get(CALLBACK_TIMEOUT_MILLIS, MILLISECONDS));
+        var threadException = (ThreadNetworkException) thrown.getCause();
+        assertThat(threadException.getErrorCode()).isEqualTo(ERROR_FAILED_PRECONDITION);
+    }
+
+    @Test
+    @RequiresFlagsEnabled({Flags.FLAG_EPSKC_ENABLED})
     public void deactivateEphemeralKeyMode_withoutPrivilegedPermission_throwsSecurityException()
             throws Exception {
         dropAllPermissions();
@@ -928,6 +950,26 @@ public class ThreadNetworkControllerTest {
         assertThrows(
                 SecurityException.class,
                 () -> mController.deactivateEphemeralKeyMode(mExecutor, v -> {}));
+    }
+
+    @Test
+    @RequiresFlagsEnabled({Flags.FLAG_EPSKC_ENABLED})
+    public void deactivateEphemeralKeyMode_notBorderRouter_failsWithFailedPrecondition()
+            throws Exception {
+        setConfigurationAndWait(
+                mController,
+                new ThreadConfiguration.Builder().setBorderRouterEnabled(false).build());
+        grantPermissions(THREAD_NETWORK_PRIVILEGED);
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
+        mController.deactivateEphemeralKeyMode(mExecutor, newOutcomeReceiver(future));
+
+        var thrown =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> future.get(CALLBACK_TIMEOUT_MILLIS, MILLISECONDS));
+        var threadException = (ThreadNetworkException) thrown.getCause();
+        assertThat(threadException.getErrorCode()).isEqualTo(ERROR_FAILED_PRECONDITION);
     }
 
     @Test
@@ -1042,7 +1084,9 @@ public class ThreadNetworkControllerTest {
                     listener2.expectThreadEphemeralKeyMode(EPHEMERAL_KEY_ENABLED);
 
             assertThat(epskc2.getSecond()).isEqualTo(epskc1.getSecond());
-            assertThat(epskc2.getThird()).isEqualTo(epskc1.getThird());
+            // allow time precision loss of a second since the value is passed via IPC
+            assertThat(epskc2.getThird()).isGreaterThan(epskc1.getThird().minusSeconds(1));
+            assertThat(epskc2.getThird()).isLessThan(epskc1.getThird().plusSeconds(1));
         } finally {
             listener2.unregisterStateCallback();
         }
@@ -1149,13 +1193,13 @@ public class ThreadNetworkControllerTest {
         ConfigurationListener listener = new ConfigurationListener(mController);
         ThreadConfiguration config1 =
                 new ThreadConfiguration.Builder()
+                        .setBorderRouterEnabled(true)
                         .setNat64Enabled(true)
-                        .setDhcpv6PdEnabled(true)
                         .build();
         ThreadConfiguration config2 =
                 new ThreadConfiguration.Builder()
+                        .setBorderRouterEnabled(false)
                         .setNat64Enabled(false)
-                        .setDhcpv6PdEnabled(true)
                         .build();
 
         try {
@@ -1268,7 +1312,10 @@ public class ThreadNetworkControllerTest {
 
         assertThat(txtMap.get("rv")).isNotNull();
         assertThat(txtMap.get("tv")).isNotNull();
-        assertThat(txtMap.get("sb")).isNotNull();
+        // Border Agent State Bitmap is 32 bits
+        assertThat(txtMap.get("sb").length).isEqualTo(4);
+        // The 12th bit (4th bit of the second byte) for ePSKc support should be set to 1.
+        assertThat(txtMap.get("sb")[2] & 8).isEqualTo(8);
     }
 
     @Test
@@ -1293,7 +1340,10 @@ public class ThreadNetworkControllerTest {
         Map<String, byte[]> txtMap = resolvedService.getAttributes();
         assertThat(txtMap.get("rv")).isNotNull();
         assertThat(txtMap.get("tv")).isNotNull();
-        assertThat(txtMap.get("sb")).isNotNull();
+        // Border Agent State Bitmap is 32 bits
+        assertThat(txtMap.get("sb").length).isEqualTo(4);
+        // The 12th bit (4th bit of the second byte) for ePSKc support should be set to 1.
+        assertThat(txtMap.get("sb")[2] & 8).isEqualTo(8);
         assertThat(txtMap.get("id").length).isEqualTo(16);
     }
 

@@ -22,7 +22,7 @@ import com.android.net.module.util.DeviceConfigUtils;
 import java.io.File;
 
 /** Class holding the constants used by the CT feature. */
-final class Config {
+public final class Config {
 
     static final boolean DEBUG = false;
 
@@ -33,6 +33,10 @@ final class Config {
     private static final String PREFERENCES_FILE_NAME = "ct.preferences";
     static final File PREFERENCES_FILE = new File(DEVICE_PROTECTED_DATA_DIR, PREFERENCES_FILE_NAME);
 
+    // CT directory
+    public static final String CT_ROOT_DIRECTORY_PATH = "/data/misc/keychain/ct/";
+    static final String COMPATIBILITY_VERSION = "v1";
+
     // Phenotype flags
     static final String NAMESPACE_NETWORK_SECURITY = "network_security";
     private static final String FLAGS_PREFIX = "CertificateTransparencyLogList__";
@@ -40,6 +44,7 @@ final class Config {
     static final String FLAG_CONTENT_URL = FLAGS_PREFIX + "content_url";
     static final String FLAG_METADATA_URL = FLAGS_PREFIX + "metadata_url";
     static final String FLAG_VERSION = FLAGS_PREFIX + "version";
+    static final String FLAG_PUBLIC_KEY = FLAGS_PREFIX + "public_key";
 
     // properties
     static final String VERSION_PENDING = "version_pending";

@@ -70,13 +70,13 @@ import com.android.internal.util.MessageUtils;
 import com.android.internal.util.State;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.InterfaceParams;
+import com.android.net.module.util.IIpv4PrefixRequest;
 import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.RoutingCoordinatorManager;
 import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.SyncStateMachine.StateInfo;
 import com.android.net.module.util.ip.InterfaceController;
 import com.android.networkstack.tethering.BpfCoordinator;
-import com.android.networkstack.tethering.PrivateAddressCoordinator;
 import com.android.networkstack.tethering.TetheringConfiguration;
 import com.android.networkstack.tethering.metrics.TetheringMetrics;
 import com.android.networkstack.tethering.util.InterfaceSet;
@@ -123,6 +123,8 @@ public class IpServer extends StateMachineShim {
 
     // TODO: have PanService use some visible version of this constant
     private static final String BLUETOOTH_IFACE_ADDR = "192.168.44.1/24";
+
+    private static final String LEGACY_WIFI_P2P_IFACE_ADDRESS = "192.168.49.1/24";
 
     // TODO: have this configurable
     private static final int DHCP_LEASE_TIME_SECS = 3600;
@@ -240,15 +242,17 @@ public class IpServer extends StateMachineShim {
     private final BpfCoordinator mBpfCoordinator;
     @NonNull
     private final RoutingCoordinatorManager mRoutingCoordinator;
+    @NonNull
+    private final IIpv4PrefixRequest mIpv4PrefixRequest;
     private final Callback mCallback;
     private final InterfaceController mInterfaceCtrl;
-    private final PrivateAddressCoordinator mPrivateAddressCoordinator;
 
     private final String mIfaceName;
     private final int mInterfaceType;
     private final LinkProperties mLinkProperties;
     private final boolean mUsingLegacyDhcp;
     private final int mP2pLeasesSubnetPrefixLength;
+    private final boolean mIsWifiP2pDedicatedIpEnabled;
 
     private final Dependencies mDeps;
 
@@ -298,7 +302,7 @@ public class IpServer extends StateMachineShim {
             String ifaceName, Handler handler, int interfaceType, SharedLog log,
             INetd netd, @NonNull BpfCoordinator bpfCoordinator,
             RoutingCoordinatorManager routingCoordinatorManager, Callback callback,
-            TetheringConfiguration config, PrivateAddressCoordinator addressCoordinator,
+            TetheringConfiguration config,
             TetheringMetrics tetheringMetrics, Dependencies deps) {
         super(ifaceName, USE_SYNC_SM ? null : handler.getLooper());
         mHandler = handler;
@@ -306,6 +310,12 @@ public class IpServer extends StateMachineShim {
         mNetd = netd;
         mBpfCoordinator = bpfCoordinator;
         mRoutingCoordinator = routingCoordinatorManager;
+        mIpv4PrefixRequest = new IIpv4PrefixRequest.Stub() {
+            @Override
+            public void onIpv4PrefixConflict(IpPrefix ipPrefix) throws RemoteException {
+                sendMessage(CMD_NOTIFY_PREFIX_CONFLICT);
+            }
+        };
         mCallback = callback;
         mInterfaceCtrl = new InterfaceController(ifaceName, mNetd, mLog);
         mIfaceName = ifaceName;
@@ -313,7 +323,7 @@ public class IpServer extends StateMachineShim {
         mLinkProperties = new LinkProperties();
         mUsingLegacyDhcp = config.useLegacyDhcpServer();
         mP2pLeasesSubnetPrefixLength = config.getP2pLeasesSubnetPrefixLength();
-        mPrivateAddressCoordinator = addressCoordinator;
+        mIsWifiP2pDedicatedIpEnabled = config.shouldEnableWifiP2pDedicatedIp();
         mDeps = deps;
         mTetheringMetrics = tetheringMetrics;
         resetLinkProperties();
@@ -389,6 +399,11 @@ public class IpServer extends StateMachineShim {
     /** The interface parameters which IpServer is using */
     public InterfaceParams getInterfaceParams() {
         return mInterfaceParams;
+    }
+
+    @VisibleForTesting
+    public IIpv4PrefixRequest getIpv4PrefixRequest() {
+        return mIpv4PrefixRequest;
     }
 
     /**
@@ -639,7 +654,7 @@ public class IpServer extends StateMachineShim {
         // NOTE: All of configureIPv4() will be refactored out of existence
         // into calls to InterfaceController, shared with startIPv4().
         mInterfaceCtrl.clearIPv4Address();
-        mPrivateAddressCoordinator.releaseDownstream(this);
+        mRoutingCoordinator.releaseDownstream(mIpv4PrefixRequest);
         mBpfCoordinator.tetherOffloadClientClear(this);
         mIpv4Address = null;
         mStaticIpv4ServerAddr = null;
@@ -698,12 +713,24 @@ public class IpServer extends StateMachineShim {
         return (mInterfaceType == TetheringManager.TETHERING_BLUETOOTH) && !SdkLevel.isAtLeastT();
     }
 
+    private boolean shouldUseWifiP2pDedicatedIp() {
+        return mIsWifiP2pDedicatedIpEnabled
+                && mInterfaceType == TetheringManager.TETHERING_WIFI_P2P;
+    }
+
     private LinkAddress requestIpv4Address(final int scope, final boolean useLastAddress) {
         if (mStaticIpv4ServerAddr != null) return mStaticIpv4ServerAddr;
 
         if (shouldNotConfigureBluetoothInterface()) return new LinkAddress(BLUETOOTH_IFACE_ADDR);
 
-        return mPrivateAddressCoordinator.requestDownstreamAddress(this, scope, useLastAddress);
+        if (shouldUseWifiP2pDedicatedIp()) return new LinkAddress(LEGACY_WIFI_P2P_IFACE_ADDRESS);
+
+        if (useLastAddress) {
+            return mRoutingCoordinator.requestStickyDownstreamAddress(mInterfaceType, scope,
+                    mIpv4PrefixRequest);
+        }
+
+        return mRoutingCoordinator.requestDownstreamAddress(mIpv4PrefixRequest);
     }
 
     private boolean startIPv6() {
