@@ -19,14 +19,19 @@ package android.net.thread;
 import static android.net.thread.ThreadNetworkController.STATE_DISABLED;
 import static android.net.thread.ThreadNetworkController.STATE_ENABLED;
 import static android.net.thread.ThreadNetworkException.ERROR_THREAD_DISABLED;
+import static android.net.thread.utils.IntegrationTestUtils.DEFAULT_CONFIG;
+import static android.net.thread.utils.IntegrationTestUtils.DEFAULT_DATASET;
 
 import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThrows;
 
 import android.content.Context;
+import android.net.thread.utils.FullThreadDevice;
+import android.net.thread.utils.OtDaemonController;
 import android.net.thread.utils.ThreadFeatureCheckerRule;
 import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresThreadFeature;
 import android.net.thread.utils.ThreadNetworkControllerWrapper;
@@ -41,6 +46,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import java.net.Inet6Address;
+import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 
 /** Integration tests for {@link ThreadNetworkShellCommand}. */
@@ -53,20 +61,38 @@ public class ThreadNetworkShellCommandTest {
     private final Context mContext = ApplicationProvider.getApplicationContext();
     private final ThreadNetworkControllerWrapper mController =
             ThreadNetworkControllerWrapper.newInstance(mContext);
+    private final OtDaemonController mOtCtl = new OtDaemonController();
+    private FullThreadDevice mFtd;
 
     @Before
-    public void setUp() {
+    public void setUp() throws Exception {
+        // TODO(b/366141754): The current implementation of "thread_network ot-ctl factoryreset"
+        // results in timeout error.
+        // A future fix will provide proper support for factoryreset, allowing us to replace the
+        // legacy "ot-ctl".
+        mOtCtl.factoryReset();
+
+        mFtd = new FullThreadDevice(10 /* nodeId */);
         ensureThreadEnabled();
     }
 
     @After
-    public void tearDown() {
+    public void tearDown() throws Exception {
+        mFtd.destroy();
         ensureThreadEnabled();
+        mController.setConfigurationAndWait(DEFAULT_CONFIG);
     }
 
     private static void ensureThreadEnabled() {
         runThreadCommand("force-stop-ot-daemon disabled");
         runThreadCommand("enable");
+    }
+
+    private static void startFtdChild(FullThreadDevice ftd, ActiveOperationalDataset activeDataset)
+            throws Exception {
+        ftd.factoryReset();
+        ftd.joinNetwork(activeDataset);
+        ftd.waitForStateAnyOf(List.of("router", "child"), Duration.ofSeconds(8));
     }
 
     @Test
@@ -121,6 +147,59 @@ public class ThreadNetworkShellCommandTest {
 
         final String result = runThreadCommand("get-country-code");
         assertThat(result).contains("Thread country code = CN");
+    }
+
+    @Test
+    public void handleOtCtlCommand_enableIfconfig_getIfconfigReturnsUP() {
+        runThreadCommand("ot-ctl ifconfig up");
+
+        final String result = runThreadCommand("ot-ctl ifconfig");
+
+        assertThat(result).isEqualTo("up\r\nDone\r\n");
+    }
+
+    @Test
+    public void handleOtCtlCommand_disableIfconfig_startThreadFailsWithInvalidState() {
+        runThreadCommand("ot-ctl ifconfig down");
+
+        final String result = runThreadCommand("ot-ctl thread start");
+
+        assertThat(result).isEqualTo("Error 13: InvalidState\r\n");
+    }
+
+    @Test
+    public void handleOtCtlCommand_pingFtd_getValidResponse() throws Exception {
+        mController.joinAndWait(DEFAULT_DATASET);
+        startFtdChild(mFtd, DEFAULT_DATASET);
+        final Inet6Address ftdMlEid = mFtd.getMlEid();
+        assertNotNull(ftdMlEid);
+
+        final String result = runThreadCommand("ot-ctl ping " + ftdMlEid.getHostAddress());
+
+        assertThat(result).contains("1 packets transmitted, 1 packets received");
+        assertThat(result).contains("Packet loss = 0.0%");
+        assertThat(result).endsWith("Done\r\n");
+    }
+
+    @Test
+    public void config_getConfig_expectedValueIsPrinted() throws Exception {
+        ThreadConfiguration config =
+                new ThreadConfiguration.Builder().setNat64Enabled(true).build();
+        mController.setConfigurationAndWait(config);
+
+        final String result = runThreadCommand("config");
+
+        assertThat(result).contains("nat64Enabled=true");
+    }
+
+    @Test
+    public void config_setConfig_expectedValueIsSet() throws Exception {
+        ThreadConfiguration config = new ThreadConfiguration.Builder().build();
+        mController.setConfigurationAndWait(config);
+
+        runThreadCommand("config nat64 enabled");
+
+        assertThat(mController.getConfiguration().isNat64Enabled()).isTrue();
     }
 
     private static String runThreadCommand(String cmd) {
