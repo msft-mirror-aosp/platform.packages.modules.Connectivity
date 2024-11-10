@@ -24,7 +24,9 @@ import android.net.InetAddresses.parseNumericAddress
 import android.net.thread.utils.FullThreadDevice
 import android.net.thread.utils.InfraNetworkDevice
 import android.net.thread.utils.IntegrationTestUtils.DEFAULT_DATASET
+import android.net.thread.utils.IntegrationTestUtils.enableThreadAndJoinNetwork
 import android.net.thread.utils.IntegrationTestUtils.joinNetworkAndWaitForOmr
+import android.net.thread.utils.IntegrationTestUtils.leaveNetworkAndDisableThread
 import android.net.thread.utils.IntegrationTestUtils.newPacketReader
 import android.net.thread.utils.IntegrationTestUtils.setUpInfraNetwork
 import android.net.thread.utils.IntegrationTestUtils.startInfraDeviceAndWaitForOnLinkAddr
@@ -32,6 +34,7 @@ import android.net.thread.utils.IntegrationTestUtils.tearDownInfraNetwork
 import android.net.thread.utils.IntegrationTestUtils.waitFor
 import android.net.thread.utils.OtDaemonController
 import android.net.thread.utils.TestDnsServer
+import android.net.thread.utils.TestUdpEchoServer
 import android.net.thread.utils.ThreadFeatureCheckerRule
 import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresSimulationThreadDevice
 import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresThreadFeature
@@ -48,9 +51,12 @@ import com.android.testutils.TestNetworkTracker
 import com.google.common.truth.Truth.assertThat
 import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.time.Duration
 import org.junit.After
+import org.junit.AfterClass
 import org.junit.Before
+import org.junit.BeforeClass
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -61,26 +67,42 @@ import org.junit.runner.RunWith
 @RequiresSimulationThreadDevice
 @LargeTest
 class InternetAccessTest {
-    private val TAG = BorderRoutingTest::class.java.simpleName
-    private val NUM_FTD = 1
-    private val DNS_SERVER_ADDR = parseNumericAddress("8.8.8.8") as Inet4Address
-    private val ANSWER_RECORDS =
-        listOf(
-            DnsPacket.DnsRecord.makeAOrAAAARecord(
-                ANSECTION,
-                "google.com",
-                CLASS_IN,
-                30 /* ttl */,
-                parseNumericAddress("1.2.3.4"),
-            ),
-            DnsPacket.DnsRecord.makeAOrAAAARecord(
-                ANSECTION,
-                "google.com",
-                CLASS_IN,
-                30 /* ttl */,
-                parseNumericAddress("2001::234"),
-            ),
-        )
+    companion object {
+        private val TAG = BorderRoutingTest::class.java.simpleName
+        private val NUM_FTD = 1
+        private val DNS_SERVER_ADDR = parseNumericAddress("8.8.8.8") as Inet4Address
+        private val UDP_ECHO_SERVER_ADDRESS =
+            InetSocketAddress(parseNumericAddress("1.2.3.4"), 12345)
+        private val ANSWER_RECORDS =
+            listOf(
+                DnsPacket.DnsRecord.makeAOrAAAARecord(
+                    ANSECTION,
+                    "google.com",
+                    CLASS_IN,
+                    30 /* ttl */,
+                    parseNumericAddress("1.2.3.4"),
+                ),
+                DnsPacket.DnsRecord.makeAOrAAAARecord(
+                    ANSECTION,
+                    "google.com",
+                    CLASS_IN,
+                    30 /* ttl */,
+                    parseNumericAddress("2001::234"),
+                ),
+            )
+
+        @BeforeClass
+        @JvmStatic
+        fun beforeClass() {
+            enableThreadAndJoinNetwork(DEFAULT_DATASET)
+        }
+
+        @AfterClass
+        @JvmStatic
+        fun afterClass() {
+            leaveNetworkAndDisableThread()
+        }
+    }
 
     @get:Rule val threadRule = ThreadFeatureCheckerRule()
 
@@ -94,13 +116,12 @@ class InternetAccessTest {
     private lateinit var infraNetworkReader: PollPacketReader
     private lateinit var infraDevice: InfraNetworkDevice
     private lateinit var dnsServer: TestDnsServer
+    private lateinit var udpEchoServer: TestUdpEchoServer
 
     @Before
     @Throws(Exception::class)
     fun setUp() {
-        // TODO: b/323301831 - This is a workaround to avoid unnecessary delay to re-form a network
         otCtl = OtDaemonController()
-        otCtl.factoryReset()
 
         handlerThread = HandlerThread(javaClass.simpleName)
         handlerThread.start()
@@ -108,15 +129,16 @@ class InternetAccessTest {
         ftds = ArrayList()
 
         infraNetworkTracker = setUpInfraNetwork(context, controller)
-        controller.setEnabledAndWait(true)
-        controller.joinAndWait(DEFAULT_DATASET)
 
-        // Creates a infra network device.
+        // Create an infra network device.
         infraNetworkReader = newPacketReader(infraNetworkTracker.testIface, handler)
         infraDevice = startInfraDeviceAndWaitForOnLinkAddr(infraNetworkReader)
 
         // Create a DNS server
         dnsServer = TestDnsServer(infraNetworkReader, DNS_SERVER_ADDR, ANSWER_RECORDS)
+
+        // Create a UDP echo server
+        udpEchoServer = TestUdpEchoServer(infraNetworkReader, UDP_ECHO_SERVER_ADDRESS)
 
         // Create Ftds
         for (i in 0 until NUM_FTD) {
@@ -128,10 +150,10 @@ class InternetAccessTest {
     @Throws(Exception::class)
     fun tearDown() {
         controller.setTestNetworkAsUpstreamAndWait(null)
-        controller.leaveAndWait()
         tearDownInfraNetwork(infraNetworkTracker)
 
         dnsServer.stop()
+        udpEchoServer.stop()
 
         handlerThread.quitSafely()
         handlerThread.join()
@@ -164,6 +186,20 @@ class InternetAccessTest {
 
         assertThat(ftd.resolveHost("google.com", TYPE_A)).isEmpty()
         assertThat(ftd.resolveHost("google.com", TYPE_AAAA)).isEmpty()
+    }
+
+    @Test
+    fun nat64Enabled_threadDeviceSendsUdpToEchoServer_replyIsReceived() {
+        controller.setNat64EnabledAndWait(true)
+        waitFor({ otCtl.hasNat64PrefixInNetdata() }, Duration.ofSeconds(10))
+        val ftd = ftds[0]
+        joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET)
+        udpEchoServer.start()
+
+        ftd.udpOpen()
+        ftd.udpSend("Hello,Thread", UDP_ECHO_SERVER_ADDRESS.address, UDP_ECHO_SERVER_ADDRESS.port)
+        val reply = ftd.udpReceive()
+        assertThat(reply).isEqualTo("Hello,Thread")
     }
 
     private fun extractIpv4AddressFromMappedAddress(address: InetAddress): Inet4Address {
