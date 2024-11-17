@@ -33,6 +33,7 @@ import android.os.ConditionVariable;
 import android.os.IBinder;
 import android.os.Parcel;
 import android.os.Parcelable;
+import android.os.Process;
 import android.os.RemoteException;
 import android.os.ResultReceiver;
 import android.util.ArrayMap;
@@ -698,7 +699,7 @@ public class TetheringManager {
         /**
          * @hide
          */
-        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
         public TetheringRequest(@NonNull final TetheringRequestParcel request) {
             mRequestParcel = request;
         }
@@ -707,7 +708,7 @@ public class TetheringManager {
             mRequestParcel = in.readParcelable(TetheringRequestParcel.class.getClassLoader());
         }
 
-        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
         @NonNull
         public static final Creator<TetheringRequest> CREATOR = new Creator<>() {
             @Override
@@ -721,13 +722,13 @@ public class TetheringManager {
             }
         };
 
-        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
         @Override
         public int describeContents() {
             return 0;
         }
 
-        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
         @Override
         public void writeToParcel(@NonNull Parcel dest, int flags) {
             dest.writeParcelable(mRequestParcel, flags);
@@ -746,6 +747,7 @@ public class TetheringManager {
                 mBuilderParcel.exemptFromEntitlementCheck = false;
                 mBuilderParcel.showProvisioningUi = true;
                 mBuilderParcel.connectivityScope = getDefaultConnectivityScope(type);
+                mBuilderParcel.uid = Process.INVALID_UID;
                 mBuilderParcel.softApConfig = null;
             }
 
@@ -818,7 +820,7 @@ public class TetheringManager {
              * @param softApConfig SoftApConfiguration to use.
              * @throws IllegalArgumentException if the tethering type isn't TETHERING_WIFI.
              */
-            @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+            @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
             @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED)
             @NonNull
             public Builder setSoftApConfiguration(@Nullable SoftApConfiguration softApConfig) {
@@ -913,10 +915,51 @@ public class TetheringManager {
         /**
          * Get the desired SoftApConfiguration of the request, if one was specified.
          */
-        @FlaggedApi(Flags.FLAG_TETHERING_REQUEST_WITH_SOFT_AP_CONFIG)
+        @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
         @Nullable
         public SoftApConfiguration getSoftApConfiguration() {
             return mRequestParcel.softApConfig;
+        }
+
+        /**
+         * Sets the UID of the app that sent this request. This should always be overridden when
+         * receiving TetheringRequest from an external source.
+         * @hide
+         */
+        public void setUid(int uid) {
+            mRequestParcel.uid = uid;
+        }
+
+        /**
+         * Sets the package name of the app that sent this request. This should always be overridden
+         * when receiving a TetheringRequest from an external source.
+         * @hide
+         */
+        public void setPackageName(String packageName) {
+            mRequestParcel.packageName = packageName;
+        }
+
+        /**
+         * Gets the UID of the app that sent this request. This defaults to
+         * {@link Process#INVALID_UID} if unset.
+         * @hide
+         */
+        @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
+        @SystemApi(client = MODULE_LIBRARIES)
+        public int getUid() {
+            return mRequestParcel.uid;
+        }
+
+        /**
+         * Gets the package name of the app that sent this request. This defaults to {@code null} if
+         * unset.
+         * @hide
+         */
+        @FlaggedApi(Flags.FLAG_TETHERING_WITH_SOFT_AP_CONFIG)
+        @SystemApi(client = MODULE_LIBRARIES)
+        @Nullable
+        public String getPackageName() {
+            return mRequestParcel.packageName;
         }
 
         /**
@@ -935,6 +978,8 @@ public class TetheringManager {
                     + ", exemptFromEntitlementCheck= " + mRequestParcel.exemptFromEntitlementCheck
                     + ", showProvisioningUi= " + mRequestParcel.showProvisioningUi
                     + ", softApConfig= " + mRequestParcel.softApConfig
+                    + ", uid= " + mRequestParcel.uid
+                    + ", packageName= " + mRequestParcel.packageName
                     + " ]";
         }
 
@@ -950,7 +995,9 @@ public class TetheringManager {
                     && parcel.exemptFromEntitlementCheck == otherParcel.exemptFromEntitlementCheck
                     && parcel.showProvisioningUi == otherParcel.showProvisioningUi
                     && parcel.connectivityScope == otherParcel.connectivityScope
-                    && Objects.equals(parcel.softApConfig, otherParcel.softApConfig);
+                    && Objects.equals(parcel.softApConfig, otherParcel.softApConfig)
+                    && parcel.uid == otherParcel.uid
+                    && Objects.equals(parcel.packageName, otherParcel.packageName);
         }
 
         @Override
@@ -958,7 +1005,8 @@ public class TetheringManager {
             TetheringRequestParcel parcel = getParcel();
             return Objects.hash(parcel.tetheringType, parcel.localIPv4Address,
                     parcel.staticClientAddress, parcel.exemptFromEntitlementCheck,
-                    parcel.showProvisioningUi, parcel.connectivityScope, parcel.softApConfig);
+                    parcel.showProvisioningUi, parcel.connectivityScope, parcel.softApConfig,
+                    parcel.uid, parcel.packageName);
         }
     }
 
