@@ -671,11 +671,12 @@ filegroup {
     visibility: ["//visibility:private"],
 }
 
+// Sources outside of com.android.net.module.util should not be added because many modules depend on
+// them and need jarjar rules
 filegroup {
     name: "net-utils-all-srcs",
     srcs: [
         "device/**/*.java",
-        ":framework-connectivity-shared-srcs",
         ":net-utils-framework-common-srcs",
     ],
     visibility: ["//visibility:private"],
@@ -723,4 +724,11 @@ java_library {
         "//packages/modules/Wifi/framework",
     ],
     apex_available: ["com.android.wifi"],
+}
+
+genrule {
+    name: "statslog-framework-connectivity-java-gen",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --java $(out) --module connectivity --javaPackage com.android.net.module.util --javaClass FrameworkConnectivityStatsLog",
+    out: ["com/android/net/module/util/FrameworkConnectivityStatsLog.java"],
 }

@@ -64,6 +64,7 @@ java_defaults {
         ":net-utils-framework-common-srcs",
         ":framework-connectivity-api-shared-srcs",
         ":framework-networksecurity-sources",
+        ":statslog-framework-connectivity-java-gen",
     ],
     aidl: {
         generate_get_transaction_name: true,
@@ -104,6 +105,7 @@ java_defaults {
         "androidx.annotation_annotation",
         "app-compat-annotations",
         "framework-connectivity-t.stubs.module_lib",
+        "framework-statsd.stubs.module_lib",
         "unsupportedappusage",
     ],
     apex_available: [

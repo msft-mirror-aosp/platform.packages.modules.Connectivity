@@ -29,6 +29,8 @@ import android.util.Log;
 
 import androidx.annotation.VisibleForTesting;
 
+import com.android.server.net.ct.DownloadHelper.DownloadStatus;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.GeneralSecurityException;
@@ -86,12 +88,17 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
     }
 
     void setPublicKey(String publicKey) throws GeneralSecurityException {
-        mPublicKey =
-                Optional.of(
-                        KeyFactory.getInstance("RSA")
-                                .generatePublic(
-                                        new X509EncodedKeySpec(
-                                                Base64.getDecoder().decode(publicKey))));
+        try {
+            mPublicKey =
+                    Optional.of(
+                            KeyFactory.getInstance("RSA")
+                                    .generatePublic(
+                                            new X509EncodedKeySpec(
+                                                    Base64.getDecoder().decode(publicKey))));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Invalid public key Base64 encoding", e);
+            mPublicKey = Optional.empty();
+        }
     }
 
     @VisibleForTesting
@@ -147,19 +154,18 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
     }
 
     private void handleMetadataDownloadCompleted(long downloadId) {
-        if (!mDownloadHelper.isSuccessful(downloadId)) {
-            Log.w(TAG, "Metadata download failed.");
-            // TODO: re-attempt download
+        DownloadStatus status = mDownloadHelper.getDownloadStatus(downloadId);
+        if (!status.isSuccessful()) {
+            handleDownloadFailed(status);
             return;
         }
-
         startContentDownload(mDataStore.getProperty(Config.CONTENT_URL_PENDING));
     }
 
     private void handleContentDownloadCompleted(long downloadId) {
-        if (!mDownloadHelper.isSuccessful(downloadId)) {
-            Log.w(TAG, "Content download failed.");
-            // TODO: re-attempt download
+        DownloadStatus status = mDownloadHelper.getDownloadStatus(downloadId);
+        if (!status.isSuccessful()) {
+            handleDownloadFailed(status);
             return;
         }
 
@@ -200,6 +206,11 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             mDataStore.setProperty(Config.METADATA_URL, metadataUrl);
             mDataStore.store();
         }
+    }
+
+    private void handleDownloadFailed(DownloadStatus status) {
+        Log.e(TAG, "Content download failed with " + status);
+        // TODO(378626065): Report failure via statsd.
     }
 
     private boolean verify(Uri file, Uri signature) throws IOException, GeneralSecurityException {

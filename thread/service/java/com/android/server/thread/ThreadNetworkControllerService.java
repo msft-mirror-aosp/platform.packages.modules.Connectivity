@@ -357,7 +357,8 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                 mNsdPublisher,
                 getMeshcopTxtAttributes(mResources.get()),
                 mOtDaemonCallbackProxy,
-                mCountryCodeSupplier.get());
+                mCountryCodeSupplier.get(),
+                FeatureFlags.isTrelEnabled());
         otDaemon.asBinder().linkToDeath(() -> mHandler.post(this::onOtDaemonDied), 0);
         mOtDaemon = otDaemon;
         mHandler.post(mNat64CidrController::maybeUpdateNat64Cidr);
@@ -1405,9 +1406,10 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     }
 
     private void setInfraLinkState(InfraLinkState newInfraLinkState) {
-        if (!Objects.equals(mInfraLinkState, newInfraLinkState)) {
-            LOG.i("Infra link state changed: " + mInfraLinkState + " -> " + newInfraLinkState);
+        if (Objects.equals(mInfraLinkState, newInfraLinkState)) {
+            return;
         }
+        LOG.i("Infra link state changed: " + mInfraLinkState + " -> " + newInfraLinkState);
         setInfraLinkInterfaceName(newInfraLinkState.interfaceName);
         setInfraLinkNat64Prefix(newInfraLinkState.nat64Prefix);
         setInfraLinkDnsServers(newInfraLinkState.dnsServers);
@@ -1415,6 +1417,9 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     }
 
     private void setInfraLinkInterfaceName(String newInfraLinkInterfaceName) {
+        if (Objects.equals(mInfraLinkState.interfaceName, newInfraLinkInterfaceName)) {
+            return;
+        }
         ParcelFileDescriptor infraIcmp6Socket = null;
         if (newInfraLinkInterfaceName != null) {
             try {
@@ -1435,6 +1440,9 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     }
 
     private void setInfraLinkNat64Prefix(@Nullable String newNat64Prefix) {
+        if (Objects.equals(newNat64Prefix, mInfraLinkState.nat64Prefix)) {
+            return;
+        }
         try {
             getOtDaemon()
                     .setInfraLinkNat64Prefix(
@@ -1445,6 +1453,9 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
     }
 
     private void setInfraLinkDnsServers(List<String> newDnsServers) {
+        if (Objects.equals(newDnsServers, mInfraLinkState.dnsServers)) {
+            return;
+        }
         try {
             getOtDaemon()
                     .setInfraLinkDnsServers(
@@ -1783,6 +1794,7 @@ final class ThreadNetworkControllerService extends IThreadNetworkController.Stub
                     // do nothing if the client is dead
                 }
             }
+            mInfraLinkState = newInfraLinkStateBuilder().build();
         }
 
         private void onThreadEnabledChanged(int state, long listenerId) {
