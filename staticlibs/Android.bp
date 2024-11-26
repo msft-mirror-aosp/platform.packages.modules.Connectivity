@@ -32,6 +32,8 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
+// This library shouldn't be used anymore (no class should be added), and per-user libraries like
+// net-utils-service-connectivity or net-utils-framework-wifi should be used instead.
 java_library {
     name: "net-utils-device-common",
     srcs: [
@@ -671,11 +673,12 @@ filegroup {
     visibility: ["//visibility:private"],
 }
 
+// Sources outside of com.android.net.module.util should not be added because many modules depend on
+// them and need jarjar rules
 filegroup {
     name: "net-utils-all-srcs",
     srcs: [
         "device/**/*.java",
-        ":framework-connectivity-shared-srcs",
         ":net-utils-framework-common-srcs",
     ],
     visibility: ["//visibility:private"],
@@ -723,4 +726,11 @@ java_library {
         "//packages/modules/Wifi/framework",
     ],
     apex_available: ["com.android.wifi"],
+}
+
+genrule {
+    name: "statslog-framework-connectivity-java-gen",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --java $(out) --module connectivity --javaPackage com.android.net.module.util --javaClass FrameworkConnectivityStatsLog",
+    out: ["com/android/net/module/util/FrameworkConnectivityStatsLog.java"],
 }
