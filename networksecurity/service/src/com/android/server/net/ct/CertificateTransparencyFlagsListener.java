@@ -16,7 +16,6 @@
 package com.android.server.net.ct;
 
 import android.annotation.RequiresApi;
-import android.content.Context;
 import android.os.Build;
 import android.provider.DeviceConfig;
 import android.provider.DeviceConfig.Properties;
@@ -33,12 +32,16 @@ class CertificateTransparencyFlagsListener implements DeviceConfig.OnPropertiesC
     private static final String TAG = "CertificateTransparencyFlagsListener";
 
     private final DataStore mDataStore;
+    private final SignatureVerifier mSignatureVerifier;
     private final CertificateTransparencyDownloader mCertificateTransparencyDownloader;
 
-    CertificateTransparencyFlagsListener(Context context) {
-        mDataStore = new DataStore(Config.PREFERENCES_FILE);
-        mCertificateTransparencyDownloader =
-                new CertificateTransparencyDownloader(context, mDataStore);
+    CertificateTransparencyFlagsListener(
+            DataStore dataStore,
+            SignatureVerifier signatureVerifier,
+            CertificateTransparencyDownloader certificateTransparencyDownloader) {
+        mDataStore = dataStore;
+        mSignatureVerifier = signatureVerifier;
+        mCertificateTransparencyDownloader = certificateTransparencyDownloader;
     }
 
     void initialize() {
@@ -104,8 +107,8 @@ class CertificateTransparencyFlagsListener implements DeviceConfig.OnPropertiesC
         }
 
         try {
-            mCertificateTransparencyDownloader.setPublicKey(newPublicKey);
-        } catch (GeneralSecurityException e) {
+            mSignatureVerifier.setPublicKey(newPublicKey);
+        } catch (GeneralSecurityException | IllegalArgumentException e) {
             Log.e(TAG, "Error setting the public Key", e);
             return;
         }
