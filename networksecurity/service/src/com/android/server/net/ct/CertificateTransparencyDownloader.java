@@ -15,11 +15,11 @@
  */
 package com.android.server.net.ct;
 
-import android.annotation.NonNull;
+import static java.nio.charset.StandardCharsets.UTF_8;
+
 import android.annotation.RequiresApi;
 import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -31,16 +31,12 @@ import androidx.annotation.VisibleForTesting;
 
 import com.android.server.net.ct.DownloadHelper.DownloadStatus;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.GeneralSecurityException;
-import java.security.InvalidKeyException;
-import java.security.KeyFactory;
-import java.security.PublicKey;
-import java.security.Signature;
-import java.security.spec.X509EncodedKeySpec;
-import java.util.Base64;
-import java.util.Optional;
 
 /** Helper class to download certificate transparency log files. */
 @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
@@ -51,28 +47,20 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
     private final Context mContext;
     private final DataStore mDataStore;
     private final DownloadHelper mDownloadHelper;
+    private final SignatureVerifier mSignatureVerifier;
     private final CertificateTransparencyInstaller mInstaller;
 
-    @NonNull private Optional<PublicKey> mPublicKey = Optional.empty();
-
-    @VisibleForTesting
     CertificateTransparencyDownloader(
             Context context,
             DataStore dataStore,
             DownloadHelper downloadHelper,
+            SignatureVerifier signatureVerifier,
             CertificateTransparencyInstaller installer) {
         mContext = context;
+        mSignatureVerifier = signatureVerifier;
         mDataStore = dataStore;
         mDownloadHelper = downloadHelper;
         mInstaller = installer;
-    }
-
-    CertificateTransparencyDownloader(Context context, DataStore dataStore) {
-        this(
-                context,
-                dataStore,
-                new DownloadHelper(context),
-                new CertificateTransparencyInstaller());
     }
 
     void initialize() {
@@ -87,43 +75,31 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
         }
     }
 
-    void setPublicKey(String publicKey) throws GeneralSecurityException {
-        try {
-            mPublicKey =
-                    Optional.of(
-                            KeyFactory.getInstance("RSA")
-                                    .generatePublic(
-                                            new X509EncodedKeySpec(
-                                                    Base64.getDecoder().decode(publicKey))));
-        } catch (IllegalArgumentException e) {
-            Log.e(TAG, "Invalid public key Base64 encoding", e);
-            mPublicKey = Optional.empty();
+    long startPublicKeyDownload() {
+        long downloadId = download(mDataStore.getProperty(Config.PUBLIC_KEY_URL));
+        if (downloadId != -1) {
+            mDataStore.setPropertyLong(Config.PUBLIC_KEY_DOWNLOAD_ID, downloadId);
+            mDataStore.store();
         }
+        return downloadId;
     }
 
-    @VisibleForTesting
-    void resetPublicKey() {
-        mPublicKey = Optional.empty();
+    long startMetadataDownload() {
+        long downloadId = download(mDataStore.getProperty(Config.METADATA_URL));
+        if (downloadId != -1) {
+            mDataStore.setPropertyLong(Config.METADATA_DOWNLOAD_ID, downloadId);
+            mDataStore.store();
+        }
+        return downloadId;
     }
 
-    void startMetadataDownload(String metadataUrl) {
-        long downloadId = download(metadataUrl);
-        if (downloadId == -1) {
-            Log.e(TAG, "Metadata download request failed for " + metadataUrl);
-            return;
+    long startContentDownload() {
+        long downloadId = download(mDataStore.getProperty(Config.CONTENT_URL));
+        if (downloadId != -1) {
+            mDataStore.setPropertyLong(Config.CONTENT_DOWNLOAD_ID, downloadId);
+            mDataStore.store();
         }
-        mDataStore.setPropertyLong(Config.METADATA_URL_KEY, downloadId);
-        mDataStore.store();
-    }
-
-    void startContentDownload(String contentUrl) {
-        long downloadId = download(contentUrl);
-        if (downloadId == -1) {
-            Log.e(TAG, "Content download request failed for " + contentUrl);
-            return;
-        }
-        mDataStore.setPropertyLong(Config.CONTENT_URL_KEY, downloadId);
-        mDataStore.store();
+        return downloadId;
     }
 
     @Override
@@ -140,6 +116,11 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             return;
         }
 
+        if (isPublicKeyDownloadId(completedId)) {
+            handlePublicKeyDownloadCompleted(completedId);
+            return;
+        }
+
         if (isMetadataDownloadId(completedId)) {
             handleMetadataDownloadCompleted(completedId);
             return;
@@ -150,7 +131,34 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             return;
         }
 
-        Log.e(TAG, "Download id " + completedId + " is neither metadata nor content.");
+        Log.i(TAG, "Download id " + completedId + " is not recognized.");
+    }
+
+    private void handlePublicKeyDownloadCompleted(long downloadId) {
+        DownloadStatus status = mDownloadHelper.getDownloadStatus(downloadId);
+        if (!status.isSuccessful()) {
+            handleDownloadFailed(status);
+            return;
+        }
+
+        Uri publicKeyUri = getPublicKeyDownloadUri();
+        if (publicKeyUri == null) {
+            Log.e(TAG, "Invalid public key URI");
+            return;
+        }
+
+        try {
+            mSignatureVerifier.setPublicKeyFrom(publicKeyUri);
+        } catch (GeneralSecurityException | IOException | IllegalArgumentException e) {
+            Log.e(TAG, "Error setting the public Key", e);
+            return;
+        }
+
+        if (startMetadataDownload() == -1) {
+            Log.e(TAG, "Metadata download not started.");
+        } else if (Config.DEBUG) {
+            Log.d(TAG, "Metadata download started successfully.");
+        }
     }
 
     private void handleMetadataDownloadCompleted(long downloadId) {
@@ -159,7 +167,11 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             handleDownloadFailed(status);
             return;
         }
-        startContentDownload(mDataStore.getProperty(Config.CONTENT_URL_PENDING));
+        if (startContentDownload() == -1) {
+            Log.e(TAG, "Content download not started.");
+        } else if (Config.DEBUG) {
+            Log.d(TAG, "Content download started successfully.");
+        }
     }
 
     private void handleContentDownloadCompleted(long downloadId) {
@@ -178,7 +190,7 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
 
         boolean success = false;
         try {
-            success = verify(contentUri, metadataUri);
+            success = mSignatureVerifier.verify(contentUri, metadataUri);
         } catch (IOException | GeneralSecurityException e) {
             Log.e(TAG, "Could not verify new log list", e);
         }
@@ -187,11 +199,16 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             return;
         }
 
-        // TODO: validate file content.
+        String version = null;
+        try (InputStream inputStream = mContext.getContentResolver().openInputStream(contentUri)) {
+            version =
+                    new JSONObject(new String(inputStream.readAllBytes(), UTF_8))
+                            .getString("version");
+        } catch (JSONException | IOException e) {
+            Log.e(TAG, "Could not extract version from log list", e);
+            return;
+        }
 
-        String version = mDataStore.getProperty(Config.VERSION_PENDING);
-        String contentUrl = mDataStore.getProperty(Config.CONTENT_URL_PENDING);
-        String metadataUrl = mDataStore.getProperty(Config.METADATA_URL_PENDING);
         try (InputStream inputStream = mContext.getContentResolver().openInputStream(contentUri)) {
             success = mInstaller.install(Config.COMPATIBILITY_VERSION, inputStream, version);
         } catch (IOException e) {
@@ -202,30 +219,13 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
         if (success) {
             // Update information about the stored version on successful install.
             mDataStore.setProperty(Config.VERSION, version);
-            mDataStore.setProperty(Config.CONTENT_URL, contentUrl);
-            mDataStore.setProperty(Config.METADATA_URL, metadataUrl);
             mDataStore.store();
         }
     }
 
     private void handleDownloadFailed(DownloadStatus status) {
-        Log.e(TAG, "Content download failed with " + status);
+        Log.e(TAG, "Download failed with " + status);
         // TODO(378626065): Report failure via statsd.
-    }
-
-    private boolean verify(Uri file, Uri signature) throws IOException, GeneralSecurityException {
-        if (!mPublicKey.isPresent()) {
-            throw new InvalidKeyException("Missing public key for signature verification");
-        }
-        Signature verifier = Signature.getInstance("SHA256withRSA");
-        verifier.initVerify(mPublicKey.get());
-        ContentResolver contentResolver = mContext.getContentResolver();
-
-        try (InputStream fileStream = contentResolver.openInputStream(file);
-                InputStream signatureStream = contentResolver.openInputStream(signature)) {
-            verifier.update(fileStream.readAllBytes());
-            return verifier.verify(signatureStream.readAllBytes());
-        }
     }
 
     private long download(String url) {
@@ -238,20 +238,59 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
     }
 
     @VisibleForTesting
+    long getPublicKeyDownloadId() {
+        return mDataStore.getPropertyLong(Config.PUBLIC_KEY_DOWNLOAD_ID, -1);
+    }
+
+    @VisibleForTesting
+    long getMetadataDownloadId() {
+        return mDataStore.getPropertyLong(Config.METADATA_DOWNLOAD_ID, -1);
+    }
+
+    @VisibleForTesting
+    long getContentDownloadId() {
+        return mDataStore.getPropertyLong(Config.CONTENT_DOWNLOAD_ID, -1);
+    }
+
+    @VisibleForTesting
+    boolean hasPublicKeyDownloadId() {
+        return getPublicKeyDownloadId() != -1;
+    }
+
+    @VisibleForTesting
+    boolean hasMetadataDownloadId() {
+        return getMetadataDownloadId() != -1;
+    }
+
+    @VisibleForTesting
+    boolean hasContentDownloadId() {
+        return getContentDownloadId() != -1;
+    }
+
+    @VisibleForTesting
+    boolean isPublicKeyDownloadId(long downloadId) {
+        return getPublicKeyDownloadId() == downloadId;
+    }
+
+    @VisibleForTesting
     boolean isMetadataDownloadId(long downloadId) {
-        return mDataStore.getPropertyLong(Config.METADATA_URL_KEY, -1) == downloadId;
+        return getMetadataDownloadId() == downloadId;
     }
 
     @VisibleForTesting
     boolean isContentDownloadId(long downloadId) {
-        return mDataStore.getPropertyLong(Config.CONTENT_URL_KEY, -1) == downloadId;
+        return getContentDownloadId() == downloadId;
+    }
+
+    private Uri getPublicKeyDownloadUri() {
+        return mDownloadHelper.getUri(getPublicKeyDownloadId());
     }
 
     private Uri getMetadataDownloadUri() {
-        return mDownloadHelper.getUri(mDataStore.getPropertyLong(Config.METADATA_URL_KEY, -1));
+        return mDownloadHelper.getUri(getMetadataDownloadId());
     }
 
     private Uri getContentDownloadUri() {
-        return mDownloadHelper.getUri(mDataStore.getPropertyLong(Config.CONTENT_URL_KEY, -1));
+        return mDownloadHelper.getUri(getContentDownloadId());
     }
 }
