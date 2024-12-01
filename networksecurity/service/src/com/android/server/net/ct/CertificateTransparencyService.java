@@ -29,6 +29,7 @@ import com.android.server.SystemService;
 public class CertificateTransparencyService extends ICertificateTransparencyManager.Stub {
 
     private final CertificateTransparencyFlagsListener mFlagsListener;
+    private final CertificateTransparencyJob mCertificateTransparencyJob;
 
     /**
      * @return true if the CertificateTransparency service is enabled.
@@ -41,7 +42,21 @@ public class CertificateTransparencyService extends ICertificateTransparencyMana
 
     /** Creates a new {@link CertificateTransparencyService} object. */
     public CertificateTransparencyService(Context context) {
-        mFlagsListener = new CertificateTransparencyFlagsListener(context);
+        DataStore dataStore = new DataStore(Config.PREFERENCES_FILE);
+        DownloadHelper downloadHelper = new DownloadHelper(context);
+        SignatureVerifier signatureVerifier = new SignatureVerifier(context);
+        CertificateTransparencyDownloader downloader =
+                new CertificateTransparencyDownloader(
+                        context,
+                        dataStore,
+                        downloadHelper,
+                        signatureVerifier,
+                        new CertificateTransparencyInstaller());
+
+        mFlagsListener =
+                new CertificateTransparencyFlagsListener(dataStore, signatureVerifier, downloader);
+        mCertificateTransparencyJob =
+                new CertificateTransparencyJob(context, dataStore, downloader);
     }
 
     /**
@@ -53,7 +68,11 @@ public class CertificateTransparencyService extends ICertificateTransparencyMana
 
         switch (phase) {
             case SystemService.PHASE_BOOT_COMPLETED:
-                mFlagsListener.initialize();
+                if (Flags.certificateTransparencyJob()) {
+                    mCertificateTransparencyJob.initialize();
+                } else {
+                    mFlagsListener.initialize();
+                }
                 break;
             default:
         }
