@@ -590,6 +590,27 @@ object IntegrationTestUtils {
         return ftd.omrAddress
     }
 
+    /** Enables Thread and joins the specified Thread network. */
+    @JvmStatic
+    fun enableThreadAndJoinNetwork(dataset: ActiveOperationalDataset) {
+        // TODO: b/323301831 - This is a workaround to avoid unnecessary delay to re-form a network
+        OtDaemonController().factoryReset();
+
+        val context: Context = requireNotNull(ApplicationProvider.getApplicationContext());
+        val controller = requireNotNull(ThreadNetworkControllerWrapper.newInstance(context));
+        controller.setEnabledAndWait(true);
+        controller.joinAndWait(dataset);
+    }
+
+    /** Leaves the Thread network and disables Thread. */
+    @JvmStatic
+    fun leaveNetworkAndDisableThread() {
+        val context: Context = requireNotNull(ApplicationProvider.getApplicationContext());
+        val controller = requireNotNull(ThreadNetworkControllerWrapper.newInstance(context));
+        controller.leaveAndWait();
+        controller.setEnabledAndWait(false);
+    }
+
     private open class DefaultDiscoveryListener : NsdManager.DiscoveryListener {
         override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {}
         override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {}
@@ -626,57 +647,6 @@ object IntegrationTestUtils {
             0 /* flags */, 0 /* scope */,
             deprecationTimeMillis, LinkAddress.LIFETIME_PERMANENT /* expirationTime */
         )
-    }
-
-    private fun defaultLinkProperties(): LinkProperties {
-        val lp = LinkProperties()
-        // TODO: use a fake DNS server
-        lp.setDnsServers(listOf(parseNumericAddress("8.8.8.8")))
-        // NAT64 feature requires the infra network to have an IPv4 default route.
-        lp.addRoute(
-            RouteInfo(
-                IpPrefix("0.0.0.0/0") /* destination */,
-                null /* gateway */,
-                null /* iface */,
-                RouteInfo.RTN_UNICAST, 1500 /* mtu */
-            )
-        )
-        return lp
-    }
-
-    @JvmStatic
-    @JvmOverloads
-    fun startInfraDeviceAndWaitForOnLinkAddr(
-            pollPacketReader: PollPacketReader,
-            macAddress: MacAddress = MacAddress.fromString("1:2:3:4:5:6")
-    ): InfraNetworkDevice {
-        val infraDevice = InfraNetworkDevice(macAddress, pollPacketReader)
-        infraDevice.runSlaac(Duration.ofSeconds(60))
-        requireNotNull(infraDevice.ipv6Addr)
-        return infraDevice
-    }
-
-    @JvmStatic
-    @JvmOverloads
-    @Throws(java.lang.Exception::class)
-    fun setUpInfraNetwork(
-        context: Context,
-        controller: ThreadNetworkControllerWrapper,
-        lp: LinkProperties = defaultLinkProperties()
-    ): TestNetworkTracker {
-        val infraNetworkTracker: TestNetworkTracker =
-            runAsShell(
-                MANAGE_TEST_NETWORKS,
-                supplier = { initTestNetwork(context, lp, setupTimeoutMs = 5000) })
-        val infraNetworkName: String = infraNetworkTracker.testIface.getInterfaceName()
-        controller.setTestNetworkAsUpstreamAndWait(infraNetworkName)
-
-        return infraNetworkTracker
-    }
-
-    @JvmStatic
-    fun tearDownInfraNetwork(testNetworkTracker: TestNetworkTracker) {
-        runAsShell(MANAGE_TEST_NETWORKS) { testNetworkTracker.teardown() }
     }
 
     /**
