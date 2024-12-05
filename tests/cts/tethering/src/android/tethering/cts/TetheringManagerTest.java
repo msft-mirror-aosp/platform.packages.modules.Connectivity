@@ -22,6 +22,8 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_DUN;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_ETHERNET;
+import static android.net.TetheringManager.CONNECTIVITY_SCOPE_GLOBAL;
+import static android.net.TetheringManager.CONNECTIVITY_SCOPE_LOCAL;
 import static android.net.TetheringManager.TETHERING_BLUETOOTH;
 import static android.net.TetheringManager.TETHERING_ETHERNET;
 import static android.net.TetheringManager.TETHERING_NCM;
@@ -32,6 +34,7 @@ import static android.net.TetheringManager.TETHER_ERROR_ENTITLEMENT_UNKNOWN;
 import static android.net.TetheringManager.TETHER_ERROR_NO_CHANGE_TETHERING_PERMISSION;
 import static android.net.TetheringManager.TETHER_ERROR_NO_ERROR;
 import static android.net.cts.util.CtsTetheringUtils.isAnyIfaceMatch;
+import static android.os.Process.INVALID_UID;
 
 import static com.android.testutils.TestPermissionUtil.runAsShell;
 
@@ -74,6 +77,7 @@ import android.telephony.CarrierConfigManager;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 
+import androidx.annotation.NonNull;
 import androidx.test.InstrumentationRegistry;
 import androidx.test.runner.AndroidJUnit4;
 
@@ -222,19 +226,23 @@ public class TetheringManagerTest {
 
     }
 
-    @Test
-    public void testTetheringRequest() {
-        SoftApConfiguration softApConfiguration;
+    private SoftApConfiguration createSoftApConfiguration(@NonNull String ssid) {
+        SoftApConfiguration config;
         if (SdkLevel.isAtLeastT()) {
-            softApConfiguration = new SoftApConfiguration.Builder()
-                    .setWifiSsid(WifiSsid.fromBytes(
-                            "This is an SSID!".getBytes(StandardCharsets.UTF_8)))
+            config = new SoftApConfiguration.Builder()
+                    .setWifiSsid(WifiSsid.fromBytes(ssid.getBytes(StandardCharsets.UTF_8)))
                     .build();
         } else {
-            softApConfiguration = new SoftApConfiguration.Builder()
-                    .setSsid("This is an SSID!")
+            config = new SoftApConfiguration.Builder()
+                    .setSsid(ssid)
                     .build();
         }
+        return config;
+    }
+
+    @Test
+    public void testTetheringRequest() {
+        SoftApConfiguration softApConfiguration = createSoftApConfiguration("SSID");
         final TetheringRequest tr = new TetheringRequest.Builder(TETHERING_WIFI)
                 .setSoftApConfiguration(softApConfiguration)
                 .build();
@@ -243,41 +251,63 @@ public class TetheringManagerTest {
         assertNull(tr.getClientStaticIpv4Address());
         assertFalse(tr.isExemptFromEntitlementCheck());
         assertTrue(tr.getShouldShowEntitlementUi());
+        assertEquals(CONNECTIVITY_SCOPE_GLOBAL, tr.getConnectivityScope());
         assertEquals(softApConfiguration, tr.getSoftApConfiguration());
+        assertEquals(INVALID_UID, tr.getUid());
+        assertNull(tr.getPackageName());
+        assertEquals(tr.toString(), "TetheringRequest[ "
+                + "TETHERING_WIFI, "
+                + "showProvisioningUi, "
+                + "CONNECTIVITY_SCOPE_GLOBAL, "
+                + "softApConfig=" + softApConfiguration.toString()
+                + " ]");
 
         final LinkAddress localAddr = new LinkAddress("192.168.24.5/24");
         final LinkAddress clientAddr = new LinkAddress("192.168.24.100/24");
         final TetheringRequest tr2 = new TetheringRequest.Builder(TETHERING_USB)
                 .setStaticIpv4Addresses(localAddr, clientAddr)
                 .setExemptFromEntitlementCheck(true)
-                .setShouldShowEntitlementUi(false).build();
+                .setShouldShowEntitlementUi(false)
+                .setConnectivityScope(CONNECTIVITY_SCOPE_LOCAL)
+                .build();
+        int uid = 1000;
+        String packageName = "package";
+        tr2.setUid(uid);
+        tr2.setPackageName(packageName);
 
         assertEquals(localAddr, tr2.getLocalIpv4Address());
         assertEquals(clientAddr, tr2.getClientStaticIpv4Address());
         assertEquals(TETHERING_USB, tr2.getTetheringType());
         assertTrue(tr2.isExemptFromEntitlementCheck());
         assertFalse(tr2.getShouldShowEntitlementUi());
+        assertEquals(CONNECTIVITY_SCOPE_LOCAL, tr2.getConnectivityScope());
+        assertNull(tr2.getSoftApConfiguration());
+        assertEquals(uid, tr2.getUid());
+        assertEquals(packageName, tr2.getPackageName());
+        assertEquals(tr2.toString(), "TetheringRequest[ "
+                + "TETHERING_USB, "
+                + "localIpv4Address=" + localAddr + ", "
+                + "staticClientAddress=" + clientAddr + ", "
+                + "exemptFromEntitlementCheck, "
+                + "CONNECTIVITY_SCOPE_LOCAL, "
+                + "uid=1000, "
+                + "packageName=package"
+                + " ]");
 
         final TetheringRequest tr3 = new TetheringRequest.Builder(TETHERING_USB)
                 .setStaticIpv4Addresses(localAddr, clientAddr)
                 .setExemptFromEntitlementCheck(true)
-                .setShouldShowEntitlementUi(false).build();
+                .setShouldShowEntitlementUi(false)
+                .setConnectivityScope(CONNECTIVITY_SCOPE_LOCAL)
+                .build();
+        tr3.setUid(uid);
+        tr3.setPackageName(packageName);
         assertEquals(tr2, tr3);
     }
 
     @Test
     public void testTetheringRequestSetSoftApConfigurationFailsWhenNotWifi() {
-        final SoftApConfiguration softApConfiguration;
-        if (SdkLevel.isAtLeastT()) {
-            softApConfiguration = new SoftApConfiguration.Builder()
-                    .setWifiSsid(WifiSsid.fromBytes(
-                            "This is an SSID!".getBytes(StandardCharsets.UTF_8)))
-                    .build();
-        } else {
-            softApConfiguration = new SoftApConfiguration.Builder()
-                    .setSsid("This is an SSID!")
-                    .build();
-        }
+        final SoftApConfiguration softApConfiguration = createSoftApConfiguration("SSID");
         for (int type : List.of(TETHERING_USB, TETHERING_BLUETOOTH, TETHERING_WIFI_P2P,
                 TETHERING_NCM, TETHERING_ETHERNET)) {
             try {
@@ -291,17 +321,7 @@ public class TetheringManagerTest {
 
     @Test
     public void testTetheringRequestParcelable() {
-        final SoftApConfiguration softApConfiguration;
-        if (SdkLevel.isAtLeastT()) {
-            softApConfiguration = new SoftApConfiguration.Builder()
-                    .setWifiSsid(WifiSsid.fromBytes(
-                            "This is an SSID!".getBytes(StandardCharsets.UTF_8)))
-                    .build();
-        } else {
-            softApConfiguration = new SoftApConfiguration.Builder()
-                    .setSsid("This is an SSID!")
-                    .build();
-        }
+        final SoftApConfiguration softApConfiguration = createSoftApConfiguration("SSID");
         final LinkAddress localAddr = new LinkAddress("192.168.24.5/24");
         final LinkAddress clientAddr = new LinkAddress("192.168.24.100/24");
         final TetheringRequest withConfig = new TetheringRequest.Builder(TETHERING_WIFI)
@@ -328,10 +348,12 @@ public class TetheringManagerTest {
             tetherEventCallback.assumeWifiTetheringSupported(mContext);
             tetherEventCallback.expectNoTetheringActive();
 
+            SoftApConfiguration softApConfig = createSoftApConfiguration("SSID");
             final TetheringInterface tetheredIface =
-                    mCtsTetheringUtils.startWifiTethering(tetherEventCallback);
+                    mCtsTetheringUtils.startWifiTethering(tetherEventCallback, softApConfig);
 
             assertNotNull(tetheredIface);
+            assertEquals(softApConfig, tetheredIface.getSoftApConfiguration());
             final String wifiTetheringIface = tetheredIface.getInterface();
 
             mCtsTetheringUtils.stopWifiTethering(tetherEventCallback);
