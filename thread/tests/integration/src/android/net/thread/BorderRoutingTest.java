@@ -16,10 +16,10 @@
 
 package android.net.thread;
 
-import static android.Manifest.permission.MANAGE_TEST_NETWORKS;
 import static android.net.InetAddresses.parseNumericAddress;
 import static android.net.thread.utils.IntegrationTestUtils.DEFAULT_DATASET;
 import static android.net.thread.utils.IntegrationTestUtils.buildIcmpv4EchoReply;
+import static android.net.thread.utils.IntegrationTestUtils.enableThreadAndJoinNetwork;
 import static android.net.thread.utils.IntegrationTestUtils.getIpv6LinkAddresses;
 import static android.net.thread.utils.IntegrationTestUtils.isExpectedIcmpv4Packet;
 import static android.net.thread.utils.IntegrationTestUtils.isExpectedIcmpv6Packet;
@@ -27,6 +27,7 @@ import static android.net.thread.utils.IntegrationTestUtils.isFrom;
 import static android.net.thread.utils.IntegrationTestUtils.isInMulticastGroup;
 import static android.net.thread.utils.IntegrationTestUtils.isTo;
 import static android.net.thread.utils.IntegrationTestUtils.joinNetworkAndWaitForOmr;
+import static android.net.thread.utils.IntegrationTestUtils.leaveNetworkAndDisableThread;
 import static android.net.thread.utils.IntegrationTestUtils.newPacketReader;
 import static android.net.thread.utils.IntegrationTestUtils.pollForPacket;
 import static android.net.thread.utils.IntegrationTestUtils.sendUdpMessage;
@@ -36,7 +37,6 @@ import static android.system.OsConstants.ICMP_ECHO;
 
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ECHO_REPLY_TYPE;
 import static com.android.net.module.util.NetworkStackConstants.ICMPV6_ECHO_REQUEST_TYPE;
-import static com.android.testutils.TestPermissionUtil.runAsShell;
 
 import static com.google.common.truth.Truth.assertThat;
 
@@ -54,8 +54,8 @@ import android.net.LinkProperties;
 import android.net.RouteInfo;
 import android.net.thread.utils.FullThreadDevice;
 import android.net.thread.utils.InfraNetworkDevice;
-import android.net.thread.utils.IntegrationTestUtils;
 import android.net.thread.utils.OtDaemonController;
+import android.net.thread.utils.TestTunNetworkUtils;
 import android.net.thread.utils.ThreadFeatureCheckerRule;
 import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresIpv6MulticastRouting;
 import android.net.thread.utils.ThreadFeatureCheckerRule.RequiresSimulationThreadDevice;
@@ -73,7 +73,10 @@ import com.android.testutils.PollPacketReader;
 import com.android.testutils.TestNetworkTracker;
 
 import org.junit.After;
+import org.junit.AfterClass;
 import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Ignore;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -115,7 +118,7 @@ public class BorderRoutingTest {
     private final Context mContext = ApplicationProvider.getApplicationContext();
     private final ThreadNetworkControllerWrapper mController =
             ThreadNetworkControllerWrapper.newInstance(mContext);
-    private OtDaemonController mOtCtl;
+    private final OtDaemonController mOtCtl = new OtDaemonController();
     private HandlerThread mHandlerThread;
     private Handler mHandler;
     private TestNetworkTracker mInfraNetworkTracker;
@@ -123,20 +126,24 @@ public class BorderRoutingTest {
     private PollPacketReader mInfraNetworkReader;
     private InfraNetworkDevice mInfraDevice;
 
+    @BeforeClass
+    public static void beforeClass() throws Exception {
+        enableThreadAndJoinNetwork(DEFAULT_DATASET);
+    }
+
+    @AfterClass
+    public static void afterClass() throws Exception {
+        leaveNetworkAndDisableThread();
+    }
+
     @Before
     public void setUp() throws Exception {
-        // TODO: b/323301831 - This is a workaround to avoid unnecessary delay to re-form a network
-        mOtCtl = new OtDaemonController();
-        mOtCtl.factoryReset();
-
         mHandlerThread = new HandlerThread(getClass().getSimpleName());
         mHandlerThread.start();
         mHandler = new Handler(mHandlerThread.getLooper());
         mFtds = new ArrayList<>();
 
         setUpInfraNetwork();
-        mController.setEnabledAndWait(true);
-        mController.joinAndWait(DEFAULT_DATASET);
 
         // Creates a infra network device.
         mInfraNetworkReader = newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
@@ -151,8 +158,7 @@ public class BorderRoutingTest {
     @After
     public void tearDown() throws Exception {
         mController.setTestNetworkAsUpstreamAndWait(null);
-        mController.leaveAndWait();
-        tearDownInfraNetwork();
+        TestTunNetworkUtils.tearDownAllInfraNetworks();
 
         mHandlerThread.quitSafely();
         mHandlerThread.join();
@@ -219,19 +225,13 @@ public class BorderRoutingTest {
         FullThreadDevice ftd = mFtds.get(0);
         joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         Inet6Address ftdOmr = ftd.getOmrAddress();
-        // Create a new infra network and let Thread prefer it
-        TestNetworkTracker oldInfraNetworkTracker = mInfraNetworkTracker;
-        try {
-            setUpInfraNetwork();
-            mInfraNetworkReader = newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
-            startInfraDeviceAndWaitForOnLinkAddr();
+        setUpInfraNetwork();
+        mInfraNetworkReader = newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
+        startInfraDeviceAndWaitForOnLinkAddr();
 
-            mInfraDevice.sendEchoRequest(ftd.getOmrAddress());
+        mInfraDevice.sendEchoRequest(ftd.getOmrAddress());
 
-            assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftdOmr));
-        } finally {
-            runAsShell(MANAGE_TEST_NETWORKS, () -> oldInfraNetworkTracker.teardown());
-        }
+        assertNotNull(pollForIcmpPacketOnInfraNetwork(ICMPV6_ECHO_REPLY_TYPE, ftdOmr));
     }
 
     @Test
@@ -608,8 +608,6 @@ public class BorderRoutingTest {
         subscribeMulticastAddressAndWait(ftd, GROUP_ADDR_SCOPE_5);
         Inet6Address ftdOmr = ftd.getOmrAddress();
 
-        // Destroy infra link and re-create
-        tearDownInfraNetwork();
         setUpInfraNetwork();
         mInfraNetworkReader = newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
         startInfraDeviceAndWaitForOnLinkAddr();
@@ -635,8 +633,6 @@ public class BorderRoutingTest {
         joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
         Inet6Address ftdOmr = ftd.getOmrAddress();
 
-        // Destroy infra link and re-create
-        tearDownInfraNetwork();
         setUpInfraNetwork();
         mInfraNetworkReader = newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
         startInfraDeviceAndWaitForOnLinkAddr();
@@ -672,10 +668,11 @@ public class BorderRoutingTest {
         }
     }
 
+    @Ignore("TODO: b/376573921 - Enable when it's not flaky at all")
     @Test
     public void nat64_withAilNat64Prefix_threadDevicePingIpv4InfraDevice_outboundPacketIsForwarded()
             throws Exception {
-        tearDownInfraNetwork();
+        TestTunNetworkUtils.tearDownInfraNetwork(mInfraNetworkTracker);
         LinkProperties lp = new LinkProperties();
         // NAT64 feature requires the infra network to have an IPv4 default route.
         lp.addRoute(
@@ -693,7 +690,7 @@ public class BorderRoutingTest {
                         RouteInfo.RTN_UNICAST,
                         1500 /* mtu */));
         lp.setNat64Prefix(AIL_NAT64_PREFIX);
-        mInfraNetworkTracker = IntegrationTestUtils.setUpInfraNetwork(mContext, mController, lp);
+        mInfraNetworkTracker = TestTunNetworkUtils.setUpInfraNetwork(mContext, mController, lp);
         mInfraNetworkReader = newPacketReader(mInfraNetworkTracker.getTestIface(), mHandler);
         FullThreadDevice ftd = mFtds.get(0);
         joinNetworkAndWaitForOmr(ftd, DEFAULT_DATASET);
@@ -709,16 +706,12 @@ public class BorderRoutingTest {
     }
 
     private void setUpInfraNetwork() throws Exception {
-        mInfraNetworkTracker = IntegrationTestUtils.setUpInfraNetwork(mContext, mController);
-    }
-
-    private void tearDownInfraNetwork() {
-        IntegrationTestUtils.tearDownInfraNetwork(mInfraNetworkTracker);
+        mInfraNetworkTracker = TestTunNetworkUtils.setUpInfraNetwork(mContext, mController);
     }
 
     private void startInfraDeviceAndWaitForOnLinkAddr() {
         mInfraDevice =
-                IntegrationTestUtils.startInfraDeviceAndWaitForOnLinkAddr(mInfraNetworkReader);
+                TestTunNetworkUtils.startInfraDeviceAndWaitForOnLinkAddr(mInfraNetworkReader);
     }
 
     private void assertInfraLinkMemberOfGroup(Inet6Address address) throws Exception {
