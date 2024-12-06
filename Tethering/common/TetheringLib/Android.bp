@@ -29,9 +29,14 @@ java_sdk_library {
         "//packages/modules/Connectivity/framework-t",
         "//packages/modules/Connectivity/service",
         "//packages/modules/Connectivity/service-t",
+        "//packages/modules/Connectivity/staticlibs",
 
         // Using for test only
         "//cts/tests/netlegacy22.api",
+
+        // TODO: b/374174952 Remove it when VCN CTS is moved to Connectivity/
+        "//cts/tests/tests/vcn",
+
         "//external/sl4a:__subpackages__",
         "//frameworks/base/core/tests/bandwidthtests",
         "//frameworks/base/core/tests/benchmarks",

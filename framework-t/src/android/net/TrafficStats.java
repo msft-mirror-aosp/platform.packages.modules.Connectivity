@@ -18,7 +18,10 @@ package android.net;
 
 import static android.annotation.SystemApi.Client.MODULE_LIBRARIES;
 
+import static com.android.internal.annotations.VisibleForTesting.Visibility.PRIVATE;
+
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.annotation.RequiresPermission;
 import android.annotation.SuppressLint;
 import android.annotation.SystemApi;
@@ -29,17 +32,22 @@ import android.app.usage.NetworkStatsManager;
 import android.compat.annotation.UnsupportedAppUsage;
 import android.content.Context;
 import android.media.MediaPlayer;
+import android.net.netstats.StatsResult;
 import android.os.Binder;
 import android.os.Build;
 import android.os.RemoteException;
 import android.os.StrictMode;
 import android.util.Log;
 
+import com.android.internal.annotations.GuardedBy;
+import com.android.internal.annotations.VisibleForTesting;
+
 import java.io.FileDescriptor;
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.Socket;
 import java.net.SocketException;
+
 
 /**
  * Class that provides network traffic statistics. These statistics include
@@ -174,15 +182,36 @@ public class TrafficStats {
     /** @hide */
     public static final int TAG_SYSTEM_PROBE = 0xFFFFFF42;
 
+    @GuardedBy("TrafficStats.class")
     private static INetworkStatsService sStatsService;
+
+    // The variable will only be accessed in the test, which is effectively
+    // single-threaded.
+    private static INetworkStatsService sStatsServiceForTest = null;
 
     @UnsupportedAppUsage(maxTargetSdk = Build.VERSION_CODES.P, trackingBug = 130143562)
     private synchronized static INetworkStatsService getStatsService() {
+        if (sStatsServiceForTest != null) return sStatsServiceForTest;
         if (sStatsService == null) {
             throw new IllegalStateException("TrafficStats not initialized, uid="
                     + Binder.getCallingUid());
         }
         return sStatsService;
+    }
+
+    /** @hide */
+    private static int getMyUid() {
+        return android.os.Process.myUid();
+    }
+
+    /**
+     * Set the network stats service for testing, or null to reset.
+     *
+     * @hide
+     */
+    @VisibleForTesting(visibility = PRIVATE)
+    public static void setServiceForTest(INetworkStatsService statsService) {
+        sStatsServiceForTest = statsService;
     }
 
     /**
@@ -239,8 +268,8 @@ public class TrafficStats {
 
     private static class SocketTagger extends dalvik.system.SocketTagger {
 
-        // TODO: set to false
-        private static final boolean LOGD = true;
+        // Enable log with `setprop log.tag.TrafficStats DEBUG` and restart the module.
+        private static final boolean LOGD = Log.isLoggable(TAG, Log.DEBUG);
 
         SocketTagger() {
         }
@@ -447,7 +476,7 @@ public class TrafficStats {
      */
     @Deprecated
     public static void setThreadStatsUidSelf() {
-        setThreadStatsUid(android.os.Process.myUid());
+        setThreadStatsUid(getMyUid());
     }
 
     /**
@@ -588,7 +617,7 @@ public class TrafficStats {
      * @param operationCount Number of operations to increment count by.
      */
     public static void incrementOperationCount(int tag, int operationCount) {
-        final int uid = android.os.Process.myUid();
+        final int uid = getMyUid();
         try {
             getStatsService().incrementOperationCount(uid, tag, operationCount);
         } catch (RemoteException e) {
@@ -730,11 +759,7 @@ public class TrafficStats {
      * @return The number of transmitted packets.
      */
     public static long getTxPackets(@NonNull String iface) {
-        try {
-            return getStatsService().getIfaceStats(iface, TYPE_TX_PACKETS);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(iface, TYPE_TX_PACKETS);
     }
 
     /**
@@ -753,11 +778,7 @@ public class TrafficStats {
      * @return The number of received packets.
      */
     public static long getRxPackets(@NonNull String iface) {
-        try {
-            return getStatsService().getIfaceStats(iface, TYPE_RX_PACKETS);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(iface, TYPE_RX_PACKETS);
     }
 
     /**
@@ -776,11 +797,7 @@ public class TrafficStats {
      * @return The number of transmitted bytes.
      */
     public static long getTxBytes(@NonNull String iface) {
-        try {
-            return getStatsService().getIfaceStats(iface, TYPE_TX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(iface, TYPE_TX_BYTES);
     }
 
     /**
@@ -799,51 +816,31 @@ public class TrafficStats {
      * @return The number of received bytes.
      */
     public static long getRxBytes(@NonNull String iface) {
-        try {
-            return getStatsService().getIfaceStats(iface, TYPE_RX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(iface, TYPE_RX_BYTES);
     }
 
     /** {@hide} */
     @TestApi
     public static long getLoopbackTxPackets() {
-        try {
-            return getStatsService().getIfaceStats(LOOPBACK_IFACE, TYPE_TX_PACKETS);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(LOOPBACK_IFACE, TYPE_TX_PACKETS);
     }
 
     /** {@hide} */
     @TestApi
     public static long getLoopbackRxPackets() {
-        try {
-            return getStatsService().getIfaceStats(LOOPBACK_IFACE, TYPE_RX_PACKETS);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(LOOPBACK_IFACE, TYPE_RX_PACKETS);
     }
 
     /** {@hide} */
     @TestApi
     public static long getLoopbackTxBytes() {
-        try {
-            return getStatsService().getIfaceStats(LOOPBACK_IFACE, TYPE_TX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(LOOPBACK_IFACE, TYPE_TX_BYTES);
     }
 
     /** {@hide} */
     @TestApi
     public static long getLoopbackRxBytes() {
-        try {
-            return getStatsService().getIfaceStats(LOOPBACK_IFACE, TYPE_RX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getIfaceStats(LOOPBACK_IFACE, TYPE_RX_BYTES);
     }
 
     /**
@@ -856,11 +853,7 @@ public class TrafficStats {
      * return {@link #UNSUPPORTED} on devices where statistics aren't available.
      */
     public static long getTotalTxPackets() {
-        try {
-            return getStatsService().getTotalStats(TYPE_TX_PACKETS);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getTotalStats(TYPE_TX_PACKETS);
     }
 
     /**
@@ -873,11 +866,7 @@ public class TrafficStats {
      * return {@link #UNSUPPORTED} on devices where statistics aren't available.
      */
     public static long getTotalRxPackets() {
-        try {
-            return getStatsService().getTotalStats(TYPE_RX_PACKETS);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getTotalStats(TYPE_RX_PACKETS);
     }
 
     /**
@@ -890,11 +879,7 @@ public class TrafficStats {
      * return {@link #UNSUPPORTED} on devices where statistics aren't available.
      */
     public static long getTotalTxBytes() {
-        try {
-            return getStatsService().getTotalStats(TYPE_TX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getTotalStats(TYPE_TX_BYTES);
     }
 
     /**
@@ -907,11 +892,7 @@ public class TrafficStats {
      * return {@link #UNSUPPORTED} on devices where statistics aren't available.
      */
     public static long getTotalRxBytes() {
-        try {
-            return getStatsService().getTotalStats(TYPE_RX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getTotalStats(TYPE_RX_BYTES);
     }
 
     /**
@@ -933,11 +914,7 @@ public class TrafficStats {
      * @see android.content.pm.ApplicationInfo#uid
      */
     public static long getUidTxBytes(int uid) {
-        try {
-            return getStatsService().getUidStats(uid, TYPE_TX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getUidStats(uid, TYPE_TX_BYTES);
     }
 
     /**
@@ -959,11 +936,7 @@ public class TrafficStats {
      * @see android.content.pm.ApplicationInfo#uid
      */
     public static long getUidRxBytes(int uid) {
-        try {
-            return getStatsService().getUidStats(uid, TYPE_RX_BYTES);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getUidStats(uid, TYPE_RX_BYTES);
     }
 
     /**
@@ -985,11 +958,7 @@ public class TrafficStats {
      * @see android.content.pm.ApplicationInfo#uid
      */
     public static long getUidTxPackets(int uid) {
-        try {
-            return getStatsService().getUidStats(uid, TYPE_TX_PACKETS);
-        } catch (RemoteException e) {
-            throw e.rethrowFromSystemServer();
-        }
+        return getUidStats(uid, TYPE_TX_PACKETS);
     }
 
     /**
@@ -1011,11 +980,40 @@ public class TrafficStats {
      * @see android.content.pm.ApplicationInfo#uid
      */
     public static long getUidRxPackets(int uid) {
+        return getUidStats(uid, TYPE_RX_PACKETS);
+    }
+
+    /** @hide */
+    public static long getUidStats(int uid, int type) {
+        final StatsResult stats;
         try {
-            return getStatsService().getUidStats(uid, TYPE_RX_PACKETS);
+            stats = getStatsService().getUidStats(uid);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
+        return getEntryValueForType(stats, type);
+    }
+
+    /** @hide */
+    public static long getTotalStats(int type) {
+        final StatsResult stats;
+        try {
+            stats = getStatsService().getTotalStats();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+        return getEntryValueForType(stats, type);
+    }
+
+    /** @hide */
+    public static long getIfaceStats(String iface, int type) {
+        final StatsResult stats;
+        try {
+            stats = getStatsService().getIfaceStats(iface);
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+        return getEntryValueForType(stats, type);
     }
 
     /**
@@ -1112,7 +1110,7 @@ public class TrafficStats {
      */
     private static NetworkStats getDataLayerSnapshotForUid(Context context) {
         // TODO: take snapshot locally, since proc file is now visible
-        final int uid = android.os.Process.myUid();
+        final int uid = getMyUid();
         try {
             return getStatsService().getDataLayerSnapshotForUid(uid);
         } catch (RemoteException e) {
@@ -1143,4 +1141,37 @@ public class TrafficStats {
     public static final int TYPE_TX_BYTES = 2;
     /** {@hide} */
     public static final int TYPE_TX_PACKETS = 3;
+
+    /** @hide */
+    private static long getEntryValueForType(@Nullable StatsResult stats, int type) {
+        if (stats == null) return UNSUPPORTED;
+        if (!isEntryValueTypeValid(type)) return UNSUPPORTED;
+        switch (type) {
+            case TYPE_RX_BYTES:
+                return stats.rxBytes;
+            case TYPE_RX_PACKETS:
+                return stats.rxPackets;
+            case TYPE_TX_BYTES:
+                return stats.txBytes;
+            case TYPE_TX_PACKETS:
+                return stats.txPackets;
+            default:
+                throw new IllegalStateException("Bug: Invalid type: "
+                        + type + " should not reach here.");
+        }
+    }
+
+    /** @hide */
+    private static boolean isEntryValueTypeValid(int type) {
+        switch (type) {
+            case TYPE_RX_BYTES:
+            case TYPE_RX_PACKETS:
+            case TYPE_TX_BYTES:
+            case TYPE_TX_PACKETS:
+                return true;
+            default :
+                return false;
+        }
+    }
 }
+

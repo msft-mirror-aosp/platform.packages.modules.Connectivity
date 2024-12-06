@@ -68,8 +68,8 @@ java_defaults {
     impl_only_libs: [
         // The build system will use framework-bluetooth module_current stubs, because
         // of sdk_version: "module_current" above.
-        "framework-bluetooth",
-        "framework-wifi",
+        "framework-bluetooth.stubs.module_lib",
+        "framework-wifi.stubs.module_lib",
         // Compile against the entire implementation of framework-connectivity,
         // including hidden methods. This is safe because if framework-connectivity-t is
         // on the bootclasspath (i.e., T), then framework-connectivity is also on the
@@ -103,8 +103,8 @@ java_library {
     name: "framework-connectivity-t-pre-jarjar",
     defaults: ["framework-connectivity-t-defaults"],
     libs: [
-        "framework-bluetooth",
-        "framework-wifi",
+        "framework-bluetooth.stubs.module_lib",
+        "framework-wifi.stubs.module_lib",
         "framework-connectivity-pre-jarjar",
         "framework-location.stubs.module_lib",
     ],
@@ -172,6 +172,10 @@ java_sdk_library {
         // Tests using hidden APIs
         "//cts/tests/netlegacy22.api",
         "//cts/tests/tests/app.usage", // NetworkUsageStatsTest
+
+        // TODO: b/374174952 Remove it when VCN CTS is moved to Connectivity/
+        "//cts/tests/tests/vcn",
+
         "//external/sl4a:__subpackages__",
         "//frameworks/base/core/tests/bandwidthtests",
         "//frameworks/base/core/tests/benchmarks",

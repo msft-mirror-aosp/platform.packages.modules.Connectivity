@@ -27,9 +27,18 @@ java_library {
     ],
 
     libs: [
-        "framework-configinfrastructure",
+        "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity-pre-jarjar",
         "service-connectivity-pre-jarjar",
+    ],
+
+    static_libs: [
+        "auto_value_annotations",
+    ],
+
+    plugins: [
+        "auto_value_plugin",
+        "auto_annotation_plugin",
     ],
 
     // This is included in service-connectivity which is 30+

@@ -30,8 +30,8 @@ android_library {
         "net-utils-service-connectivity",
     ],
     libs: [
-        "android.test.runner",
-        "android.test.base",
+        "android.test.runner.stubs",
+        "android.test.base.stubs",
     ],
     visibility: [
         "//frameworks/base/packages/Tethering/tests/integration",
@@ -55,6 +55,7 @@ android_test {
         // For mockito extended
         "libdexmakerjvmtiagent",
         "libstaticjvmtiagent",
+        "libcom_android_net_moduletests_util_jni",
     ],
     jarjar_rules: "jarjar-rules.txt",
     test_suites: ["device-tests"],
