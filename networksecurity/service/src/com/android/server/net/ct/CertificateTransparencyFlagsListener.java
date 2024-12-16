@@ -32,12 +32,15 @@ class CertificateTransparencyFlagsListener implements DeviceConfig.OnPropertiesC
     private static final String TAG = "CertificateTransparencyFlagsListener";
 
     private final DataStore mDataStore;
+    private final SignatureVerifier mSignatureVerifier;
     private final CertificateTransparencyDownloader mCertificateTransparencyDownloader;
 
     CertificateTransparencyFlagsListener(
             DataStore dataStore,
+            SignatureVerifier signatureVerifier,
             CertificateTransparencyDownloader certificateTransparencyDownloader) {
         mDataStore = dataStore;
+        mSignatureVerifier = signatureVerifier;
         mCertificateTransparencyDownloader = certificateTransparencyDownloader;
     }
 
@@ -104,19 +107,22 @@ class CertificateTransparencyFlagsListener implements DeviceConfig.OnPropertiesC
         }
 
         try {
-            mCertificateTransparencyDownloader.setPublicKey(newPublicKey);
-        } catch (GeneralSecurityException e) {
+            mSignatureVerifier.setPublicKey(newPublicKey);
+        } catch (GeneralSecurityException | IllegalArgumentException e) {
             Log.e(TAG, "Error setting the public Key", e);
             return;
         }
 
         // TODO: handle the case where there is already a pending download.
 
-        mDataStore.setProperty(Config.VERSION_PENDING, newVersion);
-        mDataStore.setProperty(Config.CONTENT_URL_PENDING, newContentUrl);
-        mDataStore.setProperty(Config.METADATA_URL_PENDING, newMetadataUrl);
+        mDataStore.setProperty(Config.CONTENT_URL, newContentUrl);
+        mDataStore.setProperty(Config.METADATA_URL, newMetadataUrl);
         mDataStore.store();
 
-        mCertificateTransparencyDownloader.startMetadataDownload(newMetadataUrl);
+        if (mCertificateTransparencyDownloader.startMetadataDownload() == -1) {
+            Log.e(TAG, "Metadata download not started.");
+        } else if (Config.DEBUG) {
+            Log.d(TAG, "Metadata download started successfully.");
+        }
     }
 }
