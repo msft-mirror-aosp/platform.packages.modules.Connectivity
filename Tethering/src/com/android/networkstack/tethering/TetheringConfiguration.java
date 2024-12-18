@@ -144,6 +144,12 @@ public class TetheringConfiguration {
     /** A flag for using synchronous or asynchronous state machine. */
     public static boolean USE_SYNC_SM = false;
 
+    /**
+     * A feature flag to control whether the active sessions metrics should be enabled.
+     * Disabled by default.
+     */
+    public static final String TETHER_ACTIVE_SESSIONS_METRICS = "tether_active_sessions_metrics";
+
     public final String[] tetherableUsbRegexs;
     public final String[] tetherableWifiRegexs;
     public final String[] tetherableWigigRegexs;
@@ -176,7 +182,6 @@ public class TetheringConfiguration {
     private final int mP2pLeasesSubnetPrefixLength;
 
     private final boolean mEnableWearTethering;
-    private final boolean mRandomPrefixBase;
 
     private final int mUsbTetheringFunction;
     protected final ContentResolver mContentResolver;
@@ -294,8 +299,6 @@ public class TetheringConfiguration {
 
         mEnableWearTethering = shouldEnableWearTethering(ctx);
 
-        mRandomPrefixBase = mDeps.isFeatureEnabled(ctx, TETHER_FORCE_RANDOM_PREFIX_BASE_SELECTION);
-
         configLog.log(toString());
     }
 
@@ -384,10 +387,6 @@ public class TetheringConfiguration {
         return mEnableWearTethering;
     }
 
-    public boolean isRandomPrefixBaseEnabled() {
-        return mRandomPrefixBase;
-    }
-
     /**
      * Check whether sync SM is enabled then set it to USE_SYNC_SM. This should be called once
      * when tethering is created. Otherwise if the flag is pushed while tethering is enabled,
@@ -448,9 +447,6 @@ public class TetheringConfiguration {
 
         pw.print("mUsbTetheringFunction: ");
         pw.println(isUsingNcm() ? "NCM" : "RNDIS");
-
-        pw.print("mRandomPrefixBase: ");
-        pw.println(mRandomPrefixBase);
 
         pw.print("USE_SYNC_SM: ");
         pw.println(USE_SYNC_SM);
