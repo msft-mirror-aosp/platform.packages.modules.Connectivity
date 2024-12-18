@@ -25,11 +25,11 @@ import android.content.Context;
 import android.net.thread.ThreadConfiguration;
 import android.os.PersistableBundle;
 import android.util.AtomicFile;
-import android.util.Log;
 
 import com.android.connectivity.resources.R;
 import com.android.internal.annotations.GuardedBy;
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.SharedLog;
 import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.ByteArrayInputStream;
@@ -48,6 +48,7 @@ import java.io.InputStream;
  */
 public class ThreadPersistentSettings {
     private static final String TAG = "ThreadPersistentSettings";
+    private static final SharedLog LOG = ThreadNetworkLogger.forSubComponent(TAG);
 
     /** File name used for storing settings. */
     private static final String FILE_NAME = "ThreadPersistentSettings.xml";
@@ -75,6 +76,13 @@ public class ThreadPersistentSettings {
 
     /** Stores the Thread country code, null if no country code is stored. */
     public static final Key<String> THREAD_COUNTRY_CODE = new Key<>("thread_country_code", null);
+
+    /**
+     * Saves the boolean flag for border router being enabled. The value defaults to {@code true} if
+     * this config is missing.
+     */
+    private static final Key<Boolean> CONFIG_BORDER_ROUTER_ENABLED =
+            new Key<>("config_border_router_enabled", true);
 
     /** Stores the Thread NAT64 feature toggle state, true for enabled and false for disabled. */
     private static final Key<Boolean> CONFIG_NAT64_ENABLED =
@@ -115,7 +123,7 @@ public class ThreadPersistentSettings {
         readFromStoreFile();
         synchronized (mLock) {
             if (!mSettings.containsKey(THREAD_ENABLED.key)) {
-                Log.i(TAG, "\"thread_enabled\" is missing in settings file, using default value");
+                LOG.i("\"thread_enabled\" is missing in settings file, using default value");
                 put(
                         THREAD_ENABLED.key,
                         mResources.get().getBoolean(R.bool.config_thread_default_enabled));
@@ -196,6 +204,7 @@ public class ThreadPersistentSettings {
         if (getConfiguration().equals(configuration)) {
             return false;
         }
+        putObject(CONFIG_BORDER_ROUTER_ENABLED.key, configuration.isBorderRouterEnabled());
         putObject(CONFIG_NAT64_ENABLED.key, configuration.isNat64Enabled());
         putObject(CONFIG_DHCP6_PD_ENABLED.key, configuration.isDhcpv6PdEnabled());
         writeToStoreFile();
@@ -205,6 +214,7 @@ public class ThreadPersistentSettings {
     /** Retrieve the {@link ThreadConfiguration} from the persistent settings. */
     public ThreadConfiguration getConfiguration() {
         return new ThreadConfiguration.Builder()
+                .setBorderRouterEnabled(get(CONFIG_BORDER_ROUTER_ENABLED))
                 .setNat64Enabled(get(CONFIG_NAT64_ENABLED))
                 .setDhcpv6PdEnabled(get(CONFIG_DHCP6_PD_ENABLED))
                 .build();
@@ -243,7 +253,7 @@ public class ThreadPersistentSettings {
                 writeToAtomicFile(mAtomicFile, outputStream.toByteArray());
             }
         } catch (IOException e) {
-            Log.wtf(TAG, "Write to store file failed", e);
+            LOG.wtf("Write to store file failed", e);
         }
     }
 
@@ -251,7 +261,7 @@ public class ThreadPersistentSettings {
         try {
             final byte[] readData;
             synchronized (mLock) {
-                Log.i(TAG, "Reading from store file: " + mAtomicFile.getBaseFile());
+                LOG.i("Reading from store file: " + mAtomicFile.getBaseFile());
                 readData = readFromAtomicFile(mAtomicFile);
             }
             final ByteArrayInputStream inputStream = new ByteArrayInputStream(readData);
@@ -262,9 +272,9 @@ public class ThreadPersistentSettings {
                 mSettings.putAll(bundleRead);
             }
         } catch (FileNotFoundException e) {
-            Log.w(TAG, "No store file to read", e);
+            LOG.w("No store file to read " + e.getMessage());
         } catch (IOException e) {
-            Log.e(TAG, "Read from store file failed", e);
+            LOG.e("Read from store file failed", e);
         }
     }
 

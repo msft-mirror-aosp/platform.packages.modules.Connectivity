@@ -41,7 +41,7 @@ flag {
 }
 
 flag {
-  name: "tethering_request_with_soft_ap_config"
+  name: "tethering_with_soft_ap_config"
   is_exported: true
   namespace: "android_core_networking"
   description: "The flag controls the access for the parcelable TetheringRequest with getSoftApConfiguration/setSoftApConfiguration API"
@@ -145,5 +145,23 @@ flag {
   namespace: "android_core_networking"
   description: "Flag for NetworkStats#addEntries API"
   bug: "335680025"
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "tethering_active_sessions_metrics"
+  is_exported: true
+  namespace: "android_core_networking"
+  description: "Flag for collecting tethering active sessions metrics"
+  bug: "354619988"
+  is_fixed_read_only: true
+}
+
+flag {
+  name: "ipv6_over_ble"
+  is_exported: true
+  namespace: "android_core_networking"
+  description: "API flag for IPv6 over BLE"
+  bug: "372936361"
   is_fixed_read_only: true
 }

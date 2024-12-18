@@ -38,10 +38,10 @@ import android.os.ParcelFileDescriptor;
 import android.os.SystemClock;
 import android.system.ErrnoException;
 import android.system.Os;
-import android.util.Log;
 
 import com.android.net.module.util.HexDump;
 import com.android.net.module.util.LinkPropertiesUtils.CompareResult;
+import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.netlink.NetlinkUtils;
 import com.android.net.module.util.netlink.StructIfinfoMsg;
 import com.android.net.module.util.netlink.StructNlAttr;
@@ -66,6 +66,7 @@ import java.util.List;
 public class TunInterfaceController {
     private static final String TAG = "TunIfController";
     private static final boolean DBG = false;
+    private static final SharedLog LOG = ThreadNetworkLogger.forSubComponent(TAG);
     private static final long INFINITE_LIFETIME = 0xffffffffL;
     static final int MTU = 1280;
 
@@ -91,8 +92,19 @@ public class TunInterfaceController {
     }
 
     /** Returns link properties of the Thread TUN interface. */
-    public LinkProperties getLinkProperties() {
-        return mLinkProperties;
+    private LinkProperties getLinkProperties() {
+        return new LinkProperties(mLinkProperties);
+    }
+
+    /** Returns link properties of the Thread TUN interface with the given NAT64 CIDR. */
+    // TODO: manage the NAT64 CIDR in the TunInterfaceController
+    public LinkProperties getLinkPropertiesWithNat64Cidr(@Nullable LinkAddress nat64Cidr) {
+        final LinkProperties lp = getLinkProperties();
+        if (nat64Cidr != null) {
+            lp.addLinkAddress(nat64Cidr);
+            lp.addRoute(getRouteForAddress(nat64Cidr));
+        }
+        return lp;
     }
 
     /**
@@ -147,7 +159,10 @@ public class TunInterfaceController {
 
     /** Adds a new address to the interface. */
     public void addAddress(LinkAddress address) {
-        Log.d(TAG, "Adding address " + address + " with flags: " + address.getFlags());
+        if (!(address.getAddress() instanceof Inet6Address)) {
+            return;
+        }
+        LOG.v("Adding address " + address + " with flags: " + address.getFlags());
 
         long preferredLifetimeSeconds;
         long validLifetimeSeconds;
@@ -171,7 +186,7 @@ public class TunInterfaceController {
                             (address.getExpirationTime() - SystemClock.elapsedRealtime()) / 1000L,
                             0L);
         }
-
+        // Only apply to Ipv6 address
         if (!NetlinkUtils.sendRtmNewAddressRequest(
                 Os.if_nametoindex(mIfName),
                 address.getAddress(),
@@ -180,7 +195,7 @@ public class TunInterfaceController {
                 (byte) address.getScope(),
                 preferredLifetimeSeconds,
                 validLifetimeSeconds)) {
-            Log.w(TAG, "Failed to add address " + address.getAddress().getHostAddress());
+            LOG.w("Failed to add address " + address.getAddress().getHostAddress());
             return;
         }
         mLinkProperties.addLinkAddress(address);
@@ -189,18 +204,22 @@ public class TunInterfaceController {
 
     /** Removes an address from the interface. */
     public void removeAddress(LinkAddress address) {
-        Log.d(TAG, "Removing address " + address);
+        if (!(address.getAddress() instanceof Inet6Address)) {
+            return;
+        }
+        LOG.v("Removing address " + address);
 
         // Intentionally update the mLinkProperties before send netlink message because the
         // address is already removed from ot-daemon and apps can't reach to the address even
         // when the netlink request below fails
         mLinkProperties.removeLinkAddress(address);
         mLinkProperties.removeRoute(getRouteForAddress(address));
+        // Only apply to Ipv6 address
         if (!NetlinkUtils.sendRtmDelAddressRequest(
                 Os.if_nametoindex(mIfName),
                 (Inet6Address) address.getAddress(),
                 (short) address.getPrefixLength())) {
-            Log.w(TAG, "Failed to remove address " + address.getAddress().getHostAddress());
+            LOG.w("Failed to remove address " + address.getAddress().getHostAddress());
         }
     }
 
@@ -287,7 +306,7 @@ public class TunInterfaceController {
         try {
             setInterfaceUp(false);
         } catch (IOException e) {
-            Log.e(TAG, "Failed to set Thread TUN interface down");
+            LOG.e("Failed to set Thread TUN interface down");
         }
     }
 
@@ -347,11 +366,15 @@ public class TunInterfaceController {
             if (e.getCause() instanceof ErrnoException) {
                 ErrnoException ee = (ErrnoException) e.getCause();
                 if (ee.errno == EADDRINUSE) {
-                    Log.w(TAG, "Already joined group" + address.getHostAddress(), e);
+                    LOG.w(
+                            "Already joined group "
+                                    + address.getHostAddress()
+                                    + ": "
+                                    + e.getMessage());
                     return;
                 }
             }
-            Log.e(TAG, "failed to join group " + address.getHostAddress(), e);
+            LOG.e("failed to join group " + address.getHostAddress(), e);
         }
     }
 
@@ -360,7 +383,7 @@ public class TunInterfaceController {
         try {
             mMulticastSocket.leaveGroup(socketAddress, mNetworkInterface);
         } catch (IOException e) {
-            Log.e(TAG, "failed to leave group " + address.getHostAddress(), e);
+            LOG.e("failed to leave group " + address.getHostAddress(), e);
         }
     }
 
@@ -415,14 +438,14 @@ public class TunInterfaceController {
         }
 
         if (DBG) {
-            Log.d(TAG, "ADDR_GEN_MODE message is:");
-            Log.d(TAG, HexDump.dumpHexString(msg));
+            LOG.v("ADDR_GEN_MODE message is:");
+            LOG.v(HexDump.dumpHexString(msg));
         }
 
         try {
             NetlinkUtils.sendOneShotKernelMessage(NETLINK_ROUTE, msg);
         } catch (ErrnoException e) {
-            Log.e(TAG, "Failed to set ADDR_GEN_MODE to NONE", e);
+            LOG.e("Failed to set ADDR_GEN_MODE to NONE", e);
         }
     }
 }

@@ -1873,7 +1873,7 @@ public class ConnectivityManager {
     public NetworkCapabilities[] getDefaultNetworkCapabilitiesForUser(int userId) {
         try {
             return mService.getDefaultNetworkCapabilitiesForUser(
-                    userId, mContext.getOpPackageName(), getAttributionTag());
+                    userId, mContext.getOpPackageName(), mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1967,7 +1967,7 @@ public class ConnectivityManager {
             @NonNull String packageName) {
         try {
             return mService.getRedactedLinkPropertiesForPackage(
-                    lp, uid, packageName, getAttributionTag());
+                    lp, uid, packageName, mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -1993,7 +1993,7 @@ public class ConnectivityManager {
     public NetworkCapabilities getNetworkCapabilities(@Nullable Network network) {
         try {
             return mService.getNetworkCapabilities(
-                    network, mContext.getOpPackageName(), getAttributionTag());
+                    network, mContext.getOpPackageName(), mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2027,7 +2027,7 @@ public class ConnectivityManager {
             int uid, @NonNull String packageName) {
         try {
             return mService.getRedactedNetworkCapabilitiesForPackage(nc, uid, packageName,
-                    getAttributionTag());
+                    mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
@@ -2752,18 +2752,10 @@ public class ConnectivityManager {
         checkLegacyRoutingApiAccess();
         try {
             return mService.requestRouteToHostAddress(networkType, hostAddress.getAddress(),
-                    mContext.getOpPackageName(), getAttributionTag());
+                    mContext.getOpPackageName(), mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }
-    }
-
-    /**
-     * @return the context's attribution tag
-     */
-    // TODO: Remove method and replace with direct call once R code is pushed to AOSP
-    private @Nullable String getAttributionTag() {
-        return mContext.getAttributionTag();
     }
 
     /**
@@ -4705,12 +4697,12 @@ public class ConnectivityManager {
                 if (reqType == LISTEN) {
                     request = mService.listenForNetwork(
                             need, messenger, binder, callbackFlags, callingPackageName,
-                            getAttributionTag(), declaredMethodsFlag);
+                            mContext.getAttributionTag(), declaredMethodsFlag);
                 } else {
                     request = mService.requestNetwork(
                             asUid, need, reqType.ordinal(), messenger, timeoutMs, binder,
-                            legacyType, callbackFlags, callingPackageName, getAttributionTag(),
-                            declaredMethodsFlag);
+                            legacyType, callbackFlags, callingPackageName,
+                            mContext.getAttributionTag(), declaredMethodsFlag);
                 }
                 if (request != null) {
                     sCallbacks.put(request, callback);
@@ -5127,7 +5119,7 @@ public class ConnectivityManager {
         try {
             mService.pendingRequestForNetwork(
                     request.networkCapabilities, operation, mContext.getOpPackageName(),
-                    getAttributionTag());
+                    mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         } catch (ServiceSpecificException e) {
@@ -5276,7 +5268,7 @@ public class ConnectivityManager {
         try {
             mService.pendingListenForNetwork(
                     request.networkCapabilities, operation, mContext.getOpPackageName(),
-                    getAttributionTag());
+                    mContext.getAttributionTag());
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         } catch (ServiceSpecificException e) {
@@ -6730,6 +6722,35 @@ public class ConnectivityManager {
     public IBinder getRoutingCoordinatorService() {
         try {
             return mService.getRoutingCoordinatorService();
+        } catch (RemoteException e) {
+            throw e.rethrowFromSystemServer();
+        }
+    }
+
+    /**
+     * Get the specified ConnectivityService feature status. This method is for test code to check
+     * whether the feature is enabled or not.
+     * Note that tests can not just read DeviceConfig since ConnectivityService reads flag at
+     * startup. For example, it's possible that the current flag value is "disable"(-1) but the
+     * feature is enabled since the flag value was "enable"(1) when ConnectivityService started up.
+     * If the ConnectivityManager needs to check the ConnectivityService feature status for non-test
+     * purpose, define feature in {@link ConnectivityManagerFeature} and use
+     * {@link #isFeatureEnabled} instead.
+     *
+     * @param featureFlag  target flag for feature
+     * @return {@code true} if the feature is enabled, {@code false} if the feature is disabled.
+     * @throws IllegalArgumentException if the flag is invalid
+     *
+     * @hide
+     */
+    @RequiresPermission(anyOf = {
+            android.Manifest.permission.NETWORK_SETTINGS,
+            android.Manifest.permission.NETWORK_STACK,
+            NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK
+    })
+    public boolean isConnectivityServiceFeatureEnabledForTesting(final String featureFlag) {
+        try {
+            return mService.isConnectivityServiceFeatureEnabledForTesting(featureFlag);
         } catch (RemoteException e) {
             throw e.rethrowFromSystemServer();
         }

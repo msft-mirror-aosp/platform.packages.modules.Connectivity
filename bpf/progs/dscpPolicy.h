@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#define CACHE_MAP_SIZE 1024
 #define MAX_POLICIES 16
 
 #define STRUCT_SIZE(name, size) _Static_assert(sizeof(name) == (size), "Incorrect struct size.")
@@ -28,9 +27,6 @@
 // This returns a non-zero u64 iff a != b
 #define v6_not_equal(a, b) ((v6_hi_be64(a) ^ v6_hi_be64(b)) \
                           | (v6_lo_be64(a) ^ v6_lo_be64(b)))
-
-// Returns 'a == b' as boolean
-#define v6_equal(a, b) (!v6_not_equal((a), (b)))
 
 typedef struct {
     struct in6_addr src_ip;

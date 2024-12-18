@@ -37,9 +37,9 @@ java_defaults {
         "ot-daemon-aidl-java",
     ],
     libs: [
-        "android.test.runner",
-        "android.test.base",
-        "android.test.mock",
+        "android.test.runner.stubs",
+        "android.test.base.stubs",
+        "android.test.mock.stubs",
     ],
 }
 
@@ -58,6 +58,27 @@ android_test {
     ],
     srcs: [
         "src/**/*.java",
+        "src/**/*.kt",
+    ],
+    compile_multilib: "both",
+}
+
+android_test {
+    name: "ThreadNetworkTrelDisabledTests",
+    platform_apis: true,
+    manifest: "AndroidManifest.xml",
+    test_config: "AndroidTestTrelDisabled.xml",
+    defaults: [
+        "framework-connectivity-test-defaults",
+        "ThreadNetworkIntegrationTestsDefaults",
+    ],
+    test_suites: [
+        "mts-tethering",
+        "general-tests",
+    ],
+    srcs: [
+        "src/**/*.java",
+        "src/**/*.kt",
     ],
     compile_multilib: "both",
 }

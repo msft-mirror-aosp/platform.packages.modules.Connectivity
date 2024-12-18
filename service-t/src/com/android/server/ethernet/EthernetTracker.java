@@ -21,6 +21,7 @@ import static android.net.EthernetManager.ETHERNET_STATE_ENABLED;
 import static android.net.TestNetworkManager.TEST_TAP_PREFIX;
 
 import static com.android.internal.annotations.VisibleForTesting.Visibility.PACKAGE;
+import static com.android.net.module.util.netlink.NetlinkConstants.IFF_UP;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -40,7 +41,6 @@ import android.os.ConditionVariable;
 import android.os.Handler;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
-import android.os.ServiceSpecificException;
 import android.system.OsConstants;
 import android.text.TextUtils;
 import android.util.ArrayMap;
@@ -49,19 +49,24 @@ import android.util.Log;
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.modules.utils.build.SdkLevel;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.NetdUtils;
 import com.android.net.module.util.PermissionUtils;
 import com.android.net.module.util.SharedLog;
 import com.android.net.module.util.ip.NetlinkMonitor;
 import com.android.net.module.util.netlink.NetlinkConstants;
 import com.android.net.module.util.netlink.NetlinkMessage;
+import com.android.net.module.util.netlink.NetlinkUtils;
 import com.android.net.module.util.netlink.RtNetlinkLinkMessage;
 import com.android.net.module.util.netlink.StructIfinfoMsg;
 import com.android.server.connectivity.ConnectivityResources;
 
 import java.io.FileDescriptor;
 import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.net.SocketException;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Objects;
@@ -104,7 +109,7 @@ public class EthernetTracker {
 
     /**
      * Track test interfaces if true, don't track otherwise.
-     * Volatile is needed as getInterfaceList() does not run on the handler thread.
+     * Volatile is needed as getEthernetInterfaceList() does not run on the handler thread.
      */
     private volatile boolean mIncludeTestInterfaces = false;
 
@@ -138,8 +143,8 @@ public class EthernetTracker {
     private int mTetheringInterfaceMode = INTERFACE_MODE_CLIENT;
     // Tracks whether clients were notified that the tethered interface is available
     private boolean mTetheredInterfaceWasAvailable = false;
-
-    private int mEthernetState = ETHERNET_STATE_ENABLED;
+    // Tracks the current state of ethernet as configured by EthernetManager#setEthernetEnabled.
+    private boolean mIsEthernetEnabled = true;
 
     private class TetheredInterfaceRequestList extends
             RemoteCallbackList<ITetheredInterfaceCallback> {
@@ -214,9 +219,6 @@ public class EthernetTracker {
         // Note: processNetlinkMessage is called on the handler thread.
         @Override
         protected void processNetlinkMessage(NetlinkMessage nlMsg, long whenMs) {
-            // ignore all updates when ethernet is disabled.
-            if (mEthernetState == ETHERNET_STATE_DISABLED) return;
-
             if (nlMsg instanceof RtNetlinkLinkMessage) {
                 processRtNetlinkLinkMessage((RtNetlinkLinkMessage) nlMsg);
             } else {
@@ -302,11 +304,7 @@ public class EthernetTracker {
     }
 
     private void ensureRunningOnEthernetServiceThread() {
-        if (mHandler.getLooper().getThread() != Thread.currentThread()) {
-            throw new IllegalStateException(
-                    "Not running on EthernetService thread: "
-                            + Thread.currentThread().getName());
-        }
+        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
     }
 
     /**
@@ -404,26 +402,27 @@ public class EthernetTracker {
         return mFactory.getAvailableInterfaces(includeRestricted);
     }
 
-    List<String> getInterfaceList() {
+    List<String> getEthernetInterfaceList() {
         final List<String> interfaceList = new ArrayList<String>();
-        final String[] ifaces;
+        final Enumeration<NetworkInterface> ifaces;
         try {
-            ifaces = mNetd.interfaceGetList();
-        } catch (RemoteException e) {
-            Log.e(TAG, "Could not get list of interfaces " + e);
+            ifaces = NetworkInterface.getNetworkInterfaces();
+        } catch (SocketException e) {
+            Log.e(TAG, "Failed to get ethernet interfaces: ", e);
             return interfaceList;
         }
 
         // There is a possible race with setIncludeTestInterfaces() which can affect
         // isValidEthernetInterface (it returns true for test interfaces if setIncludeTestInterfaces
         // is set to true).
-        // setIncludeTestInterfaces() is only used in tests, and since getInterfaceList() does not
-        // run on the handler thread, the behavior around setIncludeTestInterfaces() is
+        // setIncludeTestInterfaces() is only used in tests, and since getEthernetInterfaceList()
+        // does not run on the handler thread, the behavior around setIncludeTestInterfaces() is
         // indeterminate either way. This can easily be circumvented by waiting on a callback from
         // a test interface after calling setIncludeTestInterfaces() before calling this function.
         // In production code, this has no effect.
-        for (String iface : ifaces) {
-            if (isValidEthernetInterface(iface)) interfaceList.add(iface);
+        while (ifaces.hasMoreElements()) {
+            NetworkInterface iface = ifaces.nextElement();
+            if (isValidEthernetInterface(iface.getName())) interfaceList.add(iface.getName());
         }
         return interfaceList;
     }
@@ -450,7 +449,7 @@ public class EthernetTracker {
                 unicastInterfaceStateChange(listener, mTetheringInterface);
             }
 
-            unicastEthernetStateChange(listener, mEthernetState);
+            unicastEthernetStateChange(listener, mIsEthernetEnabled);
         });
     }
 
@@ -599,11 +598,8 @@ public class EthernetTracker {
             // Read the flags before attempting to bring up the interface. If the interface is
             // already running an UP event is created after adding the interface.
             config = NetdUtils.getInterfaceConfigParcel(mNetd, iface);
-            if (NetdUtils.hasFlag(config, INetd.IF_STATE_DOWN)) {
-                // As a side-effect, NetdUtils#setInterfaceUp() also clears the interface's IPv4
-                // address and readds it which *could* lead to unexpected behavior in the future.
-                NetdUtils.setInterfaceUp(mNetd, iface);
-            }
+            // Only bring the interface up when ethernet is enabled, otherwise set interface down.
+            setInterfaceUpState(iface, mIsEthernetEnabled);
         } catch (IllegalStateException e) {
             // Either the system is crashing or the interface has disappeared. Just ignore the
             // error; we haven't modified any state because we only do that if our calls succeed.
@@ -649,6 +645,10 @@ public class EthernetTracker {
     }
 
     private void setInterfaceAdministrativeState(String iface, boolean up, EthernetCallback cb) {
+        if (!mIsEthernetEnabled) {
+            cb.onError("Cannot enable/disable interface when ethernet is disabled");
+            return;
+        }
         if (getInterfaceState(iface) == EthernetManager.STATE_ABSENT) {
             cb.onError("Failed to enable/disable absent interface: " + iface);
             return;
@@ -659,15 +659,7 @@ public class EthernetTracker {
             return;
         }
 
-        if (up) {
-            // WARNING! setInterfaceUp() clears the IPv4 address and readds it. Calling
-            // enableInterface() on an active interface can lead to a provisioning failure which
-            // will cause IpClient to be restarted.
-            // TODO: use netlink directly rather than calling into netd.
-            NetdUtils.setInterfaceUp(mNetd, iface);
-        } else {
-            NetdUtils.setInterfaceDown(mNetd, iface);
-        }
+        setInterfaceUpState(iface, up);
         cb.onResult(iface);
     }
 
@@ -706,10 +698,6 @@ public class EthernetTracker {
     }
 
     private void maybeTrackInterface(String iface) {
-        if (!isValidEthernetInterface(iface)) {
-            return;
-        }
-
         // If we don't already track this interface, and if this interface matches
         // our regex, start tracking it.
         if (mFactory.hasInterface(iface) || iface.equals(mTetheringInterface)) {
@@ -729,13 +717,9 @@ public class EthernetTracker {
     }
 
     private void trackAvailableInterfaces() {
-        try {
-            final String[] ifaces = mNetd.interfaceGetList();
-            for (String iface : ifaces) {
-                maybeTrackInterface(iface);
-            }
-        } catch (RemoteException | ServiceSpecificException e) {
-            Log.e(TAG, "Could not get list of interfaces " + e);
+        final List<String> ifaces = getEthernetInterfaceList();
+        for (String iface : ifaces) {
+            maybeTrackInterface(iface);
         }
     }
 
@@ -963,43 +947,47 @@ public class EthernetTracker {
     @VisibleForTesting(visibility = PACKAGE)
     protected void setEthernetEnabled(boolean enabled) {
         mHandler.post(() -> {
-            int newState = enabled ? ETHERNET_STATE_ENABLED : ETHERNET_STATE_DISABLED;
-            if (mEthernetState == newState) return;
+            if (mIsEthernetEnabled == enabled) return;
 
-            mEthernetState = newState;
+            mIsEthernetEnabled = enabled;
 
-            if (enabled) {
-                trackAvailableInterfaces();
-            } else {
-                // TODO: maybe also disable server mode interface as well.
-                untrackFactoryInterfaces();
+            // Interface in server mode should also be included.
+            ArrayList<String> interfaces =
+                    new ArrayList<>(
+                    List.of(mFactory.getAvailableInterfaces(/* includeRestricted */ true)));
+
+            if (mTetheringInterfaceMode == INTERFACE_MODE_SERVER) {
+                interfaces.add(mTetheringInterface);
             }
-            broadcastEthernetStateChange(mEthernetState);
+
+            for (String iface : interfaces) {
+                setInterfaceUpState(iface, enabled);
+            }
+            broadcastEthernetStateChange(mIsEthernetEnabled);
         });
     }
 
-    private void untrackFactoryInterfaces() {
-        for (String iface : mFactory.getAvailableInterfaces(true /* includeRestricted */)) {
-            stopTrackingInterface(iface);
-        }
+    private int isEthernetEnabledAsInt(boolean state) {
+        return state ? ETHERNET_STATE_ENABLED : ETHERNET_STATE_DISABLED;
     }
 
     private void unicastEthernetStateChange(@NonNull IEthernetServiceListener listener,
-            int state) {
+            boolean enabled) {
         ensureRunningOnEthernetServiceThread();
         try {
-            listener.onEthernetStateChanged(state);
+            listener.onEthernetStateChanged(isEthernetEnabledAsInt(enabled));
         } catch (RemoteException e) {
             // Do nothing here.
         }
     }
 
-    private void broadcastEthernetStateChange(int state) {
+    private void broadcastEthernetStateChange(boolean enabled) {
         ensureRunningOnEthernetServiceThread();
         final int n = mListeners.beginBroadcast();
         for (int i = 0; i < n; i++) {
             try {
-                mListeners.getBroadcastItem(i).onEthernetStateChanged(state);
+                mListeners.getBroadcastItem(i)
+                            .onEthernetStateChanged(isEthernetEnabledAsInt(enabled));
             } catch (RemoteException e) {
                 // Do nothing here.
             }
@@ -1007,11 +995,17 @@ public class EthernetTracker {
         mListeners.finishBroadcast();
     }
 
+    private void setInterfaceUpState(@NonNull String interfaceName, boolean up) {
+        if (!NetlinkUtils.setInterfaceFlags(interfaceName, up ? IFF_UP : ~IFF_UP)) {
+            Log.e(TAG, "Failed to set interface " + interfaceName + (up ? " up" : " down"));
+        }
+    }
+
     void dump(FileDescriptor fd, IndentingPrintWriter pw, String[] args) {
         postAndWaitForRunnable(() -> {
             pw.println(getClass().getSimpleName());
             pw.println("Ethernet State: "
-                    + (mEthernetState == ETHERNET_STATE_ENABLED ? "enabled" : "disabled"));
+                    + (mIsEthernetEnabled ? "enabled" : "disabled"));
             pw.println("Ethernet interface name filter: " + mIfaceMatch);
             pw.println("Interface used for tethering: " + mTetheringInterface);
             pw.println("Tethering interface mode: " + mTetheringInterfaceMode);

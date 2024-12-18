@@ -125,6 +125,7 @@ cc_library_shared {
         "libmodules-utils-build",
         "libnetjniutils",
         "libnet_utils_device_common_bpfjni",
+        "libnet_utils_device_common_timerfdjni",
         "netd_aidl_interface-lateststable-ndk",
     ],
     shared_libs: [
@@ -161,7 +162,7 @@ java_library {
     ],
     libs: [
         "framework-annotations-lib",
-        "framework-configinfrastructure",
+        "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity-pre-jarjar",
         // The framework-connectivity-t library is only available on T+ platforms
         // so any calls to it must be protected with a check to ensure that it is
@@ -175,12 +176,12 @@ java_library {
         // TODO: figure out why just using "framework-tethering" uses the stubs, even though both
         // service-connectivity and framework-tethering are in the same APEX.
         "framework-tethering.impl",
-        "framework-wifi",
+        "framework-wifi.stubs.module_lib",
         "unsupportedappusage",
         "ServiceConnectivityResources",
-        "framework-statsd",
-        "framework-permission",
-        "framework-permission-s",
+        "framework-statsd.stubs.module_lib",
+        "framework-permission.stubs.module_lib",
+        "framework-permission-s.stubs.module_lib",
     ],
     static_libs: [
         // Do not add libs here if they are already included
@@ -206,6 +207,7 @@ java_library {
     },
     visibility: [
         "//packages/modules/Connectivity/service-t",
+        "//packages/modules/Connectivity/service-b",
         "//packages/modules/Connectivity/networksecurity:__subpackages__",
         "//packages/modules/Connectivity/tests:__subpackages__",
         "//packages/modules/Connectivity/thread/service:__subpackages__",
@@ -251,7 +253,11 @@ java_defaults {
         "service-networksecurity-pre-jarjar",
         service_remoteauth_pre_jarjar_lib,
         "service-thread-pre-jarjar",
-    ],
+    ] + select(release_flag("RELEASE_MOVE_VCN_TO_MAINLINE"), {
+        true: ["service-connectivity-b-pre-jarjar"],
+        default: [],
+    }),
+
     // The below libraries are not actually needed to build since no source is compiled
     // (only combining prebuilt static_libs), but they are necessary so that R8 has the right
     // references to optimize the code. Without these, there will be missing class warnings and
@@ -264,10 +270,10 @@ java_defaults {
         "framework-connectivity.impl",
         "framework-connectivity-t.impl",
         "framework-tethering.impl",
-        "framework-wifi",
+        "framework-wifi.stubs.module_lib",
         "libprotobuf-java-nano",
-        "framework-permission",
-        "framework-permission-s",
+        "framework-permission.stubs.module_lib",
+        "framework-permission-s.stubs.module_lib",
     ],
     jarjar_rules: ":connectivity-jarjar-rules",
     apex_available: [
@@ -310,7 +316,7 @@ java_library_static {
     apex_available: ["com.android.tethering"],
 }
 
-genrule {
+java_genrule {
     name: "connectivity-jarjar-rules",
     defaults: ["jarjar-rules-combine-defaults"],
     srcs: [
@@ -337,6 +343,7 @@ java_genrule {
     name: "service-connectivity-jarjar-gen",
     tool_files: [
         ":service-connectivity-pre-jarjar{.jar}",
+        ":service-connectivity-b-pre-jarjar{.jar}",
         ":service-connectivity-tiramisu-pre-jarjar{.jar}",
         "jarjar-excludes.txt",
     ],
@@ -346,6 +353,7 @@ java_genrule {
     out: ["service_connectivity_jarjar_rules.txt"],
     cmd: "$(location jarjar-rules-generator) " +
         "$(location :service-connectivity-pre-jarjar{.jar}) " +
+        "$(location :service-connectivity-b-pre-jarjar{.jar}) " +
         "$(location :service-connectivity-tiramisu-pre-jarjar{.jar}) " +
         "--prefix android.net.connectivity " +
         "--excludes $(location jarjar-excludes.txt) " +

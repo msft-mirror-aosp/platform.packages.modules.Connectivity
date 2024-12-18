@@ -69,6 +69,8 @@ DEFINE_BPF_MAP_RO_NETD(configuration_map, ARRAY, uint32_t, uint32_t, CONFIGURATI
 // TODO: consider whether we can merge some of these maps
 // for example it might be possible to merge 2 or 3 of:
 //   uid_counterset_map + uid_owner_map + uid_permission_map
+DEFINE_BPF_MAP_NO_NETD(blocked_ports_map, ARRAY, int, uint64_t,
+                       1024 /* 64K ports -> 1024 u64s */)
 DEFINE_BPF_MAP_RW_NETD(cookie_tag_map, HASH, uint64_t, UidTagValue, COOKIE_UID_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(uid_counterset_map, HASH, uint32_t, uint8_t, UID_COUNTERSET_MAP_SIZE)
 DEFINE_BPF_MAP_NO_NETD(app_uid_stats_map, HASH, uint32_t, StatsValue, APP_STATS_MAP_SIZE)
@@ -643,8 +645,8 @@ DEFINE_NETD_BPF_PROG_KVER("cgroupsock/inet_create", AID_ROOT, AID_ROOT, inet_soc
     return (get_app_permissions() & BPF_PERMISSION_INTERNET) ? BPF_ALLOW : BPF_DISALLOW;
 }
 
-DEFINE_NETD_V_BPF_PROG_KVER("cgroupsockrelease/inet_release", AID_ROOT, AID_ROOT,
-                            inet_socket_release, KVER_5_10)
+DEFINE_NETD_BPF_PROG_KVER("cgroupsockrelease/inet_release", AID_ROOT, AID_ROOT,
+                          inet_socket_release, KVER_5_10)
 (struct bpf_sock* sk) {
     uint64_t cookie = bpf_get_sk_cookie(sk);
     if (cookie) bpf_cookie_tag_map_delete_elem(&cookie);
@@ -670,32 +672,69 @@ static __always_inline inline int check_localhost(__unused struct bpf_sock_addr 
     return BPF_ALLOW;
 }
 
-DEFINE_NETD_V_BPF_PROG_KVER("connect4/inet4_connect", AID_ROOT, AID_ROOT, inet4_connect, KVER_4_14)
+static inline __always_inline int block_port(struct bpf_sock_addr *ctx) {
+    if (!ctx->user_port) return BPF_ALLOW;
+
+    switch (ctx->protocol) {
+        case IPPROTO_TCP:
+        case IPPROTO_MPTCP:
+        case IPPROTO_UDP:
+        case IPPROTO_UDPLITE:
+        case IPPROTO_DCCP:
+        case IPPROTO_SCTP:
+            break;
+        default:
+            return BPF_ALLOW; // unknown protocols are allowed
+    }
+
+    int key = ctx->user_port >> 6;
+    int shift = ctx->user_port & 63;
+
+    uint64_t *val = bpf_blocked_ports_map_lookup_elem(&key);
+    // Lookup should never fail in reality, but if it does return here to keep the
+    // BPF verifier happy.
+    if (!val) return BPF_ALLOW;
+
+    if ((*val >> shift) & 1) return BPF_DISALLOW;
+    return BPF_ALLOW;
+}
+
+DEFINE_NETD_BPF_PROG_KVER("bind4/inet4_bind", AID_ROOT, AID_ROOT, inet4_bind, KVER_4_19)
+(struct bpf_sock_addr *ctx) {
+    return block_port(ctx);
+}
+
+DEFINE_NETD_BPF_PROG_KVER("bind6/inet6_bind", AID_ROOT, AID_ROOT, inet6_bind, KVER_4_19)
+(struct bpf_sock_addr *ctx) {
+    return block_port(ctx);
+}
+
+DEFINE_NETD_V_BPF_PROG_KVER("connect4/inet4_connect", AID_ROOT, AID_ROOT, inet4_connect, KVER_4_19)
 (struct bpf_sock_addr *ctx) {
     return check_localhost(ctx);
 }
 
-DEFINE_NETD_V_BPF_PROG_KVER("connect6/inet6_connect", AID_ROOT, AID_ROOT, inet6_connect, KVER_4_14)
+DEFINE_NETD_V_BPF_PROG_KVER("connect6/inet6_connect", AID_ROOT, AID_ROOT, inet6_connect, KVER_4_19)
 (struct bpf_sock_addr *ctx) {
     return check_localhost(ctx);
 }
 
-DEFINE_NETD_V_BPF_PROG_KVER("recvmsg4/udp4_recvmsg", AID_ROOT, AID_ROOT, udp4_recvmsg, KVER_4_14)
+DEFINE_NETD_V_BPF_PROG_KVER("recvmsg4/udp4_recvmsg", AID_ROOT, AID_ROOT, udp4_recvmsg, KVER_4_19)
 (struct bpf_sock_addr *ctx) {
     return check_localhost(ctx);
 }
 
-DEFINE_NETD_V_BPF_PROG_KVER("recvmsg6/udp6_recvmsg", AID_ROOT, AID_ROOT, udp6_recvmsg, KVER_4_14)
+DEFINE_NETD_V_BPF_PROG_KVER("recvmsg6/udp6_recvmsg", AID_ROOT, AID_ROOT, udp6_recvmsg, KVER_4_19)
 (struct bpf_sock_addr *ctx) {
     return check_localhost(ctx);
 }
 
-DEFINE_NETD_V_BPF_PROG_KVER("sendmsg4/udp4_sendmsg", AID_ROOT, AID_ROOT, udp4_sendmsg, KVER_4_14)
+DEFINE_NETD_V_BPF_PROG_KVER("sendmsg4/udp4_sendmsg", AID_ROOT, AID_ROOT, udp4_sendmsg, KVER_4_19)
 (struct bpf_sock_addr *ctx) {
     return check_localhost(ctx);
 }
 
-DEFINE_NETD_V_BPF_PROG_KVER("sendmsg6/udp6_sendmsg", AID_ROOT, AID_ROOT, udp6_sendmsg, KVER_4_14)
+DEFINE_NETD_V_BPF_PROG_KVER("sendmsg6/udp6_sendmsg", AID_ROOT, AID_ROOT, udp6_sendmsg, KVER_4_19)
 (struct bpf_sock_addr *ctx) {
     return check_localhost(ctx);
 }

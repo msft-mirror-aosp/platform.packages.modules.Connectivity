@@ -13,39 +13,57 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package com.android.server.net.ct;
+
+import static android.security.Flags.certificateTransparencyConfiguration;
+
+import static com.android.net.ct.flags.Flags.certificateTransparencyJob;
+import static com.android.net.ct.flags.Flags.certificateTransparencyService;
 
 import android.annotation.RequiresApi;
 import android.content.Context;
 import android.net.ct.ICertificateTransparencyManager;
 import android.os.Build;
+import android.provider.DeviceConfig;
 
-import com.android.net.ct.flags.Flags;
-import com.android.net.module.util.DeviceConfigUtils;
 import com.android.server.SystemService;
 
 /** Implementation of the Certificate Transparency service. */
 @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
 public class CertificateTransparencyService extends ICertificateTransparencyManager.Stub {
 
-    private static final String CERTIFICATE_TRANSPARENCY_ENABLED =
-            "certificate_transparency_service_enabled";
-
     private final CertificateTransparencyFlagsListener mFlagsListener;
+    private final CertificateTransparencyJob mCertificateTransparencyJob;
 
     /**
      * @return true if the CertificateTransparency service is enabled.
      */
     public static boolean enabled(Context context) {
-        // TODO: replace isTetheringFeatureEnabled with CT namespace flag.
-        return DeviceConfigUtils.isTetheringFeatureEnabled(
-                        context, CERTIFICATE_TRANSPARENCY_ENABLED)
-                && Flags.certificateTransparencyService();
+        return DeviceConfig.getBoolean(
+                        Config.NAMESPACE_NETWORK_SECURITY,
+                        Config.FLAG_SERVICE_ENABLED,
+                        /* defaultValue= */ true)
+                && certificateTransparencyService()
+                && certificateTransparencyConfiguration();
     }
 
     /** Creates a new {@link CertificateTransparencyService} object. */
     public CertificateTransparencyService(Context context) {
-        mFlagsListener = new CertificateTransparencyFlagsListener(context);
+        DataStore dataStore = new DataStore(Config.PREFERENCES_FILE);
+        DownloadHelper downloadHelper = new DownloadHelper(context);
+        SignatureVerifier signatureVerifier = new SignatureVerifier(context);
+        CertificateTransparencyDownloader downloader =
+                new CertificateTransparencyDownloader(
+                        context,
+                        dataStore,
+                        downloadHelper,
+                        signatureVerifier,
+                        new CertificateTransparencyInstaller());
+        mFlagsListener =
+                new CertificateTransparencyFlagsListener(dataStore, signatureVerifier, downloader);
+        mCertificateTransparencyJob =
+                new CertificateTransparencyJob(context, dataStore, downloader);
     }
 
     /**
@@ -54,10 +72,13 @@ public class CertificateTransparencyService extends ICertificateTransparencyMana
      * @see com.android.server.SystemService#onBootPhase
      */
     public void onBootPhase(int phase) {
-
         switch (phase) {
             case SystemService.PHASE_BOOT_COMPLETED:
-                mFlagsListener.initialize();
+                if (certificateTransparencyJob()) {
+                    mCertificateTransparencyJob.initialize();
+                } else {
+                    mFlagsListener.initialize();
+                }
                 break;
             default:
         }
