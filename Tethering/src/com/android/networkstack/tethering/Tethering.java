@@ -451,6 +451,10 @@ public class Tethering {
         return mSettingsObserver;
     }
 
+    boolean isTetheringWithSoftApConfigEnabled() {
+        return mDeps.isTetheringWithSoftApConfigEnabled();
+    }
+
     /**
      * Start to register callbacks.
      * Call this function when tethering is ready to handle callback events.
@@ -664,7 +668,7 @@ public class Tethering {
             final TetheringRequest unfinishedRequest = mActiveTetheringRequests.get(type);
             // If tethering is already enabled with a different request,
             // disable before re-enabling.
-            if (unfinishedRequest != null && !unfinishedRequest.equals(request)) {
+            if (unfinishedRequest != null && !unfinishedRequest.equalsIgnoreUidPackage(request)) {
                 enableTetheringInternal(type, false /* disabled */,
                         unfinishedRequest.getInterfaceName(), null);
                 mEntitlementMgr.stopProvisioningIfNeeded(type);
@@ -2089,7 +2093,7 @@ public class Tethering {
                 }
 
                 mRoutingCoordinator.maybeRemoveDeprecatedUpstreams();
-                mUpstreamNetworkMonitor.startObserveAllNetworks();
+                mUpstreamNetworkMonitor.startObserveUpstreamNetworks();
 
                 // TODO: De-duplicate with updateUpstreamWanted() below.
                 if (upstreamWanted()) {

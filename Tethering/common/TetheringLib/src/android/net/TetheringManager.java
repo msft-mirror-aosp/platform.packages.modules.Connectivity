@@ -388,7 +388,9 @@ public class TetheringManager {
         // up and be sent from a worker thread; later, they are always sent from the caller thread.
         // Considering that it's just oneway binder calls, and ordering is preserved, this seems
         // better than inconsistent behavior persisting after boot.
-        if (connector != null) {
+        // If system server restarted, mConnectorSupplier might temporarily return a stale (i.e.
+        // dead) version of TetheringService.
+        if (connector != null && connector.isBinderAlive()) {
             mConnector = ITetheringConnector.Stub.asInterface(connector);
         } else {
             startPollingForConnector();
@@ -423,9 +425,8 @@ public class TetheringManager {
                 } catch (InterruptedException e) {
                     // Not much to do here, the system needs to wait for the connector
                 }
-
                 final IBinder connector = mConnectorSupplier.get();
-                if (connector != null) {
+                if (connector != null && connector.isBinderAlive()) {
                     onTetheringConnected(ITetheringConnector.Stub.asInterface(connector));
                     return;
                 }
@@ -1187,6 +1188,17 @@ public class TetheringManager {
         public boolean equals(Object obj) {
             if (this == obj) return true;
             if (!(obj instanceof TetheringRequest otherRequest)) return false;
+            if (!equalsIgnoreUidPackage(otherRequest)) return false;
+            TetheringRequestParcel parcel = getParcel();
+            TetheringRequestParcel otherParcel = otherRequest.getParcel();
+            return parcel.uid == otherParcel.uid
+                    && Objects.equals(parcel.packageName, otherParcel.packageName);
+        }
+
+        /**
+         * @hide
+         */
+        public boolean equalsIgnoreUidPackage(TetheringRequest otherRequest) {
             TetheringRequestParcel parcel = getParcel();
             TetheringRequestParcel otherParcel = otherRequest.getParcel();
             return parcel.tetheringType == otherParcel.tetheringType
@@ -1196,8 +1208,6 @@ public class TetheringManager {
                     && parcel.showProvisioningUi == otherParcel.showProvisioningUi
                     && parcel.connectivityScope == otherParcel.connectivityScope
                     && Objects.equals(parcel.softApConfig, otherParcel.softApConfig)
-                    && parcel.uid == otherParcel.uid
-                    && Objects.equals(parcel.packageName, otherParcel.packageName)
                     && Objects.equals(parcel.interfaceName, otherParcel.interfaceName);
         }
 
@@ -1290,18 +1300,12 @@ public class TetheringManager {
      * Starts tethering and runs tether provisioning for the given type if needed. If provisioning
      * fails, stopTethering will be called automatically.
      *
-     * <p>Without {@link android.Manifest.permission.TETHER_PRIVILEGED} permission, the call will
-     * fail if a tethering entitlement check is required.
-     *
      * @param type The tethering type, on of the {@code TetheringManager#TETHERING_*} constants.
      * @param executor {@link Executor} to specify the thread upon which the callback of
      *         TetheringRequest will be invoked.
      * @hide
      */
-    @RequiresPermission(anyOf = {
-            android.Manifest.permission.TETHER_PRIVILEGED,
-            android.Manifest.permission.WRITE_SETTINGS
-    })
+    @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED)
     @SystemApi(client = MODULE_LIBRARIES)
     public void startTethering(int type, @NonNull final Executor executor,
             @NonNull final StartTetheringCallback callback) {
@@ -1312,14 +1316,9 @@ public class TetheringManager {
      * Stops tethering for the given type. Also cancels any provisioning rechecks for that type if
      * applicable.
      *
-     * <p>Without {@link android.Manifest.permission.TETHER_PRIVILEGED} permission, the call will
-     * fail if a tethering entitlement check is required.
      * @hide
      */
-    @RequiresPermission(anyOf = {
-            android.Manifest.permission.TETHER_PRIVILEGED,
-            android.Manifest.permission.WRITE_SETTINGS
-    })
+    @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED)
     @SystemApi
     public void stopTethering(@TetheringType final int type) {
         final String callerPkg = mContext.getOpPackageName();
@@ -1374,9 +1373,6 @@ public class TetheringManager {
      * {@link #TETHER_ERROR_ENTITLEMENT_UNKNOWN} will be returned. If {@code showEntitlementUi} is
      * true, entitlement will be run.
      *
-     * <p>Without {@link android.Manifest.permission.TETHER_PRIVILEGED} permission, the call will
-     * fail if a tethering entitlement check is required.
-     *
      * @param type the downstream type of tethering. Must be one of {@code #TETHERING_*} constants.
      * @param showEntitlementUi a boolean indicating whether to check result for the UI-based
      *         entitlement check or the silent entitlement check.
@@ -1387,10 +1383,7 @@ public class TetheringManager {
      * @hide
      */
     @SystemApi
-    @RequiresPermission(anyOf = {
-            android.Manifest.permission.TETHER_PRIVILEGED,
-            android.Manifest.permission.WRITE_SETTINGS
-    })
+    @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED)
     public void requestLatestTetheringEntitlementResult(@TetheringType int type,
             boolean showEntitlementUi,
             @NonNull Executor executor,
@@ -2073,10 +2066,7 @@ public class TetheringManager {
      * @hide
      */
     @SystemApi
-    @RequiresPermission(anyOf = {
-            android.Manifest.permission.TETHER_PRIVILEGED,
-            android.Manifest.permission.WRITE_SETTINGS
-    })
+    @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED)
     public void stopAllTethering() {
         final String callerPkg = mContext.getOpPackageName();
         Log.i(TAG, "stopAllTethering caller:" + callerPkg);
