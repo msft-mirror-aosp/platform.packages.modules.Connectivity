@@ -267,8 +267,9 @@ public class TetheringTest {
     private static final String TEST_P2P_REGEX = "test_p2p-p2p\\d-.*";
     private static final String TEST_BT_REGEX = "test_pan\\d";
     private static final int TEST_CALLER_UID = 1000;
+    private static final int TEST_CALLER_UID_2 = 2000;
     private static final String TEST_CALLER_PKG = "com.test.tethering";
-
+    private static final String TEST_CALLER_PKG_2 = "com.test.tethering2";
     private static final int CELLULAR_NETID = 100;
     private static final int WIFI_NETID = 101;
     private static final int DUN_NETID = 102;
@@ -785,7 +786,10 @@ public class TetheringTest {
         if (interfaceName != null) {
             builder.setInterfaceName(interfaceName);
         }
-        return builder.build();
+        TetheringRequest request = builder.build();
+        request.setUid(TEST_CALLER_UID);
+        request.setPackageName(TEST_CALLER_PKG);
+        return request;
     }
 
     @NonNull
@@ -1032,7 +1036,7 @@ public class TetheringTest {
         verify(mWifiManager).updateInterfaceIpState(TEST_WLAN_IFNAME, expectedState);
         verifyNoMoreInteractions(mWifiManager);
 
-        verify(mUpstreamNetworkMonitor).startObserveAllNetworks();
+        verify(mUpstreamNetworkMonitor).startObserveUpstreamNetworks();
         if (isLocalOnly) {
             // There are 2 IpServer state change events: STATE_AVAILABLE -> STATE_LOCAL_ONLY.
             verify(mNotificationUpdater, times(2)).onDownstreamChanged(DOWNSTREAM_NONE);
@@ -1260,7 +1264,7 @@ public class TetheringTest {
         // Start USB tethering with no current upstream.
         prepareUsbTethering();
         sendUsbBroadcast(true, true, TETHER_USB_RNDIS_FUNCTION);
-        inOrder.verify(mUpstreamNetworkMonitor).startObserveAllNetworks();
+        inOrder.verify(mUpstreamNetworkMonitor).startObserveUpstreamNetworks();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
 
         // Pretend cellular connected and expect the upstream to be set.
@@ -1859,7 +1863,7 @@ public class TetheringTest {
         // Start USB tethering with no current upstream.
         prepareUsbTethering();
         sendUsbBroadcast(true, true, TETHER_USB_RNDIS_FUNCTION);
-        inOrder.verify(mUpstreamNetworkMonitor).startObserveAllNetworks();
+        inOrder.verify(mUpstreamNetworkMonitor).startObserveUpstreamNetworks();
         inOrder.verify(mUpstreamNetworkMonitor).setTryCell(true);
         ArgumentCaptor<NetworkCallback> captor = ArgumentCaptor.forClass(NetworkCallback.class);
         inOrder.verify(mCm).requestNetwork(any(), eq(0), eq(TYPE_MOBILE_DUN), any(),
@@ -2587,7 +2591,7 @@ public class TetheringTest {
         verify(mNetd, times(1)).tetherStartWithConfiguration(any());
         verifyNoMoreInteractions(mNetd);
         verifyTetheringBroadcast(TEST_P2P_IFNAME, EXTRA_ACTIVE_LOCAL_ONLY);
-        verify(mUpstreamNetworkMonitor, times(1)).startObserveAllNetworks();
+        verify(mUpstreamNetworkMonitor, times(1)).startObserveUpstreamNetworks();
         // There are 2 IpServer state change events: STATE_AVAILABLE -> STATE_LOCAL_ONLY
         verify(mNotificationUpdater, times(2)).onDownstreamChanged(DOWNSTREAM_NONE);
 
@@ -2781,6 +2785,17 @@ public class TetheringTest {
         // Enable USB tethering again with the same request and expect no change to USB.
         mTethering.startTethering(createTetheringRequest(TETHERING_USB), TEST_CALLER_PKG,
                 secondResult);
+        mLooper.dispatchAll();
+        secondResult.assertHasResult();
+        verify(mUsbManager, never()).setCurrentFunctions(UsbManager.FUNCTION_NONE);
+        reset(mUsbManager);
+
+        // Enable USB tethering again with the same request but different uid/package and expect no
+        // change to USB.
+        TetheringRequest differentUidPackage = createTetheringRequest(TETHERING_USB);
+        differentUidPackage.setUid(TEST_CALLER_UID_2);
+        differentUidPackage.setPackageName(TEST_CALLER_PKG_2);
+        mTethering.startTethering(differentUidPackage, TEST_CALLER_PKG_2, secondResult);
         mLooper.dispatchAll();
         secondResult.assertHasResult();
         verify(mUsbManager, never()).setCurrentFunctions(UsbManager.FUNCTION_NONE);
@@ -3757,7 +3772,7 @@ public class TetheringTest {
         verifyInterfaceServingModeStarted(TEST_P2P_IFNAME);
         verifyTetheringBroadcast(TEST_P2P_IFNAME, EXTRA_AVAILABLE_TETHER);
         verifyTetheringBroadcast(TEST_P2P_IFNAME, EXTRA_ACTIVE_LOCAL_ONLY);
-        verify(mUpstreamNetworkMonitor).startObserveAllNetworks();
+        verify(mUpstreamNetworkMonitor).startObserveUpstreamNetworks();
         // Verify never enable upstream if only P2P active.
         verify(mUpstreamNetworkMonitor, never()).setTryCell(true);
         assertEquals(TETHER_ERROR_NO_ERROR, mTethering.getLastErrorForTest(TEST_P2P_IFNAME));
