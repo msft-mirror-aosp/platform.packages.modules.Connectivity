@@ -388,7 +388,9 @@ public class TetheringManager {
         // up and be sent from a worker thread; later, they are always sent from the caller thread.
         // Considering that it's just oneway binder calls, and ordering is preserved, this seems
         // better than inconsistent behavior persisting after boot.
-        if (connector != null) {
+        // If system server restarted, mConnectorSupplier might temporarily return a stale (i.e.
+        // dead) version of TetheringService.
+        if (connector != null && connector.isBinderAlive()) {
             mConnector = ITetheringConnector.Stub.asInterface(connector);
         } else {
             startPollingForConnector();
@@ -423,9 +425,8 @@ public class TetheringManager {
                 } catch (InterruptedException e) {
                     // Not much to do here, the system needs to wait for the connector
                 }
-
                 final IBinder connector = mConnectorSupplier.get();
-                if (connector != null) {
+                if (connector != null && connector.isBinderAlive()) {
                     onTetheringConnected(ITetheringConnector.Stub.asInterface(connector));
                     return;
                 }
@@ -1187,6 +1188,17 @@ public class TetheringManager {
         public boolean equals(Object obj) {
             if (this == obj) return true;
             if (!(obj instanceof TetheringRequest otherRequest)) return false;
+            if (!equalsIgnoreUidPackage(otherRequest)) return false;
+            TetheringRequestParcel parcel = getParcel();
+            TetheringRequestParcel otherParcel = otherRequest.getParcel();
+            return parcel.uid == otherParcel.uid
+                    && Objects.equals(parcel.packageName, otherParcel.packageName);
+        }
+
+        /**
+         * @hide
+         */
+        public boolean equalsIgnoreUidPackage(TetheringRequest otherRequest) {
             TetheringRequestParcel parcel = getParcel();
             TetheringRequestParcel otherParcel = otherRequest.getParcel();
             return parcel.tetheringType == otherParcel.tetheringType
@@ -1196,8 +1208,6 @@ public class TetheringManager {
                     && parcel.showProvisioningUi == otherParcel.showProvisioningUi
                     && parcel.connectivityScope == otherParcel.connectivityScope
                     && Objects.equals(parcel.softApConfig, otherParcel.softApConfig)
-                    && parcel.uid == otherParcel.uid
-                    && Objects.equals(parcel.packageName, otherParcel.packageName)
                     && Objects.equals(parcel.interfaceName, otherParcel.interfaceName);
         }
 
