@@ -200,19 +200,19 @@ public final class NsdServiceInfo implements Parcelable {
     /**
      * Get the hostname.
      *
-     * <p>When a service is resolved, it returns the hostname of the resolved service . The top
-     * level domain ".local." is omitted.
-     *
-     * <p>For example, it returns "MyHost" when the service's hostname is "MyHost.local.".
-     *
-     * @hide
+     * <p>When a service is resolved through {@link NsdManager#resolveService} or
+     * {@link NsdManager#registerServiceInfoCallback}, this returns the hostname of the resolved
+     * service. In all other cases, this will be null. The top level domain ".local." is omitted.
+     * For example, this returns "MyHost" when the service's hostname is "MyHost.local.".
      */
-//    @FlaggedApi(NsdManager.Flags.NSD_CUSTOM_HOSTNAME_ENABLED)
+    @FlaggedApi(Flags.FLAG_IPV6_OVER_BLE)
     @Nullable
     public String getHostname() {
         return mHostname;
     }
 
+    // TODO: if setHostname is made public, AdvertisingRequest#FLAG_SKIP_PROBING javadoc must be
+    // updated to mention that hostnames must also be known unique to use that flag.
     /**
      * Set a custom hostname for this service instance for registration.
      *

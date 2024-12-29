@@ -81,6 +81,12 @@ public class MdnsFeatureFlags {
     public static final String NSD_CACHED_SERVICES_REMOVAL = "nsd_cached_services_removal";
 
     /**
+     * A feature flag to control whether to use shorter (16 characters + .local) hostnames, instead
+     * of Android_[32 characters] hostnames.
+     */
+    public static final String NSD_USE_SHORT_HOSTNAMES = "nsd_use_short_hostnames";
+
+    /**
      * A feature flag to control the retention time for cached services.
      *
      * <p> Making the retention time configurable allows for testing and future adjustments.
@@ -88,11 +94,6 @@ public class MdnsFeatureFlags {
     public static final String NSD_CACHED_SERVICES_RETENTION_TIME =
             "nsd_cached_services_retention_time";
     public static final int DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS = 10000;
-
-    /**
-     * A feature flag to control whether the accurate delay callback should be enabled.
-     */
-    public static final String NSD_ACCURATE_DELAY_CALLBACK = "nsd_accurate_delay_callback";
 
     // Flag for offload feature
     public final boolean mIsMdnsOffloadFeatureEnabled;
@@ -127,8 +128,8 @@ public class MdnsFeatureFlags {
     // Retention Time for cached services
     public final long mCachedServicesRetentionTime;
 
-    // Flag for accurate delay callback
-    public final boolean mIsAccurateDelayCallbackEnabled;
+    // Flag to use shorter (16 characters + .local) hostnames
+    public final boolean mIsShortHostnamesEnabled;
 
     @Nullable
     private final FlagOverrideProvider mOverrideProvider;
@@ -225,12 +226,8 @@ public class MdnsFeatureFlags {
                 NSD_CACHED_SERVICES_RETENTION_TIME, (int) mCachedServicesRetentionTime);
     }
 
-    /**
-     * Indicates whether {@link #NSD_ACCURATE_DELAY_CALLBACK} is enabled, including for testing.
-     */
-    public boolean isAccurateDelayCallbackEnabled() {
-        return mIsAccurateDelayCallbackEnabled
-                || isForceEnabledForTest(NSD_ACCURATE_DELAY_CALLBACK);
+    public boolean isShortHostnamesEnabled() {
+        return mIsShortHostnamesEnabled || isForceEnabledForTest(NSD_USE_SHORT_HOSTNAMES);
     }
 
     /**
@@ -247,7 +244,7 @@ public class MdnsFeatureFlags {
             boolean avoidAdvertisingEmptyTxtRecords,
             boolean isCachedServicesRemovalEnabled,
             long cachedServicesRetentionTime,
-            boolean isAccurateDelayCallbackEnabled,
+            boolean isShortHostnamesEnabled,
             @Nullable FlagOverrideProvider overrideProvider) {
         mIsMdnsOffloadFeatureEnabled = isOffloadFeatureEnabled;
         mIncludeInetAddressRecordsInProbing = includeInetAddressRecordsInProbing;
@@ -260,7 +257,7 @@ public class MdnsFeatureFlags {
         mAvoidAdvertisingEmptyTxtRecords = avoidAdvertisingEmptyTxtRecords;
         mIsCachedServicesRemovalEnabled = isCachedServicesRemovalEnabled;
         mCachedServicesRetentionTime = cachedServicesRetentionTime;
-        mIsAccurateDelayCallbackEnabled = isAccurateDelayCallbackEnabled;
+        mIsShortHostnamesEnabled = isShortHostnamesEnabled;
         mOverrideProvider = overrideProvider;
     }
 
@@ -284,7 +281,7 @@ public class MdnsFeatureFlags {
         private boolean mAvoidAdvertisingEmptyTxtRecords;
         private boolean mIsCachedServicesRemovalEnabled;
         private long mCachedServicesRetentionTime;
-        private boolean mIsAccurateDelayCallbackEnabled;
+        private boolean mIsShortHostnamesEnabled;
         private FlagOverrideProvider mOverrideProvider;
 
         /**
@@ -302,7 +299,7 @@ public class MdnsFeatureFlags {
             mAvoidAdvertisingEmptyTxtRecords = true; // Default enabled.
             mIsCachedServicesRemovalEnabled = false;
             mCachedServicesRetentionTime = DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS;
-            mIsAccurateDelayCallbackEnabled = false;
+            mIsShortHostnamesEnabled = true; // Default enabled.
             mOverrideProvider = null;
         }
 
@@ -429,12 +426,12 @@ public class MdnsFeatureFlags {
         }
 
         /**
-         * Set whether the accurate delay callback is enabled.
+         * Set whether the short hostnames feature is enabled.
          *
-         * @see #NSD_ACCURATE_DELAY_CALLBACK
+         * @see #NSD_USE_SHORT_HOSTNAMES
          */
-        public Builder setIsAccurateDelayCallbackEnabled(boolean isAccurateDelayCallbackEnabled) {
-            mIsAccurateDelayCallbackEnabled = isAccurateDelayCallbackEnabled;
+        public Builder setIsShortHostnamesEnabled(boolean isShortHostnamesEnabled) {
+            mIsShortHostnamesEnabled = isShortHostnamesEnabled;
             return this;
         }
 
@@ -453,7 +450,7 @@ public class MdnsFeatureFlags {
                     mAvoidAdvertisingEmptyTxtRecords,
                     mIsCachedServicesRemovalEnabled,
                     mCachedServicesRetentionTime,
-                    mIsAccurateDelayCallbackEnabled,
+                    mIsShortHostnamesEnabled,
                     mOverrideProvider);
         }
     }
