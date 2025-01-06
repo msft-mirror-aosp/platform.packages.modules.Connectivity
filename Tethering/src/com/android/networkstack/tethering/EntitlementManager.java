@@ -154,7 +154,9 @@ public class EntitlementManager {
 
             // Only launch entitlement UI for the current user if it is allowed to
             // change tethering. This usually means the system user or the admin users in HSUM.
-            if (SdkLevel.isAtLeastT()) {
+            // TODO (b/382624069): Figure out whether it is safe to call createContextAsUser
+            //  from secondary user. And re-enable the check or remove the code accordingly.
+            if (false) {
                 // Create a user context for the current foreground user as UserManager#isAdmin()
                 // operates on the context user.
                 final int currentUserId = getCurrentUser();
@@ -167,6 +169,11 @@ public class EntitlementManager {
                 } else {
                     mLog.e("Current user (" + currentUserId
                             + ") is not allowed to perform entitlement check.");
+                    // If the user is not allowed to perform an entitlement check
+                    // (e.g., a non-admin user), notify the receiver immediately.
+                    // This is necessary because the entitlement check app cannot
+                    // be launched to conduct the check and deliver the results.
+                    receiver.send(TETHER_ERROR_PROVISIONING_FAILED, null);
                     return null;
                 }
             } else {

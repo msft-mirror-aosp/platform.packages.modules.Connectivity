@@ -39,6 +39,7 @@ import android.os.Handler
 import android.os.SystemClock
 import android.system.OsConstants
 import android.system.OsConstants.IPPROTO_ICMP
+import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow
 import com.android.net.module.util.IpUtils
@@ -84,6 +85,8 @@ import org.junit.Assert
 
 /** Utilities for Thread integration tests. */
 object IntegrationTestUtils {
+    private val TAG = IntegrationTestUtils::class.simpleName
+
     // The timeout of join() after restarting ot-daemon. The device needs to send 6 Link Request
     // every 5 seconds, followed by 4 Parent Request every second. So this value needs to be 40
     // seconds to be safe
@@ -388,7 +391,12 @@ object IntegrationTestUtils {
         raMsg ?: return pioList
 
         val buf = ByteBuffer.wrap(raMsg)
-        val ipv6Header = Struct.parse(Ipv6Header::class.java, buf)
+        val ipv6Header = try {
+            Struct.parse(Ipv6Header::class.java, buf)
+        } catch (e: IllegalArgumentException) {
+            // the packet is not IPv6
+            return pioList
+        }
         if (ipv6Header.nextHeader != OsConstants.IPPROTO_ICMPV6.toByte()) {
             return pioList
         }
@@ -478,6 +486,7 @@ object IntegrationTestUtils {
         val serviceInfoFuture = CompletableFuture<NsdServiceInfo>()
         val listener: NsdManager.DiscoveryListener = object : DefaultDiscoveryListener() {
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                Log.d(TAG, "onServiceFound: $serviceInfo")
                 serviceInfoFuture.complete(serviceInfo)
             }
         }
@@ -525,6 +534,7 @@ object IntegrationTestUtils {
         val resolvedServiceInfoFuture = CompletableFuture<NsdServiceInfo>()
         val callback: NsdManager.ServiceInfoCallback = object : DefaultServiceInfoCallback() {
             override fun onServiceUpdated(serviceInfo: NsdServiceInfo) {
+                Log.d(TAG, "onServiceUpdated: $serviceInfo")
                 if (predicate.test(serviceInfo)) {
                     resolvedServiceInfoFuture.complete(serviceInfo)
                 }
@@ -647,57 +657,6 @@ object IntegrationTestUtils {
             0 /* flags */, 0 /* scope */,
             deprecationTimeMillis, LinkAddress.LIFETIME_PERMANENT /* expirationTime */
         )
-    }
-
-    private fun defaultLinkProperties(): LinkProperties {
-        val lp = LinkProperties()
-        // TODO: use a fake DNS server
-        lp.setDnsServers(listOf(parseNumericAddress("8.8.8.8")))
-        // NAT64 feature requires the infra network to have an IPv4 default route.
-        lp.addRoute(
-            RouteInfo(
-                IpPrefix("0.0.0.0/0") /* destination */,
-                null /* gateway */,
-                null /* iface */,
-                RouteInfo.RTN_UNICAST, 1500 /* mtu */
-            )
-        )
-        return lp
-    }
-
-    @JvmStatic
-    @JvmOverloads
-    fun startInfraDeviceAndWaitForOnLinkAddr(
-            pollPacketReader: PollPacketReader,
-            macAddress: MacAddress = MacAddress.fromString("1:2:3:4:5:6")
-    ): InfraNetworkDevice {
-        val infraDevice = InfraNetworkDevice(macAddress, pollPacketReader)
-        infraDevice.runSlaac(Duration.ofSeconds(60))
-        requireNotNull(infraDevice.ipv6Addr)
-        return infraDevice
-    }
-
-    @JvmStatic
-    @JvmOverloads
-    @Throws(java.lang.Exception::class)
-    fun setUpInfraNetwork(
-        context: Context,
-        controller: ThreadNetworkControllerWrapper,
-        lp: LinkProperties = defaultLinkProperties()
-    ): TestNetworkTracker {
-        val infraNetworkTracker: TestNetworkTracker =
-            runAsShell(
-                MANAGE_TEST_NETWORKS,
-                supplier = { initTestNetwork(context, lp, setupTimeoutMs = 5000) })
-        val infraNetworkName: String = infraNetworkTracker.testIface.getInterfaceName()
-        controller.setTestNetworkAsUpstreamAndWait(infraNetworkName)
-
-        return infraNetworkTracker
-    }
-
-    @JvmStatic
-    fun tearDownInfraNetwork(testNetworkTracker: TestNetworkTracker) {
-        runAsShell(MANAGE_TEST_NETWORKS) { testNetworkTracker.teardown() }
     }
 
     /**

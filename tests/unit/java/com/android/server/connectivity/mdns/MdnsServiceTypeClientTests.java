@@ -16,13 +16,13 @@
 
 package com.android.server.connectivity.mdns;
 
+import static com.android.server.connectivity.mdns.MdnsQueryScheduler.INITIAL_AGGRESSIVE_TIME_BETWEEN_BURSTS_MS;
+import static com.android.server.connectivity.mdns.MdnsQueryScheduler.MAX_TIME_BETWEEN_AGGRESSIVE_BURSTS_MS;
+import static com.android.server.connectivity.mdns.MdnsQueryScheduler.TIME_BETWEEN_RETRANSMISSION_QUERIES_IN_BURST_MS;
 import static com.android.server.connectivity.mdns.MdnsSearchOptions.ACTIVE_QUERY_MODE;
 import static com.android.server.connectivity.mdns.MdnsSearchOptions.AGGRESSIVE_QUERY_MODE;
 import static com.android.server.connectivity.mdns.MdnsSearchOptions.PASSIVE_QUERY_MODE;
 import static com.android.server.connectivity.mdns.MdnsServiceTypeClient.EVENT_START_QUERYTASK;
-import static com.android.server.connectivity.mdns.QueryTaskConfig.INITIAL_AGGRESSIVE_TIME_BETWEEN_BURSTS_MS;
-import static com.android.server.connectivity.mdns.QueryTaskConfig.MAX_TIME_BETWEEN_AGGRESSIVE_BURSTS_MS;
-import static com.android.server.connectivity.mdns.QueryTaskConfig.TIME_BETWEEN_RETRANSMISSION_QUERIES_IN_BURST_MS;
 import static com.android.testutils.DevSdkIgnoreRuleKt.SC_V2;
 
 import static org.junit.Assert.assertArrayEquals;
@@ -566,21 +566,21 @@ public class MdnsServiceTypeClientTests {
 
         // This is the first query. We will ask for unicast response.
         assertTrue(config.expectUnicastResponse);
-        assertEquals(config.transactionId, 1);
+        assertEquals(config.getTransactionId(), 1);
 
         // For the rest of queries in this burst, we will NOT ask for unicast response.
         for (int i = 1; i < MdnsConfigs.queriesPerBurst(); i++) {
-            int oldTransactionId = config.transactionId;
+            int oldTransactionId = config.getTransactionId();
             config = config.getConfigForNextRun(ACTIVE_QUERY_MODE);
             assertFalse(config.expectUnicastResponse);
-            assertEquals(config.transactionId, oldTransactionId + 1);
+            assertEquals(config.getTransactionId(), oldTransactionId + 1);
         }
 
         // This is the first query of a new burst. We will ask for unicast response.
-        int oldTransactionId = config.transactionId;
+        int oldTransactionId = config.getTransactionId();
         config = config.getConfigForNextRun(ACTIVE_QUERY_MODE);
         assertTrue(config.expectUnicastResponse);
-        assertEquals(config.transactionId, oldTransactionId + 1);
+        assertEquals(config.getTransactionId(), oldTransactionId + 1);
     }
 
     @Test
@@ -591,21 +591,21 @@ public class MdnsServiceTypeClientTests {
 
         // This is the first query. We will ask for unicast response.
         assertTrue(config.expectUnicastResponse);
-        assertEquals(config.transactionId, 1);
+        assertEquals(config.getTransactionId(), 1);
 
         // For the rest of queries in this burst, we will NOT ask for unicast response.
         for (int i = 1; i < MdnsConfigs.queriesPerBurst(); i++) {
-            int oldTransactionId = config.transactionId;
+            int oldTransactionId = config.getTransactionId();
             config = config.getConfigForNextRun(ACTIVE_QUERY_MODE);
             assertFalse(config.expectUnicastResponse);
-            assertEquals(config.transactionId, oldTransactionId + 1);
+            assertEquals(config.getTransactionId(), oldTransactionId + 1);
         }
 
         // This is the first query of a new burst. We will NOT ask for unicast response.
-        int oldTransactionId = config.transactionId;
+        int oldTransactionId = config.getTransactionId();
         config = config.getConfigForNextRun(ACTIVE_QUERY_MODE);
         assertFalse(config.expectUnicastResponse);
-        assertEquals(config.transactionId, oldTransactionId + 1);
+        assertEquals(config.getTransactionId(), oldTransactionId + 1);
     }
 
     @Test

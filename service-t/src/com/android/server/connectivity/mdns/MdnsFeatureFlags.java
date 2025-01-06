@@ -81,6 +81,12 @@ public class MdnsFeatureFlags {
     public static final String NSD_CACHED_SERVICES_REMOVAL = "nsd_cached_services_removal";
 
     /**
+     * A feature flag to control whether to use shorter (16 characters + .local) hostnames, instead
+     * of Android_[32 characters] hostnames.
+     */
+    public static final String NSD_USE_SHORT_HOSTNAMES = "nsd_use_short_hostnames";
+
+    /**
      * A feature flag to control the retention time for cached services.
      *
      * <p> Making the retention time configurable allows for testing and future adjustments.
@@ -121,6 +127,9 @@ public class MdnsFeatureFlags {
 
     // Retention Time for cached services
     public final long mCachedServicesRetentionTime;
+
+    // Flag to use shorter (16 characters + .local) hostnames
+    public final boolean mIsShortHostnamesEnabled;
 
     @Nullable
     private final FlagOverrideProvider mOverrideProvider;
@@ -217,6 +226,10 @@ public class MdnsFeatureFlags {
                 NSD_CACHED_SERVICES_RETENTION_TIME, (int) mCachedServicesRetentionTime);
     }
 
+    public boolean isShortHostnamesEnabled() {
+        return mIsShortHostnamesEnabled || isForceEnabledForTest(NSD_USE_SHORT_HOSTNAMES);
+    }
+
     /**
      * The constructor for {@link MdnsFeatureFlags}.
      */
@@ -231,6 +244,7 @@ public class MdnsFeatureFlags {
             boolean avoidAdvertisingEmptyTxtRecords,
             boolean isCachedServicesRemovalEnabled,
             long cachedServicesRetentionTime,
+            boolean isShortHostnamesEnabled,
             @Nullable FlagOverrideProvider overrideProvider) {
         mIsMdnsOffloadFeatureEnabled = isOffloadFeatureEnabled;
         mIncludeInetAddressRecordsInProbing = includeInetAddressRecordsInProbing;
@@ -243,6 +257,7 @@ public class MdnsFeatureFlags {
         mAvoidAdvertisingEmptyTxtRecords = avoidAdvertisingEmptyTxtRecords;
         mIsCachedServicesRemovalEnabled = isCachedServicesRemovalEnabled;
         mCachedServicesRetentionTime = cachedServicesRetentionTime;
+        mIsShortHostnamesEnabled = isShortHostnamesEnabled;
         mOverrideProvider = overrideProvider;
     }
 
@@ -266,6 +281,7 @@ public class MdnsFeatureFlags {
         private boolean mAvoidAdvertisingEmptyTxtRecords;
         private boolean mIsCachedServicesRemovalEnabled;
         private long mCachedServicesRetentionTime;
+        private boolean mIsShortHostnamesEnabled;
         private FlagOverrideProvider mOverrideProvider;
 
         /**
@@ -283,6 +299,7 @@ public class MdnsFeatureFlags {
             mAvoidAdvertisingEmptyTxtRecords = true; // Default enabled.
             mIsCachedServicesRemovalEnabled = false;
             mCachedServicesRetentionTime = DEFAULT_CACHED_SERVICES_RETENTION_TIME_MILLISECONDS;
+            mIsShortHostnamesEnabled = true; // Default enabled.
             mOverrideProvider = null;
         }
 
@@ -409,6 +426,16 @@ public class MdnsFeatureFlags {
         }
 
         /**
+         * Set whether the short hostnames feature is enabled.
+         *
+         * @see #NSD_USE_SHORT_HOSTNAMES
+         */
+        public Builder setIsShortHostnamesEnabled(boolean isShortHostnamesEnabled) {
+            mIsShortHostnamesEnabled = isShortHostnamesEnabled;
+            return this;
+        }
+
+        /**
          * Builds a {@link MdnsFeatureFlags} with the arguments supplied to this builder.
          */
         public MdnsFeatureFlags build() {
@@ -423,6 +450,7 @@ public class MdnsFeatureFlags {
                     mAvoidAdvertisingEmptyTxtRecords,
                     mIsCachedServicesRemovalEnabled,
                     mCachedServicesRetentionTime,
+                    mIsShortHostnamesEnabled,
                     mOverrideProvider);
         }
     }

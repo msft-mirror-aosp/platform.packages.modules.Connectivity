@@ -32,6 +32,7 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVIT
 import static android.net.NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
+import static android.net.NetworkCapabilities.RES_ID_UNSET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 
 import android.annotation.FlaggedApi;
@@ -193,6 +194,16 @@ public class NetworkRequest implements Parcelable {
      *       callbacks about the single, highest scoring current network
      *       (if any) that matches the specified NetworkCapabilities, or
      *
+     *     - RESERVATION requests behave identically to those of type REQUEST.
+     *       For example, unlike LISTEN, they cause networks to remain
+     *       connected, and they match exactly one network (the best one).
+     *       A RESERVATION generates a unique reservationId in its
+     *       NetworkCapabilities by copying the requestId which affects
+     *       matching. A NetworkProvider can register a "blanket" NetworkOffer
+     *       with reservationId = MATCH_ALL_RESERVATIONS to indicate that it
+     *       is capable of generating NetworkOffers in response to RESERVATION
+     *       requests.
+     *
      *     - TRACK_DEFAULT, which causes the framework to issue callbacks for
      *       the single, highest scoring current network (if any) that will
      *       be chosen for an app, but which cannot cause the framework to
@@ -229,6 +240,7 @@ public class NetworkRequest implements Parcelable {
         BACKGROUND_REQUEST,
         TRACK_SYSTEM_DEFAULT,
         LISTEN_FOR_BEST,
+        RESERVATION,
     };
 
     /**
@@ -245,8 +257,17 @@ public class NetworkRequest implements Parcelable {
         if (nc == null) {
             throw new NullPointerException();
         }
+        if (nc.getReservationId() != RES_ID_UNSET) {
+            throw new IllegalArgumentException("ReservationId must only be set by the system");
+        }
         requestId = rId;
         networkCapabilities = nc;
+        if (type == Type.RESERVATION) {
+            // Conceptually, the reservationId is not related to the requestId; however, the
+            // requestId fulfills the same uniqueness requirements that are needed for the
+            // reservationId, so it can be reused for this purpose.
+            networkCapabilities.setReservationId(rId);
+        }
         this.legacyType = legacyType;
         this.type = type;
     }
@@ -703,7 +724,7 @@ public class NetworkRequest implements Parcelable {
      * @hide
      */
     public boolean isRequest() {
-        return type == Type.REQUEST || type == Type.BACKGROUND_REQUEST;
+        return type == Type.REQUEST || type == Type.BACKGROUND_REQUEST || type == Type.RESERVATION;
     }
 
     /**

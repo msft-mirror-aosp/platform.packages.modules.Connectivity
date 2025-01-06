@@ -64,6 +64,7 @@ java_defaults {
         ":net-utils-framework-common-srcs",
         ":framework-connectivity-api-shared-srcs",
         ":framework-networksecurity-sources",
+        ":statslog-framework-connectivity-java-gen",
     ],
     aidl: {
         generate_get_transaction_name: true,
@@ -74,6 +75,7 @@ java_defaults {
             // the module builds against API (the parcelable declarations exist in framework.aidl)
             "frameworks/base/core/java", // For framework parcelables
             "frameworks/native/aidl/binder", // For PersistableBundle.aidl
+            "packages/modules/Connectivity/Tethering/common/TetheringLib/src",
         ],
     },
     stub_only_libs: [
@@ -104,6 +106,7 @@ java_defaults {
         "androidx.annotation_annotation",
         "app-compat-annotations",
         "framework-connectivity-t.stubs.module_lib",
+        "framework-statsd.stubs.module_lib",
         "unsupportedappusage",
     ],
     apex_available: [
@@ -141,6 +144,7 @@ java_library {
 java_library {
     name: "framework-connectivity-pre-jarjar",
     defaults: ["framework-module-defaults"],
+    installable: false,
     min_sdk_version: "30",
     static_libs: [
         "framework-connectivity-pre-jarjar-without-cronet",
@@ -156,6 +160,7 @@ java_library {
 java_defaults {
     name: "CronetJavaDefaults",
     srcs: [":httpclient_api_sources"],
+    static_libs: ["com.android.net.http.flags-aconfig-java"],
     libs: [
         "androidx.annotation_annotation",
     ],
@@ -187,6 +192,10 @@ java_sdk_library {
         // Tests using hidden APIs
         "//cts/tests/netlegacy22.api",
         "//cts/tests/tests/app.usage", // NetworkUsageStatsTest
+
+        // TODO: b/374174952 Remove it when VCN CTS is moved to Connectivity/
+        "//cts/tests/tests/vcn",
+
         "//external/sl4a:__subpackages__",
         "//frameworks/base/core/tests/bandwidthtests",
         "//frameworks/base/core/tests/benchmarks",
@@ -212,6 +221,7 @@ java_sdk_library {
     },
     aconfig_declarations: [
         "com.android.net.flags-aconfig",
+        "com.android.net.http.flags-aconfig",
         "com.android.networksecurity.flags-aconfig",
     ],
 }
@@ -326,6 +336,7 @@ droidstubs {
     aidl: {
         include_dirs: [
             "packages/modules/Connectivity/framework/aidl-export",
+            "packages/modules/Connectivity/Tethering/common/TetheringLib/src",
             "frameworks/native/aidl/binder", // For PersistableBundle.aidl
         ],
     },

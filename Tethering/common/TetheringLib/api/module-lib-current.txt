@@ -22,7 +22,7 @@ package android.net {
     method public boolean isTetheringSupported(@NonNull String);
     method public void requestLatestTetheringEntitlementResult(int, @NonNull android.os.ResultReceiver, boolean);
     method @Deprecated public int setUsbTethering(boolean);
-    method @RequiresPermission(anyOf={android.Manifest.permission.TETHER_PRIVILEGED, android.Manifest.permission.WRITE_SETTINGS}) public void startTethering(int, @NonNull java.util.concurrent.Executor, @NonNull android.net.TetheringManager.StartTetheringCallback);
+    method @RequiresPermission(android.Manifest.permission.TETHER_PRIVILEGED) public void startTethering(int, @NonNull java.util.concurrent.Executor, @NonNull android.net.TetheringManager.StartTetheringCallback);
     method @Deprecated public int tether(@NonNull String);
     method @Deprecated public int untether(@NonNull String);
   }
@@ -44,6 +44,16 @@ package android.net {
     method @Deprecated @NonNull public java.util.List<java.lang.String> getTetherableBluetoothRegexs();
     method @Deprecated @NonNull public java.util.List<java.lang.String> getTetherableUsbRegexs();
     method @Deprecated @NonNull public java.util.List<java.lang.String> getTetherableWifiRegexs();
+  }
+
+  public static final class TetheringManager.TetheringRequest implements android.os.Parcelable {
+    method @FlaggedApi("com.android.net.flags.tethering_with_soft_ap_config") @Nullable public String getInterfaceName();
+    method @FlaggedApi("com.android.net.flags.tethering_with_soft_ap_config") @Nullable public String getPackageName();
+    method @FlaggedApi("com.android.net.flags.tethering_with_soft_ap_config") public int getUid();
+  }
+
+  public static class TetheringManager.TetheringRequest.Builder {
+    method @FlaggedApi("com.android.net.flags.tethering_with_soft_ap_config") @NonNull @RequiresPermission(anyOf={android.Manifest.permission.NETWORK_SETTINGS, android.Manifest.permission.NETWORK_STACK, android.net.NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK}) public android.net.TetheringManager.TetheringRequest.Builder setInterfaceName(@Nullable String);
   }
 
 }

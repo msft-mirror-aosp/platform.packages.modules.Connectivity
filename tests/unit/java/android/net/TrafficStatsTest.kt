@@ -16,49 +16,98 @@
 
 package android.net
 
-import android.net.NetworkStats.UID_ALL
 import android.net.TrafficStats.UNSUPPORTED
 import android.net.netstats.StatsResult
+import android.net.netstats.TrafficStatsRateLimitCacheConfig
 import android.os.Build
-import android.os.Process.SYSTEM_UID
+import com.android.server.net.NetworkStatsService.TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRunner
+import com.android.testutils.com.android.testutils.SetFeatureFlagsRule
+import com.android.testutils.com.android.testutils.SetFeatureFlagsRule.FeatureFlag
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.mockito.ArgumentMatchers.anyInt
+import org.mockito.Mockito.clearInvocations
 import org.mockito.Mockito.doReturn
 import org.mockito.Mockito.mock
-import org.mockito.Mockito.never
+import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
+import java.util.HashMap
+import java.util.function.LongSupplier
+
+const val TEST_EXPIRY_DURATION_MS = 1000
+const val TEST_IFACE = "wlan0"
 
 @RunWith(DevSdkIgnoreRunner::class)
 @DevSdkIgnoreRule.IgnoreUpTo(Build.VERSION_CODES.S_V2)
 class TrafficStatsTest {
     private val binder = mock(INetworkStatsService::class.java)
     private val myUid = android.os.Process.myUid()
-    private val notMyUid = myUid + 1
-    private val mockSystemUidStatsResult = StatsResult(1L, 2L, 3L, 4L)
     private val mockMyUidStatsResult = StatsResult(5L, 6L, 7L, 8L)
-    private val mockNotMyUidStatsResult = StatsResult(9L, 10L, 11L, 12L)
+    private val mockIfaceStatsResult = StatsResult(7L, 3L, 10L, 21L)
+    private val mockTotalStatsResult = StatsResult(8L, 1L, 5L, 2L)
+    private val secondUidStatsResult = StatsResult(3L, 7L, 10L, 5L)
+    private val secondIfaceStatsResult = StatsResult(9L, 8L, 7L, 6L)
+    private val secondTotalStatsResult = StatsResult(4L, 3L, 2L, 1L)
+    private val emptyStatsResult = StatsResult(0L, 0L, 0L, 0L)
     private val unsupportedStatsResult =
             StatsResult(UNSUPPORTED.toLong(), UNSUPPORTED.toLong(),
                     UNSUPPORTED.toLong(), UNSUPPORTED.toLong())
 
+    private val cacheDisabledConfig = TrafficStatsRateLimitCacheConfig.Builder()
+            .setIsCacheEnabled(false)
+            .setExpiryDurationMs(0)
+            .setMaxEntries(0)
+            .build()
+    private val cacheEnabledConfig = TrafficStatsRateLimitCacheConfig.Builder()
+            .setIsCacheEnabled(true)
+            .setExpiryDurationMs(TEST_EXPIRY_DURATION_MS)
+            .setMaxEntries(100)
+            .build()
+    private val mTestTimeSupplier = TestTimeSupplier()
+
+    private val featureFlags = HashMap<String, Boolean>()
+
+    // This will set feature flags from @FeatureFlag annotations
+    // into the map before setUp() runs.
+    @get:Rule
+    val setFeatureFlagsRule = SetFeatureFlagsRule(
+            { name, enabled -> featureFlags.put(name, enabled == true) },
+            { name -> featureFlags.getOrDefault(name, false) }
+    )
+
+    class TestTimeSupplier : LongSupplier {
+        private var currentTimeMillis = 0L
+
+        override fun getAsLong() = currentTimeMillis
+
+        fun advanceTime(millis: Int) {
+            currentTimeMillis += millis
+        }
+    }
+
     @Before
     fun setUp() {
         TrafficStats.setServiceForTest(binder)
-        doReturn(mockSystemUidStatsResult).`when`(binder).getUidStats(SYSTEM_UID)
-        doReturn(mockMyUidStatsResult).`when`(binder).getUidStats(myUid)
-        doReturn(mockNotMyUidStatsResult).`when`(binder).getUidStats(notMyUid)
+        TrafficStats.setTimeSupplierForTest(mTestTimeSupplier)
+        mockStats(mockMyUidStatsResult, mockIfaceStatsResult, mockTotalStatsResult)
+        if (featureFlags.getOrDefault(TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG, false)) {
+            doReturn(cacheEnabledConfig).`when`(binder).getRateLimitCacheConfig()
+        } else {
+            doReturn(cacheDisabledConfig).`when`(binder).getRateLimitCacheConfig()
+        }
+        TrafficStats.reinitRateLimitCacheForTest()
     }
 
     @After
     fun tearDown() {
         TrafficStats.setServiceForTest(null)
-        TrafficStats.setMyUidForTest(UID_ALL)
+        TrafficStats.setTimeSupplierForTest(null)
+        TrafficStats.reinitRateLimitCacheForTest()
     }
 
     private fun assertUidStats(uid: Int, stats: StatsResult) {
@@ -68,25 +117,135 @@ class TrafficStatsTest {
         assertEquals(stats.txPackets, TrafficStats.getUidTxPackets(uid))
     }
 
-    // Verify a normal caller could get a quick UNSUPPORTED result in the TrafficStats
-    // without accessing the service if query stats other than itself.
-    @Test
-    fun testGetUidStats_appCaller() {
-        assertUidStats(SYSTEM_UID, unsupportedStatsResult)
-        assertUidStats(notMyUid, unsupportedStatsResult)
-        verify(binder, never()).getUidStats(anyInt())
-        assertUidStats(myUid, mockMyUidStatsResult)
+    private fun assertIfaceStats(iface: String, stats: StatsResult) {
+        assertEquals(stats.rxBytes, TrafficStats.getRxBytes(iface))
+        assertEquals(stats.rxPackets, TrafficStats.getRxPackets(iface))
+        assertEquals(stats.txBytes, TrafficStats.getTxBytes(iface))
+        assertEquals(stats.txPackets, TrafficStats.getTxPackets(iface))
     }
 
-    // Verify that callers with SYSTEM_UID can access network
-    // stats for other UIDs. While this behavior is not officially documented
-    // in the API, it exists for compatibility with existing callers that may
-    // rely on it.
+    private fun assertTotalStats(stats: StatsResult) {
+        assertEquals(stats.rxBytes, TrafficStats.getTotalRxBytes())
+        assertEquals(stats.rxPackets, TrafficStats.getTotalRxPackets())
+        assertEquals(stats.txBytes, TrafficStats.getTotalTxBytes())
+        assertEquals(stats.txPackets, TrafficStats.getTotalTxPackets())
+    }
+
+    private fun mockStats(uidStats: StatsResult?, ifaceStats: StatsResult?,
+                          totalStats: StatsResult?) {
+        doReturn(uidStats).`when`(binder).getUidStats(myUid)
+        doReturn(ifaceStats).`when`(binder).getIfaceStats(TEST_IFACE)
+        doReturn(totalStats).`when`(binder).getTotalStats()
+    }
+
+    private fun assertStats(uidStats: StatsResult, ifaceStats: StatsResult,
+                            totalStats: StatsResult) {
+        assertUidStats(myUid, uidStats)
+        assertIfaceStats(TEST_IFACE, ifaceStats)
+        assertTotalStats(totalStats)
+    }
+
+    private fun assertStatsFetchInvocations(wantedInvocations: Int) {
+        verify(binder, times(wantedInvocations)).getUidStats(myUid)
+        verify(binder, times(wantedInvocations)).getIfaceStats(TEST_IFACE)
+        verify(binder, times(wantedInvocations)).getTotalStats()
+    }
+
+    @FeatureFlag(name = TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG)
     @Test
-    fun testGetUidStats_systemCaller() {
-        TrafficStats.setMyUidForTest(SYSTEM_UID)
-        assertUidStats(SYSTEM_UID, mockSystemUidStatsResult)
-        assertUidStats(myUid, mockMyUidStatsResult)
-        assertUidStats(notMyUid, mockNotMyUidStatsResult)
+    fun testRateLimitCacheExpiry_cacheEnabled() {
+        // Initial fetch, verify binder calls.
+        assertStats(mockMyUidStatsResult, mockIfaceStatsResult, mockTotalStatsResult)
+        assertStatsFetchInvocations(1)
+
+        // Advance time within expiry, verify cached values used.
+        clearInvocations(binder)
+        mockStats(secondUidStatsResult, secondIfaceStatsResult, secondTotalStatsResult)
+        mTestTimeSupplier.advanceTime(1)
+        assertStats(mockMyUidStatsResult, mockIfaceStatsResult, mockTotalStatsResult)
+        assertStatsFetchInvocations(0)
+
+        // Advance time to expire cache, verify new values fetched.
+        clearInvocations(binder)
+        mTestTimeSupplier.advanceTime(TEST_EXPIRY_DURATION_MS)
+        assertStats(secondUidStatsResult, secondIfaceStatsResult, secondTotalStatsResult)
+        assertStatsFetchInvocations(1)
+    }
+
+    @FeatureFlag(name = TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG, enabled = false)
+    @Test
+    fun testRateLimitCacheExpiry_cacheDisabled() {
+        // Initial fetch, verify binder calls.
+        assertStats(mockMyUidStatsResult, mockIfaceStatsResult, mockTotalStatsResult)
+        assertStatsFetchInvocations(4)
+
+        // Advance time within expiry, verify new values fetched.
+        clearInvocations(binder)
+        mockStats(secondUidStatsResult, secondIfaceStatsResult, secondTotalStatsResult)
+        mTestTimeSupplier.advanceTime(1)
+        assertStats(secondUidStatsResult, secondIfaceStatsResult, secondTotalStatsResult)
+        assertStatsFetchInvocations(4)
+    }
+
+    @FeatureFlag(name = TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG)
+    @Test
+    fun testInvalidStatsNotCached_cacheEnabled() {
+        doTestInvalidStatsNotCached()
+    }
+
+    @FeatureFlag(name = TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG, enabled = false)
+    @Test
+    fun testInvalidStatsNotCached_cacheDisabled() {
+        doTestInvalidStatsNotCached()
+    }
+
+    private fun doTestInvalidStatsNotCached() {
+        // Mock null stats, this usually happens when the query is not valid,
+        // e.g. query uid stats of other application.
+        mockStats(null, null, null)
+        assertStats(unsupportedStatsResult, unsupportedStatsResult, unsupportedStatsResult)
+        assertStatsFetchInvocations(4)
+
+        // Verify null stats is not cached, and mock empty stats. This usually
+        // happens when queries with non-existent interface names.
+        clearInvocations(binder)
+        mockStats(emptyStatsResult, emptyStatsResult, emptyStatsResult)
+        assertStats(emptyStatsResult, emptyStatsResult, emptyStatsResult)
+        assertStatsFetchInvocations(4)
+
+        // Verify empty result is also not cached.
+        clearInvocations(binder)
+        assertStats(emptyStatsResult, emptyStatsResult, emptyStatsResult)
+        assertStatsFetchInvocations(4)
+    }
+
+    @FeatureFlag(name = TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG)
+    @Test
+    fun testClearRateLimitCaches_cacheEnabled() {
+        doTestClearRateLimitCaches(true)
+    }
+
+    @FeatureFlag(name = TRAFFICSTATS_CLIENT_RATE_LIMIT_CACHE_ENABLED_FLAG, enabled = false)
+    @Test
+    fun testClearRateLimitCaches_cacheDisabled() {
+        doTestClearRateLimitCaches(false)
+    }
+
+    private fun doTestClearRateLimitCaches(cacheEnabled: Boolean) {
+        // Initial fetch, verify binder calls.
+        assertStats(mockMyUidStatsResult, mockIfaceStatsResult, mockTotalStatsResult)
+        assertStatsFetchInvocations(if (cacheEnabled) 1 else 4)
+
+        // Verify cached values are used.
+        clearInvocations(binder)
+        assertStats(mockMyUidStatsResult, mockIfaceStatsResult, mockTotalStatsResult)
+        assertStatsFetchInvocations(if (cacheEnabled) 0 else 4)
+
+        // Clear caches, verify fetching from the service.
+        clearInvocations(binder)
+        TrafficStats.clearRateLimitCaches()
+        mockStats(secondUidStatsResult, secondIfaceStatsResult, secondTotalStatsResult)
+        assertStats(secondUidStatsResult, secondIfaceStatsResult, secondTotalStatsResult)
+        assertStatsFetchInvocations(if (cacheEnabled) 1 else 4)
     }
 }

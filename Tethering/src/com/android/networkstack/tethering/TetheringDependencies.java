@@ -25,6 +25,7 @@ import android.net.ConnectivityManager;
 import android.net.INetd;
 import android.net.connectivity.ConnectivityInternalApiUtil;
 import android.net.ip.IpServer;
+import android.os.Binder;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -36,7 +37,7 @@ import androidx.annotation.NonNull;
 import androidx.annotation.RequiresApi;
 
 import com.android.modules.utils.build.SdkLevel;
-import com.android.net.module.util.PrivateAddressCoordinator;
+import com.android.net.flags.Flags;
 import com.android.net.module.util.RoutingCoordinatorManager;
 import com.android.net.module.util.RoutingCoordinatorService;
 import com.android.net.module.util.SharedLog;
@@ -200,5 +201,20 @@ public abstract class TetheringDependencies {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     public WearableConnectionManager makeWearableConnectionManager(Context ctx) {
         return new WearableConnectionManager(ctx);
+    }
+
+    /**
+     * Wrapper to get the binder calling uid for unit testing.
+     */
+    public int getBinderCallingUid() {
+        return Binder.getCallingUid();
+    }
+
+    /**
+     * Wrapper for tethering_with_soft_ap_config feature flag.
+     */
+    public boolean isTetheringWithSoftApConfigEnabled() {
+        return Build.VERSION.SDK_INT > Build.VERSION_CODES.VANILLA_ICE_CREAM
+                && Flags.tetheringWithSoftApConfig();
     }
 }

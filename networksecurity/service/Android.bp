@@ -24,12 +24,24 @@ java_library {
 
     srcs: [
         "src/**/*.java",
+        ":statslog-certificate-transparency-java-gen",
     ],
 
     libs: [
         "framework-configinfrastructure.stubs.module_lib",
         "framework-connectivity-pre-jarjar",
         "service-connectivity-pre-jarjar",
+        "framework-statsd.stubs.module_lib",
+    ],
+
+    static_libs: [
+        "auto_value_annotations",
+        "android.security.flags-aconfig-java-export",
+    ],
+
+    plugins: [
+        "auto_value_plugin",
+        "auto_annotation_plugin",
     ],
 
     // This is included in service-connectivity which is 30+
@@ -38,4 +50,11 @@ java_library {
     min_sdk_version: "30",
     sdk_version: "system_server_current",
     apex_available: ["com.android.tethering"],
+}
+
+genrule {
+    name: "statslog-certificate-transparency-java-gen",
+    tools: ["stats-log-api-gen"],
+    cmd: "$(location stats-log-api-gen) --java $(out) --module certificate_transparency --javaPackage com.android.server.net.ct --javaClass CertificateTransparencyStatsLog",
+    out: ["com/android/server/net/ct/CertificateTransparencyStatsLog.java"],
 }

@@ -48,6 +48,7 @@ import static android.net.ConnectivityManager.CALLBACK_LOCAL_NETWORK_INFO_CHANGE
 import static android.net.ConnectivityManager.CALLBACK_LOSING;
 import static android.net.ConnectivityManager.CALLBACK_LOST;
 import static android.net.ConnectivityManager.CALLBACK_PRECHECK;
+import static android.net.ConnectivityManager.CALLBACK_RESERVED;
 import static android.net.ConnectivityManager.CALLBACK_RESUMED;
 import static android.net.ConnectivityManager.CALLBACK_SUSPENDED;
 import static android.net.ConnectivityManager.CALLBACK_UNAVAIL;
@@ -108,6 +109,7 @@ import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_5;
 import static android.net.NetworkCapabilities.REDACT_FOR_ACCESS_FINE_LOCATION;
 import static android.net.NetworkCapabilities.REDACT_FOR_LOCAL_MAC_ADDRESS;
 import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
+import static android.net.NetworkCapabilities.RES_ID_UNSET;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
@@ -121,7 +123,9 @@ import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_SELF_CER
 import static android.net.connectivity.ConnectivityCompatChanges.NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION;
 import static android.os.Process.INVALID_UID;
 import static android.os.Process.VPN_UID;
-import static android.provider.DeviceConfig.NAMESPACE_TETHERING;
+import static android.system.OsConstants.ENOENT;
+import static android.system.OsConstants.ENOTCONN;
+import static android.system.OsConstants.EOPNOTSUPP;
 import static android.system.OsConstants.ETH_P_ALL;
 import static android.system.OsConstants.IPPROTO_TCP;
 import static android.system.OsConstants.IPPROTO_UDP;
@@ -149,6 +153,7 @@ import static com.android.server.ConnectivityStatsLog.CONNECTIVITY_STATE_SAMPLE;
 import static com.android.server.connectivity.ConnectivityFlags.CELLULAR_DATA_INACTIVITY_TIMEOUT;
 import static com.android.server.connectivity.ConnectivityFlags.DELAY_DESTROY_SOCKETS;
 import static com.android.server.connectivity.ConnectivityFlags.INGRESS_TO_VPN_ADDRESS_FILTERING;
+import static com.android.server.connectivity.ConnectivityFlags.NAMESPACE_TETHERING_BOOT;
 import static com.android.server.connectivity.ConnectivityFlags.QUEUE_CALLBACKS_FOR_FROZEN_APPS;
 import static com.android.server.connectivity.ConnectivityFlags.REQUEST_RESTRICTED_WIFI;
 import static com.android.server.connectivity.ConnectivityFlags.WIFI_DATA_INACTIVITY_TIMEOUT;
@@ -195,6 +200,7 @@ import android.net.ICaptivePortal;
 import android.net.IConnectivityDiagnosticsCallback;
 import android.net.IConnectivityManager;
 import android.net.IDnsResolver;
+import android.net.IIntResultListener;
 import android.net.INetd;
 import android.net.INetworkActivityListener;
 import android.net.INetworkAgent;
@@ -1615,13 +1621,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         /** Returns the data inactivity timeout to be used for cellular networks */
         public int getDefaultCellularDataInactivityTimeout() {
-            return DeviceConfigUtils.getDeviceConfigPropertyInt(NAMESPACE_TETHERING,
+            return DeviceConfigUtils.getDeviceConfigPropertyInt(NAMESPACE_TETHERING_BOOT,
                     CELLULAR_DATA_INACTIVITY_TIMEOUT, 10);
         }
 
         /** Returns the data inactivity timeout to be used for WiFi networks */
         public int getDefaultWifiDataInactivityTimeout() {
-            return DeviceConfigUtils.getDeviceConfigPropertyInt(NAMESPACE_TETHERING,
+            return DeviceConfigUtils.getDeviceConfigPropertyInt(NAMESPACE_TETHERING_BOOT,
                     WIFI_DATA_INACTIVITY_TIMEOUT, 15);
         }
 
@@ -5551,7 +5557,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         // Delayed teardown.
-        if (nai.isCreated()) {
+        if (nai.isCreated() && !nai.isDestroyed()) {
             try {
                 mNetd.networkSetPermissionForNetwork(nai.network.netId, INetd.PERMISSION_SYSTEM);
             } catch (RemoteException e) {
@@ -6340,8 +6346,20 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private class CaptivePortalImpl extends ICaptivePortal.Stub {
+    public class CaptivePortalImpl extends ICaptivePortal.Stub implements IBinder.DeathRecipient {
         private final Network mNetwork;
+        // Binder object to track the lifetime of the setDelegateUid caller for cleanup purposes.
+        //
+        // Note that in theory it can happen that there are multiple callers for a given
+        // object. For example, the app that receives the CaptivePortal object from the Intent
+        // fired by startCaptivePortalAppInternal could send the object to another process, or
+        // clone it. Only the first of these objects that calls setDelegateUid will properly
+        // register a death recipient. Calls from the other objects will work, but only the
+        // first object's death will cause the death recipient to fire.
+        // TODO: track all callers by callerBinder instead of CaptivePortalImpl, store callerBinder
+        // in a Set. When the death recipient fires, we can remove the callingBinder from the set,
+        // and when the set is empty, we can clear the delegated UID.
+        private IBinder mDelegateUidCaller;
 
         private CaptivePortalImpl(Network network) {
             mNetwork = network;
@@ -6381,6 +6399,55 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
         }
 
+        private int handleSetDelegateUid(int uid, @NonNull final IBinder callerBinder) {
+            if (mDelegateUidCaller == null) {
+                mDelegateUidCaller = callerBinder;
+                try {
+                    // While technically unnecessary, it is safe to register a DeathRecipient for
+                    // a cleanup operation (where uid = INVALID_UID).
+                    mDelegateUidCaller.linkToDeath(this, 0);
+                } catch (RemoteException e) {
+                    // remote has died, return early.
+                    return ENOTCONN;
+                }
+            }
+
+            final NetworkAgentInfo nai = getNetworkAgentInfoForNetwork(mNetwork);
+            if (nai == null) return ENOENT; // network does not exist anymore.
+            if (nai.isDestroyed()) return ENOENT; // network has already been destroyed.
+
+            // TODO: consider allowing the uid to bypass VPN on all networks before V.
+            if (!mDeps.isAtLeastV()) return EOPNOTSUPP;
+
+            // Check whether there has already been a delegate UID configured, if so, perform
+            // cleanup and disallow bypassing VPN for that UID if no other caller is delegating
+            // this UID.
+            // TODO: consider using exceptions instead of errnos.
+            final int errno = nai.removeCaptivePortalDelegateUid(this);
+            if (errno != 0) return errno;
+
+            // If uid == INVALID_UID, we are done.
+            if (uid == INVALID_UID) return 0;
+            return nai.setCaptivePortalDelegateUid(this, uid);
+        }
+
+        @Override
+        public void setDelegateUid(int uid, @NonNull final IBinder callerBinder,
+                @NonNull final IIntResultListener listener) {
+            Objects.requireNonNull(callerBinder);
+            Objects.requireNonNull(listener);
+            enforceAnyPermissionOf(mContext, NetworkStack.PERMISSION_MAINLINE_NETWORK_STACK);
+
+            mHandler.post(() -> {
+                final int errno = handleSetDelegateUid(uid, callerBinder);
+                try {
+                    listener.onResult(errno);
+                } catch (RemoteException e) {
+                    // remote has died, nothing to do.
+                }
+            });
+        }
+
         @Nullable
         private NetworkMonitorManager getNetworkMonitorManager(final Network network) {
             // getNetworkAgentInfoForNetwork is thread-safe
@@ -6389,6 +6456,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
             // nai.networkMonitor() is thread-safe
             return nai.networkMonitor();
+        }
+
+        @Override
+        public void binderDied() {
+            // Cleanup invalid UID and restore the VPN bypass rule. Because mDelegateUidCaller is
+            // never reset, it cannot be null in this context.
+            mHandler.post(() -> handleSetDelegateUid(INVALID_UID, mDelegateUidCaller));
         }
     }
 
@@ -7729,6 +7803,28 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
+         * NetworkCapabilities that were created as part of a NetworkOffer in response to a
+         * RESERVATION request. mReservedCapabilities is null if no current offer matches the
+         * RESERVATION request or if the request is not a RESERVATION. Matching is based on
+         * reservationId.
+         */
+        @Nullable
+        private NetworkCapabilities mReservedCapabilities;
+        @Nullable
+        NetworkCapabilities getReservedCapabilities() {
+            return mReservedCapabilities;
+        }
+
+        void setReservedCapabilities(@NonNull NetworkCapabilities caps) {
+            // This function can only be called once. NetworkCapabilities are never reset as the
+            // reservation is released when the offer disappears.
+            if (mReservedCapabilities != null) {
+                logwtf("ReservedCapabilities can only be set once");
+            }
+            mReservedCapabilities = caps;
+        }
+
+        /**
          * Get the list of UIDs this nri applies to.
          */
         @NonNull
@@ -8088,6 +8184,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return PREFERENCE_ORDER_NONE;
         }
 
+        public int getReservationId() {
+            // RESERVATIONs cannot be used in multilayer requests.
+            if (isMultilayerRequest()) return RES_ID_UNSET;
+            final NetworkRequest req = mRequests.get(0);
+            // Non-reservation types return RES_ID_UNSET.
+            return req.networkCapabilities.getReservationId();
+        }
+
         @Override
         public void binderDied() {
             // As an immutable collection, mRequests cannot change by the time the
@@ -8139,6 +8243,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         flags = maybeAppendDeclaredMethod(flags, CALLBACK_BLK_CHANGED, "BLK", sb);
         flags = maybeAppendDeclaredMethod(flags, CALLBACK_LOCAL_NETWORK_INFO_CHANGED,
                 "LOCALINF", sb);
+        flags = maybeAppendDeclaredMethod(flags, CALLBACK_RESERVED, "RES", sb);
         if (flags != 0) {
             sb.append("|0x").append(Integer.toHexString(flags));
         }
@@ -8343,6 +8448,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 enforceNetworkStackOrSettingsPermission();
                 // Fall-through since other checks are the same with normal requests.
             case REQUEST:
+            case RESERVATION:
                 networkCapabilities = new NetworkCapabilities(networkCapabilities);
                 enforceNetworkRequestPermissions(networkCapabilities, callingPackageName,
                         callingAttributionTag, callingUid);
@@ -9306,6 +9412,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return false;
     }
 
+    @Nullable
+    private NetworkRequestInfo maybeGetNriForReservedOffer(NetworkOfferInfo noi) {
+        final int reservationId = noi.offer.caps.getReservationId();
+        if (reservationId == RES_ID_UNSET) return null; // not a reserved offer.
+
+        for (NetworkRequestInfo nri : mNetworkRequests.values()) {
+            if (reservationId == nri.getReservationId()) return nri;
+        }
+        // The reservation was withdrawn or the reserving process died.
+        return null;
+    }
+
     /**
      * Register or update a network offer.
      * @param newOffer The new offer. If the callback member is the same as an existing
@@ -9323,6 +9441,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
         final NetworkOfferInfo existingOffer = findNetworkOfferInfoByCallback(newOffer.callback);
         if (null != existingOffer) {
+            // TODO: to support updating the score for reserved offers by calling
+            // ConnectivityManager#offerNetwork with the same callback object or via
+            // updateOfferScore, prevent handleUnregisterNetworkOffer() from sending an
+            // onUnavailable() callback here.
             handleUnregisterNetworkOffer(existingOffer);
             newOffer.migrateFrom(existingOffer.offer);
             if (DBG) {
@@ -9335,6 +9457,25 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
         }
         final NetworkOfferInfo noi = new NetworkOfferInfo(newOffer);
+        final NetworkRequestInfo reservationNri = maybeGetNriForReservedOffer(noi);
+        if (reservationNri != null) {
+            // A NetworkRequest is only allowed to trigger a single reserved offer (and onReserved()
+            // callback). All subsequent offers are ignored. This either indicates a bug in the
+            // provider (e.g., responding twice to the same reservation, or updating the
+            // capabilities of a reserved offer), or multiple providers responding to the same offer
+            // (which could happen, but is not useful to the requesting app).
+            // TODO: add proper support for offer migration; i.e. allow the score of a reservation
+            // offer to be updated.
+            if (reservationNri.getReservedCapabilities() != null) {
+                loge("A reservation can only trigger a single offer; new offer is ignored.");
+                return;
+            }
+            // Always update the reserved offer before calling callCallbackForRequest.
+            reservationNri.setReservedCapabilities(noi.offer.caps);
+            callCallbackForRequest(
+                    reservationNri, null /* networkAgent */, CALLBACK_RESERVED, 0 /* arg1 */);
+        }
+
         try {
             noi.offer.callback.asBinder().linkToDeath(noi, 0 /* flags */);
         } catch (RemoteException e) {
@@ -9355,6 +9496,19 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // function may be called twice in a row, but the array will no longer contain
         // the offer.
         if (!mNetworkOffers.remove(noi)) return;
+
+        // If the offer was brought up as a result of a reservation, inform the RESERVATION request
+        // that it has disappeared. There is no need to reset nri.mReservedCapabilities to null, as
+        // CALLBACK_UNAVAIL will cause the request to be torn down. In addition, leaving
+        // nri.mReservedOffer set prevents an additional onReserved() callback in
+        // handleRegisterNetworkOffer() in the case of a migration (which would be ignored as it
+        // follows an onUnavailable).
+        final NetworkRequestInfo nri = maybeGetNriForReservedOffer(noi);
+        if (nri != null) {
+            handleRemoveNetworkRequest(nri);
+            callCallbackForRequest(nri, null /* networkAgent */, CALLBACK_UNAVAIL, 0 /* arg1 */);
+        }
+
         noi.offer.callback.asBinder().unlinkToDeath(noi, 0 /* flags */);
     }
 
@@ -10573,9 +10727,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return bundle;
     }
 
-    // networkAgent is only allowed to be null if notificationType is
-    // CALLBACK_UNAVAIL. This is because UNAVAIL is about no network being
-    // available, while all other cases are about some particular network.
+    // networkAgent is only allowed to be null if notificationType is CALLBACK_UNAVAIL or
+    // CALLBACK_RESERVED. This is because, per definition, no network is available for UNAVAIL, and
+    // RESERVED callbacks happen when a NetworkOffer is created in response to a reservation.
     private void callCallbackForRequest(@NonNull final NetworkRequestInfo nri,
             @Nullable final NetworkAgentInfo networkAgent, final int notificationType,
             final int arg1) {
@@ -10587,6 +10741,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
         // Even if a callback ends up not being sent, it may affect other callbacks in the queue, so
         // queue callbacks before checking the declared methods flags.
+        // UNAVAIL and RESERVED callbacks are safe not to be queued, because RESERVED must always be
+        // the first callback. In addition, RESERVED cannot be sent more than once and is only
+        // cancelled by UNVAIL.
+        // TODO: evaluate whether it makes sense to queue RESERVED callbacks.
         if (networkAgent != null && nri.maybeQueueCallback(networkAgent, notificationType)) {
             return;
         }
@@ -10594,14 +10752,24 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // No need to send the notification as the recipient method is not overridden
             return;
         }
-        final Network bundleNetwork = notificationType == CALLBACK_UNAVAIL
-                ? null
-                : networkAgent.network;
+        // networkAgent is only null for UNAVAIL and RESERVED.
+        final Network bundleNetwork = (networkAgent != null) ? networkAgent.network : null;
         final Bundle bundle = makeCommonBundleForCallback(nri, bundleNetwork);
         final boolean includeLocationSensitiveInfo =
                 (nri.mCallbackFlags & NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) != 0;
         final NetworkRequest nrForCallback = nri.getNetworkRequestForCallback();
         switch (notificationType) {
+            case CALLBACK_RESERVED: {
+                final NetworkCapabilities nc =
+                        createWithLocationInfoSanitizedIfNecessaryWhenParceled(
+                                networkCapabilitiesRestrictedForCallerPermissions(
+                                        nri.getReservedCapabilities(), nri.mPid, nri.mUid),
+                                includeLocationSensitiveInfo, nri.mPid, nri.mUid,
+                                nrForCallback.getRequestorPackageName(),
+                                nri.mCallingAttributionTag);
+                putParcelable(bundle, nc);
+                break;
+            }
             case CALLBACK_AVAILABLE: {
                 final NetworkCapabilities nc =
                         createWithLocationInfoSanitizedIfNecessaryWhenParceled(

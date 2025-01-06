@@ -16,6 +16,7 @@
 
 package android.net.cts;
 
+import static android.net.ConnectivityManager.TYPE_NONE;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_DUN;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_FOTA;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET;
@@ -41,6 +42,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeTrue;
 
@@ -130,7 +132,7 @@ public class NetworkRequestTest {
         verifyNoCapabilities(builder.build());
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     public void testTemporarilyNotMeteredCapability() {
         assertTrue(new NetworkRequest.Builder()
                 .addCapability(NET_CAPABILITY_TEMPORARILY_NOT_METERED).build()
@@ -157,7 +159,6 @@ public class NetworkRequestTest {
     }
 
     @Test
-    @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testSpecifier() {
         assertNull(new NetworkRequest.Builder().build().getNetworkSpecifier());
         final WifiNetworkSpecifier specifier = new WifiNetworkSpecifier.Builder()
@@ -192,7 +193,6 @@ public class NetworkRequestTest {
     }
 
     @Test
-    @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testRequestorPackageName() {
         assertNull(new NetworkRequest.Builder().build().getRequestorPackageName());
         final String pkgName = "android.net.test";
@@ -216,7 +216,6 @@ public class NetworkRequestTest {
     }
 
     @Test
-    @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testCanBeSatisfiedBy() {
         final LocalNetworkSpecifier specifier1 = new LocalNetworkSpecifier(1234 /* id */);
         final LocalNetworkSpecifier specifier2 = new LocalNetworkSpecifier(5678 /* id */);
@@ -284,7 +283,6 @@ public class NetworkRequestTest {
     }
 
     @Test
-    @IgnoreUpTo(Build.VERSION_CODES.Q)
     public void testInvariantInCanBeSatisfiedBy() {
         // Test invariant that result of NetworkRequest.canBeSatisfiedBy() should be the same with
         // NetworkCapabilities.satisfiedByNetworkCapabilities().
@@ -388,7 +386,7 @@ public class NetworkRequestTest {
                 otherUidsRequest.canBeSatisfiedBy(ncWithOtherUid));
     }
 
-    @Test @IgnoreUpTo(Build.VERSION_CODES.Q)
+    @Test
     public void testRequestorUid() {
         final NetworkCapabilities nc = new NetworkCapabilities();
         // Verify default value is INVALID_UID
@@ -557,5 +555,44 @@ public class NetworkRequestTest {
                 .setSsidPattern(new PatternMatcher(TEST_SSID, PatternMatcher.PATTERN_LITERAL))
                 .setBssidPattern(ARBITRARY_ADDRESS, ARBITRARY_ADDRESS)
                 .build();
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    public void testNetworkReservation() {
+        final NetworkCapabilities nc = new NetworkCapabilities();
+        final NetworkCapabilities blanketOffer = new NetworkCapabilities(nc);
+        blanketOffer.setReservationId(NetworkCapabilities.RES_ID_MATCH_ALL_RESERVATIONS);
+        final NetworkCapabilities specificOffer = new NetworkCapabilities(nc);
+        specificOffer.setReservationId(42);
+        final NetworkCapabilities otherSpecificOffer = new NetworkCapabilities(nc);
+        otherSpecificOffer.setReservationId(43);
+        final NetworkCapabilities regularOffer = new NetworkCapabilities(nc);
+
+        final NetworkRequest reservationNR = new NetworkRequest(new NetworkCapabilities(nc),
+                TYPE_NONE, 42 /* rId */, NetworkRequest.Type.RESERVATION);
+        final NetworkRequest requestNR = new NetworkRequest(new NetworkCapabilities(nc),
+                TYPE_NONE, 42 /* rId */, NetworkRequest.Type.REQUEST);
+
+        assertTrue(reservationNR.canBeSatisfiedBy(blanketOffer));
+        assertTrue(reservationNR.canBeSatisfiedBy(specificOffer));
+        assertFalse(reservationNR.canBeSatisfiedBy(otherSpecificOffer));
+        assertFalse(reservationNR.canBeSatisfiedBy(regularOffer));
+
+        assertFalse(requestNR.canBeSatisfiedBy(blanketOffer));
+        assertTrue(requestNR.canBeSatisfiedBy(specificOffer));
+        assertTrue(requestNR.canBeSatisfiedBy(otherSpecificOffer));
+        assertTrue(requestNR.canBeSatisfiedBy(regularOffer));
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.R)
+    public void testNetworkRequest_throwsWhenPassingCapsWithReservationId() {
+        final NetworkCapabilities capsWithResId = new NetworkCapabilities();
+        capsWithResId.setReservationId(42);
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            new NetworkRequest(capsWithResId, TYPE_NONE, 42 /* rId */, NetworkRequest.Type.REQUEST);
+        });
     }
 }
