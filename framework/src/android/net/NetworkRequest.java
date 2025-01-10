@@ -32,6 +32,7 @@ import static android.net.NetworkCapabilities.NET_CAPABILITY_PARTIAL_CONNECTIVIT
 import static android.net.NetworkCapabilities.NET_CAPABILITY_TEMPORARILY_NOT_METERED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_TRUSTED;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
+import static android.net.NetworkCapabilities.RES_ID_UNSET;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 
 import android.annotation.FlaggedApi;
@@ -256,6 +257,9 @@ public class NetworkRequest implements Parcelable {
         if (nc == null) {
             throw new NullPointerException();
         }
+        if (nc.getReservationId() != RES_ID_UNSET) {
+            throw new IllegalArgumentException("ReservationId must only be set by the system");
+        }
         requestId = rId;
         networkCapabilities = nc;
         if (type == Type.RESERVATION) {
@@ -276,6 +280,13 @@ public class NetworkRequest implements Parcelable {
         requestId = that.requestId;
         this.legacyType = that.legacyType;
         this.type = that.type;
+    }
+
+    private NetworkRequest(Parcel in) {
+        networkCapabilities = NetworkCapabilities.CREATOR.createFromParcel(in);
+        legacyType = in.readInt();
+        requestId = in.readInt();
+        type = Type.valueOf(in.readString());  // IllegalArgumentException if invalid.
     }
 
     /**
@@ -674,12 +685,7 @@ public class NetworkRequest implements Parcelable {
     public static final @android.annotation.NonNull Creator<NetworkRequest> CREATOR =
         new Creator<NetworkRequest>() {
             public NetworkRequest createFromParcel(Parcel in) {
-                NetworkCapabilities nc = NetworkCapabilities.CREATOR.createFromParcel(in);
-                int legacyType = in.readInt();
-                int requestId = in.readInt();
-                Type type = Type.valueOf(in.readString());  // IllegalArgumentException if invalid.
-                NetworkRequest result = new NetworkRequest(nc, legacyType, requestId, type);
-                return result;
+                return new NetworkRequest(in);
             }
             public NetworkRequest[] newArray(int size) {
                 return new NetworkRequest[size];

@@ -48,6 +48,7 @@ import static android.net.ConnectivityManager.CALLBACK_LOCAL_NETWORK_INFO_CHANGE
 import static android.net.ConnectivityManager.CALLBACK_LOSING;
 import static android.net.ConnectivityManager.CALLBACK_LOST;
 import static android.net.ConnectivityManager.CALLBACK_PRECHECK;
+import static android.net.ConnectivityManager.CALLBACK_RESERVED;
 import static android.net.ConnectivityManager.CALLBACK_RESUMED;
 import static android.net.ConnectivityManager.CALLBACK_SUSPENDED;
 import static android.net.ConnectivityManager.CALLBACK_UNAVAIL;
@@ -108,6 +109,8 @@ import static android.net.NetworkCapabilities.NET_ENTERPRISE_ID_5;
 import static android.net.NetworkCapabilities.REDACT_FOR_ACCESS_FINE_LOCATION;
 import static android.net.NetworkCapabilities.REDACT_FOR_LOCAL_MAC_ADDRESS;
 import static android.net.NetworkCapabilities.REDACT_FOR_NETWORK_SETTINGS;
+import static android.net.NetworkCapabilities.RES_ID_UNSET;
+import static android.net.NetworkCapabilities.RES_ID_MATCH_ALL_RESERVATIONS;
 import static android.net.NetworkCapabilities.TRANSPORT_CELLULAR;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
@@ -6763,7 +6766,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                     final NetworkOfferInfo offer =
                             findNetworkOfferInfoByCallback((INetworkOfferCallback) msg.obj);
                     if (null != offer) {
-                        handleUnregisterNetworkOffer(offer);
+                        handleUnregisterNetworkOffer(offer, true /* releaseReservations */);
                     }
                     break;
                 }
@@ -7680,16 +7683,22 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
     }
 
-    private void ensureAllNetworkRequestsHaveType(List<NetworkRequest> requests) {
+    private void ensureAllNetworkRequestsHaveSupportedType(List<NetworkRequest> requests) {
+        final boolean isMultilayerRequest = requests.size() > 1;
         for (int i = 0; i < requests.size(); i++) {
-            ensureNetworkRequestHasType(requests.get(i));
+            ensureNetworkRequestHasSupportedType(requests.get(i), isMultilayerRequest);
         }
     }
 
-    private void ensureNetworkRequestHasType(NetworkRequest request) {
+    private void ensureNetworkRequestHasSupportedType(NetworkRequest request,
+            boolean isMultilayerRequest) {
         if (request.type == NetworkRequest.Type.NONE) {
             throw new IllegalArgumentException(
                     "All NetworkRequests in ConnectivityService must have a type");
+        }
+        if (isMultilayerRequest && request.type == NetworkRequest.Type.RESERVATION) {
+            throw new IllegalArgumentException(
+                    "Reservation requests are not supported in multilayer request");
         }
     }
 
@@ -7801,6 +7810,28 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         /**
+         * NetworkCapabilities that were created as part of a NetworkOffer in response to a
+         * RESERVATION request. mReservedCapabilities is null if no current offer matches the
+         * RESERVATION request or if the request is not a RESERVATION. Matching is based on
+         * reservationId.
+         */
+        @Nullable
+        private NetworkCapabilities mReservedCapabilities;
+        @Nullable
+        NetworkCapabilities getReservedCapabilities() {
+            return mReservedCapabilities;
+        }
+
+        void setReservedCapabilities(@NonNull NetworkCapabilities caps) {
+            // This function can only be called once. NetworkCapabilities are never reset as the
+            // reservation is released when the offer disappears.
+            if (mReservedCapabilities != null) {
+                logwtf("ReservedCapabilities can only be set once");
+            }
+            mReservedCapabilities = caps;
+        }
+
+        /**
          * Get the list of UIDs this nri applies to.
          */
         @NonNull
@@ -7820,7 +7851,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         NetworkRequestInfo(int asUid, @NonNull final List<NetworkRequest> r,
                 @NonNull final NetworkRequest requestForCallback, @Nullable final PendingIntent pi,
                 @Nullable String callingAttributionTag, final int preferenceOrder) {
-            ensureAllNetworkRequestsHaveType(r);
+            ensureAllNetworkRequestsHaveSupportedType(r);
             mRequests = initializeRequests(r);
             mNetworkRequestForCallback = requestForCallback;
             mPendingIntent = pi;
@@ -7854,7 +7885,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 @NetworkCallback.Flag int callbackFlags,
                 @Nullable String callingAttributionTag, int declaredMethodsFlags) {
             super();
-            ensureAllNetworkRequestsHaveType(r);
+            ensureAllNetworkRequestsHaveSupportedType(r);
             mRequests = initializeRequests(r);
             mNetworkRequestForCallback = requestForCallback;
             mMessenger = m;
@@ -7874,7 +7905,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         NetworkRequestInfo(@NonNull final NetworkRequestInfo nri,
                 @NonNull final List<NetworkRequest> r) {
             super();
-            ensureAllNetworkRequestsHaveType(r);
+            ensureAllNetworkRequestsHaveSupportedType(r);
             mRequests = initializeRequests(r);
             mNetworkRequestForCallback = nri.getNetworkRequestForCallback();
             final NetworkAgentInfo satisfier = nri.getSatisfier();
@@ -8160,6 +8191,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return PREFERENCE_ORDER_NONE;
         }
 
+        public int getReservationId() {
+            // RESERVATIONs cannot be used in multilayer requests.
+            if (isMultilayerRequest()) return RES_ID_UNSET;
+            final NetworkRequest req = mRequests.get(0);
+            // Non-reservation types return RES_ID_UNSET.
+            return req.networkCapabilities.getReservationId();
+        }
+
         @Override
         public void binderDied() {
             // As an immutable collection, mRequests cannot change by the time the
@@ -8211,6 +8250,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
         flags = maybeAppendDeclaredMethod(flags, CALLBACK_BLK_CHANGED, "BLK", sb);
         flags = maybeAppendDeclaredMethod(flags, CALLBACK_LOCAL_NETWORK_INFO_CHANGED,
                 "LOCALINF", sb);
+        flags = maybeAppendDeclaredMethod(flags, CALLBACK_RESERVED, "RES", sb);
         if (flags != 0) {
             sb.append("|0x").append(Integer.toHexString(flags));
         }
@@ -8854,7 +8894,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
     @Override
     public void releaseNetworkRequest(NetworkRequest networkRequest) {
-        ensureNetworkRequestHasType(networkRequest);
+        ensureNetworkRequestHasSupportedType(networkRequest, false /* isMultilayerRequest */);
         mHandler.sendMessage(mHandler.obtainMessage(
                 EVENT_RELEASE_NETWORK_REQUEST, mDeps.getCallingUid(), 0, networkRequest));
     }
@@ -8897,6 +8937,11 @@ public class ConnectivityService extends IConnectivityManager.Stub
         Objects.requireNonNull(score);
         Objects.requireNonNull(caps);
         Objects.requireNonNull(callback);
+        if (caps.hasTransport(TRANSPORT_TEST)) {
+            enforceAnyPermissionOf(mContext, Manifest.permission.MANAGE_TEST_NETWORKS);
+        } else {
+            enforceNetworkFactoryPermission();
+        }
         final boolean yieldToBadWiFi = caps.hasTransport(TRANSPORT_CELLULAR) && !avoidBadWifi();
         final NetworkOffer offer = new NetworkOffer(
                 FullScore.makeProspectiveScore(score, caps, yieldToBadWiFi),
@@ -8935,7 +8980,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
         }
         for (final NetworkOfferInfo noi : toRemove) {
-            handleUnregisterNetworkOffer(noi);
+            handleUnregisterNetworkOffer(noi, true /* releaseReservations */);
         }
         if (DBG) log("unregisterNetworkProvider for " + npi.name);
     }
@@ -9368,7 +9413,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         @Override
         public void binderDied() {
-            mHandler.post(() -> handleUnregisterNetworkOffer(this));
+            mHandler.post(() -> handleUnregisterNetworkOffer(this, true /* releaseReservations */));
         }
     }
 
@@ -9377,6 +9422,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
             if (npi.providerId == providerId) return true;
         }
         return false;
+    }
+
+    @Nullable
+    private NetworkRequestInfo maybeGetNriForReservedOffer(NetworkOfferInfo noi) {
+        final int reservationId = noi.offer.caps.getReservationId();
+        if (reservationId == RES_ID_UNSET) return null; // not a reserved offer.
+
+        for (NetworkRequestInfo nri : mNetworkRequests.values()) {
+            if (reservationId == nri.getReservationId()) return nri;
+        }
+        // The reservation was withdrawn or the reserving process died.
+        return null;
     }
 
     /**
@@ -9395,19 +9452,62 @@ public class ConnectivityService extends IConnectivityManager.Stub
             return;
         }
         final NetworkOfferInfo existingOffer = findNetworkOfferInfoByCallback(newOffer.callback);
+
+        // If a reserved offer is updated, ensure the capabilities are not changed. This ensures
+        // that the reserved offer's capabilities match the ones passed by the onReserved callback,
+        // which is sent only once.
+        //
+        // TODO: consider letting the provider change the capabilities of an offer as long as they
+        // continue to satisfy the capabilities that were passed to onReserved. This is not needed
+        // today, but it shouldn't violate the API contract:
+        // - NetworkOffer capabilities are not promises
+        // - The app making a reservation must never assume that the capabilities of the reserved
+        // network are equal to the ones that were passed to onReserved. There will almost always be
+        // other capabilities, for example, those that change at runtime such as VALIDATED or
+        // NOT_SUSPENDED.
+        if (null != existingOffer
+                && existingOffer.offer.caps.getReservationId() != RES_ID_UNSET
+                && existingOffer.offer.caps.getReservationId() != RES_ID_MATCH_ALL_RESERVATIONS
+                && !newOffer.caps.equals(existingOffer.offer.caps)) {
+            // Reserved offers are not allowed to update their NetworkCapabilities.
+            // Doing so will immediately remove the offer from CS and send onUnavailable to the app.
+            handleUnregisterNetworkOffer(existingOffer, true /* releaseReservations */);
+            existingOffer.offer.notifyUnneeded();
+            logwtf("Reserved offers must never update their reserved NetworkCapabilities");
+            return;
+        }
+
+        final NetworkOfferInfo noi = new NetworkOfferInfo(newOffer);
         if (null != existingOffer) {
-            handleUnregisterNetworkOffer(existingOffer);
+            // Do not send onUnavailable for a reserved offer when updating it.
+            handleUnregisterNetworkOffer(existingOffer, false /* releaseReservations */);
             newOffer.migrateFrom(existingOffer.offer);
             if (DBG) {
                 // handleUnregisterNetworkOffer has already logged the old offer
                 log("update offer from providerId " + newOffer.providerId + " new : " + newOffer);
             }
         } else {
+            final NetworkRequestInfo reservationNri = maybeGetNriForReservedOffer(noi);
+            if (reservationNri != null) {
+                // A NetworkRequest is only allowed to trigger a single reserved offer (and
+                // onReserved() callback). All subsequent offers are ignored. This either indicates
+                // a bug in the provider (e.g., responding twice to the same reservation, or
+                // updating the capabilities of a reserved offer), or multiple providers responding
+                // to the same offer (which could happen, but is not useful to the requesting app).
+                if (reservationNri.getReservedCapabilities() != null) {
+                    loge("A reservation can only trigger a single offer; new offer is ignored.");
+                    return;
+                }
+                // Always update the reserved offer before calling callCallbackForRequest.
+                reservationNri.setReservedCapabilities(noi.offer.caps);
+                callCallbackForRequest(
+                        reservationNri, null /*networkAgent*/, CALLBACK_RESERVED, 0 /*arg1*/);
+            }
             if (DBG) {
                 log("register offer from providerId " + newOffer.providerId + " : " + newOffer);
             }
         }
-        final NetworkOfferInfo noi = new NetworkOfferInfo(newOffer);
+
         try {
             noi.offer.callback.asBinder().linkToDeath(noi, 0 /* flags */);
         } catch (RemoteException e) {
@@ -9418,7 +9518,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         issueNetworkNeeds(noi);
     }
 
-    private void handleUnregisterNetworkOffer(@NonNull final NetworkOfferInfo noi) {
+    private void handleUnregisterNetworkOffer(@NonNull final NetworkOfferInfo noi,
+                    boolean releaseReservations) {
         ensureRunningOnConnectivityServiceThread();
         if (DBG) {
             log("unregister offer from providerId " + noi.offer.providerId + " : " + noi.offer);
@@ -9428,6 +9529,18 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // function may be called twice in a row, but the array will no longer contain
         // the offer.
         if (!mNetworkOffers.remove(noi)) return;
+
+        // If the offer was brought up as a result of a reservation, inform the RESERVATION request
+        // that it has disappeared. There is no need to reset nri.mReservedCapabilities to null, as
+        // CALLBACK_UNAVAIL will cause the request to be torn down. In addition, leaving
+        // nri.mReservedOffer set prevents an additional onReserved() callback in
+        // handleRegisterNetworkOffer() in the case of a migration (which would be ignored as it
+        // follows an onUnavailable).
+        final NetworkRequestInfo nri = maybeGetNriForReservedOffer(noi);
+        if (releaseReservations && nri != null) {
+            handleRemoveNetworkRequest(nri);
+            callCallbackForRequest(nri, null /* networkAgent */, CALLBACK_UNAVAIL, 0 /* arg1 */);
+        }
         noi.offer.callback.asBinder().unlinkToDeath(noi, 0 /* flags */);
     }
 
@@ -10646,9 +10759,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         return bundle;
     }
 
-    // networkAgent is only allowed to be null if notificationType is
-    // CALLBACK_UNAVAIL. This is because UNAVAIL is about no network being
-    // available, while all other cases are about some particular network.
+    // networkAgent is only allowed to be null if notificationType is CALLBACK_UNAVAIL or
+    // CALLBACK_RESERVED. This is because, per definition, no network is available for UNAVAIL, and
+    // RESERVED callbacks happen when a NetworkOffer is created in response to a reservation.
     private void callCallbackForRequest(@NonNull final NetworkRequestInfo nri,
             @Nullable final NetworkAgentInfo networkAgent, final int notificationType,
             final int arg1) {
@@ -10660,6 +10773,10 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
         // Even if a callback ends up not being sent, it may affect other callbacks in the queue, so
         // queue callbacks before checking the declared methods flags.
+        // UNAVAIL and RESERVED callbacks are safe not to be queued, because RESERVED must always be
+        // the first callback. In addition, RESERVED cannot be sent more than once and is only
+        // cancelled by UNVAIL.
+        // TODO: evaluate whether it makes sense to queue RESERVED callbacks.
         if (networkAgent != null && nri.maybeQueueCallback(networkAgent, notificationType)) {
             return;
         }
@@ -10667,14 +10784,24 @@ public class ConnectivityService extends IConnectivityManager.Stub
             // No need to send the notification as the recipient method is not overridden
             return;
         }
-        final Network bundleNetwork = notificationType == CALLBACK_UNAVAIL
-                ? null
-                : networkAgent.network;
+        // networkAgent is only null for UNAVAIL and RESERVED.
+        final Network bundleNetwork = (networkAgent != null) ? networkAgent.network : null;
         final Bundle bundle = makeCommonBundleForCallback(nri, bundleNetwork);
         final boolean includeLocationSensitiveInfo =
                 (nri.mCallbackFlags & NetworkCallback.FLAG_INCLUDE_LOCATION_INFO) != 0;
         final NetworkRequest nrForCallback = nri.getNetworkRequestForCallback();
         switch (notificationType) {
+            case CALLBACK_RESERVED: {
+                final NetworkCapabilities nc =
+                        createWithLocationInfoSanitizedIfNecessaryWhenParceled(
+                                networkCapabilitiesRestrictedForCallerPermissions(
+                                        nri.getReservedCapabilities(), nri.mPid, nri.mUid),
+                                includeLocationSensitiveInfo, nri.mPid, nri.mUid,
+                                nrForCallback.getRequestorPackageName(),
+                                nri.mCallingAttributionTag);
+                putParcelable(bundle, nc);
+                break;
+            }
             case CALLBACK_AVAILABLE: {
                 final NetworkCapabilities nc =
                         createWithLocationInfoSanitizedIfNecessaryWhenParceled(

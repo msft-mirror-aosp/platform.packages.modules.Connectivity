@@ -21,6 +21,7 @@ import static android.net.NetworkRequest.Type.BACKGROUND_REQUEST;
 import static android.net.NetworkRequest.Type.LISTEN;
 import static android.net.NetworkRequest.Type.LISTEN_FOR_BEST;
 import static android.net.NetworkRequest.Type.REQUEST;
+import static android.net.NetworkRequest.Type.RESERVATION;
 import static android.net.NetworkRequest.Type.TRACK_DEFAULT;
 import static android.net.NetworkRequest.Type.TRACK_SYSTEM_DEFAULT;
 import static android.net.QosCallback.QosCallbackRegistrationException;
@@ -4271,12 +4272,18 @@ public class ConnectivityManager {
         private static final int METHOD_ONLOST = 6;
 
         /**
-         * Called if no network is found within the timeout time specified in
-         * {@link #requestNetwork(NetworkRequest, NetworkCallback, int)} call or if the
-         * requested network request cannot be fulfilled (whether or not a timeout was
-         * specified). When this callback is invoked the associated
-         * {@link NetworkRequest} will have already been removed and released, as if
-         * {@link #unregisterNetworkCallback(NetworkCallback)} had been called.
+         * If the callback was registered with one of the {@code requestNetwork} methods, this will
+         * be called if no network is found within the timeout specified in {@link
+         * #requestNetwork(NetworkRequest, NetworkCallback, int)} call or if the requested network
+         * request cannot be fulfilled (whether or not a timeout was specified).
+         *
+         * If the callback was registered when reserving a network, this method indicates that the
+         * reservation is removed. It can be called when the reservation is requested, because the
+         * system could not satisfy the reservation, or after the reserved network connects.
+         *
+         * When this callback is invoked the associated {@link NetworkRequest} will have already
+         * been removed and released, as if {@link #unregisterNetworkCallback(NetworkCallback)} had
+         * been called.
          */
         @FilteredCallback(methodId = METHOD_ONUNAVAILABLE, calledByCallbackId = CALLBACK_UNAVAIL)
         public void onUnavailable() {}
@@ -4417,6 +4424,28 @@ public class ConnectivityManager {
         }
         private static final int METHOD_ONBLOCKEDSTATUSCHANGED_INT = 14;
 
+        /**
+         * Called when a network is reserved.
+         *
+         * The reservation includes the {@link NetworkCapabilities} that uniquely describe the
+         * network that was reserved. the caller communicates this information to hardware or
+         * software components on or off-device to instruct them to create a network matching this
+         * reservation.
+         *
+         * {@link #onReserved(NetworkCapabilities)} is called at most once and is guaranteed to be
+         * called before any other callback unless the reservation is unavailable.
+         *
+         * Once a reservation is made, the reserved {@link NetworkCapabilities} will not be updated,
+         * and the reservation remains in place until the reserved network connects or {@link
+         * #onUnavailable} is called.
+         *
+         * @param networkCapabilities The {@link NetworkCapabilities} of the reservation.
+         */
+        @FlaggedApi(Flags.FLAG_IPV6_OVER_BLE)
+        @FilteredCallback(methodId = METHOD_ONRESERVED, calledByCallbackId = CALLBACK_RESERVED)
+        public void onReserved(@NonNull NetworkCapabilities networkCapabilities) {}
+        private static final int METHOD_ONRESERVED = 15;
+
         private NetworkRequest networkRequest;
         private final int mFlags;
     }
@@ -4468,6 +4497,8 @@ public class ConnectivityManager {
     public static final int CALLBACK_BLK_CHANGED                = 11;
     /** @hide */
     public static final int CALLBACK_LOCAL_NETWORK_INFO_CHANGED = 12;
+    /** @hide */
+    public static final int CALLBACK_RESERVED                   = 13;
     // When adding new IDs, note CallbackQueue assumes callback IDs are at most 16 bits.
 
 
@@ -4487,6 +4518,7 @@ public class ConnectivityManager {
             case CALLBACK_RESUMED:      return "CALLBACK_RESUMED";
             case CALLBACK_BLK_CHANGED:  return "CALLBACK_BLK_CHANGED";
             case CALLBACK_LOCAL_NETWORK_INFO_CHANGED: return "CALLBACK_LOCAL_NETWORK_INFO_CHANGED";
+            case CALLBACK_RESERVED:     return "CALLBACK_RESERVED";
             default:
                 return Integer.toString(whichCallback);
         }
@@ -4517,6 +4549,7 @@ public class ConnectivityManager {
     public static class NetworkCallbackMethodsHolder {
         public static final NetworkCallbackMethod[] NETWORK_CB_METHODS =
                 new NetworkCallbackMethod[] {
+                        method("onReserved", 1 << CALLBACK_RESERVED, NetworkCapabilities.class),
                         method("onPreCheck", 1 << CALLBACK_PRECHECK, Network.class),
                         // Note the final overload of onAvailable is not included, since it cannot
                         // match any overridden method.
@@ -4596,6 +4629,11 @@ public class ConnectivityManager {
             }
 
             switch (message.what) {
+                case CALLBACK_RESERVED: {
+                    final NetworkCapabilities cap = getObject(message, NetworkCapabilities.class);
+                    callback.onReserved(cap);
+                    break;
+                }
                 case CALLBACK_PRECHECK: {
                     callback.onPreCheck(network);
                     break;
@@ -4974,6 +5012,41 @@ public class ConnectivityManager {
         CallbackHandler cbHandler = new CallbackHandler(handler);
         NetworkCapabilities nc = request.networkCapabilities;
         sendRequestForNetwork(nc, networkCallback, 0, REQUEST, TYPE_NONE, cbHandler);
+    }
+
+    /**
+     * Reserve a network to satisfy a set of {@link NetworkCapabilities}.
+     *
+     * Some types of networks require the system to generate (i.e. reserve) some set of information
+     * before a network can be connected. For such networks, {@link #reserveNetwork} can be used
+     * which may lead to a call to {@link NetworkCallback#onReserved(NetworkCapabilities)}
+     * containing the {@link NetworkCapabilities} that were reserved.
+     *
+     * A reservation reserves at most one network. If the network connects, a reservation request
+     * behaves similar to a request filed using {@link #requestNetwork}. The provided {@link
+     * NetworkCallback} will only be called for the reserved network.
+     *
+     * If the system determines that the requested reservation can never be fulfilled, {@link
+     * NetworkCallback#onUnavailable} is called, the reservation is released by the system, and the
+     * provided callback can be reused. Otherwise, the reservation remains in place until the
+     * requested network connects. There is no guarantee that the reserved network will ever
+     * connect.
+     *
+     * @param request {@link NetworkRequest} describing this request.
+     * @param handler {@link Handler} to specify the thread upon which the callback will be invoked.
+     * @param networkCallback The {@link NetworkCallback} to be utilized for this request. Note
+     *                        the callback must not be shared - it uniquely specifies this request.
+     */
+    // TODO: add executor overloads for all network request methods. Any method that passed an
+    // Executor could process the messages on the singleton ConnectivityThread Handler.
+    @SuppressLint("ExecutorRegistration")
+    @FlaggedApi(Flags.FLAG_IPV6_OVER_BLE)
+    public void reserveNetwork(@NonNull NetworkRequest request,
+            @NonNull Handler handler,
+            @NonNull NetworkCallback networkCallback) {
+        final CallbackHandler cbHandler = new CallbackHandler(handler);
+        final NetworkCapabilities nc = request.networkCapabilities;
+        sendRequestForNetwork(nc, networkCallback, 0, RESERVATION, TYPE_NONE, cbHandler);
     }
 
     /**

@@ -103,6 +103,7 @@ package android.net {
     method public void requestNetwork(@NonNull android.net.NetworkRequest, @NonNull android.net.ConnectivityManager.NetworkCallback, int);
     method public void requestNetwork(@NonNull android.net.NetworkRequest, @NonNull android.net.ConnectivityManager.NetworkCallback, @NonNull android.os.Handler, int);
     method public void requestNetwork(@NonNull android.net.NetworkRequest, @NonNull android.app.PendingIntent);
+    method @FlaggedApi("com.android.net.flags.ipv6_over_ble") public void reserveNetwork(@NonNull android.net.NetworkRequest, @NonNull android.os.Handler, @NonNull android.net.ConnectivityManager.NetworkCallback);
     method @Deprecated public void setNetworkPreference(int);
     method @Deprecated public static boolean setProcessDefaultNetwork(@Nullable android.net.Network);
     method public void unregisterNetworkCallback(@NonNull android.net.ConnectivityManager.NetworkCallback);
@@ -151,6 +152,7 @@ package android.net {
     method public void onLinkPropertiesChanged(@NonNull android.net.Network, @NonNull android.net.LinkProperties);
     method public void onLosing(@NonNull android.net.Network, int);
     method public void onLost(@NonNull android.net.Network);
+    method @FlaggedApi("com.android.net.flags.ipv6_over_ble") public void onReserved(@NonNull android.net.NetworkCapabilities);
     method public void onUnavailable();
     field public static final int FLAG_INCLUDE_LOCATION_INFO = 1; // 0x1
   }
@@ -229,6 +231,32 @@ package android.net {
     method @NonNull public byte[] getRawAddress();
     method public void writeToParcel(android.os.Parcel, int);
     field @NonNull public static final android.os.Parcelable.Creator<android.net.IpPrefix> CREATOR;
+  }
+
+  @FlaggedApi("com.android.net.flags.ipv6_over_ble") public final class L2capNetworkSpecifier extends android.net.NetworkSpecifier implements android.os.Parcelable {
+    method public int describeContents();
+    method public int getHeaderCompression();
+    method public int getPsm();
+    method @Nullable public android.net.MacAddress getRemoteAddress();
+    method public int getRole();
+    method public void writeToParcel(@NonNull android.os.Parcel, int);
+    field @NonNull public static final android.os.Parcelable.Creator<android.net.L2capNetworkSpecifier> CREATOR;
+    field public static final int HEADER_COMPRESSION_6LOWPAN = 2; // 0x2
+    field public static final int HEADER_COMPRESSION_ANY = 0; // 0x0
+    field public static final int HEADER_COMPRESSION_NONE = 1; // 0x1
+    field public static final int PSM_ANY = -1; // 0xffffffff
+    field public static final int ROLE_ANY = 0; // 0x0
+    field public static final int ROLE_CLIENT = 1; // 0x1
+    field public static final int ROLE_SERVER = 2; // 0x2
+  }
+
+  public static final class L2capNetworkSpecifier.Builder {
+    ctor public L2capNetworkSpecifier.Builder();
+    method @NonNull public android.net.L2capNetworkSpecifier build();
+    method @NonNull public android.net.L2capNetworkSpecifier.Builder setHeaderCompression(int);
+    method @NonNull public android.net.L2capNetworkSpecifier.Builder setPsm(int);
+    method @NonNull public android.net.L2capNetworkSpecifier.Builder setRemoteAddress(@NonNull android.net.MacAddress);
+    method @NonNull public android.net.L2capNetworkSpecifier.Builder setRole(int);
   }
 
   public class LinkAddress implements android.os.Parcelable {
