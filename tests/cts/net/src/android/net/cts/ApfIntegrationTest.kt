@@ -21,8 +21,8 @@ package android.net.cts
 
 import android.Manifest.permission.WRITE_ALLOWLISTED_DEVICE_CONFIG
 import android.Manifest.permission.WRITE_DEVICE_CONFIG
-import android.content.pm.PackageManager
 import android.content.pm.PackageManager.FEATURE_AUTOMOTIVE
+import android.content.pm.PackageManager.FEATURE_LEANBACK
 import android.content.pm.PackageManager.FEATURE_WIFI
 import android.net.ConnectivityManager
 import android.net.Network
@@ -38,7 +38,7 @@ import android.net.apf.ApfConstants.IPV6_HEADER_LEN
 import android.net.apf.ApfConstants.IPV6_NEXT_HEADER_OFFSET
 import android.net.apf.ApfConstants.IPV6_SRC_ADDR_OFFSET
 import android.net.apf.ApfCounterTracker
-import android.net.apf.ApfCounterTracker.Counter.DROPPED_IPV6_MULTICAST_PING
+import android.net.apf.ApfCounterTracker.Counter.DROPPED_IPV6_NS_REPLIED_NON_DAD
 import android.net.apf.ApfCounterTracker.Counter.FILTER_AGE_16384THS
 import android.net.apf.ApfCounterTracker.Counter.PASSED_IPV6_ICMP
 import android.net.apf.ApfV4Generator
@@ -104,6 +104,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import org.junit.After
 import org.junit.AfterClass
+import org.junit.Assume.assumeFalse
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Rule
@@ -170,8 +171,8 @@ class ApfIntegrationTest {
         private fun isAutomotiveWithVisibleBackgroundUser(): Boolean {
             val packageManager = context.getPackageManager()
             val userManager = context.getSystemService(UserManager::class.java)!!
-            return (packageManager.hasSystemFeature(FEATURE_AUTOMOTIVE)
-                    && userManager.isVisibleBackgroundUsersSupported)
+            return (packageManager.hasSystemFeature(FEATURE_AUTOMOTIVE) &&
+                    userManager.isVisibleBackgroundUsersSupported)
         }
 
         @BeforeClass
@@ -299,9 +300,22 @@ class ApfIntegrationTest {
         return ApfCapabilities(version, maxLen, packetFormat)
     }
 
+    private fun isTvDeviceSupportFullNetworkingUnder2w(): Boolean {
+        return (pm.hasSystemFeature(FEATURE_LEANBACK) &&
+            pm.hasSystemFeature("com.google.android.tv.full_networking_under_2w"))
+    }
+
     @Before
     fun setUp() {
         assume().that(pm.hasSystemFeature(FEATURE_WIFI)).isTrue()
+
+        // Based on GTVS-16, Android Packet Filtering (APF) is OPTIONAL for devices that fully
+        // process all network packets on CPU at all times, even in standby, while meeting
+        // the <= 2W standby power demand requirement.
+        assumeFalse(
+            "Skipping test: TV device process full networking on CPU under 2W",
+            isTvDeviceSupportFullNetworkingUnder2w()
+        )
 
         networkCallback = TestableNetworkCallback()
         cm.requestNetwork(
@@ -349,10 +363,8 @@ class ApfIntegrationTest {
     @Test
     fun testApfCapabilities() {
         // APF became mandatory in Android 14 VSR.
-        assume().that(getVsrApiLevel()).isAtLeast(34)
-
-        // ApfFilter does not support anything but ARPHRD_ETHER.
-        assertThat(caps.apfPacketFormat).isEqualTo(OsConstants.ARPHRD_ETHER)
+        val vsrApiLevel = getVsrApiLevel()
+        assume().that(vsrApiLevel).isAtLeast(34)
 
         // DEVICEs launching with Android 14 with CHIPSETs that set ro.board.first_api_level to 34:
         // - [GMS-VSR-5.3.12-003] MUST return 4 or higher as the APF version number from calls to
@@ -372,9 +384,22 @@ class ApfIntegrationTest {
         // ro.board.first_api_level or ro.board.api_level to 202404 or higher:
         // - [GMS-VSR-5.3.12-009] MUST indicate at least 2048 bytes of usable memory from calls to
         //   the getApfPacketFilterCapabilities HAL method.
-        if (getVsrApiLevel() >= 202404) {
+        if (vsrApiLevel >= 202404) {
             assertThat(caps.maximumApfProgramSize).isAtLeast(2048)
         }
+
+        // CHIPSETs (or DEVICES with CHIPSETs) that set ro.board.first_api_level or
+        // ro.board.api_level to 202504 or higher:
+        // - [VSR-5.3.12-018] MUST implement version 6 of the Android Packet Filtering (APF)
+        //   interpreter in the Wi-Fi firmware.
+        // - [VSR-5.3.12-019] MUST provide at least 4000 bytes of APF RAM.
+        if (vsrApiLevel >= 202504) {
+            assertThat(caps.apfVersionSupported).isEqualTo(6000)
+            assertThat(caps.maximumApfProgramSize).isAtLeast(4000)
+        }
+
+        // ApfFilter does not support anything but ARPHRD_ETHER.
+        assertThat(caps.apfPacketFormat).isEqualTo(OsConstants.ARPHRD_ETHER)
     }
 
     // APF is backwards compatible, i.e. a v6 interpreter supports both v2 and v4 functionality.
@@ -691,7 +716,7 @@ class ApfIntegrationTest {
         //     pass
         //   else
         //     transmit a ICMPv6 echo request packet with the first byte of the payload in the reply
-        //     increase DROPPED_IPV6_MULTICAST_PING counter
+        //     increase DROPPED_IPV6_NS_REPLIED_NON_DAD counter
         //     drop
         val program = gen
                 .addLoad16(R0, ETH_ETHERTYPE_OFFSET)
@@ -733,8 +758,8 @@ class ApfIntegrationTest {
                         IPPROTO_ICMPV6, // partial_sum
                         false // udp
                 )
-                // Warning: the program abuse DROPPED_IPV6_MULTICAST_PING for debugging purpose
-                .addCountAndDrop(DROPPED_IPV6_MULTICAST_PING)
+                // Warning: the program abuse DROPPED_IPV6_NS_REPLIED_NON_DAD for debugging purpose
+                .addCountAndDrop(DROPPED_IPV6_NS_REPLIED_NON_DAD)
                 .defineLabel(skipPacketLabel)
                 .addPass()
                 .generate()
