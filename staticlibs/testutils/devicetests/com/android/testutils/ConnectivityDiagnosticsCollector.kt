@@ -168,7 +168,8 @@ class ConnectivityDiagnosticsCollector : BaseMetricListener() {
                     .addCapability(NET_CAPABILITY_INTERNET)
                     .addTransportType(TRANSPORT_WIFI)
                     .addTransportType(TRANSPORT_CELLULAR)
-                    .build(), networkCallback
+                    .build(),
+                networkCallback
             )
         }
     }
@@ -184,9 +185,12 @@ class ConnectivityDiagnosticsCollector : BaseMetricListener() {
         // when iterating on failing tests.
         if (!runOnFailure(failure.exception)) return
         if (outputFiles.size >= MAX_DUMPS) return
-        Log.i(TAG, "Collecting diagnostics for test failure. Disable by running tests with: " +
+        Log.i(
+            TAG,
+            "Collecting diagnostics for test failure. Disable by running tests with: " +
                 "atest MyModule -- " +
-                "--module-arg MyModule:instrumentation-arg:$ARG_RUN_ON_FAILURE:=false")
+                "--module-arg MyModule:instrumentation-arg:$ARG_RUN_ON_FAILURE:=false"
+        )
         collectTestFailureDiagnostics(failure.exception)
 
         val baseFilename = "${description.className}#${description.methodName}_failure"
@@ -326,8 +330,11 @@ class ConnectivityDiagnosticsCollector : BaseMetricListener() {
                 }
             }
         } else {
-            Log.w(TAG, "The test is still holding shell permissions, cannot collect privileged " +
-                    "device info")
+            Log.w(
+                TAG,
+                "The test is still holding shell permissions, cannot collect privileged " +
+                    "device info"
+            )
             headerObj.put("shellPermissionsUnavailable", true)
         }
         failureHeader = headerObj.apply {
@@ -379,7 +386,9 @@ class ConnectivityDiagnosticsCollector : BaseMetricListener() {
         cbHelper.registerNetworkCallback(
             NetworkRequest.Builder()
                 .addTransportType(TRANSPORT_WIFI)
-                .addCapability(NET_CAPABILITY_INTERNET).build(), cb)
+                .addCapability(NET_CAPABILITY_INTERNET).build(),
+            cb
+        )
         return try {
             cb.wifiInfoFuture.get(1L, TimeUnit.SECONDS)
         } catch (e: TimeoutException) {
@@ -410,15 +419,29 @@ class ConnectivityDiagnosticsCollector : BaseMetricListener() {
      * @param exceptionContext An exception to write a stacktrace to the dump for context.
      */
     fun collectDumpsysConnectivity(exceptionContext: Throwable? = null) {
-        Log.i(TAG, "Collecting dumpsys connectivity for test artifacts")
+        collectDumpsys("connectivity --dump-priority HIGH", exceptionContext)
+    }
+
+    /**
+     * Add a dumpsys to the test data dump.
+     *
+     * <p>The dump will be collected immediately, and exported to a test artifact file when the
+     * test ends.
+     * @param dumpsysCmd The dumpsys command to run (for example "connectivity").
+     * @param exceptionContext An exception to write a stacktrace to the dump for context.
+     */
+    fun collectDumpsys(dumpsysCmd: String, exceptionContext: Throwable? = null) {
+        Log.i(TAG, "Collecting dumpsys $dumpsysCmd for test artifacts")
         PrintWriter(buffer).let {
-            it.println("--- Dumpsys connectivity at ${ZonedDateTime.now()} ---")
+            it.println("--- Dumpsys $dumpsysCmd at ${ZonedDateTime.now()} ---")
             maybeWriteExceptionContext(it, exceptionContext)
             it.flush()
         }
         ParcelFileDescriptor.AutoCloseInputStream(
             InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
-                "dumpsys connectivity --dump-priority HIGH")).use {
+                "dumpsys $dumpsysCmd"
+            )
+        ).use {
             it.copyTo(buffer)
         }
     }
