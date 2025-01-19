@@ -45,14 +45,12 @@ final class Config {
     static final String FLAG_METADATA_URL = FLAGS_PREFIX + "metadata_url";
     static final String FLAG_VERSION = FLAGS_PREFIX + "version";
     static final String FLAG_PUBLIC_KEY = FLAGS_PREFIX + "public_key";
+    static final String FLAG_LOG_FAILURE_THRESHOLD = FLAGS_PREFIX + "log_list_failure_threshold";
 
     // properties
     static final String VERSION = "version";
-    static final String CONTENT_URL = "content_url";
     static final String CONTENT_DOWNLOAD_ID = "content_download_id";
-    static final String METADATA_URL = "metadata_url";
     static final String METADATA_DOWNLOAD_ID = "metadata_download_id";
-    static final String PUBLIC_KEY_URL = "public_key_url";
     static final String PUBLIC_KEY_DOWNLOAD_ID = "public_key_download_id";
     static final String LOG_LIST_UPDATE_FAILURE_COUNT = "log_list_update_failure_count";
 
@@ -63,5 +61,5 @@ final class Config {
     static final String URL_PUBLIC_KEY = URL_PREFIX + "log_list.pub";
 
     // Threshold amounts
-    static final int LOG_LIST_UPDATE_FAILURE_THRESHOLD = 10;
+    static final int DEFAULT_LOG_LIST_UPDATE_FAILURE_THRESHOLD = 10;
 }
