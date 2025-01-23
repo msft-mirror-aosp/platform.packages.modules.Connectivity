@@ -128,15 +128,15 @@ struct kver_uint { unsigned int kver; };
 #define KVER_(v) ((struct kver_uint){ .kver = (v) })
 #define KVER(a, b, c) KVER_(((a) << 24) + ((b) << 16) + (c))
 #define KVER_NONE KVER_(0)
+#define KVER_4_9  KVER(4, 9, 0)
 #define KVER_4_14 KVER(4, 14, 0)
 #define KVER_4_19 KVER(4, 19, 0)
 #define KVER_5_4  KVER(5, 4, 0)
-#define KVER_5_8  KVER(5, 8, 0)
-#define KVER_5_9  KVER(5, 9, 0)
 #define KVER_5_10 KVER(5, 10, 0)
 #define KVER_5_15 KVER(5, 15, 0)
 #define KVER_6_1  KVER(6, 1, 0)
 #define KVER_6_6  KVER(6, 6, 0)
+#define KVER_6_12 KVER(6, 12, 0)
 #define KVER_INF KVER_(0xFFFFFFFFu)
 
 #define KVER_IS_AT_LEAST(kver, a, b, c) ((kver).kver >= KVER(a, b, c).kver)
@@ -291,14 +291,15 @@ static void (*bpf_ringbuf_submit_unsafe)(const void* data, __u64 flags) = (void*
 // Type safe macro to declare a ring buffer and related output functions.
 // Compatibility:
 // * BPF ring buffers are only available kernels 5.8 and above. Any program
-//   accessing the ring buffer should set a program level min_kver >= 5.8.
-// * The definition below sets a map min_kver of 5.8 which requires targeting
+//   accessing the ring buffer should set a program level min_kver >= 5.10,
+//   since 5.10 is the next LTS version.
+// * The definition below sets a map min_kver of 5.10 which requires targeting
 //   a BPFLOADER_MIN_VER >= BPFLOADER_S_VERSION.
 #define DEFINE_BPF_RINGBUF_EXT(the_map, ValueType, size_bytes, usr, grp, md,   \
                                selinux, pindir, share, min_loader, max_loader, \
                                ignore_eng, ignore_user, ignore_userdebug)      \
     DEFINE_BPF_MAP_BASE(the_map, RINGBUF, 0, 0, size_bytes, usr, grp, md,      \
-                        selinux, pindir, share, KVER_5_8, KVER_INF,            \
+                        selinux, pindir, share, KVER_5_10, KVER_INF,           \
                         min_loader, max_loader, ignore_eng, ignore_user,       \
                         ignore_userdebug, 0);                                  \
                                                                                \
