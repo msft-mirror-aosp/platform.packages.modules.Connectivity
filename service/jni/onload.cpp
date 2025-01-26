@@ -21,22 +21,17 @@
 
 namespace android {
 
-int register_com_android_server_TestNetworkService(JNIEnv* env);
 int register_com_android_server_connectivity_ClatCoordinator(JNIEnv* env);
 int register_android_server_net_NetworkStatsFactory(JNIEnv* env);
 int register_android_server_net_NetworkStatsService(JNIEnv* env);
 int register_com_android_server_ServiceManagerWrapper(JNIEnv* env);
-int register_com_android_net_module_util_TimerFdUtils(JNIEnv *env,
+int register_com_android_net_module_util_ServiceConnectivityJni(JNIEnv *env,
                                                       char const *class_name);
 
 extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
     JNIEnv *env;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) {
         ALOGE("GetEnv failed");
-        return JNI_ERR;
-    }
-
-    if (register_com_android_server_TestNetworkService(env) < 0) {
         return JNI_ERR;
     }
 
@@ -58,9 +53,9 @@ extern "C" jint JNI_OnLoad(JavaVM* vm, void*) {
         }
     }
 
-    if (register_com_android_net_module_util_TimerFdUtils(
+    if (register_com_android_net_module_util_ServiceConnectivityJni(
             env, "android/net/connectivity/com/android/net/module/util/"
-                 "TimerFdUtils") < 0) {
+                 "ServiceConnectivityJni") < 0) {
       return JNI_ERR;
     }
 
