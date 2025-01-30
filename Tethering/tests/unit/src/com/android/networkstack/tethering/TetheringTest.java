@@ -957,8 +957,8 @@ public class TetheringTest {
         mTethering.startTethering(request, TEST_CALLER_PKG, null);
         mLooper.dispatchAll();
 
-        assertEquals(1, mTethering.getActiveTetheringRequests().size());
-        assertEquals(request, mTethering.getActiveTetheringRequests().get(TETHERING_USB));
+        assertEquals(1, mTethering.getPendingTetheringRequests().size());
+        assertEquals(request, mTethering.getPendingTetheringRequests().get(TETHERING_USB));
 
         if (mTethering.getTetheringConfiguration().isUsingNcm()) {
             verify(mUsbManager).setCurrentFunctions(UsbManager.FUNCTION_NCM);
@@ -2170,7 +2170,7 @@ public class TetheringTest {
         runUsbTethering(upstreamState);
         assertContains(Arrays.asList(mTethering.getTetheredIfaces()), TEST_RNDIS_IFNAME);
         assertTrue(mTethering.isTetheringActive());
-        assertEquals(0, mTethering.getActiveTetheringRequests().size());
+        assertEquals(0, mTethering.getPendingTetheringRequests().size());
 
         final Tethering.UserRestrictionActionListener ural = makeUserRestrictionActionListener(
                 mTethering, false /* currentDisallow */, true /* nextDisallow */);
@@ -3426,7 +3426,7 @@ public class TetheringTest {
         mTethering.interfaceStatusChanged(TEST_BT_IFNAME, false);
         mTethering.interfaceStatusChanged(TEST_BT_IFNAME, true);
         final ResultListener tetherResult = new ResultListener(TETHER_ERROR_NO_ERROR);
-        mTethering.legacyTether(TEST_BT_IFNAME, IpServer.STATE_TETHERED, tetherResult);
+        mTethering.legacyTether(TEST_BT_IFNAME, tetherResult);
         mLooper.dispatchAll();
         tetherResult.assertHasResult();
 
@@ -3476,7 +3476,7 @@ public class TetheringTest {
             mTethering.interfaceStatusChanged(TEST_BT_IFNAME, false);
             mTethering.interfaceStatusChanged(TEST_BT_IFNAME, true);
             final ResultListener tetherResult = new ResultListener(TETHER_ERROR_NO_ERROR);
-            mTethering.legacyTether(TEST_BT_IFNAME, IpServer.STATE_TETHERED, tetherResult);
+            mTethering.legacyTether(TEST_BT_IFNAME, tetherResult);
             mLooper.dispatchAll();
             tetherResult.assertHasResult();
         }
