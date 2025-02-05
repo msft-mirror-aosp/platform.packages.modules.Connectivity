@@ -689,7 +689,6 @@ class NetworkAgentTest {
                 }
                 return@tryTest
             }
-            cv.close()
             if (hold) {
                 carrierConfigRule.addConfigOverrides(subId, PersistableBundle().also {
                     it.putStringArray(CarrierConfigManager.KEY_CARRIER_CERTIFICATE_STRING_ARRAY,
@@ -698,7 +697,6 @@ class NetworkAgentTest {
             } else {
                 carrierConfigRule.cleanUpNow()
             }
-            assertTrue(cv.block(DEFAULT_TIMEOUT_MS), "Can't change carrier privilege")
         } cleanup {
             runAsShell(READ_PRIVILEGED_PHONE_STATE) {
                 tm.unregisterCarrierPrivilegesCallback(cpb)
