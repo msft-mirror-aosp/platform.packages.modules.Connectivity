@@ -21,7 +21,6 @@ import android.app.DownloadManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
@@ -34,7 +33,6 @@ import com.android.server.net.ct.DownloadHelper.DownloadStatus;
 import java.io.IOException;
 import java.io.InputStream;
 import java.security.GeneralSecurityException;
-import java.security.InvalidKeyException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -51,8 +49,6 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
     private final CertificateTransparencyLogger mLogger;
 
     private final List<CompatibilityVersion> mCompatVersions = new ArrayList<>();
-
-    private boolean started = false;
 
     CertificateTransparencyDownloader(
             Context context,
@@ -71,33 +67,8 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
         mCompatVersions.add(compatVersion);
     }
 
-    void start() {
-        if (started) {
-            return;
-        }
-        mContext.registerReceiver(
-                this,
-                new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-                Context.RECEIVER_EXPORTED);
-        mDataStore.load();
-        started = true;
-
-        if (Config.DEBUG) {
-            Log.d(TAG, "CertificateTransparencyDownloader started.");
-        }
-    }
-
-    void stop() {
-        if (!started) {
-            return;
-        }
-        mContext.unregisterReceiver(this);
-        mDataStore.delete();
-        started = false;
-
-        if (Config.DEBUG) {
-            Log.d(TAG, "CertificateTransparencyDownloader stopped.");
-        }
+    void clearCompatibilityVersions() {
+        mCompatVersions.clear();
     }
 
     long startPublicKeyDownload() {
@@ -226,39 +197,23 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             return;
         }
 
-        boolean success = false;
-        CTLogListUpdateState failureReason = CTLogListUpdateState.UNKNOWN_STATE;
+        LogListUpdateStatus updateStatus = mSignatureVerifier.verify(contentUri, metadataUri);
+        // TODO(b/391327942): parse file and log the timestamp of the log list
 
-        try {
-            success = mSignatureVerifier.verify(contentUri, metadataUri);
-        } catch (MissingPublicKeyException e) {
+        if (!updateStatus.isSignatureVerified()) {
             updateFailureCount();
-            failureReason = CTLogListUpdateState.PUBLIC_KEY_NOT_FOUND;
-            Log.e(TAG, "No public key found for log list verification", e);
-        } catch (InvalidKeyException e) {
-            updateFailureCount();
-            failureReason = CTLogListUpdateState.SIGNATURE_INVALID;
-            Log.e(TAG, "Signature invalid for log list verification", e);
-        } catch (IOException | GeneralSecurityException e) {
-            Log.e(TAG, "Could not verify new log list", e);
-        }
-
-        if (!success) {
             Log.w(TAG, "Log list did not pass verification");
 
-            // Avoid logging failure twice
-            if (failureReason == CTLogListUpdateState.UNKNOWN_STATE) {
-                updateFailureCount();
-                failureReason = CTLogListUpdateState.SIGNATURE_VERIFICATION_FAILED;
-            }
-
             mLogger.logCTLogListUpdateStateChangedEvent(
-                    failureReason,
+                    updateStatus.state(),
                     mDataStore.getPropertyInt(
-                            Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0));
+                            Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0),
+                    updateStatus.signature());
 
             return;
         }
+
+        boolean success = false;
 
         try (InputStream inputStream = mContext.getContentResolver().openInputStream(contentUri)) {
             success = compatVersion.install(inputStream);
@@ -276,7 +231,8 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
             mLogger.logCTLogListUpdateStateChangedEvent(
                     CTLogListUpdateState.VERSION_ALREADY_EXISTS,
                     mDataStore.getPropertyInt(
-                            Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0));
+                            Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0),
+                    updateStatus.signature());
             }
         }
 
@@ -288,6 +244,7 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
                 mDataStore.getPropertyInt(
                         Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0);
 
+        // Unable to log the signature, as that is dependent on successful downloads
         if (status.isHttpError()) {
             mLogger.logCTLogListUpdateStateChangedEvent(
                     CTLogListUpdateState.HTTP_ERROR,
