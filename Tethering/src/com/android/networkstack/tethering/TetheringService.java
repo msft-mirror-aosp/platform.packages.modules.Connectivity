@@ -111,7 +111,7 @@ public class TetheringService extends Service {
                 IIntResultListener listener) {
             if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
-            mTethering.tether(iface, IpServer.STATE_TETHERED, listener);
+            mTethering.legacyTether(iface, listener);
         }
 
         @Override
@@ -119,7 +119,7 @@ public class TetheringService extends Service {
                 IIntResultListener listener) {
             if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
-            mTethering.untether(iface, listener);
+            mTethering.legacyUntether(iface, listener);
         }
 
         @Override
@@ -156,6 +156,18 @@ public class TetheringService extends Service {
                 mTethering.stopTethering(type);
                 listener.onResult(TETHER_ERROR_NO_ERROR);
             } catch (RemoteException e) { }
+        }
+
+        @Override
+        public void stopTetheringRequest(TetheringRequest request,
+                String callerPkg, String callingAttributionTag,
+                IIntResultListener listener) {
+            if (request == null) return;
+            if (listener == null) return;
+            if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
+            request.setUid(getBinderCallingUid());
+            request.setPackageName(callerPkg);
+            mTethering.stopTetheringRequest(request, listener);
         }
 
         @Override
@@ -200,7 +212,7 @@ public class TetheringService extends Service {
             if (checkAndNotifyCommonError(callerPkg, callingAttributionTag, listener)) return;
 
             try {
-                mTethering.untetherAll();
+                mTethering.stopAllTethering();
                 listener.onResult(TETHER_ERROR_NO_ERROR);
             } catch (RemoteException e) { }
         }

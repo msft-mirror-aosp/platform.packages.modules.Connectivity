@@ -16,37 +16,29 @@
 
 package com.android.server.net.ct;
 
-import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_FAILED;
-
-/** Helper class to interface with logging to statsd. */
-public class CertificateTransparencyLogger {
-
-    public CertificateTransparencyLogger() {}
+/** Interface with logging to statsd for Certificate Transparency. */
+public interface CertificateTransparencyLogger {
 
     /**
-     * Logs a CTLogListUpdateFailed event to statsd, when no HTTP error status code is present.
+     * Logs a CTLogListUpdateStateChanged event to statsd.
      *
-     * @param failureReason reason why the log list wasn't updated (e.g. DownloadManager failures)
-     * @param failureCount number of consecutive log list update failures
+     * @param updateStatus status object containing details from this update event (e.g. log list
+     * signature, log list timestamp, failure reason if applicable)
      */
-    public void logCTLogListUpdateFailedEvent(int failureReason, int failureCount) {
-        logCTLogListUpdateFailedEvent(failureReason, failureCount, /* httpErrorStatusCode= */ 0);
-    }
+    void logCTLogListUpdateStateChangedEvent(LogListUpdateStatus updateStatus);
 
     /**
-     * Logs a CTLogListUpdateFailed event to statsd, when an HTTP error status code is provided.
+     * Intermediate enum for use with CertificateTransparencyStatsLog.
      *
-     * @param failureReason reason why the log list wasn't updated (e.g. DownloadManager failures)
-     * @param failureCount number of consecutive log list update failures
-     * @param httpErrorStatusCode if relevant, the HTTP error status code from DownloadManager
+     * This enum primarily exists to avoid 100+ char line alert fatigue.
      */
-    public void logCTLogListUpdateFailedEvent(
-            int failureReason, int failureCount, int httpErrorStatusCode) {
-        CertificateTransparencyStatsLog.write(
-                CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_FAILED,
-                failureReason,
-                failureCount,
-                httpErrorStatusCode
-        );
+    enum CTLogListUpdateState {
+        UNKNOWN_STATE,
+        HTTP_ERROR,
+        PUBLIC_KEY_NOT_FOUND,
+        SIGNATURE_INVALID,
+        SIGNATURE_NOT_FOUND,
+        SIGNATURE_VERIFICATION_FAILED,
+        VERSION_ALREADY_EXISTS
     }
 }

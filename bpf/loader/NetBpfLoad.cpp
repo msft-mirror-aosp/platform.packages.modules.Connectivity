@@ -616,9 +616,6 @@ static bool mapMatchesExpectations(const unique_fd& fd, const string& mapName,
     if (type == BPF_MAP_TYPE_DEVMAP || type == BPF_MAP_TYPE_DEVMAP_HASH)
         desired_map_flags |= BPF_F_RDONLY_PROG;
 
-    if (type == BPF_MAP_TYPE_LPM_TRIE)
-        desired_map_flags |= BPF_F_NO_PREALLOC;
-
     // The .h file enforces that this is a power of two, and page size will
     // also always be a power of two, so this logic is actually enough to
     // force it to be a multiple of the page size, as required by the kernel.
@@ -732,6 +729,12 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
         }
 
         enum bpf_map_type type = md[i].type;
+        if (type == BPF_MAP_TYPE_LPM_TRIE && !isAtLeastKernelVersion(4, 14, 0)) {
+            // On Linux Kernels older than 4.14 this map type doesn't exist - autoskip.
+            ALOGD("skipping LPM_TRIE map %s - requires kver 4.14+", mapNames[i].c_str());
+            mapFds.push_back(unique_fd());
+            continue;
+        }
         if (type == BPF_MAP_TYPE_DEVMAP && !isAtLeastKernelVersion(4, 14, 0)) {
             // On Linux Kernels older than 4.14 this map type doesn't exist, but it can kind
             // of be approximated: ARRAY has the same userspace api, though it is not usable
@@ -794,7 +797,7 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
               .key_size = md[i].key_size,
               .value_size = md[i].value_size,
               .max_entries = max_entries,
-              .map_flags = md[i].map_flags | (type == BPF_MAP_TYPE_LPM_TRIE ? BPF_F_NO_PREALLOC : 0),
+              .map_flags = md[i].map_flags,
             };
             if (isAtLeastKernelVersion(4, 15, 0))
                 strlcpy(req.map_name, mapNames[i].c_str(), sizeof(req.map_name));
@@ -1409,17 +1412,15 @@ static int doLoad(char** argv, char * const envp[]) {
     //
     // Also note that 'android_get_device_api_level()' is what the
     //   //system/core/init/apex_init_util.cpp
-    // apex init .XXrc parsing code uses for XX filtering.
-    //
-    // That code has a hack to bump <35 to 35 (to force aosp/main to parse .35rc),
-    // but could (should?) perhaps be adjusted to match this.
-    const int effective_api_level = android_get_device_api_level() + (int)unreleased;
-    const bool isAtLeastT = (effective_api_level >= __ANDROID_API_T__);
-    const bool isAtLeastU = (effective_api_level >= __ANDROID_API_U__);
-    const bool isAtLeastV = (effective_api_level >= __ANDROID_API_V__);
-    const bool isAtLeastW = (effective_api_level >  __ANDROID_API_V__);  // TODO: switch to W
+    // apex init .XXrc parsing code uses for XX filtering, and that code
+    // (now) similarly uses __ANDROID_API_FUTURE__ for non 'REL' codenames.
+    const int api_level = unreleased ? __ANDROID_API_FUTURE__ : android_get_device_api_level();
+    const bool isAtLeastT = (api_level >= __ANDROID_API_T__);
+    const bool isAtLeastU = (api_level >= __ANDROID_API_U__);
+    const bool isAtLeastV = (api_level >= __ANDROID_API_V__);
+    const bool isAtLeast25Q2 = (api_level > __ANDROID_API_V__);  // TODO: fix >
 
-    const int first_api_level = GetIntProperty("ro.board.first_api_level", effective_api_level);
+    const int first_api_level = GetIntProperty("ro.board.first_api_level", api_level);
 
     // last in U QPR2 beta1
     const bool has_platform_bpfloader_rc = exists("/system/etc/init/bpfloader.rc");
@@ -1432,10 +1433,10 @@ static int doLoad(char** argv, char * const envp[]) {
     if (isAtLeastU) ++bpfloader_ver;     // [44] BPFLOADER_MAINLINE_U_VERSION
     if (runningAsRoot) ++bpfloader_ver;  // [45] BPFLOADER_MAINLINE_U_QPR3_VERSION
     if (isAtLeastV) ++bpfloader_ver;     // [46] BPFLOADER_MAINLINE_V_VERSION
-    if (isAtLeastW) ++bpfloader_ver;     // [47] BPFLOADER_MAINLINE_W_VERSION
+    if (isAtLeast25Q2) ++bpfloader_ver;  // [47] BPFLOADER_MAINLINE_25Q2_VERSION
 
     ALOGI("NetBpfLoad v0.%u (%s) api:%d/%d kver:%07x (%s) uid:%d rc:%d%d",
-          bpfloader_ver, argv[0], android_get_device_api_level(), effective_api_level,
+          bpfloader_ver, argv[0], android_get_device_api_level(), api_level,
           kernelVersion(), describeArch(), getuid(),
           has_platform_bpfloader_rc, has_platform_netbpfload_rc);
 
@@ -1475,6 +1476,13 @@ static int doLoad(char** argv, char * const envp[]) {
         return 1;
     }
 
+    // 25Q2 bumps the kernel requirement up to 5.4
+    // see also: //system/netd/tests/kernel_test.cpp TestKernel54
+    if (isAtLeast25Q2 && !isAtLeastKernelVersion(5, 4, 0)) {
+        ALOGE("Android 25Q2 requires kernel 5.4.");
+        return 1;
+    }
+
     // Technically already required by U, but only enforce on V+
     // see also: //system/netd/tests/kernel_test.cpp TestKernel64Bit
     if (isAtLeastV && isKernel32Bit() && isAtLeastKernelVersion(5, 16, 0)) {
@@ -1498,13 +1506,13 @@ static int doLoad(char** argv, char * const envp[]) {
         bool bad = false;
 
         if (!isLtsKernel()) {
-            ALOGW("Android V only supports LTS kernels.");
+            ALOGW("Android V+ only supports LTS kernels.");
             bad = true;
         }
 
 #define REQUIRE(maj, min, sub) \
         if (isKernelVersion(maj, min) && !isAtLeastKernelVersion(maj, min, sub)) { \
-            ALOGW("Android V requires %d.%d kernel to be %d.%d.%d+.", maj, min, maj, min, sub); \
+            ALOGW("Android V+ requires %d.%d kernel to be %d.%d.%d+.", maj, min, maj, min, sub); \
             bad = true; \
         }
 

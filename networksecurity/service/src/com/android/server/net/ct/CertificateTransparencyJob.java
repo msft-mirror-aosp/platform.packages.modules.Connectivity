@@ -17,6 +17,7 @@ package com.android.server.net.ct;
 
 import android.annotation.RequiresApi;
 import android.app.AlarmManager;
+import android.app.DownloadManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -36,19 +37,24 @@ public class CertificateTransparencyJob extends BroadcastReceiver {
     private final Context mContext;
     private final DataStore mDataStore;
     private final CertificateTransparencyDownloader mCertificateTransparencyDownloader;
+    private final CompatibilityVersion mCompatVersion;
     private final AlarmManager mAlarmManager;
     private final PendingIntent mPendingIntent;
 
+    private boolean mScheduled = false;
     private boolean mDependenciesReady = false;
 
     /** Creates a new {@link CertificateTransparencyJob} object. */
     public CertificateTransparencyJob(
             Context context,
             DataStore dataStore,
-            CertificateTransparencyDownloader certificateTransparencyDownloader) {
+            CertificateTransparencyDownloader certificateTransparencyDownloader,
+            CompatibilityVersion compatVersion) {
         mContext = context;
         mDataStore = dataStore;
         mCertificateTransparencyDownloader = certificateTransparencyDownloader;
+        mCompatVersion = compatVersion;
+
         mAlarmManager = context.getSystemService(AlarmManager.class);
         mPendingIntent =
                 PendingIntent.getBroadcast(
@@ -59,15 +65,19 @@ public class CertificateTransparencyJob extends BroadcastReceiver {
     }
 
     void schedule() {
-        mContext.registerReceiver(
-                this,
-                new IntentFilter(ConfigUpdate.ACTION_UPDATE_CT_LOGS),
-                Context.RECEIVER_EXPORTED);
-        mAlarmManager.setInexactRepeating(
-                AlarmManager.ELAPSED_REALTIME,
-                SystemClock.elapsedRealtime(), // schedule first job at earliest convenient time.
-                AlarmManager.INTERVAL_DAY,
-                mPendingIntent);
+        if (!mScheduled) {
+            mContext.registerReceiver(
+                    this,
+                    new IntentFilter(ConfigUpdate.ACTION_UPDATE_CT_LOGS),
+                    Context.RECEIVER_EXPORTED);
+            mAlarmManager.setInexactRepeating(
+                    AlarmManager.ELAPSED_REALTIME,
+                    SystemClock
+                            .elapsedRealtime(), // schedule first job at earliest convenient time.
+                    AlarmManager.INTERVAL_DAY,
+                    mPendingIntent);
+        }
+        mScheduled = true;
 
         if (Config.DEBUG) {
             Log.d(TAG, "CertificateTransparencyJob scheduled.");
@@ -75,10 +85,18 @@ public class CertificateTransparencyJob extends BroadcastReceiver {
     }
 
     void cancel() {
-        mContext.unregisterReceiver(this);
-        mAlarmManager.cancel(mPendingIntent);
-        mCertificateTransparencyDownloader.stop();
+        if (mScheduled) {
+            mContext.unregisterReceiver(this);
+            mAlarmManager.cancel(mPendingIntent);
+        }
+        mScheduled = false;
+
+        if (mDependenciesReady) {
+            stopDependencies();
+        }
         mDependenciesReady = false;
+
+        mCompatVersion.delete();
 
         if (Config.DEBUG) {
             Log.d(TAG, "CertificateTransparencyJob canceled.");
@@ -95,20 +113,37 @@ public class CertificateTransparencyJob extends BroadcastReceiver {
             Log.d(TAG, "Starting CT daily job.");
         }
         if (!mDependenciesReady) {
-            mDataStore.load();
-            mCertificateTransparencyDownloader.start();
+            startDependencies();
             mDependenciesReady = true;
         }
-
-        mDataStore.setProperty(Config.CONTENT_URL, Config.URL_LOG_LIST);
-        mDataStore.setProperty(Config.METADATA_URL, Config.URL_SIGNATURE);
-        mDataStore.setProperty(Config.PUBLIC_KEY_URL, Config.URL_PUBLIC_KEY);
-        mDataStore.store();
 
         if (mCertificateTransparencyDownloader.startPublicKeyDownload() == -1) {
             Log.e(TAG, "Public key download not started.");
         } else if (Config.DEBUG) {
             Log.d(TAG, "Public key download started successfully.");
+        }
+    }
+
+    private void startDependencies() {
+        mDataStore.load();
+        mCertificateTransparencyDownloader.addCompatibilityVersion(mCompatVersion);
+        mContext.registerReceiver(
+                mCertificateTransparencyDownloader,
+                new IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+                Context.RECEIVER_EXPORTED);
+
+        if (Config.DEBUG) {
+            Log.d(TAG, "CertificateTransparencyJob dependencies ready.");
+        }
+    }
+
+    private void stopDependencies() {
+        mContext.unregisterReceiver(mCertificateTransparencyDownloader);
+        mCertificateTransparencyDownloader.clearCompatibilityVersions();
+        mDataStore.delete();
+
+        if (Config.DEBUG) {
+            Log.d(TAG, "CertificateTransparencyJob dependencies stopped.");
         }
     }
 }

@@ -174,10 +174,10 @@ public class IpServer extends StateMachineShim {
         /**
          * Request Tethering change.
          *
-         * @param request the TetheringRequest this IpServer was enabled with.
+         * @param tetheringType the downstream type of this IpServer.
          * @param enabled enable or disable tethering.
          */
-        public void requestEnableTethering(TetheringRequest request, boolean enabled) { }
+        public void requestEnableTethering(int tetheringType, boolean enabled) { }
     }
 
     /** Capture IpServer dependencies, for injection. */
@@ -429,9 +429,11 @@ public class IpServer extends StateMachineShim {
         return Collections.unmodifiableList(mDhcpLeases);
     }
 
-    /** Enable this IpServer. IpServer state machine will be tethered or localHotspot state. */
-    public void enable(final int requestedState, final TetheringRequest request) {
-        sendMessage(CMD_TETHER_REQUESTED, requestedState, 0, request);
+    /**
+     * Enable this IpServer. IpServer state machine will be tethered or localHotspot state based on
+     * the connectivity scope of the TetheringRequest. */
+    public void enable(@NonNull final TetheringRequest request) {
+        sendMessage(CMD_TETHER_REQUESTED, 0, 0, request);
     }
 
     /** Stop this IpServer. After this is called this IpServer should not be used any more. */
@@ -1026,11 +1028,11 @@ public class IpServer extends StateMachineShim {
         mLinkProperties.setInterfaceName(mIfaceName);
     }
 
-    private void maybeConfigureStaticIp(final TetheringRequest request) {
+    private void maybeConfigureStaticIp(@NonNull final TetheringRequest request) {
         // Ignore static address configuration if they are invalid or null. In theory, static
         // addresses should not be invalid here because TetheringManager do not allow caller to
         // specify invalid static address configuration.
-        if (request == null || request.getLocalIpv4Address() == null
+        if (request.getLocalIpv4Address() == null
                 || request.getClientStaticIpv4Address() == null || !checkStaticAddressConfiguration(
                 request.getLocalIpv4Address(), request.getClientStaticIpv4Address())) {
             return;
@@ -1053,13 +1055,13 @@ public class IpServer extends StateMachineShim {
                 case CMD_TETHER_REQUESTED:
                     mLastError = TETHER_ERROR_NO_ERROR;
                     mTetheringRequest = (TetheringRequest) message.obj;
-                    switch (message.arg1) {
-                        case STATE_LOCAL_ONLY:
-                            maybeConfigureStaticIp((TetheringRequest) message.obj);
+                    switch (mTetheringRequest.getConnectivityScope()) {
+                        case CONNECTIVITY_SCOPE_LOCAL:
+                            maybeConfigureStaticIp(mTetheringRequest);
                             transitionTo(mLocalHotspotState);
                             break;
-                        case STATE_TETHERED:
-                            maybeConfigureStaticIp((TetheringRequest) message.obj);
+                        case CONNECTIVITY_SCOPE_GLOBAL:
+                            maybeConfigureStaticIp(mTetheringRequest);
                             transitionTo(mTetheredState);
                             break;
                         default:
@@ -1189,8 +1191,8 @@ public class IpServer extends StateMachineShim {
                     handleNewPrefixRequest((IpPrefix) message.obj);
                     break;
                 case CMD_NOTIFY_PREFIX_CONFLICT:
-                    mLog.i("restart tethering: " + mIfaceName);
-                    mCallback.requestEnableTethering(mTetheringRequest, false /* enabled */);
+                    mLog.i("restart tethering: " + mInterfaceType);
+                    mCallback.requestEnableTethering(mInterfaceType, false /* enabled */);
                     transitionTo(mWaitingForRestartState);
                     break;
                 case CMD_SERVICE_FAILED_TO_START:
@@ -1474,12 +1476,12 @@ public class IpServer extends StateMachineShim {
                 case CMD_TETHER_UNREQUESTED:
                     transitionTo(mInitialState);
                     mLog.i("Untethered (unrequested) and restarting " + mIfaceName);
-                    mCallback.requestEnableTethering(mTetheringRequest, true /* enabled */);
+                    mCallback.requestEnableTethering(mInterfaceType, true /* enabled */);
                     break;
                 case CMD_INTERFACE_DOWN:
                     transitionTo(mUnavailableState);
                     mLog.i("Untethered (interface down) and restarting " + mIfaceName);
-                    mCallback.requestEnableTethering(mTetheringRequest, true /* enabled */);
+                    mCallback.requestEnableTethering(mInterfaceType, true /* enabled */);
                     break;
                 default:
                     return false;

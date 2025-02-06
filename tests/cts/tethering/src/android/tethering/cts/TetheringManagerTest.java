@@ -45,6 +45,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeFalse;
@@ -87,9 +88,11 @@ import androidx.test.runner.AndroidJUnit4;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.flags.Flags;
 import com.android.testutils.ParcelUtils;
+import com.android.testutils.com.android.testutils.CarrierConfigRule;
 
 import org.junit.After;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -98,13 +101,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 @RunWith(AndroidJUnit4.class)
 public class TetheringManagerTest {
+    @Rule
+    public final CarrierConfigRule mCarrierConfigRule = new CarrierConfigRule();
 
     private Context mContext;
 
@@ -387,18 +391,21 @@ public class TetheringManagerTest {
 
             mCtsTetheringUtils.stopWifiTethering(tetherEventCallback);
 
-            try {
-                final int ret = runAsShell(TETHER_PRIVILEGED, () -> mTM.tether(wifiTetheringIface));
-                // There is no guarantee that the wifi interface will be available after disabling
-                // the hotspot, so don't fail the test if the call to tether() fails.
-                if (ret == TETHER_ERROR_NO_ERROR) {
-                    // If calling #tether successful, there is a callback to tell the result of
-                    // tethering setup.
-                    tetherEventCallback.expectErrorOrTethered(
-                            new TetheringInterface(TETHERING_WIFI, wifiTetheringIface));
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
+                try {
+                    final int ret = runAsShell(TETHER_PRIVILEGED,
+                            () -> mTM.tether(wifiTetheringIface));
+                    // There is no guarantee that the wifi interface will be available after
+                    // disabling the hotspot, so don't fail the test if the call to tether() fails.
+                    if (ret == TETHER_ERROR_NO_ERROR) {
+                        // If calling #tether successful, there is a callback to tell the result of
+                        // tethering setup.
+                        tetherEventCallback.expectErrorOrTethered(
+                                new TetheringInterface(TETHERING_WIFI, wifiTetheringIface));
+                    }
+                } finally {
+                    runAsShell(TETHER_PRIVILEGED, () -> mTM.untether(wifiTetheringIface));
                 }
-            } finally {
-                runAsShell(TETHER_PRIVILEGED, () -> mTM.untether(wifiTetheringIface));
             }
         } finally {
             mCtsTetheringUtils.unregisterTetheringEventCallback(tetherEventCallback);
@@ -450,14 +457,26 @@ public class TetheringManagerTest {
 
     @Test
     public void testStopTetheringRequest() throws Exception {
-        TetheringRequest request = new TetheringRequest.Builder(TETHERING_WIFI).build();
-        Executor executor = Runnable::run;
-        TetheringManager.StopTetheringCallback callback =
-                new TetheringManager.StopTetheringCallback() {};
+        assumeTrue(isTetheringWithSoftApConfigEnabled());
+        final TestTetheringEventCallback tetherEventCallback =
+                mCtsTetheringUtils.registerTetheringEventCallback();
         try {
-            mTM.stopTethering(request, executor, callback);
-            fail("stopTethering should throw UnsupportedOperationException");
-        } catch (UnsupportedOperationException expect) { }
+            tetherEventCallback.assumeWifiTetheringSupported(mContext);
+
+            // stopTethering without any tethering active should fail.
+            TetheringRequest request = new TetheringRequest.Builder(TETHERING_WIFI).build();
+            mCtsTetheringUtils.stopTethering(request, false /* expectSuccess */);
+
+            // Start wifi tethering
+            mCtsTetheringUtils.startWifiTethering(tetherEventCallback);
+
+            // stopTethering should succeed now that there's a request.
+            mCtsTetheringUtils.stopTethering(request, true /* expectSuccess */);
+            tetherEventCallback.expectNoTetheringActive();
+        } finally {
+            mCtsTetheringUtils.stopAllTethering();
+            mCtsTetheringUtils.unregisterTetheringEventCallback(tetherEventCallback);
+        }
     }
 
     private boolean isTetheringWithSoftApConfigEnabled() {
@@ -547,22 +566,13 @@ public class TetheringManagerTest {
         // Override carrier config to ignore entitlement check.
         final PersistableBundle bundle = new PersistableBundle();
         bundle.putBoolean(CarrierConfigManager.KEY_REQUIRE_ENTITLEMENT_CHECKS_BOOL, false);
-        overrideCarrierConfig(bundle);
+        mCarrierConfigRule.addConfigOverrides(
+                SubscriptionManager.getDefaultSubscriptionId(), bundle);
 
         // Verify that requestLatestTetheringEntitlementResult() can get entitlement
         // result TETHER_ERROR_NO_ERROR due to provisioning bypassed.
         assertEntitlementResult(listener -> mTM.requestLatestTetheringEntitlementResult(
                 TETHERING_WIFI, false, c -> c.run(), listener), TETHER_ERROR_NO_ERROR);
-
-        // Reset carrier config.
-        overrideCarrierConfig(null);
-    }
-
-    private void overrideCarrierConfig(PersistableBundle bundle) {
-        final CarrierConfigManager configManager = (CarrierConfigManager) mContext
-                .getSystemService(Context.CARRIER_CONFIG_SERVICE);
-        final int subId = SubscriptionManager.getDefaultSubscriptionId();
-        runAsShell(MODIFY_PHONE_STATE, () -> configManager.overrideConfig(subId, bundle));
     }
 
     private boolean isTetheringApnRequired() {
@@ -622,5 +632,12 @@ public class TetheringManagerTest {
                 mCtsNetUtils.connectToWifi();
             }
         }
+    }
+
+    @Test
+    public void testLegacyTetherApisThrowUnsupportedOperationExceptionAfterV() {
+        assumeTrue(Build.VERSION.SDK_INT > Build.VERSION_CODES.VANILLA_ICE_CREAM);
+        assertThrows(UnsupportedOperationException.class, () -> mTM.tether("iface"));
+        assertThrows(UnsupportedOperationException.class, () -> mTM.untether("iface"));
     }
 }
