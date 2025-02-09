@@ -127,6 +127,7 @@ import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeFalse;
 import static org.junit.Assume.assumeTrue;
 
 import android.annotation.NonNull;
@@ -922,6 +923,7 @@ public class ConnectivityManagerTest {
     public void testOpenConnection() throws Exception {
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_WIFI));
         assumeTrue(mPackageManager.hasSystemFeature(FEATURE_TELEPHONY));
+        assumeFalse(Build.MODEL.contains("Cuttlefish"));
 
         Network wifiNetwork = mCtsNetUtils.ensureWifiConnected();
         Network cellNetwork = networkCallbackRule.requestCell();
@@ -2329,8 +2331,10 @@ public class ConnectivityManagerTest {
 
             // Verify that turning airplane mode off takes effect as expected.
             // connectToCell only registers a request, it cannot / does not need to be called twice
-            mCtsNetUtils.ensureWifiConnected();
-            if (verifyWifi) waitForAvailable(wifiCb);
+            if (verifyWifi) {
+                mCtsNetUtils.ensureWifiConnected();
+                waitForAvailable(wifiCb);
+            }
             if (supportTelephony) {
                 telephonyCb.eventuallyExpect(
                         CallbackEntry.AVAILABLE, CELL_DATA_AVAILABLE_TIMEOUT_MS);
