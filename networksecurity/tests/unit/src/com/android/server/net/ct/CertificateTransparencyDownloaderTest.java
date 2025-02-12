@@ -20,15 +20,9 @@ import static com.google.common.io.Files.toByteArray;
 import static com.google.common.truth.Truth.assertThat;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
-
-import static java.nio.charset.StandardCharsets.UTF_8;
 
 import android.app.DownloadManager;
 import android.app.DownloadManager.Query;
@@ -50,6 +44,7 @@ import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
@@ -59,7 +54,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -67,6 +61,7 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Signature;
 import java.util.Base64;
+import java.util.Optional;
 
 /** Tests for the {@link CertificateTransparencyDownloader}. */
 @RunWith(JUnit4.class)
@@ -74,6 +69,8 @@ public class CertificateTransparencyDownloaderTest {
 
     @Mock private DownloadManager mDownloadManager;
     @Mock private CertificateTransparencyLogger mLogger;
+    private ArgumentCaptor<LogListUpdateStatus> mUpdateStatusCaptor =
+            ArgumentCaptor.forClass(LogListUpdateStatus.class);
 
     private PrivateKey mPrivateKey;
     private PublicKey mPublicKey;
@@ -84,6 +81,7 @@ public class CertificateTransparencyDownloaderTest {
     private CertificateTransparencyDownloader mCertificateTransparencyDownloader;
 
     private long mNextDownloadId = 666;
+    private static final long LOG_LIST_TIMESTAMP = 123456789L;
 
     @Before
     public void setUp() throws IOException, GeneralSecurityException {
@@ -207,14 +205,12 @@ public class CertificateTransparencyDownloaderTest {
                 mContext,
                 makePublicKeyDownloadFailedIntent(DownloadManager.ERROR_INSUFFICIENT_SPACE));
 
-        assertThat(
-                        mDataStore.getPropertyInt(
-                                Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0))
-                .isEqualTo(1);
         verify(mLogger, times(1))
-                .logCTLogListUpdateStateChangedEventWithDownloadStatus(
-                        DownloadManager.ERROR_INSUFFICIENT_SPACE,
-                        /* failureCount= */ 1);
+                .logCTLogListUpdateStateChangedEvent(
+                        LogListUpdateStatus.builder()
+                                .setDownloadStatus(
+                                        Optional.of(DownloadManager.ERROR_INSUFFICIENT_SPACE))
+                                .build());
     }
 
     @Test
@@ -256,14 +252,12 @@ public class CertificateTransparencyDownloaderTest {
                 makeMetadataDownloadFailedIntent(
                         mCompatVersion, DownloadManager.ERROR_INSUFFICIENT_SPACE));
 
-        assertThat(
-                        mDataStore.getPropertyInt(
-                                Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0))
-                .isEqualTo(1);
         verify(mLogger, times(1))
-                .logCTLogListUpdateStateChangedEventWithDownloadStatus(
-                        DownloadManager.ERROR_INSUFFICIENT_SPACE,
-                        /* failureCount= */ 1);
+                .logCTLogListUpdateStateChangedEvent(
+                        LogListUpdateStatus.builder()
+                                .setDownloadStatus(
+                                        Optional.of(DownloadManager.ERROR_INSUFFICIENT_SPACE))
+                                .build());
     }
 
     @Test
@@ -309,14 +303,12 @@ public class CertificateTransparencyDownloaderTest {
                 makeContentDownloadFailedIntent(
                         mCompatVersion, DownloadManager.ERROR_INSUFFICIENT_SPACE));
 
-        assertThat(
-                        mDataStore.getPropertyInt(
-                                Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0))
-                .isEqualTo(1);
         verify(mLogger, times(1))
-                .logCTLogListUpdateStateChangedEventWithDownloadStatus(
-                        DownloadManager.ERROR_INSUFFICIENT_SPACE,
-                        /* failureCount= */ 1);
+                .logCTLogListUpdateStateChangedEvent(
+                        LogListUpdateStatus.builder()
+                                .setDownloadStatus(
+                                        Optional.of(DownloadManager.ERROR_INSUFFICIENT_SPACE))
+                                .build());
     }
 
     @Test
@@ -352,30 +344,10 @@ public class CertificateTransparencyDownloaderTest {
         mCertificateTransparencyDownloader.onReceive(
                 mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
 
-        assertThat(
-                        mDataStore.getPropertyInt(
-                                Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0))
-                .isEqualTo(1);
         verify(mLogger, times(1))
-                .logCTLogListUpdateStateChangedEvent(
-                        CTLogListUpdateState.PUBLIC_KEY_NOT_FOUND,
-                        /* failureCount= */ 1,
-                        "");
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.SIGNATURE_NOT_FOUND),
-                        anyInt(),
-                        anyString());
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.SIGNATURE_INVALID),
-                        anyInt(),
-                        anyString());
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.SIGNATURE_VERIFICATION_FAILED),
-                        anyInt(),
-                        anyString());
+                .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
+        assertThat(mUpdateStatusCaptor.getValue().state())
+                .isEqualTo(CTLogListUpdateState.PUBLIC_KEY_NOT_FOUND);
     }
 
     @Test
@@ -398,30 +370,10 @@ public class CertificateTransparencyDownloaderTest {
                 mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
 
         // Assert
-        assertThat(
-                        mDataStore.getPropertyInt(
-                                Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0))
-                .isEqualTo(1);
         verify(mLogger, times(1))
-                .logCTLogListUpdateStateChangedEvent(
-                        CTLogListUpdateState.SIGNATURE_INVALID,
-                        /* failureCount= */ 1,
-                        ""); // Should be empty b/c invalid key exception thrown
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.SIGNATURE_VERIFICATION_FAILED),
-                        anyInt(),
-                        anyString());
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.PUBLIC_KEY_NOT_FOUND),
-                        anyInt(),
-                        anyString());
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.SIGNATURE_NOT_FOUND),
-                        anyInt(),
-                        anyString());
+                .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
+        assertThat(mUpdateStatusCaptor.getValue().state())
+                .isEqualTo(CTLogListUpdateState.SIGNATURE_INVALID);
     }
 
     @Test
@@ -444,31 +396,12 @@ public class CertificateTransparencyDownloaderTest {
                 mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
 
         // Assert
-        assertThat(
-                        mDataStore.getPropertyInt(
-                                Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0))
-                .isEqualTo(1);
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.SIGNATURE_NOT_FOUND),
-                        anyInt(),
-                        anyString());
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.SIGNATURE_INVALID),
-                        anyInt(),
-                        anyString());
-        verify(mLogger, never())
-                .logCTLogListUpdateStateChangedEvent(
-                        eq(CTLogListUpdateState.PUBLIC_KEY_NOT_FOUND),
-                        anyInt(),
-                        anyString());
-        byte[] signatureBytes = Base64.getDecoder().decode(toByteArray(metadataFile));
         verify(mLogger, times(1))
-                .logCTLogListUpdateStateChangedEvent(
-                        CTLogListUpdateState.SIGNATURE_VERIFICATION_FAILED,
-                        /* failureCount= */ 1,
-                        new String(signatureBytes, StandardCharsets.UTF_8));
+                .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
+        LogListUpdateStatus statusValue = mUpdateStatusCaptor.getValue();
+        assertThat(statusValue.state())
+                .isEqualTo(CTLogListUpdateState.SIGNATURE_VERIFICATION_FAILED);
+        assertThat(statusValue.signature()).isEqualTo(new String(toByteArray(metadataFile)));
     }
 
     @Test
@@ -485,16 +418,11 @@ public class CertificateTransparencyDownloaderTest {
         mCertificateTransparencyDownloader.onReceive(
                 mContext, makeContentDownloadCompleteIntent(mCompatVersion, invalidLogListFile));
 
-        assertThat(
-                        mDataStore.getPropertyInt(
-                                Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0))
-                .isEqualTo(1);
-        byte[] signatureBytes = Base64.getDecoder().decode(toByteArray(metadataFile));
         verify(mLogger, times(1))
-                .logCTLogListUpdateStateChangedEvent(
-                        CTLogListUpdateState.VERSION_ALREADY_EXISTS,
-                        /* failureCount= */ 1,
-                        new String(signatureBytes, StandardCharsets.UTF_8));
+                .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
+        LogListUpdateStatus statusValue = mUpdateStatusCaptor.getValue();
+        assertThat(statusValue.state()).isEqualTo(CTLogListUpdateState.LOG_LIST_INVALID);
+        assertThat(statusValue.signature()).isEqualTo(new String(toByteArray(metadataFile)));
     }
 
     @Test
@@ -532,7 +460,8 @@ public class CertificateTransparencyDownloaderTest {
     }
 
     @Test
-    public void testDownloader_endToEndSuccess_installNewVersion() throws Exception {
+    public void testDownloader_endToEndSuccess_installNewVersion_andLogsSuccess() throws Exception {
+        // Arrange
         String newVersion = "456";
         File logListFile = makeLogListFile(newVersion);
         File metadataFile = sign(logListFile);
@@ -540,6 +469,7 @@ public class CertificateTransparencyDownloaderTest {
 
         assertNoVersionIsInstalled();
 
+        // Act
         // 1. Start download of public key.
         mCertificateTransparencyDownloader.startPublicKeyDownload();
 
@@ -557,7 +487,15 @@ public class CertificateTransparencyDownloaderTest {
         mCertificateTransparencyDownloader.onReceive(
                 mContext, makeContentDownloadCompleteIntent(mCompatVersion, logListFile));
 
+        // Assert
         assertInstallSuccessful(newVersion);
+        verify(mLogger, times(1))
+                .logCTLogListUpdateStateChangedEvent(mUpdateStatusCaptor.capture());
+
+        LogListUpdateStatus statusValue = mUpdateStatusCaptor.getValue();
+        assertThat(statusValue.state()).isEqualTo(CTLogListUpdateState.SUCCESS);
+        assertThat(statusValue.signature()).isEqualTo(new String(toByteArray(metadataFile)));
+        assertThat(statusValue.logListTimestamp()).isEqualTo(LOG_LIST_TIMESTAMP);
     }
 
     private void assertNoVersionIsInstalled() {
@@ -666,7 +604,11 @@ public class CertificateTransparencyDownloaderTest {
         File logListFile = File.createTempFile("log_list", "json");
 
         try (OutputStream outputStream = new FileOutputStream(logListFile)) {
-            outputStream.write(new JSONObject().put("version", version).toString().getBytes(UTF_8));
+            JSONObject contentJson =
+                    new JSONObject()
+                            .put("version", version)
+                            .put("log_list_timestamp", LOG_LIST_TIMESTAMP);
+            outputStream.write(contentJson.toString().getBytes());
         }
 
         return logListFile;

@@ -19,10 +19,13 @@ import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListU
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SIGNATURE_INVALID;
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SIGNATURE_NOT_FOUND;
 import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SIGNATURE_VERIFICATION_FAILED;
+import static com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState.SUCCESS;
 
 import com.android.server.net.ct.CertificateTransparencyLogger.CTLogListUpdateState;
 
 import com.google.auto.value.AutoValue;
+
+import java.util.Optional;
 
 /** Class to represent the signature verification status for Certificate Transparency. */
 @AutoValue
@@ -33,6 +36,10 @@ public abstract class LogListUpdateStatus {
     abstract String signature();
 
     abstract long logListTimestamp();
+
+    abstract int httpErrorStatusCode();
+
+    abstract Optional<Integer> downloadStatus();
 
     boolean isSignatureVerified() {
         // Check that none of the signature verification failures have been set as the state
@@ -46,6 +53,14 @@ public abstract class LogListUpdateStatus {
         return signature() != null && signature().length() > 0;
     }
 
+    boolean isSuccessful() {
+        return state() == SUCCESS;
+    }
+
+    static LogListUpdateStatus getDefaultInstance() {
+        return builder().build();
+    }
+
     @AutoValue.Builder
     abstract static class Builder {
         abstract Builder setState(CTLogListUpdateState updateState);
@@ -53,6 +68,10 @@ public abstract class LogListUpdateStatus {
         abstract Builder setSignature(String signature);
 
         abstract Builder setLogListTimestamp(long timestamp);
+
+        abstract Builder setHttpErrorStatusCode(int httpStatusCode);
+
+        abstract Builder setDownloadStatus(Optional<Integer> downloadStatus);
 
         abstract LogListUpdateStatus build();
     }
@@ -63,6 +82,8 @@ public abstract class LogListUpdateStatus {
         return new AutoValue_LogListUpdateStatus.Builder()
             .setState(CTLogListUpdateState.UNKNOWN_STATE)
             .setSignature("")
-            .setLogListTimestamp(0L);
+            .setLogListTimestamp(0L)
+            .setHttpErrorStatusCode(0)
+            .setDownloadStatus(Optional.empty());
     }
 }
