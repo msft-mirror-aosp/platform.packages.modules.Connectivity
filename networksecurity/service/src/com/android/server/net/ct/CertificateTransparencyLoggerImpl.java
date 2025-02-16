@@ -20,6 +20,7 @@ import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFIC
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_DEVICE_OFFLINE;
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_DOWNLOAD_CANNOT_RESUME;
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_HTTP_ERROR;
+import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_LOG_LIST_INVALID;
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_NO_DISK_SPACE;
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_PUBLIC_KEY_NOT_FOUND;
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_SIGNATURE_INVALID;
@@ -29,53 +30,78 @@ import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFIC
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_UNKNOWN;
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_VERSION_ALREADY_EXISTS;
 import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__PENDING_WAITING_FOR_WIFI;
+import static com.android.server.net.ct.CertificateTransparencyStatsLog.CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__SUCCESS;
 
 import android.app.DownloadManager;
 
 /** Implementation for logging to statsd for Certificate Transparency. */
 class CertificateTransparencyLoggerImpl implements CertificateTransparencyLogger {
 
-    @Override
-    public void logCTLogListUpdateStateChangedEventWithDownloadStatus(
-            int downloadStatus, int failureCount) {
-        logCTLogListUpdateStateChangedEvent(
-                downloadStatusToFailureReason(downloadStatus),
-                failureCount,
-                /* httpErrorStatusCode= */ 0,
-                /* signature= */ "");
+    private final DataStore mDataStore;
+
+    CertificateTransparencyLoggerImpl(DataStore dataStore) {
+        mDataStore = dataStore;
     }
 
     @Override
-    public void logCTLogListUpdateStateChangedEvent(
-            CTLogListUpdateState failureReason, int failureCount, String signature) {
-        logCTLogListUpdateStateChangedEvent(
-                localEnumToStatsLogEnum(failureReason),
-                failureCount,
-                /* httpErrorStatusCode= */ 0,
-                signature);
-    }
+    public void logCTLogListUpdateStateChangedEvent(LogListUpdateStatus updateStatus) {
+        if (updateStatus.isSuccessful()) {
+            resetFailureCount();
+        } else {
+            updateFailureCount();
+        }
 
-    @Override
-    public void logCTLogListUpdateStateChangedEvent(
-            CTLogListUpdateState failureReason,
-            int failureCount,
-            int httpErrorStatusCode) {
+        int updateState =
+                updateStatus
+                        .downloadStatus()
+                        .map(s -> downloadStatusToFailureReason(s))
+                        .orElseGet(() -> localEnumToStatsLogEnum(updateStatus.state()));
+        int failureCount =
+                mDataStore.getPropertyInt(
+                        Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0);
+
         logCTLogListUpdateStateChangedEvent(
-                localEnumToStatsLogEnum(failureReason),
+                updateState,
                 failureCount,
-                httpErrorStatusCode,
-                /* signature= */ "");
+                updateStatus.httpErrorStatusCode(),
+                updateStatus.signature(),
+                updateStatus.logListTimestamp());
     }
 
     private void logCTLogListUpdateStateChangedEvent(
-            int failureReason, int failureCount, int httpErrorStatusCode, String signature) {
+            int updateState,
+            int failureCount,
+            int httpErrorStatusCode,
+            String signature,
+            long logListTimestamp) {
         CertificateTransparencyStatsLog.write(
                 CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED,
-                failureReason,
+                updateState,
                 failureCount,
                 httpErrorStatusCode,
                 signature,
-                /* logListTimestampMs= */ 0);
+                logListTimestamp);
+    }
+
+    /**
+     * Resets the number of consecutive log list update failures in the data store back to zero.
+     */
+    private void resetFailureCount() {
+        mDataStore.setPropertyInt(Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* value= */ 0);
+        mDataStore.store();
+    }
+
+    /**
+     * Updates the data store with the current number of consecutive log list update failures.
+     */
+    private void updateFailureCount() {
+        int failure_count =
+                mDataStore.getPropertyInt(
+                        Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0);
+        int new_failure_count = failure_count + 1;
+
+        mDataStore.setPropertyInt(Config.LOG_LIST_UPDATE_FAILURE_COUNT, new_failure_count);
+        mDataStore.store();
     }
 
     /** Converts DownloadStatus reason into failure reason to log. */
@@ -105,6 +131,8 @@ class CertificateTransparencyLoggerImpl implements CertificateTransparencyLogger
         switch (updateState) {
             case HTTP_ERROR:
                 return CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_HTTP_ERROR;
+            case LOG_LIST_INVALID:
+                return CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_LOG_LIST_INVALID;
             case PUBLIC_KEY_NOT_FOUND:
                 return CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_PUBLIC_KEY_NOT_FOUND;
             case SIGNATURE_INVALID:
@@ -113,6 +141,8 @@ class CertificateTransparencyLoggerImpl implements CertificateTransparencyLogger
                 return CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_SIGNATURE_NOT_FOUND;
             case SIGNATURE_VERIFICATION_FAILED:
                 return CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_SIGNATURE_VERIFICATION;
+            case SUCCESS:
+                return CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__SUCCESS;
             case VERSION_ALREADY_EXISTS:
                 return CERTIFICATE_TRANSPARENCY_LOG_LIST_UPDATE_STATE_CHANGED__UPDATE_STATUS__FAILURE_VERSION_ALREADY_EXISTS;
             case UNKNOWN_STATE:

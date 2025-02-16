@@ -35,6 +35,7 @@ import java.io.InputStream;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /** Helper class to download certificate transparency log files. */
 @RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
@@ -198,76 +199,39 @@ class CertificateTransparencyDownloader extends BroadcastReceiver {
         }
 
         LogListUpdateStatus updateStatus = mSignatureVerifier.verify(contentUri, metadataUri);
-        // TODO(b/391327942): parse file and log the timestamp of the log list
 
         if (!updateStatus.isSignatureVerified()) {
-            updateFailureCount();
             Log.w(TAG, "Log list did not pass verification");
 
-            mLogger.logCTLogListUpdateStateChangedEvent(
-                    updateStatus.state(),
-                    mDataStore.getPropertyInt(
-                            Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0),
-                    updateStatus.signature());
+            mLogger.logCTLogListUpdateStateChangedEvent(updateStatus);
 
             return;
         }
 
-        boolean success = false;
-
         try (InputStream inputStream = mContext.getContentResolver().openInputStream(contentUri)) {
-            success = compatVersion.install(inputStream);
+            updateStatus = compatVersion.install(inputStream, updateStatus.toBuilder());
         } catch (IOException e) {
             Log.e(TAG, "Could not install new content", e);
             return;
         }
 
-        if (success) {
-            // Reset the number of consecutive log list failure updates back to zero.
-            mDataStore.setPropertyInt(Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* value= */ 0);
-            mDataStore.store();
-        } else {
-            updateFailureCount();
-            mLogger.logCTLogListUpdateStateChangedEvent(
-                    CTLogListUpdateState.VERSION_ALREADY_EXISTS,
-                    mDataStore.getPropertyInt(
-                            Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0),
-                    updateStatus.signature());
-            }
-        }
+        mLogger.logCTLogListUpdateStateChangedEvent(updateStatus);
+    }
 
     private void handleDownloadFailed(DownloadStatus status) {
         Log.e(TAG, "Download failed with " + status);
 
-        updateFailureCount();
-        int failureCount =
-                mDataStore.getPropertyInt(
-                        Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0);
-
-        // Unable to log the signature, as that is dependent on successful downloads
+        LogListUpdateStatus.Builder updateStatusBuilder = LogListUpdateStatus.builder();
         if (status.isHttpError()) {
-            mLogger.logCTLogListUpdateStateChangedEvent(
-                    CTLogListUpdateState.HTTP_ERROR,
-                    failureCount,
-                    status.reason());
+            updateStatusBuilder
+                    .setState(CTLogListUpdateState.HTTP_ERROR)
+                    .setHttpErrorStatusCode(status.reason());
         } else {
             // TODO(b/384935059): handle blocked domain logging
-            mLogger.logCTLogListUpdateStateChangedEventWithDownloadStatus(
-                    status.reason(), failureCount);
+            updateStatusBuilder.setDownloadStatus(Optional.of(status.reason()));
         }
-    }
 
-    /**
-     * Updates the data store with the current number of consecutive log list update failures.
-     */
-    private void updateFailureCount() {
-        int failure_count =
-                mDataStore.getPropertyInt(
-                        Config.LOG_LIST_UPDATE_FAILURE_COUNT, /* defaultValue= */ 0);
-        int new_failure_count = failure_count + 1;
-
-        mDataStore.setPropertyInt(Config.LOG_LIST_UPDATE_FAILURE_COUNT, new_failure_count);
-        mDataStore.store();
+        mLogger.logCTLogListUpdateStateChangedEvent(updateStatusBuilder.build());
     }
 
     private long download(String url) {
