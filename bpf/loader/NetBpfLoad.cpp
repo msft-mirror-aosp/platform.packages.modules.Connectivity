@@ -61,6 +61,7 @@
 
 // The following matches bpf_helpers.h, which is only for inclusion in bpf code
 #define BPFLOADER_MAINLINE_VERSION 42u
+#define BPFLOADER_MAINLINE_25Q2_VERSION 47u
 
 using android::base::EndsWith;
 using android::base::GetIntProperty;
@@ -823,14 +824,14 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
                                    "tmp_map_" + objName + "_" + mapNames[i];
                 ret = bpfFdPin(fd, createLoc.c_str());
                 if (ret) {
-                    int err = errno;
+                    const int err = errno;
                     ALOGE("create %s -> %d [%d:%s]", createLoc.c_str(), ret, err, strerror(err));
                     return -err;
                 }
                 ret = renameat2(AT_FDCWD, createLoc.c_str(),
                                 AT_FDCWD, mapPinLoc.c_str(), RENAME_NOREPLACE);
                 if (ret) {
-                    int err = errno;
+                    const int err = errno;
                     ALOGE("rename %s %s -> %d [%d:%s]", createLoc.c_str(), mapPinLoc.c_str(), ret,
                           err, strerror(err));
                     return -err;
@@ -838,32 +839,34 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
             } else {
                 ret = bpfFdPin(fd, mapPinLoc.c_str());
                 if (ret) {
-                    int err = errno;
+                    const int err = errno;
                     ALOGE("pin %s -> %d [%d:%s]", mapPinLoc.c_str(), ret, err, strerror(err));
                     return -err;
                 }
             }
             ret = chmod(mapPinLoc.c_str(), md[i].mode);
             if (ret) {
-                int err = errno;
+                const int err = errno;
                 ALOGE("chmod(%s, 0%o) = %d [%d:%s]", mapPinLoc.c_str(), md[i].mode, ret, err,
                       strerror(err));
                 return -err;
             }
             ret = chown(mapPinLoc.c_str(), (uid_t)md[i].uid, (gid_t)md[i].gid);
             if (ret) {
-                int err = errno;
+                const int err = errno;
                 ALOGE("chown(%s, %u, %u) = %d [%d:%s]", mapPinLoc.c_str(), md[i].uid, md[i].gid,
                       ret, err, strerror(err));
                 return -err;
             }
         }
 
-        int mapId = bpfGetFdMapId(fd);
-        if (mapId == -1) {
-            if (isAtLeastKernelVersion(4, 14, 0))
-                ALOGE("bpfGetFdMapId failed, ret: %d [%d]", mapId, errno);
-        } else {
+        if (isAtLeastKernelVersion(4, 14, 0)) {
+            int mapId = bpfGetFdMapId(fd);
+            if (mapId == -1) {
+                const int err = errno;
+                ALOGE("bpfGetFdMapId failed, errno: %d", err);
+                return -err;
+            }
             ALOGI("map %s id %d", mapPinLoc.c_str(), mapId);
         }
 
@@ -1006,7 +1009,7 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
         if (access(progPinLoc.c_str(), F_OK) == 0) {
             fd.reset(retrieveProgram(progPinLoc.c_str()));
             ALOGD("New bpf prog load reusing prog %s, ret: %d (%s)", progPinLoc.c_str(), fd.get(),
-                  (!fd.ok() ? std::strerror(errno) : "no error"));
+                  !fd.ok() ? std::strerror(errno) : "ok");
             reuse = true;
         } else {
             static char log_buf[1 << 20];  // 1 MiB logging buffer
@@ -1037,7 +1040,7 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
 
             ALOGD("BPF_PROG_LOAD call for %s (%s) returned '%s' fd: %d (%s)", elfPath,
                   cs[i].name.c_str(), log_oneline ? log_buf : "{multiline}",
-                  fd.get(), (!fd.ok() ? std::strerror(errno) : "ok"));
+                  fd.get(), !fd.ok() ? std::strerror(errno) : "ok");
 
             if (!fd.ok()) {
                 // kernel NULL terminates log_buf, so this checks for non-empty string
@@ -1066,14 +1069,14 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
                                    "tmp_prog_" + objName + '_' + string(name);
                 ret = bpfFdPin(fd, createLoc.c_str());
                 if (ret) {
-                    int err = errno;
+                    const int err = errno;
                     ALOGE("create %s -> %d [%d:%s]", createLoc.c_str(), ret, err, strerror(err));
                     return -err;
                 }
                 ret = renameat2(AT_FDCWD, createLoc.c_str(),
                                 AT_FDCWD, progPinLoc.c_str(), RENAME_NOREPLACE);
                 if (ret) {
-                    int err = errno;
+                    const int err = errno;
                     ALOGE("rename %s %s -> %d [%d:%s]", createLoc.c_str(), progPinLoc.c_str(), ret,
                           err, strerror(err));
                     return -err;
@@ -1081,30 +1084,52 @@ static int loadCodeSections(const char* elfPath, vector<codeSection>& cs, const 
             } else {
                 ret = bpfFdPin(fd, progPinLoc.c_str());
                 if (ret) {
-                    int err = errno;
+                    const int err = errno;
                     ALOGE("create %s -> %d [%d:%s]", progPinLoc.c_str(), ret, err, strerror(err));
                     return -err;
                 }
             }
             if (chmod(progPinLoc.c_str(), 0440)) {
-                int err = errno;
+                const int err = errno;
                 ALOGE("chmod %s 0440 -> [%d:%s]", progPinLoc.c_str(), err, strerror(err));
                 return -err;
             }
             if (chown(progPinLoc.c_str(), (uid_t)cs[i].prog_def->uid,
                       (gid_t)cs[i].prog_def->gid)) {
-                int err = errno;
+                const int err = errno;
                 ALOGE("chown %s %d %d -> [%d:%s]", progPinLoc.c_str(), cs[i].prog_def->uid,
                       cs[i].prog_def->gid, err, strerror(err));
                 return -err;
             }
         }
 
-        int progId = bpfGetFdProgId(fd);
-        if (progId == -1) {
-            ALOGE("bpfGetFdProgId failed, ret: %d [%d]", progId, errno);
-        } else {
-            ALOGI("prog %s id %d", progPinLoc.c_str(), progId);
+        if (isAtLeastKernelVersion(4, 14, 0)) {
+            int progId = bpfGetFdProgId(fd);
+            if (progId == -1) {
+                const int err = errno;
+                ALOGE("bpfGetFdProgId failed, errno: %d", err);
+                return -err;
+            }
+
+            int jitLen = bpfGetFdJitProgLen(fd);
+            if (jitLen == -1) {
+                const int err = errno;
+                ALOGE("bpfGetFdJitProgLen failed, ret: %d", err);
+                return -err;
+            }
+
+            int xlatLen = bpfGetFdXlatProgLen(fd);
+            if (xlatLen == -1) {
+                const int err = errno;
+                ALOGE("bpfGetFdXlatProgLen failed, ret: %d", err);
+                return -err;
+            }
+            ALOGI("prog %s id %d len jit:%d xlat:%d", progPinLoc.c_str(), progId, jitLen, xlatLen);
+
+            if (!jitLen && bpfloader_ver >= BPFLOADER_MAINLINE_25Q2_VERSION) {
+                ALOGE("Kernel eBPF JIT failure for %s", progPinLoc.c_str());
+                return -ENOTSUP;
+            }
         }
     }
 
