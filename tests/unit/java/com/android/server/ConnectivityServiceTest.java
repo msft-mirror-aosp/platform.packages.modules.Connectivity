@@ -426,6 +426,7 @@ import com.android.server.connectivity.Nat464Xlat;
 import com.android.server.connectivity.NetworkAgentInfo;
 import com.android.server.connectivity.NetworkNotificationManager;
 import com.android.server.connectivity.NetworkNotificationManager.NotificationType;
+import com.android.server.connectivity.PermissionMonitor;
 import com.android.server.connectivity.ProxyTracker;
 import com.android.server.connectivity.QosCallbackTracker;
 import com.android.server.connectivity.SatelliteAccessController;
@@ -594,6 +595,7 @@ public class ConnectivityServiceTest {
     private MockContext mServiceContext;
     private HandlerThread mCsHandlerThread;
     private ConnectivityServiceDependencies mDeps;
+    private PermissionMonitorDependencies mPermDeps;
     private AutomaticOnOffKeepaliveTrackerDependencies mAutoOnOffKeepaliveDependencies;
     private ConnectivityService mService;
     private WrappedConnectivityManager mCm;
@@ -1921,6 +1923,7 @@ public class ConnectivityServiceTest {
         doReturn(mResources).when(mockResContext).getResources();
         ConnectivityResources.setResourcesContextForTest(mockResContext);
         mDeps = new ConnectivityServiceDependencies(mockResContext);
+        mPermDeps = new PermissionMonitorDependencies();
         doReturn(true).when(mMockKeepaliveTrackerDependencies)
                 .isAddressTranslationEnabled(mServiceContext);
         doReturn(new ConnectivityResources(mockResContext)).when(mMockKeepaliveTrackerDependencies)
@@ -1933,7 +1936,7 @@ public class ConnectivityServiceTest {
                 mMockDnsResolver,
                 mock(IpConnectivityLog.class),
                 mMockNetd,
-                mDeps);
+                mDeps, mPermDeps);
         mService.mLingerDelayMs = TEST_LINGER_DELAY_MS;
         mService.mNascentDelayMs = TEST_NASCENT_DELAY_MS;
 
@@ -2202,6 +2205,10 @@ public class ConnectivityServiceTest {
                     return true;
                 case DELAY_DESTROY_SOCKETS:
                     return true;
+                case ConnectivityFlags.USE_DECLARED_METHODS_FOR_CALLBACKS:
+                    return true;
+                case ConnectivityFlags.QUEUE_CALLBACKS_FOR_FROZEN_APPS:
+                    return true;
                 default:
                     return super.isFeatureNotChickenedOut(context, name);
             }
@@ -2386,6 +2393,13 @@ public class ConnectivityServiceTest {
         @Override
         public L2capNetworkProvider makeL2capNetworkProvider(Context context) {
             return null;
+        }
+    }
+
+    static class PermissionMonitorDependencies extends PermissionMonitor.Dependencies {
+        @Override
+        public boolean shouldEnforceLocalNetRestrictions(int uid) {
+            return false;
         }
     }
 
