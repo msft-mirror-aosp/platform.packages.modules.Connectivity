@@ -18,7 +18,6 @@ package com.android.server;
 
 import static android.content.pm.PackageManager.FEATURE_BLUETOOTH_LE;
 import static android.net.L2capNetworkSpecifier.HEADER_COMPRESSION_ANY;
-import static android.net.L2capNetworkSpecifier.PSM_ANY;
 import static android.net.L2capNetworkSpecifier.ROLE_CLIENT;
 import static android.net.L2capNetworkSpecifier.ROLE_SERVER;
 import static android.net.NetworkCapabilities.NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED;
@@ -58,8 +57,11 @@ import android.util.ArraySet;
 import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.net.module.util.HandlerUtils;
 import com.android.net.module.util.ServiceConnectivityJni;
 import com.android.server.net.L2capNetwork;
+import com.android.server.net.L2capNetwork.L2capIpClient;
+import com.android.server.net.L2capPacketForwarder;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -75,7 +77,6 @@ public class L2capNetworkProvider {
             // BLUETOOTH_CONNECT permission.
             NetworkCapabilities.Builder.withoutDefaultCapabilities()
                     .addTransportType(TRANSPORT_BLUETOOTH)
-                    // TODO: remove NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED.
                     .addCapability(NET_CAPABILITY_NOT_BANDWIDTH_CONSTRAINED)
                     .addCapability(NET_CAPABILITY_NOT_CONGESTED)
                     .addCapability(NET_CAPABILITY_NOT_METERED)
@@ -125,23 +126,6 @@ public class L2capNetworkProvider {
             CAPABILITIES = caps;
         }
 
-        // TODO: consider moving this into L2capNetworkSpecifier as #isValidServerReservation().
-        private boolean isValidL2capServerSpecifier(L2capNetworkSpecifier l2capSpec) {
-            // The ROLE_SERVER offer can be satisfied by a ROLE_ANY request.
-            if (l2capSpec.getRole() != ROLE_SERVER) return false;
-
-            // HEADER_COMPRESSION_ANY is never valid in a request.
-            if (l2capSpec.getHeaderCompression() == HEADER_COMPRESSION_ANY) return false;
-
-            // remoteAddr must be null for ROLE_SERVER requests.
-            if (l2capSpec.getRemoteAddress() != null) return false;
-
-            // reservation must allocate a PSM, so only PSM_ANY can be passed.
-            if (l2capSpec.getPsm() != PSM_ANY) return false;
-
-            return true;
-        }
-
         @Override
         public void onNetworkNeeded(NetworkRequest request) {
             // The NetworkSpecifier is guaranteed to be either null or an L2capNetworkSpecifier, so
@@ -149,7 +133,7 @@ public class L2capNetworkProvider {
             final L2capNetworkSpecifier specifier =
                     (L2capNetworkSpecifier) request.getNetworkSpecifier();
             if (specifier == null) return;
-            if (!isValidL2capServerSpecifier(specifier)) {
+            if (!specifier.isValidServerReservationSpecifier()) {
                 Log.i(TAG, "Ignoring invalid reservation request: " + request);
                 return;
             }
@@ -226,6 +210,7 @@ public class L2capNetworkProvider {
     }
 
     private void destroyAndUnregisterReservedOffer(ReservedServerOffer reservedOffer) {
+        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
         // Ensure the offer still exists if this was posted on the handler.
         if (!mReservedServerOffers.contains(reservedOffer)) return;
         mReservedServerOffers.remove(reservedOffer);
@@ -237,13 +222,15 @@ public class L2capNetworkProvider {
     @Nullable
     private L2capNetwork createL2capNetwork(BluetoothSocket socket, NetworkCapabilities caps,
             L2capNetwork.ICallback cb) {
+        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
         final String ifname = TUN_IFNAME + String.valueOf(sTunIndex++);
         final ParcelFileDescriptor tunFd = mDeps.createTunInterface(ifname);
         if (tunFd == null) {
             return null;
         }
 
-        return new L2capNetwork(mHandler, mContext, mProvider, ifname, socket, tunFd, caps, cb);
+        return L2capNetwork.create(
+                mHandler, mContext, mProvider, ifname, socket, tunFd, caps, mDeps, cb);
     }
 
     private static void closeBluetoothSocket(BluetoothSocket socket) {
@@ -266,36 +253,40 @@ public class L2capNetworkProvider {
         private class AcceptThread extends Thread {
             private static final int TIMEOUT_MS = 500;
             private final BluetoothServerSocket mServerSocket;
-            private volatile boolean mIsRunning = true;
 
             public AcceptThread(BluetoothServerSocket serverSocket) {
+                super("L2capNetworkProvider-AcceptThread");
                 mServerSocket = serverSocket;
             }
 
             private void postDestroyAndUnregisterReservedOffer() {
+                // Called on AcceptThread
                 mHandler.post(() -> {
                     destroyAndUnregisterReservedOffer(ReservedServerOffer.this);
                 });
             }
 
             private void postCreateServerNetwork(BluetoothSocket connectedSocket) {
+                // Called on AcceptThread
                 mHandler.post(() -> {
                     final boolean success = createServerNetwork(connectedSocket);
                     if (!success) closeBluetoothSocket(connectedSocket);
                 });
             }
 
+            @Override
             public void run() {
-                while (mIsRunning) {
+                while (true) {
                     final BluetoothSocket connectedSocket;
                     try {
                         connectedSocket = mServerSocket.accept();
                     } catch (IOException e) {
-                        // BluetoothServerSocket was closed().
-                        if (!mIsRunning) return;
-
-                        // Else, BluetoothServerSocket encountered exception.
-                        Log.e(TAG, "BluetoothServerSocket#accept failed", e);
+                        // Note calling BluetoothServerSocket#close() also triggers an IOException
+                        // which is indistinguishable from any other exceptional behavior.
+                        // postDestroyAndUnregisterReservedOffer() is always safe to call as it
+                        // first checks whether the offer still exists; so if the
+                        // BluetoothServerSocket was closed (i.e. on tearDown()) this is a noop.
+                        Log.w(TAG, "BluetoothServerSocket closed or #accept failed", e);
                         postDestroyAndUnregisterReservedOffer();
                         return; // stop running immediately on error
                     }
@@ -304,7 +295,7 @@ public class L2capNetworkProvider {
             }
 
             public void tearDown() {
-                mIsRunning = false;
+                HandlerUtils.ensureRunningOnHandlerThread(mHandler);
                 try {
                     // BluetoothServerSocket.close() is thread-safe.
                     mServerSocket.close();
@@ -320,6 +311,7 @@ public class L2capNetworkProvider {
         }
 
         private boolean createServerNetwork(BluetoothSocket socket) {
+            HandlerUtils.ensureRunningOnHandlerThread(mHandler);
             // It is possible the offer went away.
             if (!mReservedServerOffers.contains(this)) return false;
 
@@ -330,17 +322,19 @@ public class L2capNetworkProvider {
 
             final L2capNetwork network = createL2capNetwork(socket, mReservedCapabilities,
                     new L2capNetwork.ICallback() {
-                @Override
-                public void onError(L2capNetwork network) {
-                    destroyAndUnregisterReservedOffer(ReservedServerOffer.this);
-                }
-                @Override
-                public void onNetworkUnwanted(L2capNetwork network) {
-                    // Leave reservation in place.
-                    final boolean networkExists = mL2capNetworks.remove(network);
-                    if (!networkExists) return; // already torn down.
-                    network.tearDown();
-                }
+                    @Override
+                    public void onError(L2capNetwork network) {
+                        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
+                        destroyAndUnregisterReservedOffer(ReservedServerOffer.this);
+                    }
+                    @Override
+                    public void onNetworkUnwanted(L2capNetwork network) {
+                        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
+                        // Leave reservation in place.
+                        final boolean networkExists = mL2capNetworks.remove(network);
+                        if (!networkExists) return; // already torn down.
+                        network.tearDown();
+                    }
             });
 
             if (network == null) {
@@ -375,6 +369,7 @@ public class L2capNetworkProvider {
 
         /** Called when the reservation goes away and the reserved offer must be torn down. */
         public void tearDown() {
+            HandlerUtils.ensureRunningOnHandlerThread(mHandler);
             mAcceptThread.tearDown();
             for (L2capNetwork network : mL2capNetworks) {
                 network.tearDown();
@@ -421,13 +416,14 @@ public class L2capNetworkProvider {
         private class ConnectThread extends Thread {
             private final L2capNetworkSpecifier mSpecifier;
             private final BluetoothSocket mSocket;
-            private volatile boolean mIsAborted = false;
 
             public ConnectThread(L2capNetworkSpecifier specifier, BluetoothSocket socket) {
+                super("L2capNetworkProvider-ConnectThread");
                 mSpecifier = specifier;
                 mSocket = socket;
             }
 
+            @Override
             public void run() {
                 try {
                     mSocket.connect();
@@ -436,18 +432,19 @@ public class L2capNetworkProvider {
                         if (!success) closeBluetoothSocket(mSocket);
                     });
                 } catch (IOException e) {
-                    Log.e(TAG, "Failed to connect", e);
-                    if (mIsAborted) return;
-
+                    Log.w(TAG, "BluetoothSocket was closed or #connect failed", e);
+                    // It is safe to call BluetoothSocket#close() multiple times.
                     closeBluetoothSocket(mSocket);
                     mHandler.post(() -> {
+                        // Note that if the Socket was closed, this call is a noop as the
+                        // ClientNetworkRequest has already been removed.
                         declareAllNetworkRequestsUnfulfillable(mSpecifier);
                     });
                 }
             }
 
             public void abort() {
-                mIsAborted = true;
+                HandlerUtils.ensureRunningOnHandlerThread(mHandler);
                 // Closing the BluetoothSocket is the only way to unblock connect() because it calls
                 // shutdown on the underlying (connected) SOCK_SEQPACKET.
                 // It is safe to call BluetoothSocket#close() multiple times.
@@ -462,6 +459,7 @@ public class L2capNetworkProvider {
 
         private boolean createClientNetwork(L2capNetworkSpecifier specifier,
                 BluetoothSocket socket) {
+            HandlerUtils.ensureRunningOnHandlerThread(mHandler);
             // Check whether request still exists
             final ClientRequestInfo cri = mClientNetworkRequests.get(specifier);
             if (cri == null) return false;
@@ -472,40 +470,24 @@ public class L2capNetworkProvider {
 
             final L2capNetwork network = createL2capNetwork(socket, caps,
                     new L2capNetwork.ICallback() {
-                // TODO: do not send onUnavailable() after the network has become available. The
-                // right thing to do here is to tearDown the network (if it still exists, because
-                // note that the request might have already been removed in the meantime, so
-                // `network` cannot be used directly.
-                @Override
-                public void onError(L2capNetwork network) {
-                    declareAllNetworkRequestsUnfulfillable(specifier);
-                }
-                @Override
-                public void onNetworkUnwanted(L2capNetwork network) {
-                    declareAllNetworkRequestsUnfulfillable(specifier);
-                }
+                    // TODO: do not send onUnavailable() after the network has become available. The
+                    // right thing to do here is to tearDown the network (if it still exists,
+                    // because note that the request might have already been removed in the
+                    // meantime, so `network` cannot be used directly.
+                    @Override
+                    public void onError(L2capNetwork network) {
+                        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
+                        declareAllNetworkRequestsUnfulfillable(specifier);
+                    }
+                    @Override
+                    public void onNetworkUnwanted(L2capNetwork network) {
+                        HandlerUtils.ensureRunningOnHandlerThread(mHandler);
+                        declareAllNetworkRequestsUnfulfillable(specifier);
+                    }
             });
             if (network == null) return false;
 
             cri.network = network;
-            return true;
-        }
-
-        private boolean isValidL2capClientSpecifier(L2capNetworkSpecifier l2capSpec) {
-            // The ROLE_CLIENT offer can be satisfied by a ROLE_ANY request.
-            if (l2capSpec.getRole() != ROLE_CLIENT) return false;
-
-            // HEADER_COMPRESSION_ANY is never valid in a request.
-            if (l2capSpec.getHeaderCompression() == HEADER_COMPRESSION_ANY) return false;
-
-            // remoteAddr must not be null for ROLE_CLIENT requests.
-            if (l2capSpec.getRemoteAddress() == null) return false;
-
-            // Client network requests require a PSM to be specified.
-            // Ensure the PSM is within the valid range of dynamic BLE L2CAP values.
-            if (l2capSpec.getPsm() < 0x80) return false;
-            if (l2capSpec.getPsm() > 0xFF) return false;
-
             return true;
         }
 
@@ -516,7 +498,7 @@ public class L2capNetworkProvider {
             final L2capNetworkSpecifier requestSpecifier =
                     (L2capNetworkSpecifier) request.getNetworkSpecifier();
             if (requestSpecifier == null) return;
-            if (!isValidL2capClientSpecifier(requestSpecifier)) {
+            if (!requestSpecifier.isValidClientRequestSpecifier()) {
                 Log.i(TAG, "Ignoring invalid client request: " + request);
                 return;
             }
@@ -595,6 +577,7 @@ public class L2capNetworkProvider {
          * Only call this when all associated NetworkRequests have been released.
          */
         private void releaseClientNetworkRequest(ClientRequestInfo cri) {
+            HandlerUtils.ensureRunningOnHandlerThread(mHandler);
             mClientNetworkRequests.remove(cri.specifier);
             if (cri.connectThread.isAlive()) {
                 // Note that if ConnectThread succeeds between calling #isAlive() and #abort(), the
@@ -610,6 +593,7 @@ public class L2capNetworkProvider {
         }
 
         private void declareAllNetworkRequestsUnfulfillable(L2capNetworkSpecifier specifier) {
+            HandlerUtils.ensureRunningOnHandlerThread(mHandler);
             final ClientRequestInfo cri = mClientNetworkRequests.get(specifier);
             if (cri == null) return;
 
@@ -629,6 +613,7 @@ public class L2capNetworkProvider {
             return thread;
         }
 
+        /** Create a tun interface configured for blocking i/o */
         @Nullable
         public ParcelFileDescriptor createTunInterface(String ifname) {
             final ParcelFileDescriptor fd;
@@ -651,13 +636,24 @@ public class L2capNetworkProvider {
             }
             return fd;
         }
+
+        /** Create an L2capPacketForwarder and start forwarding */
+        public L2capPacketForwarder createL2capPacketForwarder(Handler handler,
+                ParcelFileDescriptor tunFd, BluetoothSocket socket, boolean compressHeaders,
+                L2capPacketForwarder.ICallback cb) {
+            return new L2capPacketForwarder(handler, tunFd, socket, compressHeaders, cb);
+        }
+
+        /** Create an L2capIpClient */
+        public L2capIpClient createL2capIpClient(String logTag, Context context, String ifname) {
+            return new L2capIpClient(logTag, context, ifname);
+        }
     }
 
     public L2capNetworkProvider(Context context) {
         this(new Dependencies(), context);
     }
 
-    @VisibleForTesting
     public L2capNetworkProvider(Dependencies deps, Context context) {
         mDeps = deps;
         mContext = context;
