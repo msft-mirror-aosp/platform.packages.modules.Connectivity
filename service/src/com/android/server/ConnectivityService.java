@@ -423,14 +423,14 @@ import java.util.TreeSet;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 /**
  * @hide
  */
-public class ConnectivityService extends IConnectivityManager.Stub
-        implements PendingIntent.OnFinished {
+public class ConnectivityService extends IConnectivityManager.Stub {
     private static final String TAG = ConnectivityService.class.getSimpleName();
 
     private static final String DIAG_ARG = "--diag";
@@ -9810,8 +9810,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         // The both list contain current link properties + stacked links for new and old LP.
-        List<LinkProperties> newLinkProperties = new ArrayList<>();
-        List<LinkProperties> oldLinkProperties = new ArrayList<>();
+        final List<LinkProperties> newLinkProperties = new ArrayList<>();
+        final List<LinkProperties> oldLinkProperties = new ArrayList<>();
 
         if (newLp != null) {
             newLinkProperties.add(newLp);
@@ -9824,13 +9824,13 @@ public class ConnectivityService extends IConnectivityManager.Stub
 
         // map contains interface name to list of local network prefixes added because of change
         // in link properties
-        Map<String, List<IpPrefix>> prefixesAddedForInterface = new ArrayMap<>();
+        final Map<String, List<IpPrefix>> prefixesAddedForInterface = new ArrayMap<>();
 
         final CompareResult<LinkProperties> linkPropertiesDiff = new CompareResult<>(
                 oldLinkProperties, newLinkProperties);
 
         for (LinkProperties linkProperty : linkPropertiesDiff.added) {
-            List<IpPrefix> unicastLocalPrefixesToBeAdded = new ArrayList<>();
+            final List<IpPrefix> unicastLocalPrefixesToBeAdded = new ArrayList<>();
             for (LinkAddress linkAddress : linkProperty.getLinkAddresses()) {
                 unicastLocalPrefixesToBeAdded.addAll(
                         getLocalNetworkPrefixesForAddress(linkAddress));
@@ -9838,7 +9838,7 @@ public class ConnectivityService extends IConnectivityManager.Stub
             addLocalAddressesToBpfMap(linkProperty.getInterfaceName(),
                     unicastLocalPrefixesToBeAdded, linkProperty);
 
-            // adding iterface name -> ip prefixes that we added to map
+            // populating interface name -> ip prefixes which were added to local_net_access map.
             if (!prefixesAddedForInterface.containsKey(linkProperty.getInterfaceName())) {
                 prefixesAddedForInterface.put(linkProperty.getInterfaceName(), new ArrayList<>());
             }
@@ -9847,9 +9847,9 @@ public class ConnectivityService extends IConnectivityManager.Stub
         }
 
         for (LinkProperties linkProperty : linkPropertiesDiff.removed) {
-            List<IpPrefix> unicastLocalPrefixesToBeRemoved = new ArrayList<>();
-            List<IpPrefix> unicastLocalPrefixesAdded = prefixesAddedForInterface.getOrDefault(
-                    linkProperty.getInterfaceName(), new ArrayList<>());
+            final List<IpPrefix> unicastLocalPrefixesToBeRemoved = new ArrayList<>();
+            final List<IpPrefix> unicastLocalPrefixesAdded = prefixesAddedForInterface.getOrDefault(
+                    linkProperty.getInterfaceName(), Collections.emptyList());
 
             for (LinkAddress linkAddress : linkProperty.getLinkAddresses()) {
                 unicastLocalPrefixesToBeRemoved.addAll(
@@ -9857,8 +9857,8 @@ public class ConnectivityService extends IConnectivityManager.Stub
             }
 
             // This is to ensure if 10.0.10.0/24 was added and 10.0.11.0/24 was removed both will
-            // still populate the same prefix of 10.0.0.0/8, which mean we should not remove the
-            // prefix because of removal of 10.0.11.0/24
+            // still populate the same prefix of 10.0.0.0/8, which mean 10.0.0.0/8 should not be
+            // removed due to removal of 10.0.11.0/24
             unicastLocalPrefixesToBeRemoved.removeAll(unicastLocalPrefixesAdded);
 
             removeLocalAddressesFromBpfMap(linkProperty.getInterfaceName(),
@@ -10936,10 +10936,42 @@ public class ConnectivityService extends IConnectivityManager.Stub
         // else not handled
     }
 
+    /**
+     * A small class to manage releasing a lock exactly once even if releaseLock is called
+     * multiple times. See b/390043283
+     * PendingIntent#send throws CanceledException in various cases. In some of them it will
+     * still call onSendFinished, in others it won't and the client can't know. This class
+     * keeps a ref to the wakelock that it releases exactly once, thanks to Atomics semantics.
+     */
+    private class WakeLockOnFinishedReceiver implements PendingIntent.OnFinished {
+        private final AtomicReference<PowerManager.WakeLock> mLock;
+        WakeLockOnFinishedReceiver(@NonNull final PowerManager.WakeLock lock) {
+            mLock = new AtomicReference<>(lock);
+            lock.acquire();
+        }
+
+        public void releaseLock() {
+            final PowerManager.WakeLock lock = mLock.getAndSet(null);
+            if (null != lock) lock.release();
+        }
+
+        @Override
+        public void onSendFinished(PendingIntent pendingIntent, Intent intent, int resultCode,
+                String resultData, Bundle resultExtras) {
+            if (DBG) log("Finished sending " + pendingIntent);
+            releaseLock();
+            releasePendingNetworkRequestWithDelay(pendingIntent);
+        }
+    }
+
     // TODO(b/193460475): Remove when tooling supports SystemApi to public API.
     @SuppressLint("NewApi")
     private void sendIntent(PendingIntent pendingIntent, Intent intent) {
-        mPendingIntentWakeLock.acquire();
+        // Since the receiver will take the lock exactly once and release it exactly once, it
+        // is safe to pass the same wakelock to all receivers and avoid creating a new lock
+        // every time.
+        final WakeLockOnFinishedReceiver receiver =
+                new WakeLockOnFinishedReceiver(mPendingIntentWakeLock);
         try {
             if (DBG) log("Sending " + pendingIntent);
             final BroadcastOptions options = BroadcastOptions.makeBasic();
@@ -10948,25 +10980,14 @@ public class ConnectivityService extends IConnectivityManager.Stub
                 // utilizing the PendingIntent as a backdoor to do this.
                 options.setPendingIntentBackgroundActivityLaunchAllowed(false);
             }
-            pendingIntent.send(mContext, 0, intent, this /* onFinished */, null /* Handler */,
+            pendingIntent.send(mContext, 0, intent, receiver, null /* Handler */,
                     null /* requiredPermission */,
                     mDeps.isAtLeastT() ? options.toBundle() : null);
         } catch (PendingIntent.CanceledException e) {
             if (DBG) log(pendingIntent + " was not sent, it had been canceled.");
-            mPendingIntentWakeLock.release();
+            receiver.releaseLock();
             releasePendingNetworkRequest(pendingIntent);
         }
-        // ...otherwise, mPendingIntentWakeLock.release() gets called by onSendFinished()
-    }
-
-    @Override
-    public void onSendFinished(PendingIntent pendingIntent, Intent intent, int resultCode,
-            String resultData, Bundle resultExtras) {
-        if (DBG) log("Finished sending " + pendingIntent);
-        mPendingIntentWakeLock.release();
-        // Release with a delay so the receiving client has an opportunity to put in its
-        // own request.
-        releasePendingNetworkRequestWithDelay(pendingIntent);
     }
 
     @Nullable
