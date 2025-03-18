@@ -34,10 +34,10 @@
 
 #define DEVICEPREFIX "v4-"
 
-/* function: stop_loop
+/* function: handle_sigterm
  * signal handler: stop the event loop
  */
-static void stop_loop(__attribute__((unused)) int unused) { running = 0; };
+static void handle_sigterm(__attribute__((unused)) int unused) { sigterm = 1; };
 
 /* function: print_help
  * in case the user is running this on the command line
@@ -63,6 +63,48 @@ int main(int argc, char **argv) {
   char *v4_addr = NULL, *v6_addr = NULL, *tunfd_str = NULL, *read_sock_str = NULL,
        *write_sock_str = NULL;
   unsigned len;
+
+  // Clatd binary is setuid/gid CLAT, thus when we reach here we have:
+  //   $ adb shell ps | grep clat
+  //                [pid] [ppid]
+  //   clat          7650  1393   10785364   2612 do_sys_poll         0 S clatd-wlan0
+  //   $ adb shell cat /proc/7650/status | egrep -i '^(Uid:|Gid:|Groups:)'
+  //         [real][effective][saved][filesystem]
+  //          [uid]   [euid]  [suid]  [fsuid]
+  //   Uid:    1000    1029    1029    1029
+  //          [gid]   [egid]  [sgid]  [fsgid]
+  //   Gid:    1000    1029    1029    1029
+  //   Groups: 1001 1002 1003 1004 1005 1006 1007 1008 1009 1010 1018 1021 1023 1024 1032 1065 3001 3002 3003 3005 3006 3007 3009 3010 3011 3012
+  // This mismatch between uid & euid appears to cause periodic (every 5 minutes):
+  //                                                  objhash pid  ppid             uid
+  //   W ActivityManager: Stale PhantomProcessRecord {xxxxxxx 7650:1393:clatd-wlan0/1000}, removing
+  // This is due to:
+  //   $ adbz shell ls -ld /proc/7650
+  //   dr-xr-xr-x 9 clat clat 0 2025-03-14 11:37 /proc/7650
+  // which is used by
+  //   //frameworks/base/core/java/com/android/internal/os/ProcessCpuTracker.java
+  // which thus returns the uid 'clat' vs
+  //   //frameworks/base/core/java/android/os/Process.java
+  // getUidForPid() which grabs *real* 'uid' from /proc/<pid>/status and is used in:
+  //   //frameworks/base/services/core/java/com/android/server/am/PhantomProcessList.java
+  // (perhaps this should grab euid instead? unclear)
+  //
+  // However, we want to drop as many privs as possible, hence:
+  gid_t egid = getegid();  // documented to never fail, hence should return AID_CLAT == 1029
+  uid_t euid = geteuid();  // (ditto)
+  setresgid(egid, egid, egid);  // ignore any failure
+  setresuid(euid, euid, euid);  // ignore any failure
+  // ideally we'd somehow drop supplementary groups too...
+  // but for historical reasons that actually requires CAP_SETGID which we don't have
+  // (see man 2 setgroups)
+  //
+  // Now we (should) have:
+  // $ adb shell ps | grep clat
+  // clat          5370  1479   10785364   2528 do_sys_poll         0 S clatd-wlan0
+  // # adb shell cat /proc/5370/status | egrep -i '^(Uid:|Gid:|Groups:)'
+  // Uid:    1029    1029    1029    1029
+  // Gid:    1029    1029    1029    1029
+  // Groups: 1001 1002 1003 1004 1005 1006 1007 1008 1009 1010 1018 1021 1023 1024 1032 1065 3001 3002 3003 3005 3006 3007 3009 3010 3011 3012
 
   while ((opt = getopt(argc, argv, "i:p:4:6:t:r:w:h")) != -1) {
     switch (opt) {
@@ -150,7 +192,7 @@ int main(int argc, char **argv) {
     exit(1);
   }
 
-  logmsg(ANDROID_LOG_INFO, "Starting clat version %s on %s plat=%s v4=%s v6=%s", CLATD_VERSION,
+  logmsg(ANDROID_LOG_INFO, "Starting clat version " CLATD_VERSION " on %s plat=%s v4=%s v6=%s",
          uplink_interface, plat_prefix ? plat_prefix : "(none)", v4_addr ? v4_addr : "(none)",
          v6_addr ? v6_addr : "(none)");
 
@@ -183,25 +225,35 @@ int main(int argc, char **argv) {
   }
 
   // Loop until someone sends us a signal or brings down the tun interface.
-  if (signal(SIGTERM, stop_loop) == SIG_ERR) {
+  if (signal(SIGTERM, handle_sigterm) == SIG_ERR) {
     logmsg(ANDROID_LOG_FATAL, "sigterm handler failed: %s", strerror(errno));
     exit(1);
   }
 
+  // Apparently some network gear will refuse to perform NS for IPs that aren't DAD'ed,
+  // this would then result in an ipv6-only network with working native ipv6, working
+  // IPv4 via DNS64, but non-functioning IPv4 via CLAT (ie. IPv4 literals + IPv4 only apps).
+  // The kernel itself doesn't do DAD for anycast ips (but does handle IPV6 MLD and handle ND).
+  // So we'll spoof dad here, and yeah, we really should check for a response and in
+  // case of failure pick a different IP.  Seeing as 48-bits of the IP are utterly random
+  // (with the other 16 chosen to guarantee checksum neutrality) this seems like a remote
+  // concern...
+  // TODO: actually perform true DAD
+  send_dad(tunnel.write_fd6, &Global_Clatd_Config.ipv6_local_subnet);
+
   event_loop(&tunnel);
 
-  logmsg(ANDROID_LOG_INFO, "Shutting down clat on %s", uplink_interface);
-
-  if (running) {
-    logmsg(ANDROID_LOG_INFO, "Clatd on %s waiting for SIGTERM", uplink_interface);
+  if (sigterm) {
+    logmsg(ANDROID_LOG_INFO, "Shutting down clatd on %s, already received SIGTERM", uplink_interface);
+  } else {
+    // this implies running == false, ie. we received EOF or ENETDOWN error.
+    logmsg(ANDROID_LOG_INFO, "Shutting down clatd on %s, waiting for SIGTERM", uplink_interface);
     // let's give higher level java code 15 seconds to kill us,
     // but eventually terminate anyway, in case system server forgets about us...
-    // sleep() should be interrupted by SIGTERM, the handler should clear running
+    // sleep() should be interrupted by SIGTERM, the handler should set 'sigterm'
     sleep(15);
     logmsg(ANDROID_LOG_INFO, "Clatd on %s %s SIGTERM", uplink_interface,
-           running ? "timed out waiting for" : "received");
-  } else {
-    logmsg(ANDROID_LOG_INFO, "Clatd on %s already received SIGTERM", uplink_interface);
+           sigterm ? "received" : "timed out waiting for");
   }
   return 0;
 }

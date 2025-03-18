@@ -15,7 +15,6 @@
  */
 package android.net.cts
 
-import android.Manifest.permission.MODIFY_PHONE_STATE
 import android.Manifest.permission.NETWORK_SETTINGS
 import android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE
 import android.app.Instrumentation
@@ -80,12 +79,10 @@ import android.net.cts.NetworkAgentTest.TestableQosCallback.CallbackEntry.OnQosS
 import android.net.cts.NetworkAgentTest.TestableQosCallback.CallbackEntry.OnQosSessionLost
 import android.net.wifi.WifiInfo
 import android.os.Build
-import android.os.ConditionVariable
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.Message
-import android.os.PersistableBundle
 import android.os.Process
 import android.os.SystemClock
 import android.platform.test.annotations.AppModeFull
@@ -94,19 +91,15 @@ import android.system.OsConstants.AF_INET6
 import android.system.OsConstants.IPPROTO_TCP
 import android.system.OsConstants.IPPROTO_UDP
 import android.system.OsConstants.SOCK_DGRAM
-import android.telephony.CarrierConfigManager
 import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
-import android.telephony.TelephonyManager.CarrierPrivilegesCallback
 import android.telephony.data.EpsBearerQosSessionAttributes
 import android.util.ArraySet
 import android.util.DebugUtils.valueToString
-import android.util.Log
 import androidx.test.InstrumentationRegistry
 import com.android.compatibility.common.util.SystemUtil.runShellCommand
 import com.android.compatibility.common.util.SystemUtil.runWithShellPermissionIdentity
 import com.android.compatibility.common.util.ThrowingSupplier
-import com.android.compatibility.common.util.UiccUtil
 import com.android.modules.utils.build.SdkLevel
 import com.android.net.module.util.ArrayTrackRecord
 import com.android.net.module.util.NetworkStackConstants.ETHER_MTU
@@ -151,13 +144,12 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
-import java.security.MessageDigest
 import java.time.Duration
 import java.util.Arrays
-import java.util.Random
 import java.util.UUID
 import java.util.concurrent.Executors
 import kotlin.collections.ArrayList
+import kotlin.random.Random
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -172,6 +164,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.ArgumentMatchers.any
+import org.mockito.ArgumentMatchers.anyInt
 import org.mockito.ArgumentMatchers.argThat
 import org.mockito.ArgumentMatchers.eq
 import org.mockito.Mockito.doReturn
@@ -266,7 +259,7 @@ class NetworkAgentTest {
     private class FakeConnectivityService {
         val mockRegistry = mock(INetworkAgentRegistry::class.java)
         private var agentField: INetworkAgent? = null
-        private val registry = object : INetworkAgentRegistry.Stub(),
+        val registry: INetworkAgentRegistry = object : INetworkAgentRegistry.Stub(),
                 INetworkAgentRegistry by mockRegistry {
             // asBinder has implementations in both INetworkAgentRegistry.Stub and mockRegistry, so
             // it needs to be disambiguated. Just fail the test as it should be unused here.
@@ -283,7 +276,7 @@ class NetworkAgentTest {
 
         fun connect(agent: INetworkAgent) {
             this.agentField = agent
-            agent.onRegistered(registry)
+            agent.onRegistered()
         }
 
         fun disconnect() = agent.onDisconnected()
@@ -412,7 +405,8 @@ class NetworkAgentTest {
     }
 
     private fun createNetworkAgentWithFakeCS() = createNetworkAgent().also {
-        mFakeConnectivityService.connect(it.registerForTest(Network(FAKE_NET_ID)))
+        val binder = it.registerForTest(Network(FAKE_NET_ID), mFakeConnectivityService.registry)
+        mFakeConnectivityService.connect(binder)
     }
 
     private fun TestableNetworkAgent.expectPostConnectionCallbacks(
@@ -707,102 +701,6 @@ class NetworkAgentTest {
         doTestAllowedUids(transports, uid, expectUidsPresent, specifier, transportInfo)
     }
 
-    private fun setHoldCarrierPrivilege(hold: Boolean, subId: Int) {
-        fun getCertHash(): String {
-            val pkgInfo = realContext.packageManager.getPackageInfo(
-                realContext.opPackageName,
-                PackageManager.GET_SIGNATURES
-            )
-            val digest = MessageDigest.getInstance("SHA-256")
-            val certHash = digest.digest(pkgInfo.signatures!![0]!!.toByteArray())
-            return UiccUtil.bytesToHexString(certHash)!!
-        }
-
-        val tm = realContext.getSystemService(TelephonyManager::class.java)!!
-
-        val cv = ConditionVariable()
-        val cpb = PrivilegeWaiterCallback(cv)
-        // The lambda below is capturing |cpb|, whose type inherits from a class that appeared in
-        // T. This means the lambda will compile as a private method of this class taking a
-        // PrivilegeWaiterCallback argument. As JUnit uses reflection to enumerate all methods
-        // including private methods, this would fail with a link error when running on S-.
-        // To solve this, make the lambda serializable, which causes the compiler to emit a
-        // synthetic class instead of a synthetic method.
-        tryTest @JvmSerializableLambda {
-            val slotIndex = SubscriptionManager.getSlotIndex(subId)!!
-            runAsShell(READ_PRIVILEGED_PHONE_STATE) @JvmSerializableLambda {
-                tm.registerCarrierPrivilegesCallback(slotIndex, { it.run() }, cpb)
-            }
-            // Wait for the callback to be registered
-            assertTrue(cv.block(DEFAULT_TIMEOUT_MS), "Can't register CarrierPrivilegesCallback")
-            if (cpb.hasPrivilege == hold) {
-                if (hold) {
-                    Log.w(TAG, "Package ${realContext.opPackageName} already is privileged")
-                } else {
-                    Log.w(TAG, "Package ${realContext.opPackageName} already isn't privileged")
-                }
-                return@tryTest
-            }
-            if (hold) {
-                carrierConfigRule.addConfigOverrides(subId, PersistableBundle().also {
-                    it.putStringArray(CarrierConfigManager.KEY_CARRIER_CERTIFICATE_STRING_ARRAY,
-                        arrayOf(getCertHash()))
-                })
-            } else {
-                carrierConfigRule.cleanUpNow()
-            }
-        } cleanup @JvmSerializableLambda {
-            runAsShell(READ_PRIVILEGED_PHONE_STATE) @JvmSerializableLambda {
-                tm.unregisterCarrierPrivilegesCallback(cpb)
-            }
-        }
-    }
-
-    private fun acquireCarrierPrivilege(subId: Int) = setHoldCarrierPrivilege(true, subId)
-    private fun dropCarrierPrivilege(subId: Int) = setHoldCarrierPrivilege(false, subId)
-
-    private fun setCarrierServicePackageOverride(subId: Int, pkg: String?) {
-        val tm = realContext.getSystemService(TelephonyManager::class.java)!!
-
-        val cv = ConditionVariable()
-        val cpb = CarrierServiceChangedWaiterCallback(cv)
-        // The lambda below is capturing |cpb|, whose type inherits from a class that appeared in
-        // T. This means the lambda will compile as a private method of this class taking a
-        // PrivilegeWaiterCallback argument. As JUnit uses reflection to enumerate all methods
-        // including private methods, this would fail with a link error when running on S-.
-        // To solve this, make the lambda serializable, which causes the compiler to emit a
-        // synthetic class instead of a synthetic method.
-        tryTest @JvmSerializableLambda {
-            val slotIndex = SubscriptionManager.getSlotIndex(subId)!!
-            runAsShell(READ_PRIVILEGED_PHONE_STATE) @JvmSerializableLambda {
-                tm.registerCarrierPrivilegesCallback(slotIndex, { it.run() }, cpb)
-            }
-            // Wait for the callback to be registered
-            assertTrue(cv.block(DEFAULT_TIMEOUT_MS), "Can't register CarrierPrivilegesCallback")
-            if (cpb.pkgName == pkg) {
-                Log.w(TAG, "Carrier service package was already $pkg")
-                return@tryTest
-            }
-            cv.close()
-            runAsShell(MODIFY_PHONE_STATE) {
-                if (null == pkg) {
-                    // There is a bug is clear-carrier-service-package-override where not adding
-                    // the -s argument will use the wrong slot index : b/299604822
-                    runShellCommand("cmd phone clear-carrier-service-package-override" +
-                            " -s $subId")
-                } else {
-                    // -s could set the subId, but this test works with the default subId.
-                    runShellCommand("cmd phone set-carrier-service-package-override $pkg")
-                }
-            }
-            assertTrue(cv.block(DEFAULT_TIMEOUT_MS), "Can't modify carrier service package")
-        } cleanup @JvmSerializableLambda {
-            runAsShell(READ_PRIVILEGED_PHONE_STATE) @JvmSerializableLambda {
-                tm.unregisterCarrierPrivilegesCallback(cpb)
-            }
-        }
-    }
-
     private fun String.execute() = runShellCommand(this).trim()
 
     @Test
@@ -855,8 +753,8 @@ class NetworkAgentTest {
             if (!SdkLevel.isAtLeastU()) return@tryTest
             // Acquiring carrier privilege is necessary to override the carrier service package.
             val defaultSlotIndex = SubscriptionManager.getSlotIndex(defaultSubId)
-            acquireCarrierPrivilege(defaultSubId)
-            setCarrierServicePackageOverride(defaultSubId, servicePackage)
+            carrierConfigRule.acquireCarrierPrivilege(defaultSubId)
+            carrierConfigRule.setCarrierServicePackageOverride(defaultSubId, servicePackage)
             val actualServicePackage: String? = runAsShell(READ_PRIVILEGED_PHONE_STATE) {
                 tm.getCarrierServicePackageNameForLogicalSlot(defaultSlotIndex)
             }
@@ -895,10 +793,6 @@ class NetworkAgentTest {
                     expectUidsPresent = false)
             doTestAllowedUidsWithSubId(defaultSubId, intArrayOf(TRANSPORT_CELLULAR, TRANSPORT_WIFI),
                     uid, expectUidsPresent = false)
-        } cleanupStep {
-            if (SdkLevel.isAtLeastU()) setCarrierServicePackageOverride(defaultSubId, null)
-        } cleanup {
-            if (SdkLevel.isAtLeastU()) dropCarrierPrivilege(defaultSubId)
         }
     }
 
@@ -1055,6 +949,47 @@ class NetworkAgentTest {
         callback.expect<Lost>(agent.network!!)
     }
 
+    fun doTestOemVpnType(type: Int) {
+        val mySessionId = "MySession12345"
+        val nc = NetworkCapabilities().apply {
+            addTransportType(TRANSPORT_TEST)
+            addTransportType(TRANSPORT_VPN)
+            addCapability(NET_CAPABILITY_NOT_VCN_MANAGED)
+            removeCapability(NET_CAPABILITY_NOT_VPN)
+            setTransportInfo(VpnTransportInfo(type, mySessionId))
+        }
+
+        val agent = createNetworkAgent(initialNc = nc)
+        agent.register()
+        agent.markConnected()
+
+        val request = NetworkRequest.Builder()
+            .clearCapabilities()
+            .addTransportType(TRANSPORT_VPN)
+            .removeCapability(NET_CAPABILITY_NOT_VPN)
+            .build()
+        val callback = TestableNetworkCallback()
+        registerNetworkCallback(request, callback)
+
+        callback.expectAvailableThenValidatedCallbacks(agent.network!!)
+
+        var vpnNc = mCM.getNetworkCapabilities(agent.network!!)
+        assertNotNull(vpnNc)
+        assertEquals(type, (vpnNc!!.transportInfo as VpnTransportInfo).type)
+
+        agent.unregister()
+        callback.expect<Lost>(agent.network!!)
+    }
+
+    @Test
+    @IgnoreUpTo(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    fun testOemVpnTypes() {
+        // TODO: why is this necessary given the @IgnoreUpTo above?
+        assumeTrue(SdkLevel.isAtLeastB())
+        doTestOemVpnType(VpnManager.TYPE_VPN_OEM_SERVICE)
+        doTestOemVpnType(VpnManager.TYPE_VPN_OEM_LEGACY)
+    }
+
     private fun unregister(agent: TestableNetworkAgent) {
         agent.unregister()
         agent.eventuallyExpect<OnNetworkUnwanted>()
@@ -1066,7 +1001,20 @@ class NetworkAgentTest {
     fun testAgentStartsInConnecting() {
         val mockContext = mock(Context::class.java)
         val mockCm = mock(ConnectivityManager::class.java)
+        val mockedResult = ConnectivityManager.MockHelpers.registerNetworkAgentResult(
+            mock(Network::class.java),
+            mock(INetworkAgentRegistry::class.java)
+        )
         doReturn(mockCm).`when`(mockContext).getSystemService(Context.CONNECTIVITY_SERVICE)
+        doReturn(mockedResult).`when`(mockCm).registerNetworkAgent(
+            any(),
+            any(),
+            any(),
+            any(),
+            any(),
+            any(),
+            anyInt()
+        )
         val agent = createNetworkAgent(mockContext)
         agent.register()
         verify(mockCm).registerNetworkAgent(
@@ -1614,7 +1562,7 @@ class NetworkAgentTest {
         val s = Os.socket(AF_INET6, SOCK_DGRAM, 0)
         net.bindSocket(s)
         val content = ByteArray(16)
-        Random().nextBytes(content)
+        Random.nextBytes(content)
         Os.sendto(s, ByteBuffer.wrap(content), 0, REMOTE_ADDRESS, 7 /* port */)
         val match = reader.poll(DEFAULT_TIMEOUT_MS) {
             val udpStart = IPV6_HEADER_LEN + UDP_HEADER_LEN
@@ -1985,27 +1933,5 @@ class NetworkAgentTest {
     fun testNativeNetworkCreation_Vpn() {
         // VPN networks are always created as soon as the agent is registered.
         doTestNativeNetworkCreation(expectCreatedImmediately = true, intArrayOf(TRANSPORT_VPN))
-    }
-}
-
-// Subclasses of CarrierPrivilegesCallback can't be inline, or they'll be compiled as
-// inner classes of the test class and will fail resolution on R as the test harness
-// uses reflection to list all methods and classes
-class PrivilegeWaiterCallback(private val cv: ConditionVariable) :
-        CarrierPrivilegesCallback {
-    var hasPrivilege = false
-    override fun onCarrierPrivilegesChanged(p: MutableSet<String>, uids: MutableSet<Int>) {
-        hasPrivilege = uids.contains(Process.myUid())
-        cv.open()
-    }
-}
-
-class CarrierServiceChangedWaiterCallback(private val cv: ConditionVariable) :
-        CarrierPrivilegesCallback {
-    var pkgName: String? = null
-    override fun onCarrierPrivilegesChanged(p: MutableSet<String>, u: MutableSet<Int>) {}
-    override fun onCarrierServiceChanged(pkgName: String?, uid: Int) {
-        this.pkgName = pkgName
-        cv.open()
     }
 }

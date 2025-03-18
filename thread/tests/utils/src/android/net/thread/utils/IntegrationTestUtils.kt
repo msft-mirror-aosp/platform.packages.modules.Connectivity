@@ -455,9 +455,8 @@ object IntegrationTestUtils {
     fun isInMulticastGroup(interfaceName: String, address: Inet6Address): Boolean {
         val cmd = "ip -6 maddr show dev $interfaceName"
         val output: String = runShellCommandOrThrow(cmd)
-        val addressStr = address.hostAddress
         for (line in output.split("\\n".toRegex()).dropLastWhile { it.isEmpty() }.toTypedArray()) {
-            if (line.contains(addressStr)) {
+            if (line.contains(address.hostAddress!!)) {
                 return true
             }
         }
@@ -477,6 +476,12 @@ object IntegrationTestUtils {
         }
 
         return addresses
+    }
+
+    /** Returns the list of [InetAddress] of the given network. */
+    @JvmStatic
+    fun getIpv6Addresses(interfaceName: String): List<InetAddress> {
+        return getIpv6LinkAddresses(interfaceName).map { it.address }
     }
 
     /** Return the first discovered service of `serviceType`. */

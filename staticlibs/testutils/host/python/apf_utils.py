@@ -18,6 +18,7 @@ from mobly import asserts
 from mobly.controllers import android_device
 from mobly.controllers.android_device_lib.adb import AdbError
 from net_tests_utils.host.python import adb_utils, assert_utils
+import functools
 
 
 class PatternNotFoundException(Exception):
@@ -115,12 +116,12 @@ def get_ipv4_addresses(
   else:
     return []
 
-def get_ipv6_addresses(
+def get_non_tentative_ipv6_addresses(
     ad: android_device.AndroidDevice, iface_name: str
 ) -> list[str]:
-  """Retrieves the IPv6 addresses of a given interface on an Android device.
+  """Retrieves the non-tentative IPv6 addresses of a given interface on an Android device.
 
-  This function executes an ADB shell command (`ip -6 address show`) to get the
+  This function executes an ADB shell command (`ip -6 address show -tentative`) to get the
   network interface information and extracts the IPv6 address from the output.
   If devices have no IPv6 address, raise PatternNotFoundException.
 
@@ -138,7 +139,7 @@ def get_ipv6_addresses(
   #         valid_lft forever preferred_lft forever
   #     inet6 fe80::1233:aadb:3d32:1234/64 scope link
   #         valid_lft forever preferred_lft forever
-  output = adb_utils.adb_shell(ad, f"ip -6 address show {iface_name}")
+  output = adb_utils.adb_shell(ad, f"ip -6 address show -tentative {iface_name}")
   pattern = r"inet6\s+([0-9a-fA-F:]+)\/\d+"
   matches = re.findall(pattern, output)
 
@@ -399,6 +400,20 @@ def assume_apf_version_support_at_least(
       f"Supported apf version {caps.apf_version_supported} < expected version"
       f" {expected_version}",
   )
+
+def at_least_B():
+  def decorator(test_function):
+    @functools.wraps(test_function)
+    def wrapper(self, *args, **kwargs):
+      asserts.abort_class_if(
+        (not hasattr(self, 'client')) or (not hasattr(self.client, 'isAtLeastB')),
+        "client device is not B+"
+      )
+
+      asserts.abort_class_if(not self.client.isAtLeastB(), "not B+")
+      return test_function(self, *args, **kwargs)
+    return wrapper
+  return decorator
 
 class AdbOutputHandler:
   def __init__(self, ad, cmd):
