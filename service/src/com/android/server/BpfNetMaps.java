@@ -915,10 +915,13 @@ public class BpfNetMaps {
             final InetAddress address, final int protocol, final int remotePort,
             final boolean isAllowed) {
         throwIfPre25Q2("addLocalNetAccess is not available on pre-B devices");
-        final int ifIndex;
         if (iface == null) {
-            ifIndex = 0;
-        } else {
+            Log.e(TAG, "Null iface, skip addLocalNetAccess for " + address);
+            return;
+        }
+        int ifIndex = mInterfaceTracker.getInterfaceIndex(iface);
+        if (ifIndex == 0) {
+            mInterfaceTracker.addInterface(iface);
             ifIndex = mInterfaceTracker.getInterfaceIndex(iface);
         }
         if (ifIndex == 0) {
@@ -1325,11 +1328,11 @@ public class BpfNetMaps {
                             + value.iif2 + "(" + mDeps.getIfName(value.iif2) + ")");
             if (sLocalNetBlockedUidMap != null) {
                 BpfDump.dumpMap(sLocalNetAccessMap, pw, "sLocalNetAccessMap",
-                        (key, value) -> "[" + key + "]: " + value);
+                        (key, value) -> "" + key + ": " + value.val);
             }
             if (sLocalNetBlockedUidMap != null) {
                 BpfDump.dumpMap(sLocalNetBlockedUidMap, pw, "sLocalNetBlockedUidMap",
-                        (key, value) -> "[" + key + "]: " + value);
+                        (key, value) -> "" + key + ": " + value.val);
             }
             dumpDataSaverConfig(pw);
             pw.decreaseIndent();
