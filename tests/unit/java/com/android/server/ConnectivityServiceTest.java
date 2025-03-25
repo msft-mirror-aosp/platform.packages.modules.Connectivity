@@ -586,6 +586,10 @@ public class ConnectivityServiceTest {
             "https://android.com/user/api/capport/";
     private static final String TEST_FRIENDLY_NAME = "Network friendly name";
     private static final String TEST_REDIRECT_URL = "http://example.com/firstPath";
+    private static final String QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER =
+            "queue_network_agent_events_in_system_server";
+
+    private boolean mShouldCreateNetworksImmediately;
 
     private MockContext mServiceContext;
     private HandlerThread mCsHandlerThread;
@@ -1935,6 +1939,9 @@ public class ConnectivityServiceTest {
         mService.mLingerDelayMs = TEST_LINGER_DELAY_MS;
         mService.mNascentDelayMs = TEST_NASCENT_DELAY_MS;
 
+        mShouldCreateNetworksImmediately = mService.isConnectivityServiceFeatureEnabledForTesting(
+                QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER);
+
         if (mDeps.isAtLeastV()) {
             verify(mNetworkPolicyManager, never()).registerNetworkPolicyCallback(any(), any());
             mPolicyCallback = null;
@@ -2234,7 +2241,8 @@ public class ConnectivityServiceTest {
         private static final int VERSION_T = 3;
         private static final int VERSION_U = 4;
         private static final int VERSION_V = 5;
-        private static final int VERSION_MAX = VERSION_V;
+        private static final int VERSION_B = 6;
+        private static final int VERSION_MAX = VERSION_B;
         private int mSdkLevel = VERSION_UNMOCKED;
 
         private void setBuildSdk(final int sdkLevel) {
@@ -2261,6 +2269,12 @@ public class ConnectivityServiceTest {
         public boolean isAtLeastU() {
             return mSdkLevel == VERSION_UNMOCKED ? super.isAtLeastU()
                     : mSdkLevel >= VERSION_U;
+        }
+
+        @Override
+        public boolean isAtLeastB() {
+            return mSdkLevel == VERSION_UNMOCKED ? super.isAtLeastB()
+                    : mSdkLevel >= VERSION_B;
         }
 
         @Override
@@ -3092,23 +3106,43 @@ public class ConnectivityServiceTest {
         generalCb.expectAvailableCallbacksUnvalidated(net2);
         if (expectLingering) {
             generalCb.expectLosing(net1);
+        }
+        if (mShouldCreateNetworksImmediately) {
+            if (expectLingering) {
+                // Make sure cell 1 is unwanted immediately if the radio can't time share, but only
+                // after some delay if it can.
+                generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
+                defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
+                net1.assertNotDisconnected(TEST_CALLBACK_TIMEOUT_MS); // always incurs the timeout
+                generalCb.assertNoCallback();
+                // assertNotDisconnected waited for TEST_CALLBACK_TIMEOUT_MS, so waiting for the
+                // linger period gives TEST_CALLBACK_TIMEOUT_MS time for the event to process.
+                net1.expectDisconnected(UNREASONABLY_LONG_ALARM_WAIT_MS);
+                generalCb.expect(LOST, net1);
+            } else {
+                net1.expectDisconnected(TEST_CALLBACK_TIMEOUT_MS);
+                net1.disconnect();
+                generalCb.expect(LOST, net1);
+                generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
+                defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
+            }
+        } else {
+            generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
+            defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
 
             // Make sure cell 1 is unwanted immediately if the radio can't time share, but only
             // after some delay if it can.
-            generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
-            defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
-            net1.assertNotDisconnected(TEST_CALLBACK_TIMEOUT_MS); // always incurs the timeout
-            generalCb.assertNoCallback();
-            // assertNotDisconnected waited for TEST_CALLBACK_TIMEOUT_MS, so waiting for the
-            // linger period gives TEST_CALLBACK_TIMEOUT_MS time for the event to process.
-            net1.expectDisconnected(UNREASONABLY_LONG_ALARM_WAIT_MS);
-            generalCb.expect(LOST, net1);
-        } else {
-            net1.expectDisconnected(TEST_CALLBACK_TIMEOUT_MS);
+            if (expectLingering) {
+                net1.assertNotDisconnected(TEST_CALLBACK_TIMEOUT_MS); // always incurs the timeout
+                generalCb.assertNoCallback();
+                // assertNotDisconnected waited for TEST_CALLBACK_TIMEOUT_MS, so waiting for the
+                // linger period gives TEST_CALLBACK_TIMEOUT_MS time for the event to process.
+                net1.expectDisconnected(UNREASONABLY_LONG_ALARM_WAIT_MS);
+            } else {
+                net1.expectDisconnected(TEST_CALLBACK_TIMEOUT_MS);
+            }
             net1.disconnect();
             generalCb.expect(LOST, net1);
-            generalCb.expectCaps(net2, c -> c.hasCapability(NET_CAPABILITY_VALIDATED));
-            defaultCb.expectAvailableDoubleValidatedCallbacks(net2);
         }
 
         // Remove primary from net 2

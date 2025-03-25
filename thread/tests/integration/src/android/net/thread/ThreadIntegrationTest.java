@@ -24,8 +24,12 @@ import static android.net.thread.utils.IntegrationTestUtils.CALLBACK_TIMEOUT;
 import static android.net.thread.utils.IntegrationTestUtils.getIpv6Addresses;
 import static android.net.thread.utils.IntegrationTestUtils.getIpv6LinkAddresses;
 import static android.net.thread.utils.IntegrationTestUtils.waitFor;
+import static android.net.thread.utils.OtDaemonController.DIAG_VENDOR_MODEL_TLV_TYPE;
+import static android.net.thread.utils.OtDaemonController.DIAG_VENDOR_NAME_TLV_TYPE;
 import static android.net.thread.utils.ThreadNetworkControllerWrapper.JOIN_TIMEOUT;
 import static android.os.SystemClock.elapsedRealtime;
+
+import static androidx.test.platform.app.InstrumentationRegistry.getInstrumentation;
 
 import static com.android.compatibility.common.util.SystemUtil.runShellCommand;
 import static com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow;
@@ -121,6 +125,12 @@ public class ThreadIntegrationTest {
 
     @Before
     public void setUp() throws Exception {
+        getInstrumentation()
+                .getUiAutomation()
+                .grantRuntimePermission(
+                        "com.android.thread.tests.integration",
+                        "android.permission.NEARBY_WIFI_DEVICES");
+
         mExecutor = Executors.newSingleThreadExecutor();
         mFtd = new FullThreadDevice(10 /* nodeId */);
         mOtCtl = new OtDaemonController();
@@ -288,6 +298,17 @@ public class ThreadIntegrationTest {
 
         assertThat(mOtCtl.getBorderRoutingState()).ignoringCase().isEqualTo("disabled");
         // TODO: b/376217403 - enables / disables Border Agent at runtime
+    }
+
+    @Test
+    public void networkDiagnostic_vendorAndModelNameAreSet() throws Exception {
+        mController.joinAndWait(DEFAULT_DATASET);
+
+        var tlvTypes = List.of(DIAG_VENDOR_NAME_TLV_TYPE, DIAG_VENDOR_MODEL_TLV_TYPE);
+        var result = mOtCtl.netDiagGet(mOtCtl.getMlEid(), tlvTypes);
+
+        assertThat(result.get("Vendor Name")).isNotEmpty();
+        assertThat(result.get("Vendor Model")).isNotEmpty();
     }
 
     private NetworkCapabilities registerNetworkCallbackAndWait(NetworkRequest request)

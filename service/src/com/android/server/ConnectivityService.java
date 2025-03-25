@@ -121,6 +121,7 @@ import static android.net.NetworkScore.POLICY_TRANSPORT_PRIMARY;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST;
 import static android.net.OemNetworkPreferences.OEM_NETWORK_PREFERENCE_TEST_ONLY;
 import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_MATCH_LOCAL_NETWORK;
+import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_MATCH_NON_THREAD_LOCAL_NETWORKS;
 import static android.net.connectivity.ConnectivityCompatChanges.ENABLE_SELF_CERTIFIED_CAPABILITIES_DECLARATION;
 import static android.net.connectivity.ConnectivityCompatChanges.NETWORK_BLOCKED_WITHOUT_INTERNET_PERMISSION;
 import static android.os.Process.INVALID_UID;
@@ -1473,6 +1474,10 @@ public class ConnectivityService extends IConnectivityManager.Stub {
             return SdkLevel.isAtLeastV();
         }
 
+        public boolean isAtLeastB() {
+            return SdkLevel.isAtLeastB();
+        }
+
         /**
          * Get system properties to use in ConnectivityService.
          */
@@ -1933,8 +1938,8 @@ public class ConnectivityService extends IConnectivityManager.Stub {
         mUseDeclaredMethodsForCallbacksEnabled =
                 mDeps.isFeatureNotChickenedOut(context,
                         ConnectivityFlags.USE_DECLARED_METHODS_FOR_CALLBACKS);
-        mQueueNetworkAgentEventsInSystemServer =
-                mDeps.isFeatureNotChickenedOut(context,
+        mQueueNetworkAgentEventsInSystemServer = mDeps.isAtLeastB()
+                && mDeps.isFeatureNotChickenedOut(context,
                         ConnectivityFlags.QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER);
         // registerUidFrozenStateChangedCallback is only available on U+
         mQueueCallbacksForFrozenApps = mDeps.isAtLeastU()
@@ -3186,6 +3191,11 @@ public class ConnectivityService extends IConnectivityManager.Stub {
     }
 
     private void maybeDisableLocalNetworkMatching(NetworkCapabilities nc, int callingUid) {
+        // If disabled, NetworkRequest cannot match non-thread local networks even if
+        // specified explicitly. Compat change is enabled by default on apps targeting B+.
+        // Agent should not be visible on U- even if it's rolled out.
+        nc.setMatchNonThreadLocalNetworks(mDeps.isAtLeastV() && mDeps.isChangeEnabled(
+                ENABLE_MATCH_NON_THREAD_LOCAL_NETWORKS, callingUid));
         if (mDeps.isChangeEnabled(ENABLE_MATCH_LOCAL_NETWORK, callingUid)) {
             return;
         }
@@ -5777,6 +5787,10 @@ public class ConnectivityService extends IConnectivityManager.Stub {
             mDeps.disableIngressRateLimit(nai.linkProperties.getInterfaceName());
         }
 
+        // Removes the interfaces associated with the network being destroyed from the tracker.
+        for (String interfaceName : nai.linkProperties.getAllInterfaceNames()) {
+            mInterfaceTracker.removeInterface(interfaceName);
+        }
         nai.setDestroyed();
         nai.onNetworkDestroyed();
     }
@@ -10059,10 +10073,12 @@ public class ConnectivityService extends IConnectivityManager.Stub {
             // Adds dns allow rule to LocalNetAccessMap for both TCP and UDP protocol at port 53,
             // if it is a local dns (ie. it falls in the local prefix range).
             if (prefix.contains(dnsServer)) {
-                mBpfNetMaps.addLocalNetAccess(getIpv4MappedAddressBitLen(), iface, dnsServer,
+                mBpfNetMaps.addLocalNetAccess(32 + 128 + 16 + 16, iface, dnsServer,
                         IPPROTO_UDP, 53, true);
-                mBpfNetMaps.addLocalNetAccess(getIpv4MappedAddressBitLen(), iface, dnsServer,
+                mBpfNetMaps.addLocalNetAccess(32 + 128 + 16 + 16, iface, dnsServer,
                         IPPROTO_TCP, 53, true);
+                mBpfNetMaps.addLocalNetAccess(32 + 128 + 16 + 16, iface, dnsServer,
+                        IPPROTO_TCP, 853, true);  // DNS over TLS
             }
         }
     }
@@ -10081,22 +10097,14 @@ public class ConnectivityService extends IConnectivityManager.Stub {
             // Removes dns allow rule from LocalNetAccessMap for both TCP and UDP protocol
             // at port 53, if it is a local dns (ie. it falls in the prefix range).
             if (prefix.contains(dnsServer)) {
-                mBpfNetMaps.removeLocalNetAccess(getIpv4MappedAddressBitLen(), iface, dnsServer,
+                mBpfNetMaps.removeLocalNetAccess(32 + 128 + 16 + 16, iface, dnsServer,
                         IPPROTO_UDP, 53);
-                mBpfNetMaps.removeLocalNetAccess(getIpv4MappedAddressBitLen(), iface, dnsServer,
+                mBpfNetMaps.removeLocalNetAccess(32 + 128 + 16 + 16, iface, dnsServer,
                         IPPROTO_TCP, 53);
+                mBpfNetMaps.removeLocalNetAccess(32 + 128 + 16 + 16, iface, dnsServer,
+                        IPPROTO_TCP, 853);  // DNS over TLS
             }
         }
-    }
-
-    /**
-     * Returns total bit length of an Ipv4 mapped address.
-     */
-    private int getIpv4MappedAddressBitLen() {
-        final int ifaceLen = 32; // bit length of interface
-        final int inetAddressLen = 32 + 96; // length of ipv4 mapped addresses
-        final int portProtocolLen = 32;  //16 for port + 16 for protocol;
-        return ifaceLen + inetAddressLen + portProtocolLen;
     }
 
     /**

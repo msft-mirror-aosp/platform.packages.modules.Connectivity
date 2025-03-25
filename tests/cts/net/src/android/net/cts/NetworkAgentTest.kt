@@ -15,6 +15,7 @@
  */
 package android.net.cts
 
+import android.Manifest.permission.NEARBY_WIFI_DEVICES
 import android.Manifest.permission.NETWORK_SETTINGS
 import android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE
 import android.app.Instrumentation
@@ -247,6 +248,12 @@ class NetworkAgentTest {
     @Before
     fun setUp() {
         instrumentation.getUiAutomation().adoptShellPermissionIdentity()
+        if (SdkLevel.isAtLeastT()) {
+            instrumentation.getUiAutomation().grantRuntimePermission(
+                "android.net.cts",
+                NEARBY_WIFI_DEVICES
+            )
+        }
         mHandlerThread.start()
     }
 
@@ -751,12 +758,24 @@ class NetworkAgentTest {
         tryTest {
             // This process is not the carrier service UID, so allowedUids should be ignored in all
             // the following cases.
-            doTestAllowedUidsWithSubId(defaultSubId, TRANSPORT_CELLULAR, uid,
-                    expectUidsPresent = false)
-            doTestAllowedUidsWithSubId(defaultSubId, TRANSPORT_WIFI, uid,
-                    expectUidsPresent = false)
-            doTestAllowedUidsWithSubId(defaultSubId, TRANSPORT_BLUETOOTH, uid,
-                    expectUidsPresent = false)
+            doTestAllowedUidsWithSubId(
+                defaultSubId,
+                TRANSPORT_CELLULAR,
+                uid,
+                    expectUidsPresent = false
+            )
+            doTestAllowedUidsWithSubId(
+                defaultSubId,
+                TRANSPORT_WIFI,
+                uid,
+                    expectUidsPresent = false
+            )
+            doTestAllowedUidsWithSubId(
+                defaultSubId,
+                TRANSPORT_BLUETOOTH,
+                uid,
+                    expectUidsPresent = false
+            )
 
             // The tools to set the carrier service package override do not exist before U,
             // so there is no way to test the rest of this test on < U.
@@ -774,9 +793,11 @@ class NetworkAgentTest {
             val timeout = SystemClock.elapsedRealtime() + DEFAULT_TIMEOUT_MS
             while (true) {
                 if (SystemClock.elapsedRealtime() > timeout) {
-                    fail("Couldn't make $servicePackage the service package for $defaultSubId: " +
+                    fail(
+                        "Couldn't make $servicePackage the service package for $defaultSubId: " +
                             "dumpsys connectivity".execute().split("\n")
-                                    .filter { it.contains("Logical slot = $defaultSlotIndex.*") })
+                                    .filter { it.contains("Logical slot = $defaultSlotIndex.*") }
+                    )
                 }
                 if ("dumpsys connectivity"
                         .execute()
@@ -799,10 +820,18 @@ class NetworkAgentTest {
                 // TODO(b/315136340): Allow ownerUid to see allowedUids and enable below test case
                 // doTestAllowedUids(defaultSubId, TRANSPORT_WIFI, uid, expectUidsPresent = true)
             }
-            doTestAllowedUidsWithSubId(defaultSubId, TRANSPORT_BLUETOOTH, uid,
-                    expectUidsPresent = false)
-            doTestAllowedUidsWithSubId(defaultSubId, intArrayOf(TRANSPORT_CELLULAR, TRANSPORT_WIFI),
-                    uid, expectUidsPresent = false)
+            doTestAllowedUidsWithSubId(
+                defaultSubId,
+                TRANSPORT_BLUETOOTH,
+                uid,
+                    expectUidsPresent = false
+            )
+            doTestAllowedUidsWithSubId(
+                defaultSubId,
+                intArrayOf(TRANSPORT_CELLULAR, TRANSPORT_WIFI),
+                    uid,
+                expectUidsPresent = false
+            )
         }
     }
 
@@ -1015,6 +1044,12 @@ class NetworkAgentTest {
             mock(Network::class.java),
             mock(INetworkAgentRegistry::class.java)
         )
+        doReturn(SHOULD_CREATE_NETWORKS_IMMEDIATELY).`when`(mockCm)
+            .isFeatureEnabled(
+                eq(ConnectivityManager.FEATURE_QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER)
+            )
+        doReturn(Context.CONNECTIVITY_SERVICE).`when`(mockContext)
+            .getSystemServiceName(ConnectivityManager::class.java)
         doReturn(mockCm).`when`(mockContext).getSystemService(Context.CONNECTIVITY_SERVICE)
         doReturn(mockedResult).`when`(mockCm).registerNetworkAgent(
             any(),
@@ -1673,14 +1708,22 @@ class NetworkAgentTest {
         // The fact that the first event seen by matchAllCallback is the connection of network3
         // implicitly ensures that no callbacks are sent since network1 was lost.
         val (agent3, network3) = connectNetwork(lp = lp)
-
-        // As soon as the replacement arrives, network1 is disconnected.
-        // Check that this happens before the replacement timeout (5 seconds) fires.
-        matchAllCallback.expectAvailableCallbacks(network3, validated = false)
-        matchAllCallback.expect<Lost>(network1, 2_000 /* timeoutMs */)
-        matchAllCallback.expectCaps(network3) { it.hasCapability(NET_CAPABILITY_VALIDATED) }
-        sendAndExpectUdpPacket(network3, reader, iface)
-        testCallback.expectAvailableDoubleValidatedCallbacks(network3)
+        if (SHOULD_CREATE_NETWORKS_IMMEDIATELY) {
+            // This is the correct sequence of events.
+            matchAllCallback.expectAvailableCallbacks(network3, validated = false)
+            matchAllCallback.expect<Lost>(network1, 2_000 /* timeoutMs */)
+            matchAllCallback.expectCaps(network3) { it.hasCapability(NET_CAPABILITY_VALIDATED) }
+            sendAndExpectUdpPacket(network3, reader, iface)
+            testCallback.expectAvailableDoubleValidatedCallbacks(network3)
+        } else {
+            // This is incorrect and fixed by the "create networks immediately" feature
+            matchAllCallback.expectAvailableThenValidatedCallbacks(network3)
+            testCallback.expectAvailableDoubleValidatedCallbacks(network3)
+            sendAndExpectUdpPacket(network3, reader, iface)
+            // As soon as the replacement arrives, network1 is disconnected.
+            // Check that this happens before the replacement timeout (5 seconds) fires.
+            matchAllCallback.expect<Lost>(network1, 2_000 /* timeoutMs */)
+        }
         agent1.expectCallback<OnNetworkUnwanted>()
 
         // Test lingering:
@@ -1798,9 +1841,19 @@ class NetworkAgentTest {
 
         val (newWifiAgent, newWifiNetwork) = connectNetwork(TRANSPORT_WIFI)
         testCallback.expectAvailableCallbacks(newWifiNetwork, validated = true)
-        matchAllCallback.expectAvailableCallbacks(newWifiNetwork, validated = false)
-        matchAllCallback.expect<Lost>(wifiNetwork)
-        matchAllCallback.expectCaps(newWifiNetwork) { it.hasCapability(NET_CAPABILITY_VALIDATED) }
+        if (SHOULD_CREATE_NETWORKS_IMMEDIATELY) {
+            // This is the correct sequence of events
+            matchAllCallback.expectAvailableCallbacks(newWifiNetwork, validated = false)
+            matchAllCallback.expect<Lost>(wifiNetwork)
+            matchAllCallback.expectCaps(newWifiNetwork) {
+                it.hasCapability(NET_CAPABILITY_VALIDATED)
+            }
+        } else {
+            // When networks are not created immediately, the sequence is slightly incorrect
+            // and instead is as follows
+            matchAllCallback.expectAvailableThenValidatedCallbacks(newWifiNetwork)
+            matchAllCallback.expect<Lost>(wifiNetwork)
+        }
         wifiAgent.expectCallback<OnNetworkUnwanted>()
         testCallback.expect<CapabilitiesChanged>(newWifiNetwork)
 
@@ -1860,8 +1913,10 @@ class NetworkAgentTest {
                 it.setTransportInfo(VpnTransportInfo(
                     VpnManager.TYPE_VPN_PLATFORM,
                     sessionId,
-                    /*bypassable=*/ false,
-                    /*longLivedTcpConnectionsExpensive=*/ false
+                    /*bypassable=*/
+                    false,
+                    /*longLivedTcpConnectionsExpensive=*/
+                    false
                 ))
                 it.underlyingNetworks = listOf()
             }

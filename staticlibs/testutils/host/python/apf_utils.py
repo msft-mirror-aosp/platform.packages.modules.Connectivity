@@ -148,6 +148,38 @@ def get_non_tentative_ipv6_addresses(
   else:
     return []
 
+def get_exclude_all_host_ipv6_multicast_addresses(
+    ad: android_device.AndroidDevice, iface_name: str
+) -> list[str]:
+  """Retrieves the IPv6 multicast addresses of a given interface on an Android device.
+
+  This function executes an ADB shell command (`ip -6 maddr show`) to get the
+  network interface information and extracts the IPv6 multicast address from the output.
+  If devices have no IPv6 multicast address, raise PatternNotFoundException.
+
+  Args:
+      ad: The Android device object.
+      iface_name: The name of the network interface (e.g., "wlan0").
+
+  Returns:
+      The IPv6 multicast addresses of the interface as a list of string.
+      Return empty list if no IPv6 multicast address.
+  """
+  # output format
+  # 47:     wlan0
+  #         inet6 ff02::1:ff99:37b0
+  #         inet6 ff02::1:ffb7:cba2 users 2
+  #         inet6 ff02::1
+  #         inet6 ff01::1
+  output = adb_utils.adb_shell(ad, f"ip -6 maddr show {iface_name}")
+  pattern = r"inet6\s+([a-fA-F0-9:]+)(?:\s+users\s+\d+)?"
+  matches = re.findall(pattern, output)
+
+  if matches:
+    return [addr for addr in matches if addr not in ("ff02::1", "ff01::1")]
+  else:
+    return []
+
 def get_hardware_address(
     ad: android_device.AndroidDevice, iface_name: str
 ) -> str:
@@ -407,10 +439,28 @@ def at_least_B():
     def wrapper(self, *args, **kwargs):
       asserts.abort_class_if(
         (not hasattr(self, 'client')) or (not hasattr(self.client, 'isAtLeastB')),
-        "client device is not B+"
+        "no valid client attribute"
       )
 
-      asserts.abort_class_if(not self.client.isAtLeastB(), "not B+")
+      asserts.abort_class_if(not self.client.isAtLeastB(), "client device is not Android B+")
+      return test_function(self, *args, **kwargs)
+    return wrapper
+  return decorator
+
+def apf_ram_at_least(size):
+  def decorator(test_function):
+    @functools.wraps(test_function)
+    def wrapper(self, *args, **kwargs):
+      asserts.abort_class_if(
+        (not hasattr(self, 'clientDevice')) or (not hasattr(self, 'client_iface_name')),
+        "no valid client attribute"
+      )
+
+      caps = get_apf_capabilities(self.clientDevice, self.client_iface_name)
+      asserts.skip_if(
+        caps.apf_ram_size < size,
+        f'APF rame size {caps.apf_ram_size} < {size}'
+      )
       return test_function(self, *args, **kwargs)
     return wrapper
   return decorator

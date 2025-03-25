@@ -556,9 +556,9 @@ static int readCodeSections(ifstream& elfFile, vector<codeSection>& cs) {
         vector<string> csSymNames;
         ret = getSectionSymNames(elfFile, oldName, csSymNames, STT_FUNC);
         if (ret || !csSymNames.size()) return ret;
-        for (size_t i = 0; i < progDefNames.size(); ++i) {
-            if (!progDefNames[i].compare(csSymNames[0] + "_def")) {
-                cs_temp.prog_def = pd[i];
+        for (size_t j = 0; j < progDefNames.size(); ++j) {
+            if (!progDefNames[j].compare(csSymNames[0] + "_def")) {
+                cs_temp.prog_def = pd[j];
                 break;
             }
         }
@@ -769,7 +769,7 @@ int getKeyValueTids(const struct btf *btf, const char *mapName,
     const size_t max_name = 256;
     char kvTypeName[max_name];
     int64_t keySize, valueSize;
-    uint32_t kvId;
+    int32_t kvId;
 
     if (snprintf(kvTypeName, max_name, "____btf_map_%s", mapName) == max_name) {
         ALOGE("____btf_map_%s is too long", mapName);
@@ -858,14 +858,16 @@ static int createMaps(const char* elfPath, ifstream& elfFile, vector<unique_fd>&
 
     struct btf *btf = NULL;
     auto scopeGuard = base::make_scope_guard([btf] { if (btf) btf__free(btf); });
-    if (isAtLeastKernelVersion(4, 18, 0)) {
+    if (isAtLeastKernelVersion(5, 10, 0)) {
+        // Untested on Linux Kernel 5.4, but likely compatible.
         // On Linux Kernels older than 4.18 BPF_BTF_LOAD command doesn't exist.
+        // On Linux Kernels older than 5.2 BTF_KIND_VAR and BTF_KIND_DATASEC don't exist.
         ret = readSectionByName(".BTF", elfFile, btfData);
         if (ret) {
             ALOGE("Failed to read .BTF section, ret:%d", ret);
             return ret;
         }
-        struct btf *btf = btf__new(btfData.data(), btfData.size());
+        btf = btf__new(btfData.data(), btfData.size());
         if (btf == NULL) {
             ALOGE("btf__new failed, errno: %d", errno);
             return -errno;
@@ -1818,6 +1820,21 @@ static int doLoad(char** argv, char * const envp[]) {
     if (!isArm() && isUserspace32bit() && isAtLeastKernelVersion(6, 7, 0)) {
         ALOGE("64-bit userspace required on 6.7+ kernels.");
         return 1;
+    }
+
+    if (isAtLeast25Q2) {
+        FILE * f = fopen("/system/etc/init/netbpfload.rc", "re");
+        if (!f) {
+            ALOGE("failure opening /system/etc/init/netbpfload.rc");
+            return 1;
+        }
+        int y = -1, q = -1, a = -1, b = -1, c = -1;
+        int v = fscanf(f, "# %d %d %d %d %d #", &y, &q, &a, &b, &c);
+        ALOGI("detected %d of 5: %dQ%d api:%d.%d.%d", v, y, q, a, b, c);
+        fclose(f);
+        if (v != 5 || y != 2025 || a != 36 || b) return 1;
+        if (q < 2 || q > 3) return 1;
+        if (c < 0 || c > 1) return 1;
     }
 
     // Ensure we can determine the Android build type.

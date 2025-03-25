@@ -17,6 +17,7 @@
 package com.android.testutils
 
 import android.content.Context
+import android.net.ConnectivityManager
 import android.net.ConnectivityManager.FEATURE_QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER
 import android.net.InetAddresses.parseNumericAddress
 import android.net.KeepalivePacketData
@@ -72,14 +73,14 @@ import org.junit.Assert.assertArrayEquals
 // Any legal score (0~99) for the test network would do, as it is going to be kept up by the
 // requests filed by the test and should never match normal internet requests. 70 is the default
 // score of Ethernet networks, it's as good a value as any other.
-private val TEST_NETWORK_SCORE = NetworkScore.Builder().setLegacyInt(70).build()
+// Note that this can't use NetworkScore.Builder() because this test must be able to
+// run on R, which doesn't know this class.
+private const val TEST_NETWORK_SCORE = 70
 
 private class Provider(context: Context, looper: Looper) :
             NetworkProvider(context, looper, "NetworkAgentTest NetworkProvider")
 
-private val enabledFeatures = mutableMapOf(
-    FEATURE_QUEUE_NETWORK_AGENT_EVENTS_IN_SYSTEM_SERVER to true
-)
+private val enabledFeatures = mutableMapOf<Long, Boolean>()
 
 public open class TestableNetworkAgent(
     context: Context,
@@ -92,7 +93,12 @@ public open class TestableNetworkAgent(
 
     override fun isFeatureEnabled(context: Context, feature: Long): Boolean {
         when (val it = enabledFeatures.get(feature)) {
-            null -> fail("Unmocked feature $feature, see TestableNetworkAgent.enabledFeatures")
+            null -> {
+                val cm = context.getSystemService(ConnectivityManager::class.java)
+                val res = cm.isFeatureEnabled(feature)
+                enabledFeatures[feature] = res
+                return res
+            }
             else -> return it
         }
     }
