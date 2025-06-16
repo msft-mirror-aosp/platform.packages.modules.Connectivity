@@ -20,6 +20,7 @@ import static android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_DISABLE
 import static android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_ENABLED;
 import static android.net.ConnectivityManager.RESTRICT_BACKGROUND_STATUS_WHITELISTED;
 
+import static com.android.compatibility.common.util.FeatureUtil.isAutomotive;
 import static com.android.compatibility.common.util.FeatureUtil.isTV;
 import static com.android.cts.net.hostside.NetworkPolicyTestUtils.setRestrictBackground;
 import static com.android.cts.net.hostside.Property.DATA_SAVER_MODE;
@@ -27,6 +28,9 @@ import static com.android.cts.net.hostside.Property.METERED_NETWORK;
 import static com.android.cts.net.hostside.Property.NO_DATA_SAVER_MODE;
 
 import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeFalse;
+
+import android.os.Build;
 
 import androidx.test.filters.LargeTest;
 
@@ -43,6 +47,8 @@ public class DataSaverModeTest extends AbstractRestrictBackgroundNetworkTestCase
     private static final String[] REQUIRED_WHITELISTED_PACKAGES = {
         "com.android.providers.downloads"
     };
+
+    private static final int VANILLA_ICE_CREAM = Build.VERSION_CODES.UPSIDE_DOWN_CAKE + 1;
 
     @Before
     public void setUp() throws Exception {
@@ -97,6 +103,11 @@ public class DataSaverModeTest extends AbstractRestrictBackgroundNetworkTestCase
 
     @Test
     public void testGetRestrictBackgroundStatus_enabled() throws Exception {
+        // TODO(b/437105925): Rewrite the test with a new way of turning all displays off.
+        // This is a temporary solution and only required for Android 14 and 15.
+        if (Build.VERSION.SDK_INT <= VANILLA_ICE_CREAM) {
+            assumeFalse(isAutomotive());
+        }
         setRestrictBackground(true);
         assertRestrictBackgroundChangedReceived(1);
         assertDataSaverStatusOnBackground(RESTRICT_BACKGROUND_STATUS_ENABLED);
