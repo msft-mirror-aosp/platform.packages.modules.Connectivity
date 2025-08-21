@@ -20,7 +20,6 @@
 package android.net.cts
 
 import android.Manifest.permission.WRITE_DEVICE_CONFIG
-import android.content.pm.PackageManager
 import android.content.pm.PackageManager.FEATURE_AUTOMOTIVE
 import android.content.pm.PackageManager.FEATURE_WIFI
 import android.net.ConnectivityManager
@@ -29,20 +28,10 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.apf.ApfCapabilities
 import android.net.apf.ApfConstants.ETH_ETHERTYPE_OFFSET
-import android.net.apf.ApfConstants.ETH_HEADER_LEN
-import android.net.apf.ApfConstants.ICMP6_CHECKSUM_OFFSET
 import android.net.apf.ApfConstants.ICMP6_TYPE_OFFSET
-import android.net.apf.ApfConstants.IPV6_DEST_ADDR_OFFSET
-import android.net.apf.ApfConstants.IPV6_HEADER_LEN
 import android.net.apf.ApfConstants.IPV6_NEXT_HEADER_OFFSET
-import android.net.apf.ApfConstants.IPV6_SRC_ADDR_OFFSET
-import android.net.apf.ApfCounterTracker
-import android.net.apf.ApfCounterTracker.Counter.DROPPED_IPV6_MULTICAST_PING
-import android.net.apf.ApfCounterTracker.Counter.FILTER_AGE_16384THS
-import android.net.apf.ApfCounterTracker.Counter.PASSED_IPV6_ICMP
 import android.net.apf.ApfV4Generator
 import android.net.apf.ApfV4GeneratorBase
-import android.net.apf.ApfV6Generator
 import android.net.apf.BaseApfGenerator
 import android.net.apf.BaseApfGenerator.MemorySlot
 import android.net.apf.BaseApfGenerator.Register.R0
@@ -71,12 +60,6 @@ import com.android.compatibility.common.util.SystemUtil.runShellCommand
 import com.android.compatibility.common.util.SystemUtil.runShellCommandOrThrow
 import com.android.compatibility.common.util.VsrTest
 import com.android.internal.util.HexDump
-import com.android.net.module.util.NetworkStackConstants.ETHER_ADDR_LEN
-import com.android.net.module.util.NetworkStackConstants.ETHER_DST_ADDR_OFFSET
-import com.android.net.module.util.NetworkStackConstants.ETHER_HEADER_LEN
-import com.android.net.module.util.NetworkStackConstants.ETHER_SRC_ADDR_OFFSET
-import com.android.net.module.util.NetworkStackConstants.ICMPV6_HEADER_MIN_LEN
-import com.android.net.module.util.NetworkStackConstants.IPV6_ADDR_LEN
 import com.android.net.module.util.PacketReader
 import com.android.testutils.DevSdkIgnoreRule
 import com.android.testutils.DevSdkIgnoreRule.IgnoreUpTo
@@ -103,6 +86,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import org.junit.After
 import org.junit.AfterClass
+import org.junit.Assume.assumeFalse
 import org.junit.Before
 import org.junit.BeforeClass
 import org.junit.Rule
@@ -301,6 +285,10 @@ class ApfIntegrationTest {
     @Before
     fun setUp() {
         assume().that(pm.hasSystemFeature(FEATURE_WIFI)).isTrue()
+
+        // APF GMS-VSR requirements don't apply to automotive devices. There is no power benefit to
+        // running APF on automotive as the device has almost infinite battery power.
+        assumeFalse("Skip test: automotive device", pm.hasSystemFeature(FEATURE_AUTOMOTIVE))
 
         networkCallback = TestableNetworkCallback()
         cm.requestNetwork(
