@@ -46,6 +46,7 @@ import android.net.TetheringManager;
 import android.net.TetheringManager.TetheringEventCallback;
 import android.net.TetheringManager.TetheringInterfaceRegexps;
 import android.net.TetheringManager.TetheringRequest;
+import android.net.wifi.SoftApInfo;
 import android.net.wifi.WifiClient;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.SoftApCallback;
@@ -543,6 +544,32 @@ public final class CtsTetheringUtils {
             // registerSoftApCallback will immediately call the callback with the current state, so
             // this callback will fire even if softAp is already disabled.
             callback.waitForSoftApStopped();
+        } finally {
+            runAsShell(NETWORK_SETTINGS, () -> mWm.unregisterSoftApCallback(callback));
+        }
+    }
+
+    /**
+     * Waits for the SoftAP to be successfully started and ready.
+     * <p>
+     * This method registers a {@link SoftApCallback} and blocks until the
+     * {@link SoftApCallback#onInfoChanged(List)} callback is invoked with a non-empty list of
+     * {@link SoftApInfo}. This indicates that the SoftAP has been configured and is operational.
+     * </p>
+     */
+    public void expectSoftApCompleted() {
+        final ConditionVariable cv = new ConditionVariable();
+        final SoftApCallback callback = new SoftApCallback() {
+            @Override
+            public void onInfoChanged(@NonNull List<SoftApInfo> l) {
+                if (l.size() > 0) cv.open();
+            }
+        };
+        try {
+            runAsShell(NETWORK_SETTINGS, () -> mWm.registerSoftApCallback(c -> c.run(), callback));
+            if (!cv.block(DEFAULT_TIMEOUT_MS)) {
+                fail("SoftAp Completed Timeout");
+            }
         } finally {
             runAsShell(NETWORK_SETTINGS, () -> mWm.unregisterSoftApCallback(callback));
         }
