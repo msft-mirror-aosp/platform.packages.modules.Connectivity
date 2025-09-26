@@ -287,6 +287,12 @@ class EthernetManagerTest {
             val cb = events.poll(NO_CALLBACK_TIMEOUT_MS)
             assertNull(cb, "Expected no callback but got $cb")
         }
+
+        fun assumeNoCallback() {
+            val cb = events.poll(0 /* timeout */)
+            // Note that assumeNull does not exist.
+            assumeTrue(cb == null)
+        }
     }
 
     private class TetheredInterfaceListener : TetheredInterfaceCallback {
@@ -562,7 +568,7 @@ class EthernetManagerTest {
         // check is explicitly *not* using an interface state listener.
         // Since restricted interfaces cannot be used for tethering,
         // assumeNoInterfaceForTetheringAvailable() is an okay proxy.
-        assumeNoInterfaceForTetheringAvailable()
+        assumeNoUnrestrictedInterfacesAvailable()
 
         // If an interface exists when the callback is registered, it is reported on registration.
         val iface = createInterface()
@@ -632,6 +638,15 @@ class EthernetManagerTest {
             // setEthernetEnabled(true) which always waits on a callback.
             setEthernetEnabled(true)
         }
+    }
+
+    private fun assumeNoUnrestrictedInterfacesAvailable() {
+        val listener = EthernetStateListener()
+        addInterfaceStateListener(listener)
+
+        // Force interface state listener callbacks to be processed before proceeding.
+        setEthernetEnabled(true)
+        listener.assumeNoCallback()
     }
 
     @Test
