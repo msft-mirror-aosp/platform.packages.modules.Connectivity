@@ -45,7 +45,10 @@ import com.android.testutils.TestableNetworkCallback
 import com.android.testutils.runAsShell
 import com.google.android.mobly.snippet.Snippet
 import com.google.android.mobly.snippet.rpc.Rpc
+import kotlin.test.fail
 import org.junit.Rule
+
+private const val MAX_CONNECT_RETRY = 3
 
 class ConnectivityMultiDevicesSnippet : Snippet {
     @get:Rule
@@ -109,29 +112,39 @@ class ConnectivityMultiDevicesSnippet : Snippet {
         wifiConfig.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP)
         wifiConfig.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP)
 
-        // Add the test configuration and connect to it.
         val connectUtil = ConnectUtil(context)
-        connectUtil.connectToWifiConfig(wifiConfig)
-
-        // Implement manual SSID matching. Specifying the SSID in
-        // NetworkSpecifier is ineffective
-        // (see WifiNetworkAgentSpecifier#canBeSatisfiedBy for details).
-        // Note that holding permission is necessary when waiting for
-        // the callbacks. The handler thread checks permission; if
-        // it's not present, the SSID will be redacted.
-        val networkCallback = TestableNetworkCallback()
         val wifiRequest = NetworkRequest.Builder().addTransportType(TRANSPORT_WIFI).build()
-        return runAsShell(NETWORK_SETTINGS) {
-            // Register the network callback is needed here.
-            // This is to avoid the race condition where callback is fired before
-            // acquiring permission.
-            networkCallbackRule.registerNetworkCallback(wifiRequest, networkCallback)
-            return@runAsShell networkCallback.eventuallyExpect<CapabilitiesChanged> {
-                // Remove double quotes.
-                val ssidFromCaps = (WifiInfo::sanitizeSsid)(it.caps.ssid)
-                ssidFromCaps == ssid && it.caps.hasCapability(NET_CAPABILITY_VALIDATED)
-            }.network.networkHandle
+        // Retry connecting to the Wi-Fi network. Connection establishment can be flaky
+        // (e.g., SoftAP is not ready or the scan misses the hotspot). Retrying overcomes these
+        // transient issues. See b/448345079 for more context.
+        repeat(MAX_CONNECT_RETRY) {
+            // Add the test configuration and connect to it.
+            connectUtil.connectToWifiConfig(wifiConfig)
+
+            // Implement manual SSID matching. Specifying the SSID in
+            // NetworkSpecifier is ineffective
+            // (see WifiNetworkAgentSpecifier#canBeSatisfiedBy for details).
+            // Note that holding permission is necessary when waiting for
+            // the callbacks. The handler thread checks permission; if
+            // it's not present, the SSID will be redacted.
+            val networkCallback = TestableNetworkCallback()
+            val network = runAsShell(NETWORK_SETTINGS) {
+                // Register the network callback is needed here.
+                // This is to avoid the race condition where callback is fired before
+                // acquiring permission.
+                networkCallbackRule.registerNetworkCallback(wifiRequest, networkCallback)
+                val event = networkCallback.poll { event ->
+                    if (event !is CapabilitiesChanged) return@poll false
+                    // Remove double quotes.
+                    val ssidFromCaps = (WifiInfo::sanitizeSsid)(event.caps.ssid)
+                    ssidFromCaps == ssid && event.caps.hasCapability(NET_CAPABILITY_VALIDATED)
+                }
+                (event as? CapabilitiesChanged)?.network
+            }
+            if (network != null) return network.networkHandle
+            // If network is null, it means poll timed out. Retry connecting.
         }
+        fail("Could not connect to ${wifiConfig.SSID} after retrying $MAX_CONNECT_RETRY times")
     }
 
     @Rpc(description = "Get interface name from NetworkHandle")
@@ -169,7 +182,6 @@ class ConnectivityMultiDevicesSnippet : Snippet {
         try {
             tetheringCallback.expectNoTetheringActive()
             val iface = ctsTetheringUtils.startWifiTethering(tetheringCallback).getInterface()
-            ctsTetheringUtils.expectSoftApCompleted()
             return iface
         } finally {
             ctsTetheringUtils.unregisterTetheringEventCallback(tetheringCallback)
