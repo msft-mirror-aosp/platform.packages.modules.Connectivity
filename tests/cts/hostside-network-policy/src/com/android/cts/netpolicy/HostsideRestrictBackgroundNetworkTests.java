@@ -17,6 +17,7 @@
 package com.android.cts.netpolicy;
 
 import static org.junit.Assert.fail;
+import static org.junit.Assume.assumeFalse;
 
 import android.platform.test.annotations.FlakyTest;
 import android.platform.test.annotations.SecurityTest;
@@ -31,6 +32,8 @@ import org.junit.Test;
 
 @FlakyTest(bugId = 288324467)
 public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkPolicyTestCase {
+
+    private static final String FEATURE_AUTOMOTIVE = "android.hardware.type.automotive";
 
     @Before
     public void setUp() throws Exception {
@@ -68,6 +71,10 @@ public class HostsideRestrictBackgroundNetworkTests extends HostsideNetworkPolic
 
     @Test
     public void testDataSaverMode_enabled() throws Exception {
+        // Skip this test on AAOS MUMD build as per-display power is not supported.
+        assumeFalse(
+                getDevice().hasFeature(FEATURE_AUTOMOTIVE)
+                        && getDevice().isVisibleBackgroundUsersSupported());
         runDeviceTestsWithCustomOptions(TEST_PKG, TEST_PKG + ".DataSaverModeTest",
                 "testGetRestrictBackgroundStatus_enabled");
     }
