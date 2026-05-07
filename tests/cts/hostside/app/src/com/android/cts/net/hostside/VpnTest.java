@@ -25,6 +25,7 @@ import static android.content.pm.PackageManager.FEATURE_WIFI;
 import static android.net.ConnectivityManager.FIREWALL_CHAIN_BACKGROUND;
 import static android.net.ConnectivityManager.TYPE_VPN;
 import static android.net.NetworkCapabilities.TRANSPORT_TEST;
+import static android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED;
 import static android.net.NetworkCapabilities.TRANSPORT_VPN;
 import static android.os.Process.INVALID_UID;
 import static android.system.OsConstants.AF_INET;
@@ -1015,7 +1016,10 @@ public class VpnTest {
         checkTrafficOnVpn();
 
         final Network vpnNetwork = mCM.getActiveNetwork();
-        myUidCallback.expectAvailableThenValidatedCallbacks(vpnNetwork, TIMEOUT_MS);
+        myUidCallback.eventuallyExpect(CallbackEntry.NETWORK_CAPS_UPDATED,
+                NETWORK_CALLBACK_TIMEOUT_MS,
+                entry -> entry.getNetwork().equals(vpnNetwork)
+                        && entry.getCaps().hasCapability(NET_CAPABILITY_VALIDATED));
         assertEquals(vpnNetwork, mCM.getActiveNetwork());
         assertNotEqual(defaultNetwork, vpnNetwork);
         maybeExpectVpnTransportInfo(vpnNetwork);
