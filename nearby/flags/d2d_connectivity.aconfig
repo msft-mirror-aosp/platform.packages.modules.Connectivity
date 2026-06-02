@@ -1,0 +1,10 @@
+package: "android.bettertogether.flags"
+container: "system"
+
+flag {
+    name: "enable_d2d_connectivity_service"
+    is_exported: true
+    namespace: "bettertogether"
+    description: "This flag controls whether d2d connectivity is enabled"
+    bug: "454960181"
+}
