@@ -343,7 +343,7 @@ class ApfIntegrationTest {
 
         if (caps.apfVersionSupported > 4) {
             assertThat(caps.maximumApfProgramSize).isAtLeast(2048)
-            assertThat(caps.apfVersionSupported).isEqualTo(6000) // v6.0000
+            assertThat(caps.apfVersionSupported).isAnyOf(6000, 6100) // v6.000 or v6.100
         }
 
         // DEVICEs launching with Android 15 (AOSP experimental) or higher with CHIPSETs that set
